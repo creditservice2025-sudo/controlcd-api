@@ -11,6 +11,9 @@ use App\Http\Controllers\GuarantorController;
 use App\Http\Controllers\CreditController;
 use App\Http\Controllers\InstallmentController;
 use App\Http\Controllers\PaymentController;
+use App\Http\Controllers\DashboardController;
+
+// Auth routes
 Route::post('login', [AuthController::class, 'login']);
 Route::post('forgot-password', [AuthController::class, 'forgotPassword']);
 Route::post('reset-password', [AuthController::class, 'resetPassword']);
@@ -21,6 +24,9 @@ Route::middleware('auth:api')->group(function () {
     //change password
     Route::post('auth/change-password', [AuthController::class, 'changePassword']);
 
+    // dashboard routes
+    Route::get('dashboard/counter-entities', [DashboardController::class, 'loadDahsboardData']);
+
     // route crud
     Route::get('routes', [RouteController::class, 'index']);
     Route::get('routes/select', [RouteController::class, 'getRoutesSelect']);
@@ -28,6 +34,7 @@ Route::middleware('auth:api')->group(function () {
     Route::put('route/update/{id}', [RouteController::class, 'update']);
     Route::delete('route/delete/{id}', [RouteController::class, 'delete']);
     Route::put('/routes/toggle-status/{routeId}', [RouteController::class, 'toggleStatus']);
+
     //route user
     Route::get('users', [UserController::class, 'index']);
     Route::get('users/select', [UserController::class, 'getUsersSelect']);
@@ -75,8 +82,3 @@ Route::middleware('auth:api')->group(function () {
     Route::post('payment/create', [PaymentController::class, 'create']);
     Route::get('payment/{creditId}/{paymentId}', [PaymentController::class, 'show']);
 });
-
-
-
-
-
