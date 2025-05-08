@@ -1,0 +1,82 @@
+<?php
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\AuthController;
+use App\Http\Controllers\RouteController;
+use App\Http\Controllers\UserController;
+use App\Http\Controllers\CitiesController;
+use App\Http\Controllers\RoleController;
+use App\Http\Controllers\ClientController;
+use App\Http\Controllers\GuarantorController;
+use App\Http\Controllers\CreditController;
+use App\Http\Controllers\InstallmentController;
+use App\Http\Controllers\PaymentController;
+Route::post('login', [AuthController::class, 'login']);
+Route::post('forgot-password', [AuthController::class, 'forgotPassword']);
+Route::post('reset-password', [AuthController::class, 'resetPassword']);
+Route::put('client/update/{id}', [ClientController::class, 'update']);
+
+Route::middleware('auth:api')->group(function () {
+
+    //change password
+    Route::post('auth/change-password', [AuthController::class, 'changePassword']);
+
+    // route crud
+    Route::get('routes', [RouteController::class, 'index']);
+    Route::get('routes/select', [RouteController::class, 'getRoutesSelect']);
+    Route::post('route/create', [RouteController::class, 'create']);
+    Route::put('route/update/{id}', [RouteController::class, 'update']);
+    Route::delete('route/delete/{id}', [RouteController::class, 'delete']);
+    Route::put('/routes/toggle-status/{routeId}', [RouteController::class, 'toggleStatus']);
+    //route user
+    Route::get('users', [UserController::class, 'index']);
+    Route::get('users/select', [UserController::class, 'getUsersSelect']);
+    Route::post('user/create', [UserController::class, 'create']);
+    Route::put('user/update/{id}', [UserController::class, 'update']);
+    Route::delete('user/delete/{id}', [UserController::class, 'delete']);
+    Route::get('user/{id}', [UserController::class, 'show']);
+    Route::put('/user/toggle-status/{userId}', [UserController::class, 'toggleStatus']);
+    //route cities
+    Route::get('cities/select', [CitiesController::class, 'getCitiesSelect']);
+
+    //route roles
+    Route::apiResource('roles', RoleController::class);
+
+    //route client
+    Route::get('clients', [ClientController::class, 'index']);
+    Route::get('clients/select', [ClientController::class, 'getClientsSelect']);
+    Route::post('client/create', [ClientController::class, 'create']);
+    Route::put('client/update/{id}', [ClientController::class, 'update']);
+    Route::delete('client/delete/{id}', [ClientController::class, 'delete']);
+    Route::get('client/{id}', [ClientController::class, 'show']);
+
+    //route guarantor
+    Route::get('guarantors', [GuarantorController::class, 'index']);
+    Route::get('guarantors/select', [GuarantorController::class, 'getGuarantorsSelect']);
+    Route::post('guarantor/create', [GuarantorController::class, 'create']);
+    Route::put('guarantor/update/{guarantorId}', [GuarantorController::class, 'update']);
+    Route::delete('guarantor/delete/{guarantorId}', [GuarantorController::class, 'delete']);
+    Route::get('guarantor/{guarantorId}', [GuarantorController::class, 'show']);
+
+    //route credit
+    Route::get('credits', [CreditController::class, 'index']);
+    Route::post('credit/create', [CreditController::class, 'create']);
+    Route::put('credit/update/{id}', [CreditController::class, 'update']);
+    Route::delete('credit/delete/{id}', [CreditController::class, 'delete']);
+    Route::get('credit/{id}', [CreditController::class, 'show']);
+    Route::get('credits/clients', [CreditController::class, 'getClientCredits']);
+
+    //route installment
+    Route::get('installments', [InstallmentController::class, 'index']);
+    Route::get('installment/{id}', [InstallmentController::class, 'show']);
+
+    //route payment
+    Route::get('payments/{creditId}', [PaymentController::class, 'index']);
+    Route::post('payment/create', [PaymentController::class, 'create']);
+    Route::get('payment/{creditId}/{paymentId}', [PaymentController::class, 'show']);
+});
+
+
+
+
+
