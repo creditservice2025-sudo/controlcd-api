@@ -31,7 +31,9 @@ class LoginService
                 return $this->errorResponse($validator->errors(), 422);
             }
 
-            $user = User::where('email', 'LIKE', $credentials['email'] . '%')->first();
+            $user = User::where('email', 'LIKE', $credentials['email'] . '%')
+            ->with('city')
+            ->first();
 
             if (!$user || !Hash::check($credentials['password'], $user->password)) {
                 return $this->errorResponse(['Los datos introducidos son inválidos, verifica e intenta nuevamente'], 401);
@@ -49,6 +51,7 @@ class LoginService
                 'success' => true,
                 'access_token' => $token,
                 'token_type' => 'Bearer',
+                'user' => $user,
             ]);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
