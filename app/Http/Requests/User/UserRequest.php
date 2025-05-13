@@ -24,11 +24,11 @@ class UserRequest extends FormRequest
         return [
             'name' => 'required|string|max:255',
             'email' => 'required|string|email|max:255|unique:users',
-            'dni' => 'required|integer',
+            'dni' => 'required|integer|unique:users',
             'address' => 'required|string|max:255',
             'password' => 'required|string|min:8',
             'routes' => 'array',
-            'phone' => 'required|integer',
+            'phone' => 'required|integer|unique:users',
             'role_id' => 'required|integer|in:3,4,6',
         ];
     }
@@ -47,6 +47,7 @@ class UserRequest extends FormRequest
             'password.required' => 'La contraseña es requerida',
             'dni.required' => 'El dni es requerido',
             'phone.required' => 'El teléfono es requerido',
+            'phone.unique' => 'El teléfono ya se encuentra en uso',
             'address.required' => 'La dirección es requerida',
             'email.unique' => 'El email ya existe',
             'dni.unique' => 'El dni ya existe',
