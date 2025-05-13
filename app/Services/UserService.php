@@ -121,7 +121,7 @@ class UserService {
         try {
             $superAdminRoleId = Role::where('name', 'super-admin')->value('id');
     
-            $users = User::select('id', 'name', 'email', 'phone', 'address', 'dni', 'city_id', 'parent_id', 'role_id', 'status')
+            $users = User::select('id', 'uuid', 'name', 'email', 'phone', 'address', 'dni', 'city_id', 'parent_id', 'role_id', 'status')
                 ->with('routes')
                 ->where(function ($query) use ($search) {
                     $query->where('name', 'like', '%'.$search.'%')
