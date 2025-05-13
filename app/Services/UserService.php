@@ -123,7 +123,6 @@ class UserService {
     
             $users = User::select('id', 'name', 'email', 'phone', 'address', 'dni', 'city_id', 'parent_id', 'role_id', 'status')
                 ->with('routes')
-                ->with('city')
                 ->where(function ($query) use ($search) {
                     $query->where('name', 'like', '%'.$search.'%')
                         ->orWhere('email', 'like', '%'.$search.'%')

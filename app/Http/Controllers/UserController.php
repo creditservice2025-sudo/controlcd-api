@@ -19,22 +19,10 @@ class UserController extends Controller
         $this->userService = $userService;
     }
 
-    public function create(Request $request)
+    public function create(UserRequest $request)
     {
         try {
-            $params = $request->validate([
-                'name' => 'required|string|max:255',
-                'email' => 'required|string|email|max:255|unique:users',
-                'dni' => 'required|integer',
-                'city_id' => 'required|integer',
-                'address' => 'required|string|max:255',
-                'password' => 'required|string|min:8',
-                'routes' => 'array',
-                'phone' => 'required|integer',
-                'role_id' => 'required|integer', 
-            ]);
-
-            return $this->userService->create($params);
+            return $this->userService->create($request->all());
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }

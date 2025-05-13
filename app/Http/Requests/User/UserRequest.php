@@ -11,7 +11,7 @@ class UserRequest extends FormRequest
      */
     public function authorize(): bool
     {
-        return false;
+        return true;
     }
 
     /**
@@ -22,13 +22,14 @@ class UserRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'name' => 'required|string',
-            'email' => 'required|email',
-            'password' => 'required|max:8',
-            'dni' => 'required|numeric|unique:users',
-            'phone' => 'required|numeric',
-            'address' => 'required|string',
-            'city_id' => 'numeric',
+            'name' => 'required|string|max:255',
+            'email' => 'required|string|email|max:255|unique:users',
+            'dni' => 'required|integer',
+            'address' => 'required|string|max:255',
+            'password' => 'required|string|min:8',
+            'routes' => 'array',
+            'phone' => 'required|integer',
+            'role_id' => 'required|integer|in:3,4,6',
         ];
     }
 
@@ -49,6 +50,9 @@ class UserRequest extends FormRequest
             'address.required' => 'La dirección es requerida',
             'email.unique' => 'El email ya existe',
             'dni.unique' => 'El dni ya existe',
+            'password.min' => 'La contraseña debe tener minimo 8 caracteres',
+            'role_id.required' => 'El rol del miembro es requerido',
+            'role_id.in' => 'El rol del miembro debe ser una de las siguientes opciones: 3, 4, 6'
         ];
     }
 }
