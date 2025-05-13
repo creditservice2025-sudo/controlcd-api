@@ -2,11 +2,11 @@
 
 namespace App\Services;
 
-use App\Traits\ApiResponse;
-use App\Models\User;
-use App\Models\UserRoute;
-use App\Models\Client;
 use Hash;
+use App\Models\User;
+use App\Models\Client;
+use App\Models\UserRoute;
+use App\Traits\ApiResponse;
 use Spatie\Permission\Models\Role;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -121,22 +121,35 @@ class UserService {
         try {
             $superAdminRoleId = Role::where('name', 'super-admin')->value('id');
     
-            $users = User::select('id', 'uuid', 'name', 'email', 'phone', 'address', 'dni', 'city_id', 'parent_id', 'role_id', 'status')
-                ->with('routes')
-                ->where(function ($query) use ($search) {
-                    $query->where('name', 'like', '%'.$search.'%')
-                        ->orWhere('email', 'like', '%'.$search.'%')
-                        ->orWhere('phone', 'like', '%'.$search.'%')
-                        ->orWhere('address', 'like', '%'.$search.'%')
-                        ->orWhere('dni', 'like', '%'.$search.'%');
-                })
-                ->whereNull('deleted_at')
-                ->whereDoesntHave('roles', function ($query) use ($superAdminRoleId) {
-                    $query->where('id', $superAdminRoleId);
-                })
-                ->orderBy('created_at', 'desc')
-                ->paginate($perpage);
-    
+            $users = User::query()
+            ->leftJoin('roles', 'roles.id', '=', 'users.role_id')
+            ->select(
+                'users.id',
+                'users.uuid',
+                'users.name',
+                'users.email',
+                'users.phone',
+                'users.address',
+                'users.dni',
+                'users.city_id',
+                'users.parent_id',
+                'users.role_id',
+                'users.status',
+                'roles.name as role_name'
+            )
+            ->with(['routes:id,name,sector'])
+            ->where(function ($query) use ($search) {
+                $query->where('users.name', 'like', '%'.$search.'%')
+                    ->orWhere('users.email', 'like', '%'.$search.'%')
+                    ->orWhere('users.phone', 'like', '%'.$search.'%')
+                    ->orWhere('users.address', 'like', '%'.$search.'%')
+                    ->orWhere('users.dni', 'like', '%'.$search.'%');
+            })
+            ->whereNull('users.deleted_at')
+            ->where('users.role_id', '!=', $superAdminRoleId)
+            ->orderByDesc('users.created_at')
+            ->paginate($perpage);
+
             return $this->successResponse([
                 'success' => true,
                 'data' => $users
@@ -159,7 +172,8 @@ class UserService {
                 'address',
                 'dni',
                 'city_id',
-                'parent_id'
+                'parent_id',
+                'status'
             ])
             ->with(['city', 'routes']) // Include related routes
             ->where('id', $userId)
