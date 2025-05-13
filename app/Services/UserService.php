@@ -162,7 +162,9 @@ class UserService {
                 'parent_id'
             ])
             ->with(['city', 'routes']) // Include related routes
-            ->find($userId);
+            ->where('id', $userId)
+            ->orWhere('uuid', $userId)
+            ->first();
 
             if($user == null) {
                 return $this->errorNotFoundResponse('Miembro no encontrado');
