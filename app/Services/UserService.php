@@ -165,19 +165,21 @@ class UserService {
         try {
 
             $user = User::select([
-                'id',
-                'name',
-                'email',
-                'phone',
-                'address',
-                'dni',
-                'city_id',
-                'parent_id',
-                'status'
+                'users.id',
+                'users.name',
+                'users.email',
+                'users.phone',
+                'users.address',
+                'users.dni',
+                'users.city_id',
+                'users.parent_id',
+                'users.status',
+                'roles.name as role_name' // Agregamos el nombre del rol
             ])
-            ->with(['city', 'routes']) // Include related routes
-            ->where('id', $userId)
-            ->orWhere('uuid', $userId)
+            ->leftJoin('roles', 'roles.id', '=', 'users.role_id')
+            ->with(['city', 'routes']) // Incluye relaciones necesarias
+            ->where('users.id', $userId)
+            ->orWhere('users.uuid', $userId)
             ->first();
 
             if($user == null) {
