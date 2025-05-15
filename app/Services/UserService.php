@@ -18,6 +18,7 @@ class UserService {
 
     public function create($params)
     {
+        DB::beginTransaction();
         try {
             if ($params['role_id'] == 'super-admin') {
                 return $this->errorResponse('No tienes permisos para crear este usuario', 403);
@@ -35,6 +36,7 @@ class UserService {
 
             $user->parent_id = $params['role_id'];
             $user->save();
+            DB::commit();
 
             return $this->successResponse([
                 'success' => true,
@@ -43,6 +45,7 @@ class UserService {
             ]);
 
         } catch (\Exception $e) {
+            DB::rollback();
             \Log::error($e->getMessage());
             return $this->errorResponse('Error al crear el miembro', 500);
         }
@@ -51,18 +54,12 @@ class UserService {
 
     public function update($userId, $params)
     {
+        DB::beginTransaction();
         try {
             $user = User::find($userId);
 
             if ($user == null) {
                 return $this->errorNotFoundResponse('Miembro no encontrado');
-            }
-
-            if (isset($params['role_id'])) {
-                $parentUser = User::find($params['role_id']);
-                if (!$parentUser) {
-                    return $this->errorResponse('El usuario padre no existe', 400);
-                }
             }
 
             if (isset($params['password'])) {
@@ -76,6 +73,7 @@ class UserService {
             if (isset($params['routes'])) {
                 $user->routes()->sync($params['routes']);
             }
+            DB::commit();
 
             return $this->successResponse([
                 'success' => true,
@@ -84,6 +82,7 @@ class UserService {
             ]);
 
         } catch (\Exception $e) {
+            DB::rollback();
             \Log::error($e->getMessage());
             return $this->errorResponse('Error al actualizar el miembro', 500);
         }
