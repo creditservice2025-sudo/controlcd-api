@@ -1,4 +1,5 @@
 <?php
+
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
@@ -12,6 +13,7 @@ use App\Http\Controllers\CreditController;
 use App\Http\Controllers\InstallmentController;
 use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\CountriesController;
 
 // Auth routes
 Route::post('login', [AuthController::class, 'login']);
@@ -44,7 +46,16 @@ Route::middleware('auth:api')->group(function () {
     Route::get('user/{id}', [UserController::class, 'show']);
     Route::put('/user/toggle-status/{userId}', [UserController::class, 'toggleStatus']);
     //route cities
+    Route::get('cities', [CitiesController::class, 'index']);
     Route::get('cities/select', [CitiesController::class, 'getCitiesSelect']);
+    Route::post('/cities/create', [CitiesController::class, 'store']);
+    Route::put('/cities/{id}', [CitiesController::class, 'update']);
+    Route::delete('/cities/delete/{id}', [CitiesController::class, 'destroy']);
+
+    //route countries
+    Route::get('/countries', [CountriesController::class, 'index']);
+    Route::post('/countries', [CountriesController::class, 'store']);
+    Route::put('/countries/{id}', [CountriesController::class, 'update']);
 
     //route roles
     Route::apiResource('roles', RoleController::class);
