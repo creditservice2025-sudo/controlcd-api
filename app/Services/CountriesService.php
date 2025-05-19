@@ -5,10 +5,45 @@ namespace App\Services;
 use App\Traits\ApiResponse;
 use App\Models\Country;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
 
 class CountriesService
 {
     use ApiResponse;
+
+    public function getAll($page = 1, $perPage = 10, $search = null)
+    {
+        try {
+            $query = Country::query();
+            
+            if ($search) {
+                $searchTerm = Str::lower($search);
+                $query->whereRaw('LOWER(name) LIKE ?', ["%{$searchTerm}%"]);
+            }
+            
+            $countries = $query->paginate(
+                $perPage, 
+                ['id', 'name', 'currency'], 
+                'page', 
+                $page
+            );
+
+            return $this->successResponse([
+                'data' => $countries->items(),
+                'pagination' => [
+                    'total' => $countries->total(),
+                    'current_page' => $countries->currentPage(),
+                    'per_page' => $countries->perPage(),
+                    'last_page' => $countries->lastPage(),
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            $this->handlerException('Error al obtener los países');
+        }
+    }
+
 
     public function getCountries()
     {
