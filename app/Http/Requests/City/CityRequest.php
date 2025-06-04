@@ -25,18 +25,20 @@ class CityRequest extends FormRequest
                 'required',
                 'string',
                 'max:255',
+                Rule::unique('cities')->where(function ($query) {
+                    return $query->where('country_id', $this->country_id);
+                })
             ],
             'country_id' => 'required|exists:countries,id'
         ];
     
         if ($this->isMethod('PUT') || $this->isMethod('PATCH')) {
-            $rules['name'][] = Rule::unique('cities')->ignore($this->route('id'));
-        } else {
-            $rules['name'][] = 'unique:cities';
+            $rules['name'][3] = $rules['name'][3]->ignore($this->route('id'));
         }
     
         return $rules;
     }
+
 
     /**
      * Custom validation messages
@@ -45,7 +47,7 @@ class CityRequest extends FormRequest
     {
         return [
             'name.required' => 'El nombre de la ciudad es obligatorio',
-            'name.unique' => 'Esta ciudad ya existe',
+            'name.unique' => 'Ya existe una ciudad con este nombre en el país seleccionado',
             'country_id.required' => 'Debe seleccionar un país',
             'country_id.exists' => 'El país seleccionado no es válido'
         ];

@@ -25,6 +25,19 @@ class CountriesController extends Controller
         }
     }
 
+    public function getAll(Request $request)
+    {
+        try {
+            $page = $request->get('page', 1);
+            $perPage = $request->get('perPage', 10);
+            $search = $request->get('search', null);
+
+            return $this->countriesService->getAll($page, $perPage, $search);
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
     public function store(Request $request)
     {
         try {

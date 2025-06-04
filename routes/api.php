@@ -51,9 +51,11 @@ Route::middleware('auth:api')->group(function () {
     Route::post('/cities/create', [CitiesController::class, 'store']);
     Route::put('/cities/{id}', [CitiesController::class, 'update']);
     Route::delete('/cities/delete/{id}', [CitiesController::class, 'destroy']);
+    Route::get('/cities/country/{country_id}', [CitiesController::class, 'getByCountry']);
 
     //route countries
     Route::get('/countries', [CountriesController::class, 'index']);
+    Route::get('/countries/all', [CountriesController::class, 'getAll']);
     Route::post('/countries', [CountriesController::class, 'store']);
     Route::put('/countries/{id}', [CountriesController::class, 'update']);
 
