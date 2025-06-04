@@ -173,6 +173,7 @@ class UserService {
                 'users.city_id',
                 'users.parent_id',
                 'users.status',
+                'users.role_id',
                 'roles.name as role_name' // Agregamos el nombre del rol
             ])
             ->leftJoin('roles', 'roles.id', '=', 'users.role_id')
