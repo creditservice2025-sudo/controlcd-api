@@ -6,15 +6,15 @@ use Illuminate\Database\Eloquent\Model;
 
 class UserRoute extends Model
 {
-    protected $fillable = ['user_id', 'route_id'];
+    protected $fillable = ['user_id', 'seller_id'];
 
     public function user()
     {
         return $this->belongsTo(User::class);
     }
 
-    public function route()
+    public function seller()
     {
-        return $this->belongsTo(Route::class);
+        return $this->belongsTo(Seller::class);
     }
 }

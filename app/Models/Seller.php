@@ -10,20 +10,39 @@ use Laravel\Passport\HasApiTokens;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 
-class Route extends Model
+class Seller extends Model
 {
 
     use HasFactory, Notifiable, HasRoles, HasApiTokens, SoftDeletes;
 
-    protected $fillable = ['name', 'sector', 'status'];
+    protected $fillable = [
+        'user_id',
+        'city_id',
+        'status'
+    ];
 
     public function userRoutes()
     {
         return $this->hasMany(UserRoute::class);
     }
-    public function credits()
+
+    public function city() 
     {
-        return $this->hasMany(Credit::class, 'route_id');
+        return $this->belongsTo(City::class);
     }
 
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
+   
+    public function credits()
+    {
+        return $this->hasMany(Credit::class, 'seller_id');
+    }
+
+    public function images()
+    {
+        return $this->hasMany(Image::class);
+    }
 }

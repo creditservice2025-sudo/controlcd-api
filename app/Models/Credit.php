@@ -13,11 +13,11 @@ class Credit extends Model
 {
 
     use HasFactory, Notifiable, HasRoles, HasApiTokens, SoftDeletes;
-    
+
     protected $fillable = [
         'client_id',
         'guarantor_id',
-        'route_id',
+        'seller_id',
         'start_date',
         'end_date',
         'credit_value',
@@ -40,9 +40,9 @@ class Credit extends Model
         return $this->belongsTo(Guarantor::class, 'guarantor_id');
     }
 
-    public function route()
+    public function seller()
     {
-        return $this->belongsTo(Route::class, 'route_id');
+        return $this->belongsTo(Seller::class, 'seller_id');
     }
 
     public function installments()
@@ -54,6 +54,4 @@ class Credit extends Model
     {
         return $this->hasMany(Payment::class);
     }
-
 }
-

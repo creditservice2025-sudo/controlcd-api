@@ -137,7 +137,7 @@ class UserService {
                 'users.status',
                 'roles.name as role_name'
             )
-            ->with(['routes:id,name,sector'])
+           /*  ->with(['routes:id,name,sector']) */
             ->where(function ($query) use ($search) {
                 $query->where('users.name', 'like', '%'.$search.'%')
                     ->orWhere('users.email', 'like', '%'.$search.'%')
@@ -177,7 +177,7 @@ class UserService {
                 'roles.name as role_name' // Agregamos el nombre del rol
             ])
             ->leftJoin('roles', 'roles.id', '=', 'users.role_id')
-            ->with(['city', 'routes']) // Incluye relaciones necesarias
+            ->with(['city'/* , 'routes' */]) // Incluye relaciones necesarias
             ->where('users.id', $userId)
             ->orWhere('users.uuid', $userId)
             ->first();

@@ -4,42 +4,35 @@ namespace App\Http\Controllers;
 
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
-use App\Http\Requests\Route\RouteRequest;
-use App\Services\RouteService;
+use App\Http\Requests\Seller\SellerRequest;
+use App\Services\SellerService;
 use App\Http\Middleware\RouteAuthMiddleware;
 
-class RouteController extends Controller
+class SellerController extends Controller
 {
 
     use ApiResponse;
 
-    protected $routeService;
+    protected $sellerService;
 
-    public function __construct(RouteService $routeService)
+    public function __construct(SellerService $sellerService)
     {
-        $this->routeService = $routeService;
+        $this->sellerService = $sellerService;
     }
 
-    public function create(RouteRequest $request)
+    public function create(SellerRequest $request)
     {
         try {
-            $params = $request->all();
-
-            return $this->routeService->create($params);
-
+            return $this->sellerService->create($request);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
     }
 
-    public function update(Request $request, $routeId)
+    public function update(SellerRequest $request, $sellerId)
     {
         try {
-
-            $params = $request->all();
-
-            return $this->routeService->update($routeId, $params);
-
+            return $this->sellerService->update($sellerId, $request);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
@@ -48,7 +41,7 @@ class RouteController extends Controller
     public function delete($routeId)
     {
         try {
-            return $this->routeService->delete($routeId);
+            return $this->sellerService->delete($routeId);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
@@ -61,15 +54,16 @@ class RouteController extends Controller
             $search = $request->get('search') ?? '';
             $perPage = $request->get('perPage') ?? 10;
 
-            return $this->routeService->getRoutes($search, $perPage);
+            return $this->sellerService->getRoutes($search, $perPage);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
     }
 
-    public function getRoutesSelect(){
+    public function getRoutesSelect()
+    {
         try {
-            return $this->routeService->getRoutesSelect();
+            return $this->sellerService->getRoutesSelect();
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
@@ -78,7 +72,6 @@ class RouteController extends Controller
     public function toggleStatus(Request $request, $routeId)
     {
         $status = $request->input('status');
-        return $this->routeService->toggleStatus($routeId, $status);
+        return $this->sellerService->toggleStatus($routeId, $status);
     }
-
 }
