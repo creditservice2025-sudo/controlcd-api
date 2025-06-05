@@ -21,7 +21,7 @@ class CreditRequest extends FormRequest
         $rules = [
             'client_id' => 'required|exists:clients,id',
             'guarantor_id' => 'required|exists:guarantors,id',
-            'route_id' => 'nullable|exists:routes,id',
+            'seller_id' => 'required|exists:sellers,id',
             // 'start_date' => 'required|date',
             // 'end_date' => 'required|date',
             'credit_value' => 'required|numeric',
@@ -36,7 +36,7 @@ class CreditRequest extends FormRequest
         if ($this->isMethod('put' ) || $this->isMethod('get')) {
             $rules['client_id'] = 'nullable|exists:clients,id';
             $rules['guarantor_id'] = 'nullable|exists:guarantors,id';
-            $rules['route_id'] = 'nullable|exists:routes,id';
+            $rules['seller_id'] = 'nullable|exists:sellers,id';
             // $rules['start_date'] = 'nullable|date';
             // $rules['end_date'] = 'nullable|date';
             $rules['credit_value'] = 'nullable|numeric';
@@ -57,7 +57,7 @@ class CreditRequest extends FormRequest
             'client_id.exists' => 'El cliente no existe',
             'guarantor_id.required' => 'El fiador es requerido',
             'guarantor_id.exists' => 'El fiador no existe',
-            'route_id.required' => 'La ruta es requerida',
+            'seller_id.required' => 'El vendedor es requerido',
             'start_date.required' => 'La fecha de inicio es requerida',
             'start_date.date' => 'La fecha de inicio debe ser una fecha válida',
             'end_date.required' => 'La fecha final es requerida',

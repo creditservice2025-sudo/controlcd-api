@@ -191,9 +191,9 @@ class CreditService
     public function getClientCredits(string $search, int $perPage)
     {
         try {
-            $query = Credit::with(['client', 'route'])
-                ->select('client_id', 'route_id', DB::raw('count(*) as total_credits'), DB::raw('sum(credit_value) as total_credit_value'))
-                ->groupBy('client_id', 'route_id');
+            $query = Credit::with(['client', 'seller'])
+                ->select('client_id', 'seller_id', DB::raw('count(*) as total_credits'), DB::raw('sum(credit_value) as total_credit_value'))
+                ->groupBy('client_id', 'seller_id');
 
             if (!empty($search)) {
                 $query->where(function($q) use ($search) {
@@ -201,10 +201,10 @@ class CreditService
                         $query->where('name', 'like', "%{$search}%")
                             ->orWhere('dni', 'like', "%{$search}%");
                     })
-                    ->orWhereHas('route', function($query) use ($search) {
+                    /* ->orWhereHas('route', function($query) use ($search) {
                         $query->where('name', 'like', "%{$search}%")
                             ->orWhere('sector', 'like', "%{$search}%");
-                    });
+                    }) */;
                 });
             }
 

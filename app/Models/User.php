@@ -69,7 +69,7 @@ class User extends Authenticatable
 
     public function route()
     {
-        return $this->belongsToMany(Route::class, 'users_routes');
+        return $this->belongsToMany(Seller::class, 'users_routes');
     }
 
     public function clients()
@@ -79,7 +79,12 @@ class User extends Authenticatable
 
     public function routes()
     {
-        return $this->belongsToMany(Route::class, 'user_routes');
+        return $this->belongsToMany(Seller::class, 'user_routes');
+    }
+
+    public function seller()
+    {
+        return $this->hasOne(Seller::class);
     }
 
     // boots

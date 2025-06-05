@@ -3,7 +3,7 @@
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
-use App\Http\Controllers\RouteController;
+use App\Http\Controllers\SellerController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\CitiesController;
 use App\Http\Controllers\RoleController;
@@ -30,12 +30,12 @@ Route::middleware('auth:api')->group(function () {
     Route::get('dashboard/counter-entities', [DashboardController::class, 'loadDahsboardData']);
 
     // route crud
-    Route::get('routes', [RouteController::class, 'index']);
-    Route::get('routes/select', [RouteController::class, 'getRoutesSelect']);
-    Route::post('route/create', [RouteController::class, 'create']);
-    Route::put('route/update/{id}', [RouteController::class, 'update']);
-    Route::delete('route/delete/{id}', [RouteController::class, 'delete']);
-    Route::put('/routes/toggle-status/{routeId}', [RouteController::class, 'toggleStatus']);
+    Route::get('routes', [SellerController::class, 'index']);
+    Route::get('routes/select', [SellerController::class, 'getRoutesSelect']);
+    Route::post('route/create', [SellerController::class, 'create']);
+    Route::put('route/update/{sellerId}', [SellerController::class, 'update']);
+    Route::delete('route/delete/{id}', [SellerController::class, 'delete']);
+    Route::put('/routes/toggle-status/{routeId}', [SellerController::class, 'toggleStatus']);
 
     //route user
     Route::get('users', [UserController::class, 'index']);
