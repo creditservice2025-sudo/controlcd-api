@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Foundation\Auth\Guarantor as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Spatie\Permission\Traits\HasRoles;
@@ -20,7 +21,10 @@ class Client extends Model
         'address',
         'geolocation',
         'phone',
-        'email'
+        'email',
+        'company_name',
+        'guarantor_id',
+        'seller_id',
     ];
 
     protected $casts = [
@@ -30,6 +34,16 @@ class Client extends Model
     public function guarantors()
     {
         return $this->belongsToMany(Guarantor::class, 'credits', 'client_id', 'guarantor_id');
+    }
+
+    public function guarantor(): BelongsTo
+    {
+        return $this->belongsTo(Guarantor::class);
+    }
+
+    public function seller(): BelongsTo
+    {
+        return $this->belongsTo(Seller::class);
     }
 
 

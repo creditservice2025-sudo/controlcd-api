@@ -64,6 +64,7 @@ Route::middleware('auth:api')->group(function () {
 
     //route client
     Route::get('clients', [ClientController::class, 'index']);
+    Route::get('clients/total', [ClientController::class, 'totalClients']);
     Route::get('clients/select', [ClientController::class, 'getClientsSelect']);
     Route::post('client/create', [ClientController::class, 'create']);
     Route::put('client/update/{id}', [ClientController::class, 'update']);

@@ -26,7 +26,7 @@ class Seller extends Model
         return $this->hasMany(UserRoute::class);
     }
 
-    public function city() 
+    public function city()
     {
         return $this->belongsTo(City::class);
     }
@@ -35,7 +35,11 @@ class Seller extends Model
     {
         return $this->belongsTo(User::class);
     }
-   
+    public function clients()
+    {
+        return $this->hasMany(Client::class);
+    }
+
     public function credits()
     {
         return $this->hasMany(Credit::class, 'seller_id');

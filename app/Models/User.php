@@ -84,8 +84,9 @@ class User extends Authenticatable
 
     public function seller()
     {
-        return $this->hasOne(Seller::class);
+        return $this->hasOne(Seller::class, 'user_id');
     }
+
 
     // boots
     protected static function boot()

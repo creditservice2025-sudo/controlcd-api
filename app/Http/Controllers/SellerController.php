@@ -50,11 +50,11 @@ class SellerController extends Controller
     public function index(Request $request)
     {
         try {
-
+            $page = $request->get('page', 1);
             $search = $request->get('search') ?? '';
             $perPage = $request->get('perPage') ?? 10;
 
-            return $this->sellerService->getRoutes($search, $perPage);
+            return $this->sellerService->getRoutes($page, $perPage, $search);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
