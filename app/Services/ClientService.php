@@ -22,14 +22,16 @@ class ClientService
     {
         try {
             $params = $request->validated();
-            /* 
+            \Log::info('Datos recibidos:', $params);
+
             if ($request->has('images')) {
                 $validationResponse = $this->validateImages($request);
                 if ($validationResponse !== true) {
                     return $validationResponse;
                 }
-            } */
-            \Log::info('Datos recibidos:', $params);
+            }
+
+            $guarantorId = null;
 
             if (!empty($params['guarantor_name'])) {
                 $guarantorData = [
@@ -44,6 +46,7 @@ class ClientService
                 $guarantorId = $guarantor->id;
             }
 
+
             $clientData = [
                 'name' => $params['name'],
                 'dni' => $params['dni'],
@@ -56,10 +59,7 @@ class ClientService
                 'seller_id' => $params['seller_id'],
             ];
 
-
             $client = Client::create($clientData);
-
-
 
 
             if (!empty($params['credit_value'])) {
@@ -68,27 +68,27 @@ class ClientService
                     'guarantor_id' => $guarantorId,
                     'seller_id' => $params['seller_id'],
                     'credit_value' => $params['credit_value'],
-                    'total_interest' => $params['interest_rate'],
-                    'number_installments' => $params['installment_count'],
-                    'payment_frequency' => $params['payment_frequency'],
-                    'first_quota_date' => $params['first_installment_date'],
+                    'total_interest' => $params['interest_rate'] ?? 0,
+                    'number_installments' => $params['installment_count'] ?? 0,
+                    'payment_frequency' => $params['payment_frequency'] ?? '',
+                    'first_quota_date' => $params['first_installment_date'] ?? null,
                     'excluded_days' => json_encode($params['excluded_days'] ?? []),
                     'micro_insurance_percentage' => $params['micro_insurance_percentage'] ?? null,
                     'micro_insurance_amount' => $params['micro_insurance_amount'] ?? null,
                 ];
 
-                $credit = Credit::create($creditData);
+                Credit::create($creditData);
             }
 
+
             if ($request->has('images')) {
-                $images = $request->input('images');
-                foreach ($images as $index => $imageData) {
+                foreach ($request->input('images') as $index => $imageData) {
                     $imageFile = $request->file("images.{$index}.file");
                     $imagePath = Helper::uploadFile($imageFile, 'clients');
 
                     $client->images()->create([
                         'path' => $imagePath,
-                        'type' => $imageData['type']
+                        'type' => $imageData['type'],
                     ]);
                 }
             }
@@ -96,16 +96,15 @@ class ClientService
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Cliente creado con éxito',
-                'data' => $client
+                'data' => $client,
             ]);
         } catch (\Exception $e) {
-            if (isset($filePath)) {
-                Helper::deleteFile($filePath);
-            }
             \Log::error($e->getMessage());
             return $this->errorResponse('Error al crear el cliente', 500);
         }
     }
+
+
 
     public function update(ClientRequest $request, $clientId)
     {
@@ -168,6 +167,8 @@ class ClientService
                 return $this->errorResponse('Cada imagen debe contener un archivo y un tipo ("profile" o "gallery").', 400);
             }
 
+
+
             if ($imageData['type'] === 'profile') {
                 $profileCount++;
             } elseif ($imageData['type'] === 'gallery') {
@@ -183,13 +184,18 @@ class ClientService
             }
 
             $imageFile = $request->file("images.{$index}.file");
+
+            if ($imageFile->getSize() > 2 * 1024 * 1024) {
+                return $this->errorResponse("La imagen {$index} excede 2MB", 400);
+            }
+
             if (!$imageFile) {
                 return $this->errorResponse('No se encontró la imagen en la solicitud.', 400);
             }
 
-            if (!$imageFile instanceof \UploadedFile) {
+         /*    if (!$imageFile instanceof \UploadedFile) {
                 return $this->errorResponse('Formato incorrecto de imágenes.', 400);
-            }
+            } */
 
             if (!in_array($imageData['type'], ['profile', 'gallery'])) {
                 return $this->errorResponse('El tipo de imagen es requerido y debe ser "profile" o "gallery".', 400);
@@ -311,7 +317,14 @@ class ClientService
     public function show($clientId)
     {
         try {
-            $client = Client::with(['credits.guarantor', 'credits.installments', 'images'])->find($clientId);
+            $client = Client::with([
+                'guarantors',
+                'images',
+                'credits',
+                'seller',
+                'seller.city'
+            ])->find($clientId);
+            /* $client = Client::with(['credits.guarantor', 'credits.installments', 'images'])->find($clientId); */
 
             // Verificar si el cliente no existe
             if (!$client) {

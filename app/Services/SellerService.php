@@ -38,7 +38,7 @@ class SellerService
                 'email' => $params['email'],
                 'dni' => $params['dni'],
                 'password' => Hash::make($params['password']),
-                'role' => 5
+                'role_id' => 5
             ]);
 
             $seller = Seller::create([
@@ -182,6 +182,10 @@ class SellerService
 
 
             $imageFile = $request->file("images.{$index}.file");
+
+            if ($imageFile->getSize() > 2 * 1024 * 1024) {
+                return $this->errorResponse("La imagen {$index} excede 2MB", 400);
+            }
             if (!$imageFile) {
                 return $this->errorResponse('No se encontró la imagen en la solicitud.', 400);
             }
@@ -230,7 +234,7 @@ class SellerService
     public function getRoutes($page = 1, $perPage = 10, $search = null)
     {
         try {
-            $routes = Seller::with('userRoutes.user', 'city.country', 'user')
+            $routes = Seller::with('userRoutes.user', 'city.country', 'user', 'images')
                 ->whereNull('deleted_at')
                 ->orderBy('created_at', 'desc')
                 // ->withCount(['credits as total_credits' => function ($query) {

@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Helpers\Helper;
 use App\Traits\ApiResponse;
 use App\Models\Client;
 use Illuminate\Support\Facades\DB;
@@ -19,52 +20,49 @@ class CreditService
     {
         try {
             $params = $request->validated();
+            \Log::info('Datos recibidos para crédito:', $params);
 
-            $client = Client::find($request->input('client_id'));
-            $guarantor = Guarantor::find($request->input('guarantor_id'));
 
-            if (!$client) {
-               return $this->errorResponse('El cliente no existe.', 404);
-            }
 
-            $creditValue = $request->input('credit_value');
-            $numberInstallments = $request->input('number_installments');
-            $totalInterest = $request->input('total_interest') ? $request->input('total_interest') : 0;
 
-            $quotaAmount = ($creditValue / $numberInstallments);
-            $totalAmount = $quotaAmount * $numberInstallments;
-
-            $params['total_amount'] = $creditValue;
-            $params['remaining_amount'] = $creditValue;
-
-            $firstQuotaDate = Carbon::createFromFormat('d-m-Y', $request->input('first_quota_date'))->format('Y-m-d');
-            $params['first_quota_date'] = $firstQuotaDate;
-
-            // Map payment_frequency to the correct format
-            $paymentFrequencyMap = [
-                'daily' => 'Diaria',
-                'weekly' => 'Semanal',
-                'biweekly' => 'Quincenal',
-                'monthly' => 'Mensual'
+            $creditData = [
+                'client_id' => $params['client_id'],
+                'seller_id' => $params['seller_id'],
+                'guarantor_id' => $params['guarantor_id'] ?? null,
+                'credit_value' => $params['credit_value'],
+                'total_interest' => $params['interest_rate'],
+                'number_installments' => $params['installment_count'],
+                'payment_frequency' => $params['payment_frequency'],
+                'excluded_days' => json_encode($params['excluded_days'] ?? []),
+                'micro_insurance_percentage' => $params['micro_insurance_percentage'] ?? null,
+                'micro_insurance_amount' => $params['micro_insurance_amount'] ?? null,
+                'first_quota_date' => $params['first_installment_date'] ?? now()->addDay()->toDateString(),
             ];
-            $params['payment_frequency'] = $paymentFrequencyMap[$request->input('payment_frequency')] ?? $request->input('payment_frequency');
 
-            $credit = Credit::create($params);
+            $credit = Credit::create($creditData);
 
-            if ($client && $guarantor) {
-                $guarantor->clients()->syncWithoutDetaching($client->getKey());
+            if ($request->has('images')) {
+                $images = $request->input('images');
+                foreach ($images as $index => $imageData) {
+                    $imageFile = $request->file("images.{$index}.file");
+                    $imagePath = Helper::uploadFile($imageFile, 'clients');
+
+                    $credit->client->images()->create([
+                        'path' => $imagePath,
+                        'type' => $imageData['type']
+                    ]);
+                }
             }
 
-            $this->generateInstallments($credit, $quotaAmount, $params['first_quota_date'], $params['payment_frequency'], $numberInstallments);
 
             return $this->successResponse([
                 'success' => true,
-                'message' => 'Crédito creado correctamente',
+                'message' => 'Crédito creado con éxito',
                 'data' => $credit
             ]);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
-            return $this->handlerException('Error al crear el crédito');
+            return $this->errorResponse('Error al crear el crédito', 500);
         }
     }
 
@@ -89,15 +87,15 @@ class CreditService
         try {
             return 'texto';
             $credits = Credit::with(['client', 'route'])
-            
-            ->where(function ($query) use ($search) {
-                $query->whereHas('client', function ($query) use ($search) {
-                    $query->where('name', 'like', "%{$search}%")
-                    ->orWhere('dni', 'like', "%{$search}%")
-                    ->orWhere('email', 'like', "%{$search}%");
-                });
-            })
-            ->paginate($perPage); 
+
+                ->where(function ($query) use ($search) {
+                    $query->whereHas('client', function ($query) use ($search) {
+                        $query->where('name', 'like', "%{$search}%")
+                            ->orWhere('dni', 'like', "%{$search}%")
+                            ->orWhere('email', 'like', "%{$search}%");
+                    });
+                })
+                ->paginate($perPage);
 
             return $this->successResponse([
                 'success' => true,
@@ -184,8 +182,6 @@ class CreditService
             \Log::error($e->getMessage());
             $this->handlerException('Error al generar las cuotas');
         }
-
-
     }
 
     public function getClientCredits(string $search, int $perPage)
@@ -196,12 +192,12 @@ class CreditService
                 ->groupBy('client_id', 'seller_id');
 
             if (!empty($search)) {
-                $query->where(function($q) use ($search) {
-                    $q->whereHas('client', function($query) use ($search) {
+                $query->where(function ($q) use ($search) {
+                    $q->whereHas('client', function ($query) use ($search) {
                         $query->where('name', 'like', "%{$search}%")
                             ->orWhere('dni', 'like', "%{$search}%");
                     })
-                    /* ->orWhereHas('route', function($query) use ($search) {
+                        /* ->orWhereHas('route', function($query) use ($search) {
                         $query->where('name', 'like', "%{$search}%")
                             ->orWhere('sector', 'like', "%{$search}%");
                     }) */;
@@ -220,5 +216,4 @@ class CreditService
             return $this->handlerException('Error al obtener los créditos del cliente');
         }
     }
-
 }
