@@ -7,6 +7,7 @@ use Illuminate\Http\Request;
 use App\Traits\ApiResponse;
 use App\Services\ClientService;
 use App\Http\Requests\Client\ClientRequest;
+
 class ClientController extends Controller
 {
 
@@ -22,7 +23,7 @@ class ClientController extends Controller
     public function create(ClientRequest $request)
     {
         try {
-            return $this->clientService->create( $request );
+            return $this->clientService->create($request);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
@@ -53,6 +54,17 @@ class ClientController extends Controller
             $perpage = $request->input('perpage', 10);
 
             return $this->clientService->index($search, $perpage);
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+    public function totalClients()
+    {
+        try {
+
+
+            return $this->clientService->totalClients();
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }

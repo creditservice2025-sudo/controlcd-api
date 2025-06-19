@@ -11,6 +11,8 @@ use App\Models\UserRoute;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Log;
+use Illuminate\Support\Str;
 
 class SellerService
 {
@@ -36,7 +38,7 @@ class SellerService
                 'email' => $params['email'],
                 'dni' => $params['dni'],
                 'password' => Hash::make($params['password']),
-                'role' => 5
+                'role_id' => 5
             ]);
 
             $seller = Seller::create([
@@ -180,6 +182,10 @@ class SellerService
 
 
             $imageFile = $request->file("images.{$index}.file");
+
+            if ($imageFile->getSize() > 2 * 1024 * 1024) {
+                return $this->errorResponse("La imagen {$index} excede 2MB", 400);
+            }
             if (!$imageFile) {
                 return $this->errorResponse('No se encontró la imagen en la solicitud.', 400);
             }
@@ -205,12 +211,14 @@ class SellerService
                 return $this->errorNotFoundResponse('Ruta no encontrada');
             }
 
-            $userRoutes = UserRoute::where('route_id', $routeId)->get();
+            $userRoutes = UserRoute::where('seller_id', $routeId)->get();
 
             foreach ($userRoutes as $userRoute) {
                 $userRoute->delete();
             }
 
+            \Log::info('Eliminando ruta con ID: ' . $routeId);
+            \Log::info('Ruta: ' . $route);
             $route->delete();
 
             return $this->successResponse([
@@ -223,10 +231,11 @@ class SellerService
         }
     }
 
-    public function getRoutes($search, $perPage)
+    public function getRoutes($page = 1, $perPage = 10, $search = null)
     {
         try {
-            $routes = Seller::with('userRoutes.user', 'city.country', 'user')
+            $routes = Seller::with('userRoutes.user', 'city.country', 'user', 'images')
+                ->whereNull('deleted_at')
                 ->orderBy('created_at', 'desc')
                 // ->withCount(['credits as total_credits' => function ($query) {
                 //     $query->where('active', true);
@@ -234,23 +243,53 @@ class SellerService
                 // ->with(['userRoutes.user' => function ($query) {
                 //     $query->select('id', 'name');
                 // }])
-                ->select('id', 'user_id', 'city_id', 'status', 'created_at')
-                // ->withSum(['credits as total_credits' => function ($query) {
-                //     $query->where('active', true);
-                // }], 'total_value')
-                /*  ->where(function ($query) use ($search) {
+                ->select('id', 'user_id', 'city_id', 'status', 'created_at');
+            // ->withSum(['credits as total_credits' => function ($query) {
+            //     $query->where('active', true);
+            // }], 'total_value')
+            /*  ->where(function ($query) use ($search) {
                     $query->where('name', 'like', '%' . $search . '%')
                         ->orWhere('sector', 'like', '%' . $search . '%');
                 }) */
-                ->paginate($perPage);
 
-            foreach ($routes as $route) {
+            /*      foreach ($routes as $route) {
                 $route->total_credits = $route->total_credits ?? 0;
+            } */
+
+            if ($search) {
+                $searchTerm = Str::lower($search);
+
+                $routes->where(function ($query) use ($searchTerm) {
+                    $query->whereHas('user', function ($q) use ($searchTerm) {
+                        $q->whereRaw('LOWER(name) LIKE ?', ["%{$searchTerm}%"]);
+                    })->orWhereHas('city', function ($q) use ($searchTerm) {
+                        $q->whereRaw('LOWER(name) LIKE ?', ["%{$searchTerm}%"]);
+                    })->orWhereHas('city.country', function ($q) use ($searchTerm) {
+                        $q->whereRaw('LOWER(name) LIKE ?', ["%{$searchTerm}%"]);
+                    });
+                });
             }
 
+
+
+
+
+            $routesQuery = $routes->paginate(
+                $perPage,
+                ['id', 'user_id', 'city_id', 'status', 'created_at'],
+                'page',
+                $page
+            );
+
             return $this->successResponse([
-                'success' => true,
-                'data' => $routes
+
+                'data' => $routesQuery->items(),
+                'pagination' => [
+                    'total' => $routesQuery->total(),
+                    'current_page' => $routesQuery->currentPage(),
+                    'per_page' => $routesQuery->perPage(),
+                    'last_page' => $routesQuery->lastPage(),
+                ]
             ]);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());

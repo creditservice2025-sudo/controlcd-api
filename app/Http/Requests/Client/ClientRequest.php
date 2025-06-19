@@ -30,10 +30,33 @@ class ClientRequest extends FormRequest
             'geolocation.longitude' => 'required|numeric',
             'phone' => 'required|numeric',
             'email' => 'nullable|email|unique:clients',
-            'guarantors_ids' => 'array',
-            'images' => 'nullable|array', 
-            'images.*.file' => 'nullable|file|mimes:jpg,jpeg,png|max:2048', 
-            'images.*.type' => 'nullable|string|in:profile,gallery'           
+            'company_name' => 'nullable|string',
+            'guarantor_name' => 'nullable|string',
+            'guarantor_dni' => 'nullable|numeric|unique:guarantors,dni',
+            'guarantor_address' => 'nullable|string',
+            'guarantor_phone' => 'nullable|numeric',
+
+            'seller_id' => 'required|exists:sellers,id',
+
+            'credit_value' => 'nullable|numeric',
+            'interest_rate' => 'nullable|numeric',
+            'installment_count' => 'nullable|numeric',
+            'payment_frequency' => 'nullable|in:Diaria,Semanal,Quincenal,Mensual',
+            'excluded_days' => 'nullable|array',
+            'micro_insurance_percentage' => 'nullable|numeric',
+            'micro_insurance_amount' => 'nullable|numeric',
+            'first_installment_date' => 'nullable|date',
+
+
+
+
+
+
+
+            /* 'guarantors_ids' => 'array', */
+            'images' => 'nullable|array',
+            /*  'images.*.file' => 'nullable|file|mimes:jpg,jpeg,png|max:2048',  */
+            'images.*.type' => 'nullable|string|in:profile,gallery'
         ];
 
         if ($this->isMethod('get')) {
@@ -45,7 +68,7 @@ class ClientRequest extends FormRequest
 
         if ($this->isMethod('put')) {
             $rules = [
-                'name' => 'nullable|string', 
+                'name' => 'nullable|string',
                 'address' => 'nullable|string',
                 'dni' => 'nullable|numeric|unique:clients,dni,' . $this->route('clientId'),
                 'phone' => 'nullable|numeric',
@@ -59,7 +82,7 @@ class ClientRequest extends FormRequest
         return $rules;
     }
 
-    
+
 
     public function messages(): array
     {

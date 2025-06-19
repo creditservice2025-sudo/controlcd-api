@@ -9,8 +9,10 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use App\Helpers\Helper;
 use App\Http\Requests\Client\ClientRequest;
+use App\Models\Credit;
 use Illuminate\Support\Facades\Storage;
 use App\Models\Guarantor;
+use Illuminate\Support\Facades\Auth;
 
 class ClientService
 {
@@ -20,6 +22,7 @@ class ClientService
     {
         try {
             $params = $request->validated();
+            \Log::info('Datos recibidos:', $params);
 
             if ($request->has('images')) {
                 $validationResponse = $this->validateImages($request);
@@ -28,17 +31,64 @@ class ClientService
                 }
             }
 
-            $client = Client::create($params);
+            $guarantorId = null;
+
+            if (!empty($params['guarantor_name'])) {
+                $guarantorData = [
+                    'name' => $params['guarantor_name'],
+                    'dni' => $params['guarantor_dni'] ?? null,
+                    'address' => $params['guarantor_address'] ?? null,
+                    'phone' => $params['guarantor_phone'] ?? null,
+                    'email' => $params['guarantor_email'] ?? null,
+                ];
+
+                $guarantor = Guarantor::create($guarantorData);
+                $guarantorId = $guarantor->id;
+            }
+
+
+            $clientData = [
+                'name' => $params['name'],
+                'dni' => $params['dni'],
+                'address' => $params['address'],
+                'geolocation' => $params['geolocation'],
+                'phone' => $params['phone'],
+                'email' => $params['email'],
+                'company_name' => $params['company_name'],
+                'guarantor_id' => $guarantorId,
+                'seller_id' => $params['seller_id'],
+            ];
+
+            $client = Client::create($clientData);
+
+
+            if (!empty($params['credit_value'])) {
+                $creditData = [
+                    'client_id' => $client->id,
+                    'guarantor_id' => $guarantorId,
+                    'seller_id' => $params['seller_id'],
+                    'credit_value' => $params['credit_value'],
+                    'total_interest' => $params['interest_rate'] ?? 0,
+                    'number_installments' => $params['installment_count'] ?? 0,
+                    'payment_frequency' => $params['payment_frequency'] ?? '',
+                    'first_quota_date' => $params['first_installment_date'] ?? null,
+                    'excluded_days' => json_encode($params['excluded_days'] ?? []),
+                    'micro_insurance_percentage' => $params['micro_insurance_percentage'] ?? null,
+                    'micro_insurance_amount' => $params['micro_insurance_amount'] ?? null,
+                ];
+
+                Credit::create($creditData);
+            }
+
 
             if ($request->has('images')) {
-                $images = $request->input('images');
-                foreach ($images as $index => $imageData) {
+                foreach ($request->input('images') as $index => $imageData) {
                     $imageFile = $request->file("images.{$index}.file");
                     $imagePath = Helper::uploadFile($imageFile, 'clients');
 
                     $client->images()->create([
                         'path' => $imagePath,
-                        'type' => $imageData['type']
+                        'type' => $imageData['type'],
                     ]);
                 }
             }
@@ -46,17 +96,15 @@ class ClientService
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Cliente creado con éxito',
-                'data' => $client
+                'data' => $client,
             ]);
-
         } catch (\Exception $e) {
-            if (isset($filePath)) {
-                Helper::deleteFile($filePath);
-            }
             \Log::error($e->getMessage());
             return $this->errorResponse('Error al crear el cliente', 500);
         }
     }
+
+
 
     public function update(ClientRequest $request, $clientId)
     {
@@ -97,7 +145,6 @@ class ClientService
                 'message' => 'Cliente actualizado con éxito',
                 'data' => $client
             ]);
-
         } catch (\Exception $e) {
             if (isset($uploadedImagePaths)) {
                 foreach ($uploadedImagePaths as $path) {
@@ -120,6 +167,8 @@ class ClientService
                 return $this->errorResponse('Cada imagen debe contener un archivo y un tipo ("profile" o "gallery").', 400);
             }
 
+
+
             if ($imageData['type'] === 'profile') {
                 $profileCount++;
             } elseif ($imageData['type'] === 'gallery') {
@@ -135,13 +184,18 @@ class ClientService
             }
 
             $imageFile = $request->file("images.{$index}.file");
+
+            if ($imageFile->getSize() > 2 * 1024 * 1024) {
+                return $this->errorResponse("La imagen {$index} excede 2MB", 400);
+            }
+
             if (!$imageFile) {
                 return $this->errorResponse('No se encontró la imagen en la solicitud.', 400);
             }
 
-            if (!$imageFile instanceof \UploadedFile) {
+         /*    if (!$imageFile instanceof \UploadedFile) {
                 return $this->errorResponse('Formato incorrecto de imágenes.', 400);
-            }
+            } */
 
             if (!in_array($imageData['type'], ['profile', 'gallery'])) {
                 return $this->errorResponse('El tipo de imagen es requerido y debe ser "profile" o "gallery".', 400);
@@ -182,13 +236,21 @@ class ClientService
     public function index(string $search, int $perpage)
     {
         try {
-            $clients = Client::with(['guarantors', 'images'])
-            ->where(function ($query) use ($search) {
-                $query->where('name', 'like', "%{$search}%")
-                    ->orWhere('dni', 'like', "%{$search}%")
-                    ->orWhere('email', 'like', "%{$search}%");
-            })
-            ->paginate($perpage);
+            $user = Auth::user();
+            $seller = $user->seller;
+
+            $clientsQuery = Client::with(['guarantors', 'images', 'credits', 'seller', 'seller.city'])
+                ->where(function ($query) use ($search) {
+                    $query->where('name', 'like', "%{$search}%")
+                        ->orWhere('dni', 'like', "%{$search}%")
+                        ->orWhere('email', 'like', "%{$search}%");
+                });
+
+            if ($user->role_id == 5 && $seller) {
+                $clientsQuery->where('seller_id', $seller->id);
+            }
+
+            $clients = $clientsQuery->orderBy('created_at', 'desc')->paginate($perpage);
 
             return $this->successResponse([
                 'success' => true,
@@ -200,6 +262,33 @@ class ClientService
             return $this->errorResponse('Error al obtener los clientes', 500);
         }
     }
+
+    public function totalClients()
+    {
+        try {
+            $user = Auth::user();
+            $seller = $user->seller;
+
+            $clientsQuery = Client::query();
+
+            if ($user->role_id == 5 && $seller) {
+                $clientsQuery->where('seller_id', $seller->id);
+            }
+
+            $totalClients = $clientsQuery->count();
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Total de clientes obtenido',
+                'data' => $totalClients
+            ]);
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->errorResponse('Error al obtener el total de clientes', 500);
+        }
+    }
+
+
 
     public function getClientsSelect(string $search = '')
     {
@@ -228,7 +317,14 @@ class ClientService
     public function show($clientId)
     {
         try {
-            $client = Client::with(['credits.guarantor','credits.installments', 'images'])->find($clientId);
+            $client = Client::with([
+                'guarantors',
+                'images',
+                'credits',
+                'seller',
+                'seller.city'
+            ])->find($clientId);
+            /* $client = Client::with(['credits.guarantor', 'credits.installments', 'images'])->find($clientId); */
 
             // Verificar si el cliente no existe
             if (!$client) {
@@ -248,12 +344,9 @@ class ClientService
                 'message' => 'Cliente encontrado',
                 'data' => $client
             ]);
-
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             return $this->errorResponse('Error al obtener el cliente', 500);
         }
     }
-
-
 }

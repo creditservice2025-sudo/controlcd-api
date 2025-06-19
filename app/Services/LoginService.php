@@ -32,7 +32,7 @@ class LoginService
             }
 
             $user = User::where('email', 'LIKE', $credentials['email'] . '%')
-            ->with('city')
+            ->with('city', 'seller')
             ->first();
 
             if (!$user || !Hash::check($credentials['password'], $user->password)) {

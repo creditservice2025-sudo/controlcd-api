@@ -22,12 +22,16 @@ class Credit extends Model
         'end_date',
         'credit_value',
         'number_installments',
-        'first_quota_date',
         'payment_frequency',
         'status',
         'total_interest',
         'total_amount',
-        'remaining_amount'
+        'remaining_amount',
+        'first_quota_date',
+        'excluded_days',
+        'micro_insurance_percentage',
+        'micro_insurance_amount',
+
     ];
 
     public function client()

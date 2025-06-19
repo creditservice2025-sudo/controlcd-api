@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Notifications\Notifiable;
 use Spatie\Permission\Traits\HasRoles;
 use Laravel\Passport\HasApiTokens;
@@ -18,12 +19,16 @@ class Guarantor extends Model
         'dni',
         'address',
         'phone',
-        'email'
+
     ];
 
     public function clients()
     {
         return $this->belongsToMany(Client::class, 'credits', 'guarantor_id', 'client_id');
     }
-    
+
+    public function client(): HasOne
+    {
+        return $this->hasOne(Client::class);
+    }
 }

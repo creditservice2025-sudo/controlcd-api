@@ -20,20 +20,21 @@ class CreditRequest extends FormRequest
     {
         $rules = [
             'client_id' => 'required|exists:clients,id',
-            'guarantor_id' => 'required|exists:guarantors,id',
+            'guarantor_id' => 'nullable|exists:guarantors,id',
             'seller_id' => 'required|exists:sellers,id',
             // 'start_date' => 'required|date',
             // 'end_date' => 'required|date',
-            'credit_value' => 'required|numeric',
-            'number_installments' => 'required|integer',
-            'first_quota_date' => 'required|date',
-            'payment_frequency' => 'required|in:daily,weekly,biweekly,monthly',
-            // 'status' => 'required|in:Pendiente,Cancelado,Finalizado,Renovado,Moroso',
-            // 'total_interest' => 'required|numeric',
-
+            'credit_value' => 'nullable|numeric',
+            'interest_rate' => 'nullable|numeric',
+            'installment_count' => 'nullable|numeric',
+            'payment_frequency' => 'nullable|in:Diaria,Semanal,Quincenal,Mensual',
+            'excluded_days' => 'nullable|array',
+            'micro_insurance_percentage' => 'nullable|numeric',
+            'micro_insurance_amount' => 'nullable|numeric',
+            'first_installment_date' => 'nullable|date',
         ];
 
-        if ($this->isMethod('put' ) || $this->isMethod('get')) {
+        if ($this->isMethod('put') || $this->isMethod('get')) {
             $rules['client_id'] = 'nullable|exists:clients,id';
             $rules['guarantor_id'] = 'nullable|exists:guarantors,id';
             $rules['seller_id'] = 'nullable|exists:sellers,id';
@@ -55,7 +56,6 @@ class CreditRequest extends FormRequest
         return [
             'client_id.required' => 'El cliente es requerido',
             'client_id.exists' => 'El cliente no existe',
-            'guarantor_id.required' => 'El fiador es requerido',
             'guarantor_id.exists' => 'El fiador no existe',
             'seller_id.required' => 'El vendedor es requerido',
             'start_date.required' => 'La fecha de inicio es requerida',
