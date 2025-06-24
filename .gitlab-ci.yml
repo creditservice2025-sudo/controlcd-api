@@ -1,0 +1,50 @@
+image: php:8.1-fpm
+
+deploy_dev:
+  stage: deploy
+  before_script:
+    - apt-get update -y && apt-get install openssh-client rsync sshpass -y
+    - mkdir -p ~/.ssh
+    - echo "${SSH_PRIVATE_KEY_DEV}" > ~/.ssh/id_rsa
+    - chmod 700 ~/.ssh
+    - chmod 600 ~/.ssh/id_rsa
+    - ssh-keyscan ${SSH_HOST_DEV} > ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+  script:
+    - sshpass -p "${SSH_PASSWORD_DEV}" rsync -rzvhWP --delete --exclude-from '.rsyncignore' ./ ${SSH_USER_DEV}@${SSH_HOST_DEV}:${SERVER_PATH_DEV}
+    - sshpass -p "${SSH_PASSWORD_DEV}" ssh -o StrictHostKeyChecking=no -T ${SSH_USER_DEV}@${SSH_HOST_DEV} "${SSH_COMMAND_DEV}"
+  only:
+    - develop
+
+deploy_test:
+  stage: deploy
+  before_script:
+    - apt-get update -y && apt-get install openssh-client rsync sshpass -y
+    - mkdir -p ~/.ssh
+    - echo "${SSH_PRIVATE_KEY_DEV}" > ~/.ssh/id_rsa
+    - chmod 700 ~/.ssh
+    - chmod 600 ~/.ssh/id_rsa
+    - ssh-keyscan ${SSH_HOST_DEV} > ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+  script:
+    - sshpass -p "${SSH_PASSWORD_DEV}" rsync -rzvhWP --delete --exclude-from '.rsyncignore' ./ ${SSH_USER_DEV}@${SSH_HOST_DEV}:${SERVER_PATH_DEV}
+    - sshpass -p "${SSH_PASSWORD_DEV}" ssh -o StrictHostKeyChecking=no -T ${SSH_USER_DEV}@${SSH_HOST_DEV} "${SSH_COMMAND_DEV}"
+  only:
+    - testing
+
+deploy_prod:
+  stage: deploy
+  before_script:
+    - apt-get update -y && apt-get install openssh-client rsync sshpass -y
+    - mkdir -p ~/.ssh
+    - echo "${SSH_PRIVATE_KEY_PROD}" > ~/.ssh/id_rsa
+    - chmod 700 ~/.ssh
+    - chmod 600 ~/.ssh/id_rsa
+    - ssh-keyscan ${SSH_HOST_PROD} > ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+  script:
+    - sshpass -p "${SSH_PASSWORD_PROD}" rsync -rzvhWP --delete --exclude-from '.rsyncignore' ./ ${SSH_USER_PROD}@${SSH_HOST_PROD}:${SERVER_PATH_PROD}
+    - sshpass -p "${SSH_PASSWORD_PROD}" ssh -o StrictHostKeyChecking=no -T ${SSH_USER_PROD}@${SSH_HOST_PROD} "${SSH_COMMAND_PROD}"
+  only:
+    - production
+

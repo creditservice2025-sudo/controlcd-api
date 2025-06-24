@@ -1,23 +1,110 @@
-/.phpunit.cache
-/node_modules
-/public/build
-/public/hot
-/public/storage
+# See http://help.github.com/ignore-files/ for more about ignoring files.
+
+# compiled output
+build
+nbproject
+dist
+tmp
+out-tsc
+plugins/
+plugins/android.json
+plugins/ios.json
+*target
+bld
+bin
+
+# dependencies
+node_modules
+vendor
+
+# IDEs and editors
+.idea
+.svn
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-project
+*.sublime-workspace
+*nb-configuration.xml
+*.iml
+/.fleet
+/.nova
+/.zed
+
+# IDE - VSCode
+.vs
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.user
+*.jsproj
+
+# e2e
+/e2e/*.js
+/e2e/*.map
+
+# file not necesary
+*~
+*.key
+*.log
+*.lock
+*-lock.json
+*.db
+*.sw[mnpcod]
+*.tmp
+*.tmp.*
+.tmp/
+tmp/
+temp/
+log.txt
+npm-debug.log*
+out/
+.env
+.sqlite
+
+# Misc
+.sourcemaps/
+.sass-cache
+connect.lock
+coverage/
+typings
+.versions/
+hooks/
+www/
+docs/
+
+# laravel
 /storage/*.key
 /storage/pail
-/vendor
+/bootstrap/cache/*
+/database/*.sql*
 .env
-.env.backup
-.env.production
-.phpactor.json
-.phpunit.result.cache
+.env_*
+
+# System Files
+.DS_Store
+Thumbs.db
+UserInterfaceState.xcuserstate
+$RECYCLE.BIN/
+
+# Others
 Homestead.json
 Homestead.yaml
-auth.json
-npm-debug.log
+/public/build
+/public/hot
+/public/images
+/public/storage
+.phpintel/*
 yarn-error.log
-/.fleet
-/.idea
-/.nova
-/.vscode
-/.zed
+/.phpunit.cache
+.env.backup
+.env.production
+.phpunit.result.cache
+auth.json
+
+.database-data
+!/resources/views/vendor

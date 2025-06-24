@@ -1,0 +1,153 @@
+#Docker Networks
+networks:
+    app-controlcd-network:
+        driver: bridge
+
+# Volumes
+volumes:
+    database-data-controlcd:
+        driver: local
+
+services:
+
+    # Database Service
+    database-controlcd:
+        image: mysql:8.0
+        hostname: database-controlcd
+        container_name: database-controlcd
+        restart: always
+        tty: true
+        ports:
+            - ${DOCKER_DB_PORT:-4406}:3306
+        volumes:
+            - ./.database-data:/var/lib/mysql
+        environment:
+            MYSQL_DATABASE: ${DOCKER_DB_DATABASE:-app}
+            MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-root}
+        healthcheck:
+            test: [ "CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent", "-p${DOCKER_DB_PASSWORD:-root}" ]
+            interval: 30s
+            timeout: 5s
+            retries: 2
+            start_period: 0s
+        networks:
+            - app-controlcd-network
+
+    # PHPMyAdmin Service
+    phpmyadmin-controlcd:
+        image: phpmyadmin:5.2
+        hostname: phpmyadmin-controlcd
+        container_name: phpmyadmin-controlcd
+        restart: always
+        tty: true
+        depends_on:
+            database-controlcd:
+                  condition: service_healthy
+        ports:
+            - ${DOCKER_PMA_PORT:-8091}:80
+        environment:
+            PMA_HOST: ${DOCKER_DB_HOST:-database-controlcd}
+            PMA_PORT: ${DOCKER_DB_PORT:-3306}
+            MYSQL_ROOT_PASSWORD: ${DOCKER_DB_PASSWORD:-root}
+            UPLOAD_LIMIT: ${PMA_UPLOAD_LIMIT:-300M}
+            MEMORY_LIMIT: ${PMA_MEMORY_LIMIT:-512M}
+            PHP_UPLOAD_MAX_FILESIZE: ${PMA_PHP_UPLOAD_MAX_FILESIZE:-300M}
+            PHP_MAX_INPUT_VARS: ${PMA_PHP_MAX_INPUT_VARS:-1000}
+        healthcheck:
+            test: ["CMD", "curl", "-f", "http://localhost:80"]
+            interval: 90s
+            timeout: 10s
+            retries: 5
+        links:
+            - database-controlcd
+        networks:
+            - app-controlcd-network
+
+    # Application Service
+    app-controlcd:
+        build:
+            context: .
+            dockerfile: Dockerfile
+        hostname: app-controlcd
+        container_name: app-controlcd
+        restart: always
+        tty: true
+        depends_on:
+            database-controlcd:
+                condition: service_healthy
+        environment:
+            SERVICE_NAME: app
+            SERVICE_TAGS: dev
+            DB_HOST: database-controlcd
+            DB_PORT: 3306
+            DB_DATABASE: ${DOCKER_DB_DATABASE:-app}
+            DB_USERNAME: root
+            DB_PASSWORD: ${DOCKER_DB_PASSWORD:-root}
+            APP_DEBUG: true
+        working_dir: /var/www/html
+        volumes:
+            - ./.docker/php/conf.d/error_reporting.ini:/usr/local/etc/php/conf.d/docker-php-ext-error_reporting.ini
+            - ./.docker/php/conf.d/xdebug.ini:/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini
+            - ./:/var/www/html:cached
+        links:
+            - database-controlcd
+        networks:
+            - app-controlcd-network
+
+    # Nginx Service
+    nginx-controlcd:
+        image: nginx:alpine
+        hostname: nginx-controlcd
+        container_name: nginx-controlcd
+        restart: always
+        tty: true
+        depends_on:
+            database-controlcd:
+                condition: service_healthy
+        ports:
+            - ${DOCKER_NGINX_PORT:-8001}:80
+        volumes:
+            - ./:/var/www/html
+            - ./.docker/nginx/conf.d/default.conf:/etc/nginx/conf.d/default.conf
+        healthcheck:
+            test: ["CMD", "curl", "-f", "http://localhost:80/"]
+            interval: 90s
+            timeout: 10s
+            retries: 5
+        networks:
+            - app-controlcd-network
+
+    # setup
+    setup-controlcd:
+        build:
+            context: .
+            dockerfile: Dockerfile
+        hostname: setup-controlcd
+        container_name: setup-controlcd
+        volumes:
+            - ./:/var/www/html
+        command: >
+            bash -c '
+              mkdir -p storage/logs 2> /dev/null;
+              chown -R www-data:www-data storage bootstrap/cache 2> /dev/null;
+              chmod -R 775 storage 2> /dev/null;
+              if [ ! -f ".env" ]; then cp .env.example .env; php artisan key:generate --ansi; fi;
+              if [ ! -d "./vendor" ]; then
+                composer --ignore-platform-reqs --no-interaction install 2> /dev/null;
+                php artisan key:generate --ansi;
+                php artisan passport:keys;
+                php artisan migrate --ansi --force --no-interaction 2> /dev/null;
+                php artisan db:seed --quiet --no-interaction 2> /dev/null;
+              else
+                composer --ignore-platform-reqs --no-interaction update 2> /dev/null;
+                php artisan migrate --ansi --no-interaction 2> /dev/null;
+              fi;
+
+              php artisan optimize:clear 2> /dev/null;
+              npm install;
+            '
+        depends_on:
+            database-controlcd:
+                condition: service_healthy
+        networks:
+            - app-controlcd-network
