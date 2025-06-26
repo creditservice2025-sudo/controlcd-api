@@ -26,8 +26,8 @@ class DatabaseSeeder extends Seeder
             CountriesSeeder::class,
             CreateSuperAdminSeeder::class,
             CitiesSeeder::class,
-            ClientsSeeder::class,
-            GuarantorsSeeder::class,
+            /* ClientsSeeder::class,
+            GuarantorsSeeder::class, */
         ]);
 
         $roles = [

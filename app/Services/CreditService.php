@@ -85,6 +85,7 @@ class CreditService
                 $images = $request->input('images');
                 foreach ($images as $index => $imageData) {
                     $imageFile = $request->file("images.{$index}.file");
+
                     $imagePath = Helper::uploadFile($imageFile, 'clients');
 
                     $credit->client->images()->create([
@@ -93,7 +94,6 @@ class CreditService
                     ]);
                 }
             }
-
 
             return $this->successResponse([
                 'success' => true,

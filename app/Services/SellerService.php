@@ -47,17 +47,22 @@ class SellerService
                 'status' => 'ACTIVE'
             ]);
 
-            foreach ($params['members'] as $user) {
-                $userSeller = new UserRoute();
-                $userSeller->user_id = $user;
-                $userSeller->seller_id = $seller->id;
-                $userSeller->save();
+            if (isset($params['members']) && is_array($params['members'])) {
+                foreach ($params['members'] as $user) {
+                    $userSeller = new UserRoute();
+                    $userSeller->user_id = $user;
+                    $userSeller->seller_id = $seller->id;
+                    $userSeller->save();
+                }
             }
+
+
 
             if ($request->has('images')) {
                 $images = $request->input('images');
                 foreach ($images as $index => $imageData) {
                     $imageFile = $request->file("images.{$index}.file");
+
                     $imagePath = Helper::uploadFile($imageFile, 'clients');
 
                     $seller->images()->create([

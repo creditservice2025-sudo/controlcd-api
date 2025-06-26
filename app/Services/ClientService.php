@@ -122,15 +122,16 @@ class ClientService
                 }
             }
 
-
             if ($request->has('images')) {
-                foreach ($request->input('images') as $index => $imageData) {
+                $images = $request->input('images');
+                foreach ($images as $index => $imageData) {
                     $imageFile = $request->file("images.{$index}.file");
+
                     $imagePath = Helper::uploadFile($imageFile, 'clients');
 
                     $client->images()->create([
                         'path' => $imagePath,
-                        'type' => $imageData['type'],
+                        'type' => $imageData['type']
                     ]);
                 }
             }

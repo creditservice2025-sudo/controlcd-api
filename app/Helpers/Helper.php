@@ -17,12 +17,18 @@ class Helper
      */
     public static function uploadFile($file, $folder)
     {
-        // Generar un nombre único para el archivo
+        $basePath = public_path('images');
+        
+        $folderPath = $folder ? "{$basePath}/{$folder}" : $basePath;
+        if (!file_exists($folderPath)) {
+            mkdir($folderPath, 0777, true);
+        }
+    
         $fileName = Str::random(20) . '_' . time() . '.' . $file->getClientOriginalExtension();
-
-        $filePath = $file->storeAs($folder, $fileName, 'public');
-
-        return $filePath;
+    
+        $file->move($folderPath, $fileName);
+    
+        return "images/" . ($folder ? "{$folder}/" : "") . $fileName;
     }
 
     /**
@@ -33,11 +39,13 @@ class Helper
      */
     public static function deleteFile($filePath)
     {
-        if (Storage::disk('public')->exists($filePath)) {
-            Storage::disk('public')->delete($filePath);
+        $fullPath = public_path($filePath);
+        
+        if (file_exists($fullPath)) {
+            unlink($fullPath);
             return true;
         }
-
+    
         return false;
     }
 }

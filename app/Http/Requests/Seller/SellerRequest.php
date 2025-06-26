@@ -39,13 +39,10 @@ class SellerRequest extends FormRequest
                 Rule::unique('users', 'dni')->ignore($userId)
             ],
             'city_id' => 'required|exists:cities,id',
-            'members' => 'required|array|min:1',
+            'members' => 'nullable|array',
             'members.*' => 'exists:users,id'
         ];
 
-        if ($this->isMethod('put') || $this->isMethod('patch')) {
-            $rules['members'] = 'sometimes|array|min:1';
-        }
 
         if ($this->isMethod('post')) {
             $rules['password'] = 'required|string|min:8';
@@ -83,7 +80,6 @@ class SellerRequest extends FormRequest
             'city_id.exists' => 'Ciudad seleccionada no válida',
             'password.required' => 'La contraseña es requerida',
             'password.min' => 'La contraseña debe tener al menos 8 caracteres',
-            'members.required' => 'Debe asignar al menos un miembro responsable',
             'members.*.exists' => 'Uno o más miembros seleccionados son inválidos'
         ];
     }
