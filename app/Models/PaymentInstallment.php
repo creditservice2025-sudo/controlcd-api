@@ -8,29 +8,28 @@ use Illuminate\Notifications\Notifiable;
 use Spatie\Permission\Traits\HasRoles;
 use Laravel\Passport\HasApiTokens;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
-use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
-class Payment extends Model
+class PaymentInstallment extends Model
 {
     use HasFactory, Notifiable, HasRoles, HasApiTokens, SoftDeletes;
 
     protected $fillable = [
+        'payment_id',
         'installment_id',
-        'payment_date',
-        'amount',
-        'status',
-        'payment_method',
-        'payment_reference'
+        'applied_amount'
     ];
 
-    public function installment()
+    public function payment(): BelongsTo
     {
-        return $this->belongsTo(Installment::class);
+        return $this->belongsTo(Payment::class);
     }
 
-
-    public function installments(): HasMany
+    /**
+     * Get the installment that owns the payment installment.
+     */
+    public function installment(): BelongsTo
     {
-        return $this->hasMany(PaymentInstallment::class);
+        return $this->belongsTo(Installment::class);
     }
 }

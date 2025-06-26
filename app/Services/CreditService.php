@@ -10,7 +10,9 @@ use Illuminate\Support\Facades\Log;
 use App\Models\Guarantor;
 use App\Models\Credit;
 use App\Http\Requests\Credit\CreditRequest;
+use App\Models\Installment;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Auth;
 
 class CreditService
 {
@@ -40,6 +42,44 @@ class CreditService
             ];
 
             $credit = Credit::create($creditData);
+
+            $totalAmount = $credit->credit_value + $credit->total_interest;
+            $quotaAmount = $totalAmount / $credit->number_installments;
+
+            $dueDate = Carbon::parse($credit->first_quota_date);
+            $excludedDays = json_decode($credit->excluded_days, true) ?? [];
+
+            for ($i = 1; $i <= $credit->number_installments; $i++) {
+                // Ajustar fecha si cae en día excluido
+                while (in_array($dueDate->dayOfWeek, $excludedDays)) {
+                    $dueDate->addDay();
+                }
+
+                Installment::create([
+                    'credit_id' => $credit->id,
+                    'quota_number' => $i,
+                    'due_date' => $dueDate->format('Y-m-d'),
+                    'quota_amount' => round($quotaAmount, 2),
+                    'status' => 'Pendiente'
+                ]);
+
+                switch ($credit->payment_frequency) {
+                    case 'Diario':
+                        $dueDate->addDay();
+                        break;
+                    case 'Semanal':
+                        $dueDate->addWeek();
+                        break;
+                    case 'Quincenal':
+                        $dueDate->addDays(15);
+                        break;
+                    case 'Mensual':
+                        $dueDate->addMonth();
+                        break;
+                    default:
+                        $dueDate->addMonth();
+                }
+            }
 
             if ($request->has('images')) {
                 $images = $request->input('images');
@@ -85,17 +125,25 @@ class CreditService
     public function index(string $search, int $perPage)
     {
         try {
-            return 'texto';
-            $credits = Credit::with(['client', 'route'])
+            $user = Auth::user();
+            $seller = $user->seller;
 
+            $creditsQuery = Credit::with(['client', 'route'])
                 ->where(function ($query) use ($search) {
                     $query->whereHas('client', function ($query) use ($search) {
                         $query->where('name', 'like', "%{$search}%")
                             ->orWhere('dni', 'like', "%{$search}%")
                             ->orWhere('email', 'like', "%{$search}%");
                     });
-                })
-                ->paginate($perPage);
+                });
+
+            if ($user->role_id == 5 && $seller) {
+                $creditsQuery->whereHas('client', function ($query) use ($seller) {
+                    $query->where('seller_id', $seller->id);
+                });
+            }
+
+            $credits = $creditsQuery->paginate($perPage);
 
             return $this->successResponse([
                 'success' => true,
@@ -187,20 +235,32 @@ class CreditService
     public function getClientCredits(string $search, int $perPage)
     {
         try {
+            $user = Auth::user();
+            $seller = $user->seller;
+
             $query = Credit::with(['client', 'seller'])
-                ->select('client_id', 'seller_id', DB::raw('count(*) as total_credits'), DB::raw('sum(credit_value) as total_credit_value'))
+                ->select(
+                    'client_id',
+                    'seller_id',
+                    DB::raw('count(*) as total_credits'),
+                    DB::raw('sum(credit_value) as total_credit_value')
+                )
                 ->groupBy('client_id', 'seller_id');
+
+
+            if ($user->role_id == 5 && $seller) {
+                $query->whereHas('client', function ($q) use ($seller) {
+                    $q->where('seller_id', $seller->id);
+                });
+            }
+
 
             if (!empty($search)) {
                 $query->where(function ($q) use ($search) {
                     $q->whereHas('client', function ($query) use ($search) {
                         $query->where('name', 'like', "%{$search}%")
                             ->orWhere('dni', 'like', "%{$search}%");
-                    })
-                        /* ->orWhereHas('route', function($query) use ($search) {
-                        $query->where('name', 'like', "%{$search}%")
-                            ->orWhere('sector', 'like', "%{$search}%");
-                    }) */;
+                    });
                 });
             }
 
