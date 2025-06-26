@@ -3,8 +3,8 @@
 namespace App\Services;
 
 use App\Models\User;
-use App\Models\Route;
 use App\Models\Credit;
+use App\Models\Seller;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
 
@@ -17,7 +17,7 @@ class DashboardService
         try {
             // get data
             $userCount = User::all()->count();
-            $routesCount = Route::all()->count();
+            $routesCount = Seller::all()->count();
             $creditsCount = Credit::all()->count();
 
             // return response
