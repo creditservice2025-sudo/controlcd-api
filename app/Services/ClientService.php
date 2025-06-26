@@ -12,6 +12,8 @@ use App\Http\Requests\Client\ClientRequest;
 use App\Models\Credit;
 use Illuminate\Support\Facades\Storage;
 use App\Models\Guarantor;
+use App\Models\Installment;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 
 class ClientService
@@ -77,7 +79,47 @@ class ClientService
                     'micro_insurance_amount' => $params['micro_insurance_amount'] ?? null,
                 ];
 
-                Credit::create($creditData);
+                $credit = Credit::create($creditData);
+
+                // Calcular monto de cuota (capital + intereses)
+                $totalAmount = $credit->credit_value + $credit->total_interest;
+                $quotaAmount = $totalAmount / $credit->number_installments;
+
+                // Generar cuotas
+                $dueDate = Carbon::parse($credit->first_quota_date);
+                $excludedDays = json_decode($credit->excluded_days, true) ?? [];
+
+                for ($i = 1; $i <= $credit->number_installments; $i++) {
+                    // Ajustar fecha si cae en día excluido
+                    while (in_array($dueDate->dayOfWeek, $excludedDays)) {
+                        $dueDate->addDay();
+                    }
+
+                    Installment::create([
+                        'credit_id' => $credit->id,
+                        'quota_number' => $i,
+                        'due_date' => $dueDate->format('Y-m-d'),
+                        'quota_amount' => round($quotaAmount, 2),
+                        'status' => 'Pendiente'
+                    ]);
+
+                    switch ($credit->payment_frequency) {
+                        case 'Diario':
+                            $dueDate->addDay();
+                            break;
+                        case 'Semanal':
+                            $dueDate->addWeek();
+                            break;
+                        case 'Quincenal':
+                            $dueDate->addDays(15);
+                            break;
+                        case 'Mensual':
+                            $dueDate->addMonth();
+                            break;
+                        default:
+                            $dueDate->addMonth();
+                    }
+                }
             }
 
 
@@ -193,7 +235,7 @@ class ClientService
                 return $this->errorResponse('No se encontró la imagen en la solicitud.', 400);
             }
 
-         /*    if (!$imageFile instanceof \UploadedFile) {
+            /*    if (!$imageFile instanceof \UploadedFile) {
                 return $this->errorResponse('Formato incorrecto de imágenes.', 400);
             } */
 

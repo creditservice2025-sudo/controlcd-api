@@ -12,6 +12,7 @@ use Carbon\Carbon;
 use App\Models\Payment;
 use App\Http\Requests\Payment\PaymentRequest;
 use App\Models\Installment;
+use App\Models\PaymentInstallment;
 
 class PaymentService
 {
@@ -20,75 +21,93 @@ class PaymentService
     public function create(PaymentRequest $request)
     {
         try {
+            DB::beginTransaction();
+
             $params = $request->validated();
 
-            $installment = Installment::find($request->installment_id);
-
-            if (!$installment) {
-                throw new \Exception('La cuota no existe.');
-            }
-
-            if ($installment->status === 'Pagado') {
-                throw new \Exception('No se puede realizar un pago a una cuota que ya está pagada.');
-            }
-
-            $credit = $installment->credit;
+            $credit = Credit::find($request->credit_id);
 
             if (!$credit) {
                 throw new \Exception('El crédito no existe.');
             }
 
-            if ($request->status === 'Pagado' && $request->amount != $installment->quota_amount) {
-                throw new \Exception('El pago debe ser igual al monto de la cuota.');
+            if (!in_array($credit->status, ['Pendiente', 'Moroso'])) {
+                throw new \Exception('No se pueden realizar pagos a un crédito en estado: ' . $credit->status);
             }
 
-            if ($request->status === 'Devuelto') {
-                if ($request->amount != $credit->remaining_amount) {
-                    throw new \Exception('El pago debe ser igual al monto restante del crédito.');
-                }
+            $payment = Payment::create([
+                'credit_id' => $credit->id,
+                'payment_date' => $request->payment_date,
+                'amount' => $request->amount,
+                'status' => 'Pagado',
+                'payment_method' => $request->payment_method,
+                'payment_reference' => $request->payment_reference,
+            ]);
 
-                if ($credit->remaining_amount <= 0 || ($credit->status !== 'Pendiente' && $credit->status !== 'Moroso')) {
-                    throw new \Exception('El crédito no tiene un monto pendiente o no está en estado "Pendiente" o "Moroso".');
-                }
+            $remainingAmount = $request->amount;
+
+            $installments = Installment::where('credit_id', $credit->id)
+                ->whereIn('status', ['Pendiente', 'Atrasado', 'Parcial'])
+                ->orderBy('due_date')
+                ->get();
+
+            if ($installments->isEmpty()) {
+                throw new \Exception('No hay cuotas pendientes para aplicar el pago.');
             }
 
-            $payment = Payment::create($params);
+            foreach ($installments as $installment) {
+                if ($remainingAmount <= 0) break;
 
-            if ($payment->status === 'Pagado') {
-                $installment->update(['status' => 'Pagado']);
-                $credit->remaining_amount -= $payment->amount;
-            
-                if ($credit->remaining_amount < 0) {
-                    $credit->remaining_amount = 0;
+                $pendingAmount = $installment->quota_amount - $installment->paid_amount;
+                $toApply = min($pendingAmount, $remainingAmount);
+
+                $installment->paid_amount += $toApply;
+
+                if ($installment->paid_amount >= $installment->quota_amount) {
+                    $installment->status = 'Pagado';
+                } elseif ($installment->paid_amount > 0) {
+                    $installment->status = 'Parcial';
                 }
 
-                if ($request->payment_date > $credit->end_date) {
-                    $credit->status = 'Moroso';
-                }
-            
-                if ($credit->remaining_amount == 0) {
-                    $credit->status = 'Finalizado';
-                }  
-            
-                $credit->save();
+                $installment->save();
+
+                PaymentInstallment::create([
+                    'payment_id' => $payment->id,
+                    'installment_id' => $installment->id,
+                    'applied_amount' => $toApply
+                ]);
+
+                $remainingAmount -= $toApply;
             }
 
-            if ($payment->status === 'Devuelto') {
-                $credit->installments()->update(['status' => 'Pagado']);
+            $appliedAmount = $request->amount - $remainingAmount;
+            $credit->remaining_amount -= $appliedAmount;
 
-                $credit->status = 'Renovado';
-
+            if ($credit->remaining_amount < 0) {
                 $credit->remaining_amount = 0;
-                $credit->save();
             }
+
+            $pendingInstallments = Installment::where('credit_id', $credit->id)
+                ->where('status', '<>', 'Pagado')
+                ->exists();
+
+            if (!$pendingInstallments) {
+                $credit->status = 'Finalizado';
+            } elseif ($request->payment_date > $credit->end_date) {
+                $credit->status = 'Moroso';
+            }
+
+            $credit->save();
+
+            DB::commit();
 
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Pago procesado correctamente',
                 'data' => $payment
             ]);
-
         } catch (\Exception $e) {
+            DB::rollBack();
             \Log::error($e->getMessage());
             return $this->errorResponse($e->getMessage(), 500);
         }
@@ -96,7 +115,7 @@ class PaymentService
 
     public function index($creditId)
     {
-        try{
+        try {
             $credit = Credit::find($creditId);
 
             if (!$credit) {
@@ -104,26 +123,26 @@ class PaymentService
             }
 
             $payments = Payment::join('installments', 'payments.installment_id', '=', 'installments.id')
-            ->join('credits', 'installments.credit_id', '=', 'credits.id')
-            ->join('clients', 'credits.client_id', '=', 'clients.id')
-            ->join('guarantors', 'credits.guarantor_id', '=', 'guarantors.id')
-            ->where('credits.id', $creditId)
-            ->select(
-                'clients.name as client_name',
-                'clients.dni as client_dni',
-                'guarantors.name as guarantor_name',
-                'guarantors.dni as guarantor_dni',
-                'credits.credit_value',
-                'credits.total_interest',
-                'credits.total_amount',
-                'credits.number_installments',
-                'credits.start_date',
-                'payments.payment_date',
-                'payments.amount',
-                'payments.payment_method',
-                'payments.payment_reference'
-            )
-            ->get();
+                ->join('credits', 'installments.credit_id', '=', 'credits.id')
+                ->join('clients', 'credits.client_id', '=', 'clients.id')
+                ->join('guarantors', 'credits.guarantor_id', '=', 'guarantors.id')
+                ->where('credits.id', $creditId)
+                ->select(
+                    'clients.name as client_name',
+                    'clients.dni as client_dni',
+                    'guarantors.name as guarantor_name',
+                    'guarantors.dni as guarantor_dni',
+                    'credits.credit_value',
+                    'credits.total_interest',
+                    'credits.total_amount',
+                    'credits.number_installments',
+                    'credits.start_date',
+                    'payments.payment_date',
+                    'payments.amount',
+                    'payments.payment_method',
+                    'payments.payment_reference'
+                )
+                ->get();
 
             return $this->successResponse([
                 'success' => true,
@@ -177,7 +196,6 @@ class PaymentService
                 'message' => 'Pago obtenido correctamente',
                 'data' => $payment
             ]);
-
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             return $this->errorResponse($e->getMessage(), 500);

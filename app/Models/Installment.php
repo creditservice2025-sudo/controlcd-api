@@ -8,6 +8,7 @@ use Illuminate\Notifications\Notifiable;
 use Spatie\Permission\Traits\HasRoles;
 use Laravel\Passport\HasApiTokens;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Installment extends Model
 {
@@ -25,5 +26,9 @@ class Installment extends Model
     {
         return $this->belongsTo(Credit::class);
     }
-    
+
+    public function payments(): HasMany
+    {
+        return $this->hasMany(PaymentInstallment::class);
+    }
 }
