@@ -25,7 +25,7 @@ class CorsMiddleware
     private function getHeaders()
     {
         return [
-            'Access-Control-Allow-Origin' => 'http://localhost:9000', // Cambia esto a tu dominio
+            'Access-Control-Allow-Origin' => '*', // Cambia esto a tu dominio
             'Access-Control-Allow-Methods' => 'GET, POST, PUT, DELETE, OPTIONS',
             'Access-Control-Allow-Headers' => 'Content-Type, Authorization, X-Requested-With, X-CSRF-TOKEN',
             'Access-Control-Allow-Credentials' => 'true',
