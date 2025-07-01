@@ -1,0 +1,51 @@
+# compiled output
+build
+nbproject
+dist
+tmp
+out-tsc
+plugins/
+plugins/android.json
+plugins/ios.json
+*target
+bld
+bin
+
+# IDEs and editors
+.idea
+.svn
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-project
+*.sublime-workspace
+*nb-configuration.xml
+*.iml
+/.fleet
+
+# IDE - VSCode
+.vs
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.user
+*.jsproj
+
+# dependencies
+**/node_modules/
+
+# file not necesary
+**/dist
+.git*
+.coverage
+.coverage.*
+.env
+.aws
+npm-debug.log*
+bitbucket-pipelines*
+Dockerfile*
+docker*
