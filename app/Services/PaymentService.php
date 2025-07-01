@@ -31,17 +31,55 @@ class PaymentService
                 throw new \Exception('El crédito no existe.');
             }
 
-            if (!in_array($credit->status, ['Pendiente', 'Moroso'])) {
+            /*   if (!in_array($credit->status, ['Pendiente', 'Moroso'])) {
                 throw new \Exception('No se pueden realizar pagos a un crédito en estado: ' . $credit->status);
+            } */
+
+            if ($request->amount == 0) {
+                $payment = Payment::create([
+                    'credit_id' => $request->credit_id,
+                    'payment_date' => $request->payment_date,
+                    'amount' => 0,
+                    'status' => 'No pagado',
+                    'payment_method' => $request->payment_method,
+                    'payment_reference' => $request->payment_reference ?: 'Registro de no pago',
+                ]);
+
+                $nextInstallment = Installment::where('credit_id', $credit->id)
+                    ->whereIn('status', ['Pendiente', 'Parcial'])
+                    ->orderBy('due_date', 'asc')
+                    ->first();
+
+                if ($nextInstallment) {
+                    if (now()->gt($nextInstallment->due_date)) {
+                        $nextInstallment->status = 'Atrasado';
+                        $nextInstallment->save();
+                    }
+
+                    PaymentInstallment::create([
+                        'payment_id' => $payment->id,
+                        'installment_id' => $nextInstallment->id,
+                        'applied_amount' => 0
+                    ]);
+                }
+
+                DB::commit();
+
+                return $this->successResponse([
+                    'success' => true,
+                    'message' => 'Registro de no pago realizado',
+                    'data' => $payment
+                ]);
             }
 
+            Log::info($request->credit_id);
             $payment = Payment::create([
-                'credit_id' => $credit->id,
+                'credit_id' => $request->credit_id,
                 'payment_date' => $request->payment_date,
                 'amount' => $request->amount,
                 'status' => 'Pagado',
                 'payment_method' => $request->payment_method,
-                'payment_reference' => $request->payment_reference,
+                'payment_reference' => $request->payment_reference ?: '',
             ]);
 
             $remainingAmount = $request->amount;
@@ -92,9 +130,9 @@ class PaymentService
                 ->exists();
 
             if (!$pendingInstallments) {
-                $credit->status = 'Finalizado';
+                $credit->status = 'Saldado';
             } elseif ($request->payment_date > $credit->end_date) {
-                $credit->status = 'Moroso';
+                $credit->status = 'Pendiente';
             }
 
             $credit->save();
@@ -122,27 +160,35 @@ class PaymentService
                 throw new \Exception('El crédito no existe.');
             }
 
-            $payments = Payment::join('installments', 'payments.installment_id', '=', 'installments.id')
-                ->join('credits', 'installments.credit_id', '=', 'credits.id')
+            $payments = Payment::join('payment_installments', 'payments.id', '=', 'payment_installments.payment_id')
+                ->join('installments', 'payment_installments.installment_id', '=', 'installments.id')
+                ->join('credits', 'installments.credit_id', '=', 'credits.id') 
                 ->join('clients', 'credits.client_id', '=', 'clients.id')
-                ->join('guarantors', 'credits.guarantor_id', '=', 'guarantors.id')
                 ->where('credits.id', $creditId)
                 ->select(
+                    'payments.id',
                     'clients.name as client_name',
                     'clients.dni as client_dni',
-                    'guarantors.name as guarantor_name',
-                    'guarantors.dni as guarantor_dni',
                     'credits.credit_value',
                     'credits.total_interest',
                     'credits.total_amount',
                     'credits.number_installments',
                     'credits.start_date',
                     'payments.payment_date',
-                    'payments.amount',
+                    'payments.amount as total_payment',
                     'payments.payment_method',
-                    'payments.payment_reference'
+                    'payments.payment_reference',
+                    'installments.quota_number',
+                    'installments.status',
+                    'installments.due_date',
+                    'installments.quota_amount',
+                    'installments.paid_amount',
+                    'installments.quota_number',
+                    'payment_installments.applied_amount'
                 )
                 ->get();
+
+                Log::info($payments);
 
             return $this->successResponse([
                 'success' => true,

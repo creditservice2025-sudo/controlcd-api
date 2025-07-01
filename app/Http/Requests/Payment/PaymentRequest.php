@@ -22,12 +22,13 @@ class PaymentRequest extends FormRequest
     public function rules(): array
     {
         $rules = [
-            'installment_id' => 'required|exists:installments,id',
+            'installment_id' => 'nullable|exists:installments,id',
             'amount' => 'required|numeric|min:0',
             'payment_date' => 'required|date',
             'payment_method' => 'required|string',
             'status' => 'required|string|in:Abonado,Pagado,No Pagado,Devuelto',
             'payment_reference' => 'nullable|string',
+            'credit_id' => 'required|exists:credits,id',
         ];
 
         if($this->isMethod('put')){
@@ -45,7 +46,8 @@ class PaymentRequest extends FormRequest
     public function messages(): array
     {
         return [
-            'installment_id.required' => 'La cuota es requerida',
+            'credit_id.required' => 'El crédito es requerido',
+            'credit_id.exists' => 'El crédito no existe',
             'installment_id.exists' => 'La cuota no existe',
             'amount.required' => 'El monto es requerido',
             'amount.numeric' => 'El monto debe ser un número',

@@ -7,6 +7,7 @@ use Illuminate\Http\Request;
 use App\Services\CreditService;
 use App\Http\Requests\Credit\CreditRequest;
 use App\Traits\ApiResponse;
+use Exception;
 
 class CreditController extends Controller
 {
@@ -64,16 +65,17 @@ class CreditController extends Controller
         }
     }
 
-    public function getCreditsSelect(string $search = '')
+ /*    public function getCreditsSelect(string $search = '')
     {
         try {
             return $this->creditService->getCreditsSelect($search);
         } catch (Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
-    }
+    } */
 
-    public function getClientCredits(Request $request){
+    public function getClientCredits(Request $request)
+    {
         try {
 
             $search = $request->get('search') ?? '';
@@ -85,4 +87,16 @@ class CreditController extends Controller
         }
     }
 
+    public function getCredits(Request $request, $clientId)
+    {
+        try {
+            $page = $request->get('page', 1);
+            $perPage = $request->get('perPage', 10);
+            $search = $request->get('search', null);
+
+            return $this->creditService->getCredits($clientId, $page, $perPage, $search);
+        } catch (Exception $e) {
+            return $this->handlerException($e->getMessage());
+        }
+    }
 }

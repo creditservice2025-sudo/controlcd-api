@@ -8,6 +8,7 @@ use App\Models\Client;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use App\Models\Guarantor;
+use Illuminate\Support\Str;
 use App\Models\Credit;
 use App\Http\Requests\Credit\CreditRequest;
 use App\Models\Installment;
@@ -44,7 +45,7 @@ class CreditService
             $credit = Credit::create($creditData);
 
             $totalAmount = $credit->credit_value + $credit->total_interest;
-            $quotaAmount = $totalAmount / $credit->number_installments;
+            $quotaAmount = (($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value)  / $credit->number_installments;
 
             $dueDate = Carbon::parse($credit->first_quota_date);
             $excludedDays = json_decode($credit->excluded_days, true) ?? [];
@@ -270,6 +271,50 @@ class CreditService
                 'success' => true,
                 'message' => 'Créditos de clientes obtenidos correctamente',
                 'data' => $paginator
+            ]);
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->handlerException('Error al obtener los créditos del cliente');
+        }
+    }
+
+    // CreditService.php
+    public function getCredits(string $clientId, $page = 1, $perPage = 5, $search = null) // 👈 Añade $clientId
+    {
+        try {
+            $query = Credit::query()
+                ->where('client_id', $clientId)
+                ->with(['client', 'seller', 'installments'])
+                ->orderBy('created_at', 'desc');
+
+            $credits = $query->paginate($perPage, ['*'], 'page', $page);
+
+            /*  ->select(
+                    'client_id',
+                    'seller_id',
+                    DB::raw('count(*) as total_credits'),
+                    DB::raw('sum(credit_value) as total_credit_value')
+                )
+                ->groupBy('client_id', 'seller_id'); */
+
+            // Búsqueda
+            /*   if (!empty($search)) {
+                $query->where(function ($q) use ($search) {
+                    $q->whereHas('client', function ($query) use ($search) {
+                        $query->where('name', 'like', "%{$search}%")
+                            ->orWhere('dni', 'like', "%{$search}%");
+                    });
+                });
+            } */
+
+            return $this->successResponse([
+                'data' => $credits->items(),
+                'pagination' => [
+                    'total' => $credits->total(),
+                    'current_page' => $credits->currentPage(),
+                    'per_page' => $credits->perPage(),
+                    'last_page' => $credits->lastPage(),
+                ]
             ]);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());

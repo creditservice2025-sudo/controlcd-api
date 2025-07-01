@@ -86,6 +86,7 @@ Route::middleware('auth:api')->group(function () {
     Route::delete('credit/delete/{id}', [CreditController::class, 'delete']);
     Route::get('credit/{id}', [CreditController::class, 'show']);
     Route::get('credits/clients', [CreditController::class, 'getClientCredits']);
+    Route::get('credits/client/{client}', [CreditController::class, 'getCredits']);
 
     //route installment
     Route::get('installments', [InstallmentController::class, 'index']);

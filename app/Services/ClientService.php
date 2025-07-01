@@ -363,10 +363,15 @@ class ClientService
             $client = Client::with([
                 'guarantors',
                 'images',
-                'credits',
                 'seller',
-                'seller.city'
+                'seller.city',
+                'credits' => function ($query) {
+                    $query->orderBy('created_at', 'desc');
+                },
+                'credits.installments'
             ])->find($clientId);
+
+
             /* $client = Client::with(['credits.guarantor', 'credits.installments', 'images'])->find($clientId); */
 
             // Verificar si el cliente no existe

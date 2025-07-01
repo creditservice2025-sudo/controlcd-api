@@ -15,6 +15,7 @@ class Payment extends Model
     use HasFactory, Notifiable, HasRoles, HasApiTokens, SoftDeletes;
 
     protected $fillable = [
+        'credit_id',
         'installment_id',
         'payment_date',
         'amount',
@@ -26,6 +27,11 @@ class Payment extends Model
     public function installment()
     {
         return $this->belongsTo(Installment::class);
+    }
+
+    public function credit()
+    {
+        return $this->belongsTo(Credit::class);
     }
 
 
