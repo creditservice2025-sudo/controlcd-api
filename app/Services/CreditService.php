@@ -12,6 +12,7 @@ use Illuminate\Support\Str;
 use App\Models\Credit;
 use App\Http\Requests\Credit\CreditRequest;
 use App\Models\Installment;
+use App\Models\Payment;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 
@@ -278,47 +279,52 @@ class CreditService
         }
     }
 
-    // CreditService.php
-    public function getCredits(string $clientId, $page = 1, $perPage = 5, $search = null) // 👈 Añade $clientId
-    {
-        try {
-            $query = Credit::query()
-                ->where('client_id', $clientId)
-                ->with(['client', 'seller', 'installments'])
-                ->orderBy('created_at', 'desc');
+   public function getCredits(string $clientId, $page = 1, $perPage = 5, $search = null)
+{
+    try {
+        $query = Credit::query()
+            ->where('client_id', $clientId)
+            ->with(['client', 'seller', 'installments', 'payments'])
+            ->orderBy('created_at', 'desc');
 
-            $credits = $query->paginate($perPage, ['*'], 'page', $page);
+        $credits = $query->paginate($perPage, ['*'], 'page', $page);
 
-            /*  ->select(
-                    'client_id',
-                    'seller_id',
-                    DB::raw('count(*) as total_credits'),
-                    DB::raw('sum(credit_value) as total_credit_value')
-                )
-                ->groupBy('client_id', 'seller_id'); */
+        $paymentSummary = Payment::whereIn('credit_id', $credits->pluck('id'))
+            ->select(
+                'credit_id',
+                'status',
+                DB::raw('SUM(amount) as total_amount')
+            )
+            ->groupBy('credit_id', 'status')
+            ->get()
+            ->groupBy('credit_id');
 
-            // Búsqueda
-            /*   if (!empty($search)) {
-                $query->where(function ($q) use ($search) {
-                    $q->whereHas('client', function ($query) use ($search) {
-                        $query->where('name', 'like', "%{$search}%")
-                            ->orWhere('dni', 'like', "%{$search}%");
-                    });
-                });
-            } */
+        $creditsWithSummary = $credits->getCollection()->map(function ($credit) use ($paymentSummary) {
+            $summary = $paymentSummary->get($credit->id, collect());
 
-            return $this->successResponse([
-                'data' => $credits->items(),
-                'pagination' => [
-                    'total' => $credits->total(),
-                    'current_page' => $credits->currentPage(),
-                    'per_page' => $credits->perPage(),
-                    'last_page' => $credits->lastPage(),
-                ]
-            ]);
-        } catch (\Exception $e) {
-            \Log::error($e->getMessage());
-            return $this->handlerException('Error al obtener los créditos del cliente');
-        }
+            foreach ($summary as $item) {
+                $credit->{$item->status} = $item->total_amount;
+            }
+
+            return $credit;
+        });
+
+        $credits->setCollection($creditsWithSummary);
+
+        return $this->successResponse([
+            'data' => $credits->items(),
+            'pagination' => [
+                'total' => $credits->total(),
+                'current_page' => $credits->currentPage(),
+                'per_page' => $credits->perPage(),
+                'last_page' => $credits->lastPage(),
+            ]
+        ]);
+    } catch (\Exception $e) {
+        \Log::error($e->getMessage());
+        return $this->handlerException('Error al obtener los créditos del cliente');
     }
+}
+
+
 }

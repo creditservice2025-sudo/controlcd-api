@@ -15,7 +15,7 @@ class PaymentController extends Controller
     {
         $this->paymentService = $paymentService;
     }
-    
+
     public function create(PaymentRequest $request)
     {
         try {
@@ -26,10 +26,13 @@ class PaymentController extends Controller
         }
     }
 
-    public function index($creditId)
+    public function index(Request $request, $creditId)
     {
         try {
-            return $this->paymentService->index($creditId);
+            $page = $request->get('page', 1);
+            $perPage = $request->get('perPage', 10);
+
+            return $this->paymentService->index($creditId, $request, $page, $perPage);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             return $this->errorResponse($e->getMessage(), 500);
@@ -54,5 +57,5 @@ class PaymentController extends Controller
             \Log::error($e->getMessage());
             return $this->errorResponse($e->getMessage(), 500);
         }
-    }   
+    }
 }

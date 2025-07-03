@@ -55,8 +55,8 @@ class ClientService
                 'address' => $params['address'],
                 'geolocation' => $params['geolocation'],
                 'phone' => $params['phone'],
-                'email' => $params['email'],
-                'company_name' => $params['company_name'],
+                'email' => $params['email'] ?? null,
+                'company_name' => $params['company_name'] ?? null,
                 'guarantor_id' => $guarantorId,
                 'seller_id' => $params['seller_id'],
             ];
