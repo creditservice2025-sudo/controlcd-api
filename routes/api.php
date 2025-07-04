@@ -96,4 +96,5 @@ Route::middleware('auth:api')->group(function () {
     Route::get('payments/{creditId}', [PaymentController::class, 'index']);
     Route::post('payment/create', [PaymentController::class, 'create']);
     Route::get('payment/{creditId}/{paymentId}', [PaymentController::class, 'show']);
+    Route::get('payments/total/{creditId}', [PaymentController::class, 'getTotalWithoutInstallments']);
 });

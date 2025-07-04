@@ -49,6 +49,17 @@ class PaymentController extends Controller
         }
     }
 
+    public function getTotalWithoutInstallments(Request $request, $creditId)
+    {
+        try {
+
+            return $this->paymentService->getTotalWithoutInstallments($creditId);
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
     public function delete($paymentId)
     {
         try {

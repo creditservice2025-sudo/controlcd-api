@@ -26,7 +26,7 @@ class PaymentRequest extends FormRequest
             'amount' => 'required|numeric|min:0',
             'payment_date' => 'required|date',
             'payment_method' => 'required|string',
-            'status' => 'required|string|in:Abonado,Pagado,No Pagado,Devuelto',
+            'status' => 'required|string|in:Abonado,Pagado,No Pagado,Devuelto,Aplicado',
             'payment_reference' => 'nullable|string',
             'credit_id' => 'required|exists:credits,id',
         ];
@@ -36,7 +36,7 @@ class PaymentRequest extends FormRequest
             $rules['amount'] = 'nullable|numeric|min:0';
             $rules['payment_date'] = 'nullable|date';
             $rules['payment_method'] = 'nullable|string|in:cash,transfer,check';
-            $rules['status'] = 'nullable|string|in:Abonado,Pagado,No Pagado,Devuelto';
+            $rules['status'] = 'nullable|string|in:Abonado,Pagado,No Pagado,Devuelto, Aplicado';
             $rules['payment_reference'] = 'nullable|numeric';
         }
 
