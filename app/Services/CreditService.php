@@ -26,9 +26,6 @@ class CreditService
             $params = $request->validated();
             \Log::info('Datos recibidos para crédito:', $params);
 
-
-
-
             $creditData = [
                 'client_id' => $params['client_id'],
                 'seller_id' => $params['seller_id'],
@@ -37,26 +34,42 @@ class CreditService
                 'total_interest' => $params['interest_rate'],
                 'number_installments' => $params['installment_count'],
                 'payment_frequency' => $params['payment_frequency'],
-                'excluded_days' => json_encode($params['excluded_days'] ?? []),
+                'excluded_days' => json_encode($params['excluded_days'] ?? []), // Guardar como nombres
                 'micro_insurance_percentage' => $params['micro_insurance_percentage'] ?? null,
                 'micro_insurance_amount' => $params['micro_insurance_amount'] ?? null,
                 'first_quota_date' => $params['first_installment_date'] ?? now()->addDay()->toDateString(),
             ];
-
+    
             $credit = Credit::create($creditData);
-
+    
             $totalAmount = $credit->credit_value + $credit->total_interest;
-            $quotaAmount = (($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value)  / $credit->number_installments;
-
+            $quotaAmount = (($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value) / $credit->number_installments;
+    
             $dueDate = Carbon::parse($credit->first_quota_date);
-            $excludedDays = json_decode($credit->excluded_days, true) ?? [];
-
-            for ($i = 1; $i <= $credit->number_installments; $i++) {
-                // Ajustar fecha si cae en día excluido
-                while (in_array($dueDate->dayOfWeek, $excludedDays)) {
-                    $dueDate->addDay();
+            $excludedDayNames = json_decode($credit->excluded_days, true) ?? [];
+    
+            $dayMap = [
+                'Domingo' => 0,
+                'Lunes' => 1,
+                'Martes' => 2,
+                'Miércoles' => 3,
+                'Jueves' => 4,
+                'Viernes' => 5,
+                'Sábado' => 6
+            ];
+            
+            $excludedDayNumbers = [];
+            foreach ($excludedDayNames as $dayName) {
+                if (isset($dayMap[$dayName])) {
+                    $excludedDayNumbers[] = $dayMap[$dayName];
                 }
-
+            }
+    
+            while (in_array($dueDate->dayOfWeek, $excludedDayNumbers)) {
+                $dueDate->addDay();
+            }
+    
+            for ($i = 1; $i <= $credit->number_installments; $i++) {
                 Installment::create([
                     'credit_id' => $credit->id,
                     'quota_number' => $i,
@@ -64,22 +77,27 @@ class CreditService
                     'quota_amount' => round($quotaAmount, 2),
                     'status' => 'Pendiente'
                 ]);
-
-                switch ($credit->payment_frequency) {
-                    case 'Diario':
-                        $dueDate->addDay();
-                        break;
-                    case 'Semanal':
-                        $dueDate->addWeek();
-                        break;
-                    case 'Quincenal':
-                        $dueDate->addDays(15);
-                        break;
-                    case 'Mensual':
-                        $dueDate->addMonth();
-                        break;
-                    default:
-                        $dueDate->addMonth();
+    
+                if ($i < $credit->number_installments) {
+                    switch ($credit->payment_frequency) {
+                        case 'Diaria':
+                            $dueDate->addDay();
+                            while (in_array($dueDate->dayOfWeek, $excludedDayNumbers)) {
+                                $dueDate->addDay();
+                            }
+                            break;
+                        case 'Semanal':
+                            $dueDate->addWeek();
+                            break;
+                        case 'Quincenal':
+                            $dueDate->addDays(15);
+                            break;
+                        case 'Mensual':
+                            $dueDate->addMonth();
+                            break;
+                        default:
+                            $dueDate->addMonth();
+                    }
                 }
             }
 
@@ -279,52 +297,50 @@ class CreditService
         }
     }
 
-   public function getCredits(string $clientId, $page = 1, $perPage = 5, $search = null)
-{
-    try {
-        $query = Credit::query()
-            ->where('client_id', $clientId)
-            ->with(['client', 'seller', 'installments', 'payments'])
-            ->orderBy('created_at', 'desc');
+    public function getCredits(string $clientId, $page = 1, $perPage = 5, $search = null)
+    {
+        try {
+            $query = Credit::query()
+                ->where('client_id', $clientId)
+                ->with(['client', 'seller', 'installments', 'payments'])
+                ->orderBy('created_at', 'desc');
 
-        $credits = $query->paginate($perPage, ['*'], 'page', $page);
+            $credits = $query->paginate($perPage, ['*'], 'page', $page);
 
-        $paymentSummary = Payment::whereIn('credit_id', $credits->pluck('id'))
-            ->select(
-                'credit_id',
-                'status',
-                DB::raw('SUM(amount) as total_amount')
-            )
-            ->groupBy('credit_id', 'status')
-            ->get()
-            ->groupBy('credit_id');
+            $paymentSummary = Payment::whereIn('credit_id', $credits->pluck('id'))
+                ->select(
+                    'credit_id',
+                    'status',
+                    DB::raw('SUM(amount) as total_amount')
+                )
+                ->groupBy('credit_id', 'status')
+                ->get()
+                ->groupBy('credit_id');
 
-        $creditsWithSummary = $credits->getCollection()->map(function ($credit) use ($paymentSummary) {
-            $summary = $paymentSummary->get($credit->id, collect());
+            $creditsWithSummary = $credits->getCollection()->map(function ($credit) use ($paymentSummary) {
+                $summary = $paymentSummary->get($credit->id, collect());
 
-            foreach ($summary as $item) {
-                $credit->{$item->status} = $item->total_amount;
-            }
+                foreach ($summary as $item) {
+                    $credit->{$item->status} = $item->total_amount;
+                }
 
-            return $credit;
-        });
+                return $credit;
+            });
 
-        $credits->setCollection($creditsWithSummary);
+            $credits->setCollection($creditsWithSummary);
 
-        return $this->successResponse([
-            'data' => $credits->items(),
-            'pagination' => [
-                'total' => $credits->total(),
-                'current_page' => $credits->currentPage(),
-                'per_page' => $credits->perPage(),
-                'last_page' => $credits->lastPage(),
-            ]
-        ]);
-    } catch (\Exception $e) {
-        \Log::error($e->getMessage());
-        return $this->handlerException('Error al obtener los créditos del cliente');
+            return $this->successResponse([
+                'data' => $credits->items(),
+                'pagination' => [
+                    'total' => $credits->total(),
+                    'current_page' => $credits->currentPage(),
+                    'per_page' => $credits->perPage(),
+                    'last_page' => $credits->lastPage(),
+                ]
+            ]);
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->handlerException('Error al obtener los créditos del cliente');
+        }
     }
-}
-
-
 }

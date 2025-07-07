@@ -67,6 +67,7 @@ Route::middleware('auth:api')->group(function () {
     Route::get('clients/total', [ClientController::class, 'totalClients']);
     Route::get('clients/select', [ClientController::class, 'getClientsSelect']);
     Route::post('client/create', [ClientController::class, 'create']);
+    Route::get('clients/seller/{seller}', [ClientController::class, 'getClientsBySeller']);
     Route::put('client/update/{id}', [ClientController::class, 'update']);
     Route::delete('client/delete/{id}', [ClientController::class, 'delete']);
     Route::get('client/{id}', [ClientController::class, 'show']);

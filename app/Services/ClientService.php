@@ -13,7 +13,9 @@ use App\Models\Credit;
 use Illuminate\Support\Facades\Storage;
 use App\Models\Guarantor;
 use App\Models\Installment;
+use App\Models\Seller;
 use Carbon\Carbon;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 
 class ClientService
@@ -303,6 +305,25 @@ class ClientService
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             return $this->errorResponse('Error al obtener los clientes', 500);
+        }
+    }
+
+    public function getClientsBySeller($sellerId, $search, $perpage)
+    {
+        try {
+            return Client::with(['guarantors', 'images', 'credits', 'seller', 'seller.city'])
+                ->where('seller_id', $sellerId)
+                ->where(function ($query) use ($search) {
+                    $query->where('name', 'like', "%{$search}%")
+                        ->orWhere('dni', 'like', "%{$search}%")
+                        ->orWhere('email', 'like', "%{$search}%");
+                })
+                ->orderBy('created_at', 'desc')
+                ->paginate($perpage);
+                
+        } catch (\Exception $e) {
+            Log::error($e->getMessage());
+            throw $e;
         }
     }
 

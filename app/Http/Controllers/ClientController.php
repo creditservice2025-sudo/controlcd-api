@@ -7,6 +7,7 @@ use Illuminate\Http\Request;
 use App\Traits\ApiResponse;
 use App\Services\ClientService;
 use App\Http\Requests\Client\ClientRequest;
+use App\Models\Seller;
 
 class ClientController extends Controller
 {
@@ -58,6 +59,31 @@ class ClientController extends Controller
             return $this->errorResponse($e->getMessage(), 500);
         }
     }
+
+    public function getClientsBySeller($sellerId, Request $request)
+{
+    try {
+        $perpage = $request->input('perpage', 10);
+        $search = $request->input('search', '');
+
+        $seller = Seller::find($sellerId);
+        if (!$seller) {
+            return $this->errorResponse('Vendedor no encontrado', 404);
+        }
+
+        $clients = $this->clientService->getClientsBySeller($sellerId, $search, $perpage);
+
+        return $this->successResponse([
+            'success' => true,
+            'message' => 'Clientes encontrados',
+            'data' => $clients
+        ]);
+        
+    } catch (\Exception $e) {
+        \Log::error($e->getMessage());
+        return $this->errorResponse('Error al obtener los clientes', 500);
+    }
+}
 
     public function totalClients()
     {
