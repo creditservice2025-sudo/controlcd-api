@@ -13,6 +13,7 @@ use App\Models\Payment;
 use App\Http\Requests\Payment\PaymentRequest;
 use App\Models\Installment;
 use App\Models\PaymentInstallment;
+use App\Models\Seller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Redis;
@@ -348,6 +349,65 @@ class PaymentService
             \Log::error($e->getMessage());
             return $this->errorResponse($e->getMessage(), 500);
         }
+    }
+
+     public function getPaymentsBySeller($sellerId, Request $request, $page, $perPage)
+    {
+        $seller = Seller::find($sellerId);
+
+        if (!$seller) {
+            throw new \Exception('El vendedor no existe.');
+        }
+
+        $paymentsQuery = Payment::query()
+            ->leftJoin('payment_installments', 'payments.id', '=', 'payment_installments.payment_id')
+            ->leftJoin('installments', 'payment_installments.installment_id', '=', 'installments.id')
+            ->join('credits', 'payments.credit_id', '=', 'credits.id')
+            ->join('clients', 'credits.client_id', '=', 'clients.id')
+            ->where('clients.seller_id', $sellerId)
+            ->select(
+                'payments.id',
+                'clients.name as client_name',
+                'clients.dni as client_dni',
+                'credits.id as credit_id',
+                'credits.credit_value',
+                'credits.total_interest',
+                'credits.total_amount',
+                'credits.number_installments',
+                'credits.start_date',
+                'payments.payment_date',
+                'payments.amount as total_payment',
+                'payments.payment_method',
+                'payments.payment_reference',
+                'payments.status',
+                'payments.amount',
+                DB::raw('GROUP_CONCAT(installments.quota_number ORDER BY installments.quota_number) as quotas'),
+                DB::raw('COALESCE(SUM(payment_installments.applied_amount), 0) as total_applied')
+            )
+            ->groupBy(
+                'payments.id', 'clients.name', 'clients.dni', 'credits.id', 'credits.credit_value',
+                'credits.total_interest', 'credits.total_amount', 'credits.number_installments',
+                'credits.start_date', 'payments.payment_date', 'payments.amount', 'payments.payment_method',
+                'payments.payment_reference', 'payments.status'
+            );
+
+        if ($request->has('status') && in_array($request->status, ['Abonado', 'Pagado'])) {
+            $paymentsQuery->where('payments.status', $request->status);
+        }
+
+        $payments = $paymentsQuery->paginate($perPage, ['*'], 'page', $page);
+
+        return $this->successResponse([
+            'success' => true,
+            'message' => 'Pagos obtenidos correctamente por vendedor.',
+            'data' => $payments->items(),
+            'pagination' => [
+                'total' => $payments->total(),
+                'current_page' => $payments->currentPage(),
+                'per_page' => $payments->perPage(),
+                'last_page' => $payments->lastPage(),
+            ]
+        ]);
     }
 
 

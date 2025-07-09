@@ -24,4 +24,14 @@ class DashboardController extends Controller
             return $this->errorResponse($e->getMessage(), 500);
         }
     }
+
+    public function loadFinancialSummary(Request $request)
+    {
+        try {
+            return $this->dashboardService->loadFinancialSummary($request);
+        } catch (Exception $e) {
+            \Log::error("Error in loadFinancialSummary: " . $e->getMessage());
+            return $this->errorResponse('Error al cargar el resumen financiero.', 500);
+        }
+    }
 }

@@ -39,6 +39,19 @@ class PaymentController extends Controller
         }
     }
 
+    public function indexBySeller(Request $request, $sellerId)
+    {
+        try {
+            $page = $request->get('page', 1);
+            $perPage = $request->get('perPage', 10);
+
+            return $this->paymentService->getPaymentsBySeller($sellerId, $request, $page, $perPage);
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
     public function show($creditId, $paymentId)
     {
         try {

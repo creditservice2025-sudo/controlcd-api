@@ -28,7 +28,7 @@ Route::middleware('auth:api')->group(function () {
 
     // dashboard routes
     Route::get('dashboard/counter-entities', [DashboardController::class, 'loadDahsboardData']);
-
+    Route::get('/dashboard/financial-summary', [DashboardController::class, 'loadFinancialSummary']);
     // route crud
     Route::get('routes', [SellerController::class, 'index']);
     Route::get('routes/select', [SellerController::class, 'getRoutesSelect']);
@@ -97,5 +97,6 @@ Route::middleware('auth:api')->group(function () {
     Route::get('payments/{creditId}', [PaymentController::class, 'index']);
     Route::post('payment/create', [PaymentController::class, 'create']);
     Route::get('payment/{creditId}/{paymentId}', [PaymentController::class, 'show']);
+    Route::get('payments/seller/{sellerId}', [PaymentController::class, 'indexBySeller']);
     Route::get('payments/total/{creditId}', [PaymentController::class, 'getTotalWithoutInstallments']);
 });
