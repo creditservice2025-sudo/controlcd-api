@@ -35,9 +35,8 @@ class ClientRequest extends FormRequest
             'guarantor_dni' => 'nullable|numeric|unique:guarantors,dni',
             'guarantor_address' => 'nullable|string',
             'guarantor_phone' => 'nullable|numeric',
-
+            'routing_order' => 'required|integer|min:1',
             'seller_id' => 'required|exists:sellers,id',
-
             'credit_value' => 'nullable|numeric',
             'interest_rate' => 'nullable|numeric',
             'installment_count' => 'nullable|numeric',
@@ -92,6 +91,9 @@ class ClientRequest extends FormRequest
             'dni.required' => 'El DNI es requerido',
             'dni.numeric' => 'El DNI debe ser un número',
             'dni.unique' => 'El DNI ya existe',
+            'routing_order.required' => 'El orden de rutas es requerido',
+            'routing_order.integer' => 'El orden de rutas debe ser un número entero',
+            'routing_order.min' => 'El orden de rutas debe ser mayor a 0',  
             'geolocation.required' => 'La geolocalización es requerida',
             'geolocation.latitude.required' => 'La latitud es requerida',
             'geolocation.latitude.numeric' => 'La latitud debe ser un número',

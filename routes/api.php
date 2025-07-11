@@ -71,6 +71,7 @@ Route::middleware('auth:api')->group(function () {
     Route::put('client/update/{id}', [ClientController::class, 'update']);
     Route::delete('client/delete/{id}', [ClientController::class, 'delete']);
     Route::get('client/{id}', [ClientController::class, 'show']);
+    Route::post('/clients/update-order', [ClientController::class, 'updateOrder']);
 
     //route guarantor
     Route::get('guarantors', [GuarantorController::class, 'index']);
@@ -94,6 +95,7 @@ Route::middleware('auth:api')->group(function () {
     Route::get('installment/{id}', [InstallmentController::class, 'show']);
 
     //route payment
+    Route::get('payments/daily-totals', [PaymentController::class, 'dailyPaymentTotals']);
     Route::get('payments/{creditId}', [PaymentController::class, 'index']);
     Route::post('payment/create', [PaymentController::class, 'create']);
     Route::get('payment/{creditId}/{paymentId}', [PaymentController::class, 'show']);

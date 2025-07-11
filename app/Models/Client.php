@@ -10,6 +10,7 @@ use Illuminate\Notifications\Notifiable;
 use Spatie\Permission\Traits\HasRoles;
 use Laravel\Passport\HasApiTokens;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Facades\DB;
 
 class Client extends Model
 {
@@ -25,11 +26,60 @@ class Client extends Model
         'company_name',
         'guarantor_id',
         'seller_id',
+        'routing_order'
     ];
 
     protected $casts = [
         'geolocation' => 'array',
     ];
+
+      public static function boot()
+    {
+        parent::boot();
+
+        static::saving(function ($client) {
+            if ($client->isDirty('routing_order')) {
+                $newOrder = $client->routing_order;
+                $sellerId = $client->seller_id;
+                $originalOrder = $client->getOriginal('routing_order');
+                $clientId = $client->id;
+
+                $conflictingClient = self::where('seller_id', $sellerId)
+                    ->where('routing_order', $newOrder)
+                    ->first();
+
+                if ($conflictingClient) {
+                    DB::transaction(function () use ($sellerId, $newOrder, $originalOrder, $clientId) {
+                        if ($originalOrder === null || $newOrder < $originalOrder) {
+                            self::where('seller_id', $sellerId)
+                                ->where('routing_order', '>=', $newOrder)
+                                ->where('id', '!=', $clientId)
+                                ->increment('routing_order');
+                        } 
+                        else {
+                            self::where('seller_id', $sellerId)
+                                ->where('routing_order', '>', $originalOrder)
+                                ->where('routing_order', '<=', $newOrder)
+                                ->where('id', '!=', $clientId)
+                                ->decrement('routing_order');
+                        }
+                    });
+                }
+            }
+        });
+
+        static::deleting(function ($client) {
+            $sellerId = $client->seller_id;
+            $order = $client->routing_order;
+            
+            DB::transaction(function () use ($sellerId, $order) {
+                self::where('seller_id', $sellerId)
+                    ->where('routing_order', '>', $order)
+                    ->decrement('routing_order');
+            });
+        });
+    }
+
 
     public function guarantors()
     {

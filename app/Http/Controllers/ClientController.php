@@ -8,6 +8,8 @@ use App\Traits\ApiResponse;
 use App\Services\ClientService;
 use App\Http\Requests\Client\ClientRequest;
 use App\Models\Seller;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
 
 class ClientController extends Controller
 {
@@ -39,6 +41,54 @@ class ClientController extends Controller
         }
     }
 
+    public function updateOrder(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'clients' => 'required|array',
+            'clients.*.id' => 'required|exists:clients,id',
+            'clients.*.routing_order' => 'required|integer|min:1',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Datos de entrada inválidos',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        DB::beginTransaction();
+        try {
+            $clientIds = collect($request->clients)->pluck('id');
+            $clients = Client::whereIn('id', $clientIds)->get()->keyBy('id');
+
+            foreach ($request->clients as $clientData) {
+                $client = $clients[$clientData['id']];
+
+                if ($client->routing_order != $clientData['routing_order']) {
+                    $client->update(['routing_order' => $clientData['routing_order']]);
+                }
+            }
+
+            DB::commit();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Orden de ruta actualizado correctamente',
+                'data' => Client::whereIn('id', $clientIds)
+                    ->orderBy('routing_order')
+                    ->get()
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al actualizar el orden',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
     public function delete($clientId)
     {
         try {
@@ -48,42 +98,43 @@ class ClientController extends Controller
         }
     }
 
-    public function index(ClientRequest $request)
-    {
-        try {
-            $search = $request->input('search', '');
-            $perpage = $request->input('perpage', 10);
-
-            return $this->clientService->index($search, $perpage);
-        } catch (\Exception $e) {
-            return $this->errorResponse($e->getMessage(), 500);
-        }
-    }
-
-    public function getClientsBySeller($sellerId, Request $request)
+public function index(ClientRequest $request)
 {
     try {
-        $perpage = $request->input('perpage', 10);
         $search = $request->input('search', '');
+        $perpage = $request->input('perpage', 10);
+        $orderBy = $request->input('orderBy', 'created_at'); 
+        $orderDirection = $request->input('orderDirection', 'desc'); 
 
-        $seller = Seller::find($sellerId);
-        if (!$seller) {
-            return $this->errorResponse('Vendedor no encontrado', 404);
-        }
-
-        $clients = $this->clientService->getClientsBySeller($sellerId, $search, $perpage);
-
-        return $this->successResponse([
-            'success' => true,
-            'message' => 'Clientes encontrados',
-            'data' => $clients
-        ]);
-        
+        return $this->clientService->index($search, $perpage, $orderBy, $orderDirection);
     } catch (\Exception $e) {
-        \Log::error($e->getMessage());
-        return $this->errorResponse('Error al obtener los clientes', 500);
+        return $this->errorResponse($e->getMessage(), 500);
     }
 }
+
+    public function getClientsBySeller($sellerId, Request $request)
+    {
+        try {
+            $perpage = $request->input('perpage', 10);
+            $search = $request->input('search', '');
+
+            $seller = Seller::find($sellerId);
+            if (!$seller) {
+                return $this->errorResponse('Vendedor no encontrado', 404);
+            }
+
+            $clients = $this->clientService->getClientsBySeller($sellerId, $search, $perpage);
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Clientes encontrados',
+                'data' => $clients
+            ]);
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->errorResponse('Error al obtener los clientes', 500);
+        }
+    }
 
     public function totalClients()
     {

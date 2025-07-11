@@ -64,7 +64,7 @@ class DashboardService
             $profit = 0;      
 
             if ($role === 1 || $role === 2) { 
-                $totalBalance = Credit::where('status', '!=', 'Saldado')->sum('credit_value'); 
+                $totalBalance = Credit::where('status', '!=', 'Liquidado')->sum('credit_value'); 
                 $capital = Credit::sum('credit_value');
                 $profit = Credit::sum(DB::raw('credit_value * total_interest / 100')); 
 
@@ -72,7 +72,7 @@ class DashboardService
                 $seller = $user->seller;
 
                 if ($seller) {
-                    $totalBalance = $seller->credits()->where('status', '!=', 'Saldado')->sum('credit_value');
+                    $totalBalance = $seller->credits()->where('status', '!=', 'Liquidado')->sum('credit_value');
                     $capital = $seller->credits()->sum('credit_value');
                     $profit = Credit::sum(DB::raw('credit_value * total_interest / 100'));
                 }

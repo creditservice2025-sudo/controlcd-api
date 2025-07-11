@@ -61,6 +61,7 @@ class ClientService
                 'company_name' => $params['company_name'] ?? null,
                 'guarantor_id' => $guarantorId,
                 'seller_id' => $params['seller_id'],
+                'routing_order' => $params['routing_order']
             ];
 
             $client = Client::create($clientData);
@@ -83,20 +84,34 @@ class ClientService
 
                 $credit = Credit::create($creditData);
 
-                // Calcular monto de cuota (capital + intereses)
                 $totalAmount = $credit->credit_value + $credit->total_interest;
-                $quotaAmount = $totalAmount / $credit->number_installments;
+                $quotaAmount = (($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value) / $credit->number_installments;
 
-                // Generar cuotas
                 $dueDate = Carbon::parse($credit->first_quota_date);
-                $excludedDays = json_decode($credit->excluded_days, true) ?? [];
+                $excludedDayNames = json_decode($credit->excluded_days, true) ?? [];
+
+                $dayMap = [
+                    'Domingo' => 0,
+                    'Lunes' => 1,
+                    'Martes' => 2,
+                    'Miércoles' => 3,
+                    'Jueves' => 4,
+                    'Viernes' => 5,
+                    'Sábado' => 6
+                ];
+
+                $excludedDayNumbers = [];
+                foreach ($excludedDayNames as $dayName) {
+                    if (isset($dayMap[$dayName])) {
+                        $excludedDayNumbers[] = $dayMap[$dayName];
+                    }
+                }
+
+                while (in_array($dueDate->dayOfWeek, $excludedDayNumbers)) {
+                    $dueDate->addDay();
+                }
 
                 for ($i = 1; $i <= $credit->number_installments; $i++) {
-                    // Ajustar fecha si cae en día excluido
-                    while (in_array($dueDate->dayOfWeek, $excludedDays)) {
-                        $dueDate->addDay();
-                    }
-
                     Installment::create([
                         'credit_id' => $credit->id,
                         'quota_number' => $i,
@@ -105,21 +120,26 @@ class ClientService
                         'status' => 'Pendiente'
                     ]);
 
-                    switch ($credit->payment_frequency) {
-                        case 'Diario':
-                            $dueDate->addDay();
-                            break;
-                        case 'Semanal':
-                            $dueDate->addWeek();
-                            break;
-                        case 'Quincenal':
-                            $dueDate->addDays(15);
-                            break;
-                        case 'Mensual':
-                            $dueDate->addMonth();
-                            break;
-                        default:
-                            $dueDate->addMonth();
+                    if ($i < $credit->number_installments) {
+                        switch ($credit->payment_frequency) {
+                            case 'Diaria':
+                                $dueDate->addDay();
+                                while (in_array($dueDate->dayOfWeek, $excludedDayNumbers)) {
+                                    $dueDate->addDay();
+                                }
+                                break;
+                            case 'Semanal':
+                                $dueDate->addWeek();
+                                break;
+                            case 'Quincenal':
+                                $dueDate->addDays(15);
+                                break;
+                            case 'Mensual':
+                                $dueDate->addMonth();
+                                break;
+                            default:
+                                $dueDate->addMonth();
+                        }
                     }
                 }
             }
@@ -278,8 +298,12 @@ class ClientService
     }
 
 
-    public function index(string $search, int $perpage)
-    {
+    public function index(
+        string $search,
+        int $perpage,
+        string $orderBy = 'created_at',
+        string $orderDirection = 'desc'
+    ) {
         try {
             $user = Auth::user();
             $seller = $user->seller;
@@ -295,7 +319,14 @@ class ClientService
                 $clientsQuery->where('seller_id', $seller->id);
             }
 
-            $clients = $clientsQuery->orderBy('created_at', 'desc')->paginate($perpage);
+            $validOrderDirections = ['asc', 'desc'];
+            $orderDirection = in_array(strtolower($orderDirection), $validOrderDirections)
+                ? $orderDirection
+                : 'desc';
+
+            $clientsQuery->orderBy($orderBy, $orderDirection);
+
+            $clients = $clientsQuery->paginate($perpage);
 
             return $this->successResponse([
                 'success' => true,
@@ -320,7 +351,6 @@ class ClientService
                 })
                 ->orderBy('created_at', 'desc')
                 ->paginate($perpage);
-                
         } catch (\Exception $e) {
             Log::error($e->getMessage());
             throw $e;

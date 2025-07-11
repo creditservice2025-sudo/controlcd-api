@@ -256,8 +256,8 @@ class PaymentService
                 ->exists();
 
             if (!$pendingInstallments) {
-                $credit->status = 'Saldado';
-                Cache::forget($cacheKey); // Limpiar caché si no hay pendientes
+                $credit->status = 'Liquidado';
+                Cache::forget($cacheKey); 
             } elseif ($request->payment_date > $credit->end_date) {
                 $credit->status = 'Pendiente';
             }
@@ -484,4 +484,5 @@ class PaymentService
             return $this->errorResponse($e->getMessage(), 500);
         }
     }
+    
 }
