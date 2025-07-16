@@ -98,19 +98,19 @@ class ClientController extends Controller
         }
     }
 
-public function index(ClientRequest $request)
-{
-    try {
-        $search = $request->input('search', '');
-        $perpage = $request->input('perpage', 10);
-        $orderBy = $request->input('orderBy', 'created_at'); 
-        $orderDirection = $request->input('orderDirection', 'desc'); 
+    public function index(ClientRequest $request)
+    {
+        try {
+            $search = $request->input('search', '');
+            $perpage = $request->input('perpage', 10);
+            $orderBy = $request->input('orderBy', 'created_at');
+            $orderDirection = $request->input('orderDirection', 'desc');
 
-        return $this->clientService->index($search, $perpage, $orderBy, $orderDirection);
-    } catch (\Exception $e) {
-        return $this->errorResponse($e->getMessage(), 500);
+            return $this->clientService->index($search, $perpage, $orderBy, $orderDirection);
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
     }
-}
 
     public function getClientsBySeller($sellerId, Request $request)
     {
@@ -160,6 +160,22 @@ public function index(ClientRequest $request)
     {
         try {
             return $this->clientService->show($clientId);
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+
+
+    public function getForCollections(ClientRequest $request)
+    {
+        try {
+            $search = $request->input('search', '');
+            $perpage = $request->input('perpage', 10);
+            $orderBy = $request->input('orderBy', 'created_at');
+            $orderDirection = $request->input('orderDirection', 'desc');
+
+            return $this->clientService->getForCollections($search, $perpage, $orderBy, $orderDirection);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }

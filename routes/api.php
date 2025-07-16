@@ -72,6 +72,7 @@ Route::middleware('auth:api')->group(function () {
     Route::delete('client/delete/{id}', [ClientController::class, 'delete']);
     Route::get('client/{id}', [ClientController::class, 'show']);
     Route::post('/clients/update-order', [ClientController::class, 'updateOrder']);
+    Route::get('/clients/for-collections', [ClientController::class, 'getForCollections']);
 
     //route guarantor
     Route::get('guarantors', [GuarantorController::class, 'index']);

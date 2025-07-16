@@ -12,7 +12,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class PaymentInstallment extends Model
 {
-    use HasFactory, Notifiable, HasRoles, HasApiTokens, SoftDeletes;
+    use HasFactory, Notifiable, HasRoles, HasApiTokens;
 
     protected $fillable = [
         'payment_id',

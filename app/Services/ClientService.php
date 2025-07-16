@@ -448,4 +448,58 @@ class ClientService
             return $this->errorResponse('Error al obtener el cliente', 500);
         }
     }
+    public function getForCollections(
+        string $search,
+        int $perpage,
+        string $orderBy = 'created_at',
+        string $orderDirection = 'desc'
+    ) {
+        try {
+            $user = Auth::user();
+            $seller = $user->seller;
+
+            $clientsQuery = Client::with([
+                'guarantors',
+                'images',
+                'credits' => function ($query) {
+                    $query->with(['installments', 'payments', 'payments.installments'])
+                        ->orderBy('created_at', 'desc');
+                },
+                'seller',
+                'seller.city'
+            ]);
+
+            $clientsQuery->whereHas('credits'); 
+
+            if (!empty($search)) {
+                $clientsQuery->where(function ($query) use ($search) {
+                    $query->where('name', 'like', "%{$search}%")
+                        ->orWhere('dni', 'like', "%{$search}%")
+                        ->orWhere('email', 'like', "%{$search}%");
+                });
+            }
+
+            if ($user->role_id == 5 && $seller) {
+                $clientsQuery->where('seller_id', $seller->id);
+            }
+
+            $validOrderDirections = ['asc', 'desc'];
+            $orderDirection = in_array(strtolower($orderDirection), $validOrderDirections)
+                ? $orderDirection
+                : 'desc';
+
+            $clientsQuery->orderBy($orderBy, $orderDirection);
+
+            $clients = $clientsQuery->paginate($perpage);
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Clientes encontrados',
+                'data' => $clients
+            ]);
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->errorResponse('Error al obtener los clientes', 500);
+        }
+    }
 }
