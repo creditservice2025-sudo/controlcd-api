@@ -449,57 +449,246 @@ class ClientService
         }
     }
     public function getForCollections(
-        string $search,
-        int $perpage,
+        string $search = '',
+        int $perpage = 10,
+        int $page = 1,
+        string $filter = 'all',
         string $orderBy = 'created_at',
-        string $orderDirection = 'desc'
+        string $orderDirection = 'desc',
+        string $status = '',
     ) {
-        try {
-            $user = Auth::user();
-            $seller = $user->seller;
+        $user = Auth::user();
+        $seller = $user->seller;
 
-            $clientsQuery = Client::with([
+        $paymentPrioritySubquery = DB::table('clients')
+            ->leftJoin('credits', function ($join) {
+                $join->on('clients.id', '=', 'credits.client_id')
+                    ->where('credits.status', '!=', 'liquidado');
+            })
+            ->leftJoin('installments', function ($join) {
+                $join->on('credits.id', '=', 'installments.credit_id')
+                    ->where('installments.status', '!=', 'paid');
+            })
+            ->selectRaw('
+            clients.id as client_id,
+            MAX(CASE WHEN installments.due_date < CURDATE() THEN 1 ELSE 0 END) as has_overdue,
+            MAX(CASE WHEN installments.due_date >= CURDATE() THEN 1 ELSE 0 END) as has_pending
+        ')
+            ->groupBy('clients.id');
+
+        $clientsQuery = Client::query()
+            ->select('clients.*')
+            ->selectSub('
+            CASE 
+                WHEN payment_priority.has_overdue = 1 THEN 1
+                WHEN payment_priority.has_pending = 1 THEN 2
+                ELSE 3
+            END', 'payment_priority')
+            ->leftJoinSub($paymentPrioritySubquery, 'payment_priority', function ($join) {
+                $join->on('clients.id', '=', 'payment_priority.client_id');
+            })
+            ->with([
                 'guarantors',
                 'images',
-                'credits' => function ($query) {
+                'credits' => function ($query) use ($status) {
                     $query->with(['installments', 'payments', 'payments.installments'])
+                        ->where('status', '!=', 'liquidado')
                         ->orderBy('created_at', 'desc');
+
+                    if (!empty($status)) {
+                        $query->where('payment_frequency', $status);
+                    }
                 },
                 'seller',
                 'seller.city'
             ]);
 
-            $clientsQuery->whereHas('credits'); 
+        if (!empty($status)) {
+            $clientsQuery->whereHas('credits', function ($query) use ($status) {
+                $query->where('payment_frequency', $status)
+                    ->where('status', '!=', 'liquidado');
+            });
+        }
 
-            if (!empty($search)) {
-                $clientsQuery->where(function ($query) use ($search) {
-                    $query->where('name', 'like', "%{$search}%")
-                        ->orWhere('dni', 'like', "%{$search}%")
-                        ->orWhere('email', 'like', "%{$search}%");
-                });
-            }
+        // Búsqueda
+        if (!empty($search)) {
+            $clientsQuery->where(function ($query) use ($search) {
+                $query->where('name', 'like', "%{$search}%")
+                    ->orWhere('dni', 'like', "%{$search}%")
+                    ->orWhere('email', 'like', "%{$search}%");
+            });
+        }
 
-            if ($user->role_id == 5 && $seller) {
-                $clientsQuery->where('seller_id', $seller->id);
-            }
+        if ($filter !== 'all') {
+            $clientsQuery->whereHas('credits', function ($query) use ($filter) {
+                $query->where('status', $filter)
+                    ->where('status', '!=', 'liquidado');
+            });
+        }
 
+        if ($user->role_id == 5 && $seller) {
+            $clientsQuery->where('seller_id', $seller->id);
+        }
+
+        if ($orderBy === 'routing') {
+            $clientsQuery->orderBy('payment_priority')
+                ->orderBy('clients.name');
+        }
+        else {
             $validOrderDirections = ['asc', 'desc'];
             $orderDirection = in_array(strtolower($orderDirection), $validOrderDirections)
                 ? $orderDirection
                 : 'desc';
 
             $clientsQuery->orderBy($orderBy, $orderDirection);
-
-            $clients = $clientsQuery->paginate($perpage);
-
-            return $this->successResponse([
-                'success' => true,
-                'message' => 'Clientes encontrados',
-                'data' => $clients
-            ]);
-        } catch (\Exception $e) {
-            \Log::error($e->getMessage());
-            return $this->errorResponse('Error al obtener los clientes', 500);
         }
+
+        $clients = $clientsQuery->paginate($perpage, ['*'], 'page', $page);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Clientes encontrados',
+            'data' => $clients->items(),
+            'pagination' => [
+                'total' => $clients->total(),
+                'per_page' => $clients->perPage(),
+                'current_page' => $clients->currentPage(),
+                'last_page' => $clients->lastPage(),
+            ]
+        ]);
+    }
+
+    public function getCollectionSummary(
+        string $search = '',
+        string $filter = 'all',
+        string $status = ''
+    ) {
+        $today = now()->format('Y-m-d');
+        $startOfDay = $today . ' 00:00:00';
+        $endOfDay = $today . ' 23:59:59';
+        $user = Auth::user();
+        $seller = $user->seller;
+
+        $totalsQuery = DB::table('installments')
+            ->selectRaw('
+            COALESCE(SUM(installments.quota_amount), 0) as total_expected,
+            COALESCE(SUM(
+                CASE 
+                    WHEN payments.status IN ("Pagado", "Abonado")
+                    THEN payment_installments.applied_amount 
+                    ELSE 0 
+                END
+            ), 0) as total_collected,
+            COALESCE(SUM(
+                CASE 
+                    WHEN payments.status = "Pagado"
+                    THEN payment_installments.applied_amount 
+                    ELSE 0 
+                END
+            ), 0) as total_paid,
+            COALESCE(SUM(
+                CASE 
+                    WHEN payments.status = "Abonado"
+                    THEN payment_installments.applied_amount 
+                    ELSE 0 
+                END
+            ), 0) as total_deposits
+        ')
+            ->join('credits', 'installments.credit_id', '=', 'credits.id')
+            ->join('clients', 'credits.client_id', '=', 'clients.id')
+            ->leftJoin('payment_installments', 'installments.id', '=', 'payment_installments.installment_id')
+            ->leftJoin('payments', function ($join) use ($startOfDay, $endOfDay) {
+                $join->on('payment_installments.payment_id', '=', 'payments.id')
+                    ->where('payments.payment_date', '>=', $startOfDay)
+                    ->where('payments.payment_date', '<=', $endOfDay)
+                    ->whereIn('payments.status', ['Pagado', 'Abonado']);
+            })
+            ->where('installments.due_date', '>=', $startOfDay)
+            ->where('installments.due_date', '<=', $endOfDay)
+            ->where('installments.status', '!=', 'paid');
+
+        $clientsQuery = DB::table('clients')
+            ->selectRaw('
+            COUNT(DISTINCT clients.id) as total_clients,
+            COUNT(DISTINCT CASE WHEN payments.id IS NOT NULL THEN clients.id END) as clients_served,
+            COUNT(DISTINCT CASE WHEN payment_status = "Abonado" THEN clients.id END) as pending_clients,
+            COUNT(DISTINCT CASE WHEN payments.id IS NULL THEN clients.id END) as defaulted_clients
+        ')
+            ->join('credits', 'clients.id', '=', 'credits.client_id')
+            ->join('installments', 'credits.id', '=', 'installments.credit_id')
+            ->leftJoin('payment_installments', 'installments.id', '=', 'payment_installments.installment_id')
+            ->leftJoin('payments', function ($join) use ($startOfDay, $endOfDay) {
+                $join->on('payment_installments.payment_id', '=', 'payments.id')
+                    ->where('payments.payment_date', '>=', $startOfDay)
+                    ->where('payments.payment_date', '<=', $endOfDay)
+                    ->whereIn('payments.status', ['Pagado', 'Abonado']);
+            })
+            ->leftJoin(DB::raw('(
+            SELECT 
+                clients.id as client_id,
+                CASE 
+                    WHEN SUM(COALESCE(payment_installments.applied_amount, 0)) < SUM(installments.quota_amount) 
+                    THEN "Abonado" 
+                    ELSE "Pagado" 
+                END as payment_status
+            FROM clients
+            JOIN credits ON clients.id = credits.client_id
+            JOIN installments ON credits.id = installments.credit_id
+            LEFT JOIN payment_installments ON installments.id = payment_installments.installment_id
+            LEFT JOIN payments ON payment_installments.payment_id = payments.id
+                AND payments.payment_date BETWEEN \'' . $startOfDay . '\' AND \'' . $endOfDay . '\'
+                AND payments.status IN ("Pagado", "Abonado")
+            WHERE installments.due_date BETWEEN \'' . $startOfDay . '\' AND \'' . $endOfDay . '\'
+            GROUP BY clients.id
+        ) as client_payment'), 'clients.id', '=', 'client_payment.client_id')
+            ->where('installments.due_date', '>=', $startOfDay)
+            ->where('installments.due_date', '<=', $endOfDay);
+
+        if (!empty($search)) {
+            $searchFilter = function ($query) use ($search) {
+                $query->where('clients.name', 'like', "%{$search}%")
+                    ->orWhere('clients.dni', 'like', "%{$search}%")
+                    ->orWhere('clients.email', 'like', "%{$search}%");
+            };
+
+            $totalsQuery->where($searchFilter);
+            $clientsQuery->where($searchFilter);
+        }
+
+        if ($filter !== 'all') {
+            $totalsQuery->where('credits.status', $filter);
+            $clientsQuery->where('credits.status', $filter);
+        }
+
+        if (!empty($status)) {
+            $totalsQuery->where('credits.payment_frequency', $status);
+            $clientsQuery->where('credits.payment_frequency', $status);
+        }
+
+        if ($user->role_id == 5 && $seller) {
+            $totalsQuery->where('credits.seller_id', $seller->id);
+            $clientsQuery->where('credits.seller_id', $seller->id);
+        }
+
+        $totals = $totalsQuery->first();
+        $clientCounts = $clientsQuery->first();
+
+        $summary = [
+            'totalExpected'     => $totals->total_expected ?? 0,
+            'totalCollected'    => $totals->total_collected ?? 0,
+            'totalPaid'         => $totals->total_paid ?? 0,
+            'totalDeposits'     => $totals->total_deposits ?? 0,
+            'totalUnpaid'       => ($totals->total_expected ?? 0) - ($totals->total_collected ?? 0),
+            'clientsServed'     => $clientCounts->clients_served ?? 0,
+            'pendingClients'    => $clientCounts->pending_clients ?? 0,
+            'defaultedClients'  => $clientCounts->defaulted_clients ?? 0,
+            'totalClients'      => $clientCounts->total_clients ?? 0
+        ];
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Resumen de cobranza diaria',
+            'data' => $summary
+        ]);
     }
 }

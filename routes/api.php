@@ -73,6 +73,7 @@ Route::middleware('auth:api')->group(function () {
     Route::get('client/{id}', [ClientController::class, 'show']);
     Route::post('/clients/update-order', [ClientController::class, 'updateOrder']);
     Route::get('/clients/for-collections', [ClientController::class, 'getForCollections']);
+    Route::get('/clients/for-collections-summary', [ClientController::class, 'getForCollectionSummary']);
 
     //route guarantor
     Route::get('guarantors', [GuarantorController::class, 'index']);

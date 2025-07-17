@@ -170,12 +170,40 @@ class ClientController extends Controller
     public function getForCollections(ClientRequest $request)
     {
         try {
-            $search = $request->input('search', '');
-            $perpage = $request->input('perpage', 10);
-            $orderBy = $request->input('orderBy', 'created_at');
-            $orderDirection = $request->input('orderDirection', 'desc');
+            $search = (string) $request->input('search', ''); 
+            $perpage = (int) $request->input('perpage', 10);
+            $page = (int) $request->input('page', 1);
+            $filter = (string) $request->input('filter', 'all');
+            $orderBy = (string) $request->input('orderBy', 'created_at');
+            $orderDirection = (string) $request->input('orderDirection', 'desc');
+            $status = (string) $request->input('status', '');
 
-            return $this->clientService->getForCollections($search, $perpage, $orderBy, $orderDirection);
+            return $this->clientService->getForCollections(
+                $search,
+                $perpage,
+                $page,
+                $filter,
+                $orderBy,
+                $orderDirection,
+                $status
+            );
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+    public function getForCollectionSummary(ClientRequest $request)
+    {
+        try {
+            $search = (string) $request->input('search', '');
+            $filter = (string) $request->input('filter', 'all');
+            $status = (string) $request->input('status', '');
+
+            return $this->clientService->getCollectionSummary(
+                $search,
+                $filter,
+                $status
+            );
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
