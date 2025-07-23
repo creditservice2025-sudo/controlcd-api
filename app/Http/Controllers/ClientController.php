@@ -102,11 +102,11 @@ class ClientController extends Controller
     {
         try {
             $search = $request->input('search', '');
-            $perpage = $request->input('perpage', 10);
+            $perPage = $request->get('perPage') ?? 5;
             $orderBy = $request->input('orderBy', 'created_at');
             $orderDirection = $request->input('orderDirection', 'desc');
 
-            return $this->clientService->index($search, $perpage, $orderBy, $orderDirection);
+            return $this->clientService->index($search, $perPage, $orderBy, $orderDirection);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }

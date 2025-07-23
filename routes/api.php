@@ -1,5 +1,7 @@
 <?php
 
+use App\Http\Controllers\ExpenseController;
+use App\Http\Controllers\LiquidationController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
@@ -91,6 +93,26 @@ Route::middleware('auth:api')->group(function () {
     Route::get('credit/{id}', [CreditController::class, 'show']);
     Route::get('credits/clients', [CreditController::class, 'getClientCredits']);
     Route::get('credits/client/{client}', [CreditController::class, 'getCredits']);
+
+    //route expense
+    Route::get('expenses', [ExpenseController::class, 'index']);
+    Route::post('expense/create', [ExpenseController::class, 'store']);
+    Route::get('expense/{id}', [ExpenseController::class, 'show']);
+    Route::put('expense/update/{id}', [ExpenseController::class, 'update']);
+    Route::delete('expense/delete/{id}', [ExpenseController::class, 'destroy']);
+    Route::get('expenses/summary', [ExpenseController::class, 'summary']);
+    Route::get('expenses/report/monthly', [ExpenseController::class, 'monthlyReport']);
+    Route::get('expenses/user/{userId}', [ExpenseController::class, 'getExpensesByUser']);
+    Route::put('/expenses/{expense}/{status}', [ExpenseController::class, 'changeStatus'])
+        ->where('status', 'Aprobado|Rechazado');
+
+    //route liquidations
+    Route::prefix('liquidations')->group(function () {
+        Route::post('calculate', [LiquidationController::class, 'calculateLiquidation']);
+        Route::post('store', [LiquidationController::class, 'storeLiquidation']);
+        Route::get('history', [LiquidationController::class, 'getLiquidationHistory']);
+        Route::get('/{sellerId}/{date}', [LiquidationController::class, 'getLiquidationData']);
+    });
 
     //route installment
     Route::get('installments', [InstallmentController::class, 'index']);

@@ -257,7 +257,7 @@ class PaymentService
 
             if (!$pendingInstallments) {
                 $credit->status = 'Liquidado';
-                Cache::forget($cacheKey); 
+                Cache::forget($cacheKey);
             } elseif ($request->payment_date > $credit->end_date) {
                 $credit->status = 'Pendiente';
             }
@@ -279,7 +279,7 @@ class PaymentService
 
 
 
-    public function index($creditId, Request $request, $page, $perPage)
+    public function index($creditId, Request $request, $perPage)
     {
         try {
             $credit = Credit::find($creditId);
@@ -332,9 +332,15 @@ class PaymentService
                 $paymentsQuery->where('payments.status', 'Pagado');
             }
 
-            $payments = $paymentsQuery->paginate($perPage, ['*'], 'page', $page);
+            $payments = $paymentsQuery->paginate($perPage, ['*']);
 
             return $this->successResponse([
+                'success' => true,
+                'message' => 'Pagos obtenidos correctamente',
+                'data' => $payments
+            ]);
+
+            /*   return $this->successResponse([
                 'success' => true,
                 'message' => 'Pagos obtenidos correctamente',
                 'data' => $payments->items(),
@@ -344,14 +350,14 @@ class PaymentService
                     'per_page' => $payments->perPage(),
                     'last_page' => $payments->lastPage(),
                 ]
-            ]);
+            ]); */
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             return $this->errorResponse($e->getMessage(), 500);
         }
     }
 
-     public function getPaymentsBySeller($sellerId, Request $request, $page, $perPage)
+    public function getPaymentsBySeller($sellerId, Request $request, $page, $perPage)
     {
         $seller = Seller::find($sellerId);
 
@@ -385,10 +391,20 @@ class PaymentService
                 DB::raw('COALESCE(SUM(payment_installments.applied_amount), 0) as total_applied')
             )
             ->groupBy(
-                'payments.id', 'clients.name', 'clients.dni', 'credits.id', 'credits.credit_value',
-                'credits.total_interest', 'credits.total_amount', 'credits.number_installments',
-                'credits.start_date', 'payments.payment_date', 'payments.amount', 'payments.payment_method',
-                'payments.payment_reference', 'payments.status'
+                'payments.id',
+                'clients.name',
+                'clients.dni',
+                'credits.id',
+                'credits.credit_value',
+                'credits.total_interest',
+                'credits.total_amount',
+                'credits.number_installments',
+                'credits.start_date',
+                'payments.payment_date',
+                'payments.amount',
+                'payments.payment_method',
+                'payments.payment_reference',
+                'payments.status'
             );
 
         if ($request->has('status') && in_array($request->status, ['Abonado', 'Pagado'])) {
@@ -399,13 +415,15 @@ class PaymentService
 
         return $this->successResponse([
             'success' => true,
-            'message' => 'Pagos obtenidos correctamente por vendedor.',
-            'data' => $payments->items(),
-            'pagination' => [
-                'total' => $payments->total(),
-                'current_page' => $payments->currentPage(),
-                'per_page' => $payments->perPage(),
-                'last_page' => $payments->lastPage(),
+            'message' => 'Pagos obtenidos correctamente',
+            'data' => [
+                'data' => $payments->items(),
+                'pagination' => [
+                    'total' => $payments->total(),
+                    'current_page' => $payments->currentPage(),
+                    'per_page' => $payments->perPage(),
+                    'last_page' => $payments->lastPage(),
+                ]
             ]
         ]);
     }
@@ -484,5 +502,4 @@ class PaymentService
             return $this->errorResponse($e->getMessage(), 500);
         }
     }
-    
 }
