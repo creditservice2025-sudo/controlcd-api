@@ -454,64 +454,101 @@ class ClientService
         int $perpage = 10,
         int $page = 1,
         string $filter = 'all',
+        string $frequency = '',
+        string $paymentStatus = '',
         string $orderBy = 'created_at',
         string $orderDirection = 'desc',
-        string $status = '',
     ) {
         $user = Auth::user();
         $seller = $user->seller;
-
+    
         $paymentPrioritySubquery = DB::table('clients')
             ->leftJoin('credits', function ($join) {
                 $join->on('clients.id', '=', 'credits.client_id')
                     ->where('credits.status', '!=', 'liquidado');
             })
-            ->leftJoin('installments', function ($join) {
-                $join->on('credits.id', '=', 'installments.credit_id')
-                    ->where('installments.status', '!=', 'paid');
+            ->leftJoin('installments', function ($join) use ($paymentStatus) {
+                $join->on('credits.id', '=', 'installments.credit_id');
+                
+                if ($paymentStatus === 'paid') {
+                    $join->where('installments.status', '=', 'Pagado');
+                } elseif ($paymentStatus === 'unpaid') {
+                    $join->where(function($query) {
+                        $query->where('installments.status', '=', 'Pendiente')
+                              ->orWhere(function($subQuery) {
+                                  $subQuery->where('installments.status', '=', 'Pendiente')
+                                           ->where('installments.due_date', '<', now()->toDateString());
+                              });
+                    });
+                }
             })
             ->selectRaw('
-            clients.id as client_id,
-            MAX(CASE WHEN installments.due_date < CURDATE() THEN 1 ELSE 0 END) as has_overdue,
-            MAX(CASE WHEN installments.due_date >= CURDATE() THEN 1 ELSE 0 END) as has_pending
-        ')
+                clients.id as client_id,
+                MAX(CASE WHEN installments.due_date < CURDATE() THEN 1 ELSE 0 END) as has_overdue,
+                MAX(CASE WHEN installments.due_date >= CURDATE() THEN 1 ELSE 0 END) as has_pending
+            ')
             ->groupBy('clients.id');
-
+    
         $clientsQuery = Client::query()
             ->select('clients.*')
             ->selectSub('
-            CASE 
-                WHEN payment_priority.has_overdue = 1 THEN 1
-                WHEN payment_priority.has_pending = 1 THEN 2
-                ELSE 3
-            END', 'payment_priority')
+                CASE 
+                    WHEN payment_priority.has_overdue = 1 THEN 1
+                    WHEN payment_priority.has_pending = 1 THEN 2
+                    ELSE 3
+                END', 'payment_priority')
             ->leftJoinSub($paymentPrioritySubquery, 'payment_priority', function ($join) {
                 $join->on('clients.id', '=', 'payment_priority.client_id');
             })
             ->with([
                 'guarantors',
                 'images',
-                'credits' => function ($query) use ($status) {
+                'credits' => function ($query) use ($frequency, $paymentStatus) {
                     $query->with(['installments', 'payments', 'payments.installments'])
                         ->where('status', '!=', 'liquidado')
                         ->orderBy('created_at', 'desc');
-
-                    if (!empty($status)) {
-                        $query->where('payment_frequency', $status);
+    
+                    if (!empty($frequency)) {
+                        $query->where('payment_frequency', $frequency);
+                    }
+    
+                    if (!empty($paymentStatus)) {
+                        $query->whereHas('installments', function($q) use ($paymentStatus) {
+                            if ($paymentStatus === 'paid') {
+                                $q->where('status', 'Pagado');
+                            } elseif ($paymentStatus === 'unpaid') {
+                                $q->where(function($subQuery) {
+                                    $subQuery->where('status', 'Pendiente')
+                                             ->where('due_date', '<=', now()->toDateString());
+                                });
+                            }
+                        });
                     }
                 },
                 'seller',
                 'seller.city'
             ]);
-
-        if (!empty($status)) {
-            $clientsQuery->whereHas('credits', function ($query) use ($status) {
-                $query->where('payment_frequency', $status)
+    
+        if (!empty($frequency)) {
+            $clientsQuery->whereHas('credits', function ($query) use ($frequency) {
+                $query->where('payment_frequency', $frequency)
                     ->where('status', '!=', 'liquidado');
             });
         }
-
-        // Búsqueda
+    
+        if (!empty($paymentStatus)) {
+            $clientsQuery->whereHas('credits.installments', function ($query) use ($paymentStatus) {
+                if ($paymentStatus === 'paid') {
+                    $query->where('status', 'Pagado');
+                } elseif ($paymentStatus === 'unpaid') {
+                    $query->where(function($subQuery) {
+                        $subQuery->where('status', 'Pendiente')
+                                 ->where('due_date', '<=', now()->toDateString());
+                    });
+                }
+            });
+        }
+    
         if (!empty($search)) {
             $clientsQuery->where(function ($query) use ($search) {
                 $query->where('name', 'like', "%{$search}%")
@@ -519,18 +556,18 @@ class ClientService
                     ->orWhere('email', 'like', "%{$search}%");
             });
         }
-
+    
         if ($filter !== 'all') {
             $clientsQuery->whereHas('credits', function ($query) use ($filter) {
                 $query->where('status', $filter)
                     ->where('status', '!=', 'liquidado');
             });
         }
-
+    
         if ($user->role_id == 5 && $seller) {
             $clientsQuery->where('seller_id', $seller->id);
         }
-
+    
         if ($orderBy === 'routing') {
             $clientsQuery->orderBy('payment_priority')
                 ->orderBy('clients.name');
@@ -539,19 +576,19 @@ class ClientService
             $orderDirection = in_array(strtolower($orderDirection), $validOrderDirections)
                 ? $orderDirection
                 : 'desc';
-
+    
             $clientsQuery->orderBy($orderBy, $orderDirection);
         }
-
+    
         $clients = $clientsQuery->paginate($perpage, ['*'], 'page', $page);
-
+    
         $creditIds = $clients->getCollection()
             ->pluck('credits')
             ->flatten()
             ->pluck('id')
             ->unique()
             ->values();
-
+    
         $paymentSummary = collect();
         if ($creditIds->isNotEmpty()) {
             $paymentSummary = Payment::whereIn('credit_id', $creditIds)
@@ -564,7 +601,7 @@ class ClientService
                 ->get()
                 ->groupBy('credit_id');
         }
-
+    
         $transformedItems = $clients->getCollection()->map(function ($client) use ($paymentSummary) {
             if ($client->credits) {
                 $client->credits->transform(function ($credit) use ($paymentSummary) {
@@ -572,18 +609,18 @@ class ClientService
                     foreach ($summary as $item) {
                         $credit->{$item->status} = $item->total_amount;
                     }
-
+    
                     $credit->installment = $credit->installments;
                     unset($credit->installments);
-
+    
                     return $credit;
                 });
             }
             return $client;
         });
-
+    
         $clients->setCollection($transformedItems);
-
+    
         return response()->json([
             'success' => true,
             'message' => 'Clientes encontrados',
@@ -600,19 +637,19 @@ class ClientService
 public function getCollectionSummary(
     string $search = '',
     string $filter = 'all',
-    string $status = ''
+    string $frequency = '',
+    string $paymentStatus = '',
 ) {
     $today = now()->format('Y-m-d');
     $user = Auth::user();
     $seller = $user->seller;
 
-    // Aplicar filtros comunes
-    $applyFilters = function ($query) use ($search, $filter, $status, $user, $seller) {
+    $applyFilters = function ($query) use ($search, $filter, $frequency, $paymentStatus, $user, $seller) {
         if (!empty($search)) {
             $query->where(function ($q) use ($search) {
                 $q->where('clients.name', 'like', "%{$search}%")
-                    ->orWhere('clients.dni', 'like', "%{$search}%")
-                    ->orWhere('clients.email', 'like', "%{$search}%");
+                  ->orWhere('clients.dni', 'like', "%{$search}%")
+                  ->orWhere('clients.email', 'like', "%{$search}%");
             });
         }
 
@@ -620,8 +657,19 @@ public function getCollectionSummary(
             $query->where('credits.status', $filter);
         }
 
-        if (!empty($status)) {
-            $query->where('credits.payment_frequency', $status);
+        if (!empty($frequency)) {
+            $query->where('credits.payment_frequency', $frequency);
+        }
+
+        if (!empty($paymentStatus)) {
+            if ($paymentStatus === 'paid') {
+                $query->where('installments.status', 'Pagado');
+            } elseif ($paymentStatus === 'unpaid') {
+                $query->where(function($q) {
+                    $q->where('installments.status', 'Pendiente')
+                      ->where('installments.due_date', '<=', now()->toDateString());
+                });
+            }
         }
 
         if ($user->role_id == 5 && $seller) {
@@ -629,18 +677,24 @@ public function getCollectionSummary(
         }
     };
 
-    // 1. TOTAL ESPERADO (Cuotas con vencimiento hoy)
+    // 1. TOTAL ESPERADO (Cuotas con vencimiento hoy o pendientes)
     $expectedQuery = DB::table('installments')
         ->selectRaw('COALESCE(SUM(quota_amount), 0) as total_expected')
         ->join('credits', 'installments.credit_id', '=', 'credits.id')
         ->join('clients', 'credits.client_id', '=', 'clients.id')
-        ->whereDate('due_date', $today)
-        ->where('installments.status', '!=', 'paid');
+        ->where('credits.status', '!=', 'liquidado')
+        ->where(function($query) use ($today) {
+            $query->whereDate('due_date', $today)
+                  ->orWhere(function($q) use ($today) {
+                      $q->where('installments.status', 'Pendiente')
+                        ->whereDate('due_date', '<', $today);
+                  });
+        });
 
     $applyFilters($expectedQuery);
     $expected = $expectedQuery->first();
 
-    // 2. PAGOS REALIZADOS HOY (Todos los pagos del día) - SIN FILTRO DE CUOTAS
+    // 2. PAGOS REALIZADOS HOY (Todos los pagos del día)
     $todayPaymentsQuery = DB::table('payments')
         ->selectRaw('
             COALESCE(SUM(payments.amount), 0) as total_collected_today,
@@ -653,12 +707,13 @@ public function getCollectionSummary(
         ->join('credits', 'installments.credit_id', '=', 'credits.id')
         ->join('clients', 'credits.client_id', '=', 'clients.id')
         ->whereDate('payments.payment_date', $today)
-        ->whereIn('payments.status', ['Pagado', 'Abonado']);
+        ->whereIn('payments.status', ['Pagado', 'Abonado'])
+        ->where('credits.status', '!=', 'liquidado');
 
     $applyFilters($todayPaymentsQuery);
     $todayPayments = $todayPaymentsQuery->first();
 
-    // 3. RECAUDACIÓN DE CUOTAS QUE VENCEN HOY
+    // 3. RECAUDACIÓN DE CUOTAS QUE VENCEN HOY O ESTÁN PENDIENTES
     $todayDueCollectedQuery = DB::table('payment_installments')
         ->selectRaw('
             COALESCE(SUM(payment_installments.applied_amount), 0) as total_collected,
@@ -669,13 +724,20 @@ public function getCollectionSummary(
         ->join('payments', 'payment_installments.payment_id', '=', 'payments.id')
         ->join('credits', 'installments.credit_id', '=', 'credits.id')
         ->join('clients', 'credits.client_id', '=', 'clients.id')
-        ->whereDate('installments.due_date', $today)
-        ->whereIn('payments.status', ['Pagado', 'Abonado']);
+        ->where(function($query) use ($today) {
+            $query->whereDate('installments.due_date', $today)
+                  ->orWhere(function($q) use ($today) {
+                      $q->where('installments.status', 'Pendiente')
+                        ->whereDate('due_date', '<', $today);
+                  });
+        })
+        ->whereIn('payments.status', ['Pagado', 'Abonado'])
+        ->where('credits.status', '!=', 'liquidado');
 
     $applyFilters($todayDueCollectedQuery);
     $todayDueCollected = $todayDueCollectedQuery->first();
 
-    // 4. CONTEO DE CLIENTES (Con cuotas que vencen hoy)
+    // 4. CONTEO DE CLIENTES (Con cuotas que vencen hoy o están pendientes)
     $clientsQuery = DB::table('clients')
         ->selectRaw('
             COUNT(DISTINCT clients.id) as total_clients,
@@ -690,31 +752,43 @@ public function getCollectionSummary(
             $join->on('payment_installments.payment_id', '=', 'payments.id')
                 ->whereIn('payments.status', ['Pagado', 'Abonado']);
         })
-        ->whereDate('installments.due_date', $today)
-        ->where('installments.status', '!=', 'paid');
+        ->where(function($query) use ($today) {
+            $query->whereDate('installments.due_date', $today)
+                  ->orWhere(function($q) use ($today) {
+                      $q->where('installments.status', 'Pendiente')
+                        ->whereDate('due_date', '<', $today);
+                  });
+        })
+        ->where('credits.status', '!=', 'liquidado')
+        ->where('installments.status', '!=', 'Pagado');
 
     $applyFilters($clientsQuery);
     $clientCounts = $clientsQuery->first();
 
     $summary = [
-        // Obligaciones del día (cuotas que vencen hoy)
-        'totalExpected'     => $expected->total_expected ?? 0,
+        // Obligaciones del día (cuotas que vencen hoy o pendientes)
+        'totalExpected'        => $expected->total_expected ?? 0,
         'totalCollectedForDue' => $todayDueCollected->total_collected ?? 0,
-        'totalPaidForDue'   => $todayDueCollected->total_paid ?? 0,
-        'totalDepositsForDue' => $todayDueCollected->total_deposits ?? 0,
-        'totalUnpaid'       => ($expected->total_expected ?? 0) - ($todayDueCollected->total_collected ?? 0),
+        'totalPaidForDue'      => $todayDueCollected->total_paid ?? 0,
+        'totalDepositsForDue'  => $todayDueCollected->total_deposits ?? 0,
+        'totalUnpaid'          => ($expected->total_expected ?? 0) - ($todayDueCollected->total_collected ?? 0),
 
         // Pagos realizados hoy (todos los pagos del día)
-        'totalCollectedToday' => $todayPayments->total_collected_today ?? 0,
-        'totalPaidToday'    => $todayPayments->total_paid_today ?? 0,
-        'totalDepositsToday' => $todayPayments->total_deposits_today ?? 0,
-        'clientsPaidToday'  => $todayPayments->clients_paid_today ?? 0,
+        'totalCollectedToday'  => $todayPayments->total_collected_today ?? 0,
+        'totalPaidToday'       => $todayPayments->total_paid_today ?? 0,
+        'totalDepositsToday'   => $todayPayments->total_deposits_today ?? 0,
+        'clientsPaidToday'     => $todayPayments->clients_paid_today ?? 0,
 
-        // Conteo de clientes con cuotas que vencen hoy
-        'clientsServed'     => $clientCounts->clients_served ?? 0,
-        'pendingClients'    => $clientCounts->pending_clients ?? 0,
-        'defaultedClients'  => $clientCounts->defaulted_clients ?? 0,
-        'totalClients'      => $clientCounts->total_clients ?? 0
+        // Conteo de clientes con cuotas que vencen hoy o pendientes
+        'clientsServed'       => $clientCounts->clients_served ?? 0,
+        'pendingClients'      => $clientCounts->pending_clients ?? 0,
+        'defaultedClients'    => $clientCounts->defaulted_clients ?? 0,
+        'totalClients'        => $clientCounts->total_clients ?? 0,
+
+        // Nuevos campos para filtros
+        'totalPaid'           => $todayPayments->total_paid_today ?? 0,
+        'totalDeposits'       => $todayPayments->total_deposits_today ?? 0,
+        'totalUnpaidClients'  => $clientCounts->defaulted_clients ?? 0
     ];
 
     return response()->json([
