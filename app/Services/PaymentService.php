@@ -324,7 +324,9 @@ class PaymentService
                     'payments.payment_method',
                     'payments.payment_reference',
                     'payments.status'
-                );
+                )
+                ->orderBy('payments.payment_date', 'desc');
+
 
             if ($request->has('status') && $request->status === 'Abonado') {
                 $paymentsQuery->where('payments.status', 'Abonado');
@@ -405,7 +407,8 @@ class PaymentService
                 'payments.payment_method',
                 'payments.payment_reference',
                 'payments.status'
-            );
+            )
+            ->orderBy('payments.payment_date', 'desc');
 
         if ($request->has('status') && in_array($request->status, ['Abonado', 'Pagado'])) {
             $paymentsQuery->where('payments.status', $request->status);
