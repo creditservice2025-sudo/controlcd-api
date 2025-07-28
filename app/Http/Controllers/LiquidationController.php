@@ -51,33 +51,33 @@ class LiquidationController extends Controller
             'total_expenses' => 'required|numeric|min:0',
             'new_credits' => 'required|numeric|min:0'
         ]);
-    
+
         // Verificar si ya existe liquidación para este día
         $existingLiquidation = Liquidation::where('seller_id', $request->seller_id)
             ->whereDate('date', $request->date)
             ->first();
-    
+
         if ($existingLiquidation) {
             return response()->json([
                 'success' => false,
                 'message' => 'Ya existe una liquidación para este vendedor en la fecha seleccionada'
             ], 422);
         }
-    
+
         // Calcular el valor real a entregar
-        $realToDeliver = $request->initial_cash + $request->total_collected 
-                        - $request->total_expenses - $request->new_credits;
-    
+        $realToDeliver = $request->initial_cash + $request->total_collected
+            - $request->total_expenses - $request->new_credits;
+
         // Calcular faltante/sobrante
         $shortage = 0;
         $surplus = 0;
-        
+
         if ($request->cash_delivered < $realToDeliver) {
             $shortage = $realToDeliver - $request->cash_delivered;
         } else {
             $surplus = $request->cash_delivered - $realToDeliver;
         }
-    
+
         // Crear liquidación
         $liquidation = Liquidation::create([
             'date' => $request->date,
@@ -89,12 +89,12 @@ class LiquidationController extends Controller
             'total_expenses' => $request->total_expenses,
             'new_credits' => $request->new_credits,
             'real_to_deliver' => $realToDeliver,
-            'shortage' => $shortage,
-            'surplus' => $surplus,
+            'shortage' => $request->shortage,
+            'surplus' => $request->surplus,
             'cash_delivered' => $request->cash_delivered,
             'status' => 'pending'
         ]);
-    
+
         return response()->json([
             'success' => true,
             'data' => $liquidation,
@@ -121,32 +121,35 @@ class LiquidationController extends Controller
     public function getLiquidationData($sellerId, $date)
     {
         $user = Auth::user();
-        
+
         // 1. Verificar si ya existe liquidación para esta fecha
         $existingLiquidation = Liquidation::where('seller_id', $sellerId)
             ->whereDate('date', $date)
             ->first();
-    
+
         // Si existe liquidación, retornar directamente esos datos
         if ($existingLiquidation) {
             return $this->formatLiquidationResponse($existingLiquidation, true);
         }
-    
+
         // 2. Obtener datos del endpoint dailyPaymentTotals
         $dailyTotals = $this->getDailyTotals($sellerId, $date, $user);
-        
+
+
         // 3. Obtener última liquidación para saldo inicial
         $lastLiquidation = Liquidation::where('seller_id', $sellerId)
             ->where('date', '<', $date)
             ->orderBy('date', 'desc')
             ->first();
-    
+
         $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
-    
+
         // 4. Calcular valor real a entregar
-        $realToDeliver = $initialCash + $dailyTotals['collected_total'] 
-                        - $dailyTotals['total_expenses'] - $dailyTotals['created_credits_value'];
-    
+        $realToDeliver = $initialCash
+            + $dailyTotals['collected_total']
+            - $dailyTotals['created_credits_value']
+            - $dailyTotals['total_expenses'];
+
         // 5. Estructurar respuesta completa
         return [
             'collection_target' => $dailyTotals['daily_goal'],
@@ -165,13 +168,16 @@ class LiquidationController extends Controller
             'total_clients' => $dailyTotals['total_clients'],
             'existing_liquidation' => null,
             'last_liquidation' => $lastLiquidation ? $this->formatLiquidationDetails($lastLiquidation) : null,
-            'is_new' => true
+            'is_new' => true,
+            'liquidation_start_date' => $dailyTotals['liquidation_start_date']
         ];
     }
-    
+
     // Nuevo método para obtener los dailyTotals
     protected function getDailyTotals($sellerId, $date, $user)
     {
+        $formattedDate = Carbon::parse($date)->format('Y-m-d');
+        $targetDate = Carbon::parse($date);
         $query = DB::table('payments')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
             ->select(
@@ -182,16 +188,30 @@ class LiquidationController extends Controller
             ->where('credits.seller_id', $sellerId)
             ->where('payments.status', 'Aprobado')
             ->groupBy('payments.payment_method');
-    
+
+        $firstPaymentQuery = DB::table('payments')
+            ->join('credits', 'payments.credit_id', '=', 'credits.id')
+            ->select(DB::raw('MIN(payments.created_at) as first_payment_date'))
+            ->whereDate('payments.payment_date', $date);
+
+        if ($sellerId) {
+            $firstPaymentQuery->where('credits.seller_id', $sellerId);
+        }
+
+
+        $firstPaymentResult = $firstPaymentQuery->first();
+        $firstPaymentDate = $firstPaymentResult->first_payment_date;
+
         $paymentResults = $query->get();
-    
+
         $totals = [
             'cash' => 0,
             'transfer' => 0,
             'collected_total' => 0,
-            'base_value' => 0
+            'base_value' => 0,
+            'liquidation_start_date' => $firstPaymentDate
         ];
-    
+
         foreach ($paymentResults as $result) {
             $amount = (float)$result->total;
             if ($result->payment_method === 'Efectivo') {
@@ -201,30 +221,61 @@ class LiquidationController extends Controller
             }
             $totals['collected_total'] += $amount;
         }
-    
+
         // Obtener total esperado
         $totals['expected_total'] = (float)DB::table('installments')
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
             ->where('credits.seller_id', $sellerId)
             ->where('installments.due_date', $date)
             ->sum('installments.quota_amount');
-    
+
         // Obtener créditos creados
         $credits = DB::table('credits')
             ->where('seller_id', $sellerId)
-            ->whereDate('created_at', $date)
-            ->selectRaw('COALESCE(SUM(credit_value), 0) as value, COALESCE(SUM(credit_value * (total_interest / 100)), 0) as interest')
+            ->whereBetween('created_at', [
+                $targetDate->startOfDay()->format('Y-m-d H:i:s'),
+                $targetDate->endOfDay()->format('Y-m-d H:i:s')
+            ])
+            ->select([
+                DB::raw('COALESCE(SUM(credit_value), 0) as value'),
+                DB::raw('COALESCE(SUM(
+                CASE 
+                    WHEN total_interest IS NOT NULL AND total_interest > 0 
+                    THEN credit_value * (total_interest / 100)
+                    ELSE 0
+                END
+            ), 0) as interest')
+            ])
             ->first();
-    
+
+        Log::info('Créditos creados en ' . $targetDate->format('Y-m-d') . ':', [
+            'query' => DB::table('credits')
+                ->where('seller_id', $sellerId)
+                ->whereBetween('created_at', [
+                    $targetDate->startOfDay()->format('Y-m-d H:i:s'),
+                    $targetDate->endOfDay()->format('Y-m-d H:i:s')
+                ])
+                ->toSql(),
+            'bindings' => DB::table('credits')
+                ->where('seller_id', $sellerId)
+                ->whereBetween('created_at', [
+                    $targetDate->startOfDay()->format('Y-m-d H:i:s'),
+                    $targetDate->endOfDay()->format('Y-m-d H:i:s')
+                ])
+                ->getBindings(),
+            'result' => $credits
+        ]);
+
+
         $totals['created_credits_value'] = (float)$credits->value;
         $totals['created_credits_interest'] = (float)$credits->interest;
-    
+
         // Obtener gastos
         $totals['total_expenses'] = (float)Expense::where('user_id', $user->id)
             ->whereDate('created_at', $date)
             ->where('status', 'Aprobado')
             ->sum('value');
-    
+
         // Obtener total clientes
         $totals['total_clients'] = (int)DB::table('clients')
             ->whereExists(function ($query) use ($sellerId) {
@@ -234,19 +285,34 @@ class LiquidationController extends Controller
                     ->where('credits.seller_id', $sellerId);
             })
             ->count();
-    
+
         // Calcular saldos
         $totals['daily_goal'] = $totals['expected_total'];
         $totals['current_balance'] = $totals['collected_total'] - $totals['total_expenses'];
 
         Log::info($totals['expected_total']);
-    
+
         return $totals;
     }
-    
+
     // Método para formatear respuesta de liquidación existente
     protected function formatLiquidationResponse($liquidation, $isExisting = false)
     {
+        $firstPaymentDate = null;
+        if ($isExisting) {
+            $firstPaymentQuery = DB::table('payments')
+                ->join('credits', 'payments.credit_id', '=', 'credits.id')
+                ->select('payments.payment_date', 'payments.created_at') // 👈 aquí
+                ->whereDate('payments.payment_date', $liquidation->date)
+                ->where('credits.seller_id', $liquidation->seller_id)
+                ->orderBy('payments.payment_date', 'asc')
+                ->first();
+
+
+            if ($firstPaymentQuery) {
+                $firstPaymentDate = $firstPaymentQuery->created_at;
+            }
+        }
         return [
             'collection_target' => $liquidation->collection_target,
             'initial_cash' => $liquidation->initial_cash,
@@ -259,10 +325,12 @@ class LiquidationController extends Controller
             'seller_id' => $liquidation->seller_id,
             'existing_liquidation' => $isExisting ? $this->formatLiquidationDetails($liquidation) : null,
             'last_liquidation' => $this->getPreviousLiquidation($liquidation->seller_id, $liquidation->date),
-            'is_new' => false // Indicador de que ya existe
+            'is_new' => false, // Indicador de que ya existe
+            'liquidation_start_date' => $firstPaymentDate
+
         ];
     }
-    
+
     // Método para obtener liquidación anterior
     protected function getPreviousLiquidation($sellerId, $date)
     {
@@ -270,10 +338,10 @@ class LiquidationController extends Controller
             ->where('date', '<', $date)
             ->orderBy('date', 'desc')
             ->first();
-    
+
         return $lastLiquidation ? $this->formatLiquidationDetails($lastLiquidation) : null;
     }
-    
+
     // Método para formatear detalles de liquidación
     protected function formatLiquidationDetails($liquidation)
     {

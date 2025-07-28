@@ -151,7 +151,9 @@ class ExpenseService
                         });
                 });
 
-
+                if ($user->role_id == 5) {
+                    $expensesQuery->where('user_id', $user->id);
+                }
 
             $validOrderDirections = ['asc', 'desc'];
             $orderDirection = in_array(strtolower($orderDirection), $validOrderDirections)
