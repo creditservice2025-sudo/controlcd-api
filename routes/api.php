@@ -5,6 +5,7 @@ use App\Http\Controllers\LiquidationController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\CategoryController;
 use App\Http\Controllers\SellerController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\CitiesController;
@@ -31,6 +32,7 @@ Route::middleware('auth:api')->group(function () {
     // dashboard routes
     Route::get('dashboard/counter-entities', [DashboardController::class, 'loadDahsboardData']);
     Route::get('/dashboard/financial-summary', [DashboardController::class, 'loadFinancialSummary']);
+    Route::get('/dashboard/weekly-movements', [DashboardController::class, 'loadWeeklyMovements']);
     // route crud
     Route::get('routes', [SellerController::class, 'index']);
     Route::get('routes/select', [SellerController::class, 'getRoutesSelect']);
@@ -93,7 +95,7 @@ Route::middleware('auth:api')->group(function () {
     Route::get('credit/{id}', [CreditController::class, 'show']);
     Route::get('credits/clients', [CreditController::class, 'getClientCredits']);
     Route::get('credits/client/{client}', [CreditController::class, 'getCredits']);
-
+    Route::get('credits/seller/{sellerId}', [CreditController::class, 'getSellerCredits']);
     //route expense
     Route::get('expenses', [ExpenseController::class, 'index']);
     Route::post('expense/create', [ExpenseController::class, 'store']);
@@ -105,6 +107,12 @@ Route::middleware('auth:api')->group(function () {
     Route::get('expenses/user/{userId}', [ExpenseController::class, 'getExpensesByUser']);
     Route::put('/expenses/{expense}/{status}', [ExpenseController::class, 'changeStatus'])
         ->where('status', 'Aprobado|Rechazado');
+    Route::get('expenses/seller/{sellerId}', [ExpenseController::class, 'getSellerExpensesByDate']);
+
+    //route categories
+    Route::get('categories', [CategoryController::class, 'index']);
+    Route::post('category/create', [CategoryController::class, 'store']);
+
 
     //route liquidations
     Route::prefix('liquidations')->group(function () {

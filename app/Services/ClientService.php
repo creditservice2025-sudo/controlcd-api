@@ -81,6 +81,7 @@ class ClientService
                     'excluded_days' => json_encode($params['excluded_days'] ?? []),
                     'micro_insurance_percentage' => $params['micro_insurance_percentage'] ?? null,
                     'micro_insurance_amount' => $params['micro_insurance_amount'] ?? null,
+                    'status' => 'Vigente'
                 ];
 
                 $credit = Credit::create($creditData);

@@ -4,7 +4,9 @@ namespace App\Services;
 
 use App\Traits\ApiResponse;
 use App\Models\Expense;
+use App\Models\Seller;
 use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Http\Request;
@@ -14,17 +16,18 @@ class ExpenseService
 {
     use ApiResponse;
 
-  public function create(Request $request)
+    public function create(Request $request)
     {
         try {
             $validated = $request->validate([
                 'value' => 'required|numeric|min:0',
                 'concept' => 'required|string|max:25',
                 'description' => 'required|string',
+                'category_id' => 'required|numeric',
             ]);
 
             $user = Auth::user();
-            
+
             $status = in_array($user->role_id, [1, 2]) ? 'Aprobado' : 'Pendiente';
 
             $expense = Expense::create([
@@ -32,6 +35,7 @@ class ExpenseService
                 'concept' => $validated['concept'],
                 'description' => $validated['description'],
                 'user_id' => $user->id,
+                'category_id' => $validated['category_id'],
                 'status' => $status,
             ]);
 
@@ -94,44 +98,44 @@ class ExpenseService
     }
 
     public function changeExpenseStatus($expenseId, $status)
-{
-    try {
-        $validStatuses = ['Aprobado', 'Rechazado'];
-        
-        if (!in_array($status, $validStatuses)) {
-            return $this->errorResponse('Estado no válido', 400);
+    {
+        try {
+            $validStatuses = ['Aprobado', 'Rechazado'];
+
+            if (!in_array($status, $validStatuses)) {
+                return $this->errorResponse('Estado no válido', 400);
+            }
+
+            $expense = Expense::find($expenseId);
+            if (!$expense) {
+                return $this->errorNotFoundResponse('Gasto no encontrado');
+            }
+
+            $user = Auth::user();
+
+            if (!in_array($user->role_id, [1, 2])) {
+                return $this->errorResponse("No tienes permisos para {$status} gastos", 403);
+            }
+
+            $expense->update([
+                'status' => $status,
+                'reviewed_by' => $user->id,
+                'reviewed_at' => now(),
+            ]);
+
+            $actionMessage = $status === 'approved' ? 'aprobado' : 'rechazado';
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => "Gasto {$actionMessage} con éxito",
+                'data' => $expense
+            ]);
+        } catch (\Exception $e) {
+            Log::error($e->getMessage());
+            $actionMessage = $status === 'approved' ? 'aprobar' : 'rechazar';
+            return $this->errorResponse("Error al {$actionMessage} el gasto", 500);
         }
-
-        $expense = Expense::find($expenseId);
-        if (!$expense) {
-            return $this->errorNotFoundResponse('Gasto no encontrado');
-        }
-
-        $user = Auth::user();
-        
-        if (!in_array($user->role_id, [1, 2])) {
-            return $this->errorResponse("No tienes permisos para {$status} gastos", 403);
-        }
-
-        $expense->update([
-            'status' => $status,
-            'reviewed_by' => $user->id,
-            'reviewed_at' => now(),
-        ]);
-
-        $actionMessage = $status === 'approved' ? 'aprobado' : 'rechazado';
-
-        return $this->successResponse([
-            'success' => true,
-            'message' => "Gasto {$actionMessage} con éxito",
-            'data' => $expense
-        ]);
-    } catch (\Exception $e) {
-        Log::error($e->getMessage());
-        $actionMessage = $status === 'approved' ? 'aprobar' : 'rechazar';
-        return $this->errorResponse("Error al {$actionMessage} el gasto", 500);
     }
-}
 
     public function index(
         string $search,
@@ -142,7 +146,7 @@ class ExpenseService
         try {
             $user = Auth::user();
 
-            $expensesQuery = Expense::with(['user'])
+            $expensesQuery = Expense::with(['user', 'category'])
                 ->where(function ($query) use ($search) {
                     $query->where('concept', 'like', "%{$search}%")
                         ->orWhere('description', 'like', "%{$search}%")
@@ -151,9 +155,9 @@ class ExpenseService
                         });
                 });
 
-                if ($user->role_id == 5) {
-                    $expensesQuery->where('user_id', $user->id);
-                }
+            if ($user->role_id == 5) {
+                $expensesQuery->where('user_id', $user->id);
+            }
 
             $validOrderDirections = ['asc', 'desc'];
             $orderDirection = in_array(strtolower($orderDirection), $validOrderDirections)
@@ -269,6 +273,38 @@ class ExpenseService
         } catch (\Exception $e) {
             Log::error($e->getMessage());
             return $this->errorResponse('Error al generar reporte mensual', 500);
+        }
+    }
+    public function getSellerExpensesByDate(int $sellerId, ?string $date = null)
+    {
+        try {
+            $filterDate = $date ? Carbon::parse($date)->toDateString() : Carbon::today()->toDateString();
+    
+            $sellerUserId = Seller::where('id', $sellerId)->value('user_id');
+    
+            if (!$sellerUserId) {
+                return $this->successResponse([
+                    'success' => true,
+                    'message' => 'No se encontró el usuario asociado a este ID de vendedor.',
+                    'data' => []
+                ]);
+            }
+    
+            $userIds = [$sellerUserId]; 
+    
+            $expenses = Expense::with(['user', 'category'])
+                ->whereIn('user_id', $userIds) 
+                ->whereDate('created_at', $filterDate)
+                ->get();
+    
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Gastos obtenidos correctamente para el vendedor y fecha especificados',
+                'data' => $expenses
+            ]);
+        } catch (\Exception $e) {
+            Log::error($e->getMessage());
+            return $this->errorResponse('Error al obtener los gastos del vendedor: ' . $e->getMessage(), 500);
         }
     }
 }

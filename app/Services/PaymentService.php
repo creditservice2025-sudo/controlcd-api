@@ -359,7 +359,7 @@ class PaymentService
         }
     }
 
-    public function getPaymentsBySeller($sellerId, Request $request, $page, $perPage)
+    public function getPaymentsBySeller($sellerId, Request $request, $perPage)
     {
         $seller = Seller::find($sellerId);
 
@@ -414,7 +414,7 @@ class PaymentService
             $paymentsQuery->where('payments.status', $request->status);
         }
 
-        $payments = $paymentsQuery->paginate($perPage, ['*'], 'page', $page);
+        $payments = $paymentsQuery->paginate($perPage, ['*']);
 
         return $this->successResponse([
             'success' => true,

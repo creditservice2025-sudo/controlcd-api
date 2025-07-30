@@ -49,4 +49,8 @@ class Seller extends Model
     {
         return $this->hasMany(Image::class);
     }
+
+    public function expenses() {
+        return $this->hasMany(Expense::class);
+    }
 }

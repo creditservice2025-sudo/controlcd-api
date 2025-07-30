@@ -65,7 +65,7 @@ class CreditController extends Controller
         }
     }
 
- /*    public function getCreditsSelect(string $search = '')
+    /*    public function getCreditsSelect(string $search = '')
     {
         try {
             return $this->creditService->getCreditsSelect($search);
@@ -97,6 +97,16 @@ class CreditController extends Controller
             return $this->creditService->getCredits($clientId, $page, $perPage, $search);
         } catch (Exception $e) {
             return $this->handlerException($e->getMessage());
+        }
+    }
+    public function getSellerCredits(Request $request, int $sellerId)
+    {
+        try {
+            $date = $request->query('date');
+            return $this->creditService->getSellerCreditsByDate($sellerId, $date);
+        } catch (Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->errorResponse('Error al obtener los créditos del vendedor: ' . $e->getMessage(), 500);
         }
     }
 }

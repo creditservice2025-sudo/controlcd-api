@@ -38,16 +38,17 @@ class CreditService
                 'micro_insurance_percentage' => $params['micro_insurance_percentage'] ?? null,
                 'micro_insurance_amount' => $params['micro_insurance_amount'] ?? null,
                 'first_quota_date' => $params['first_installment_date'] ?? now()->addDay()->toDateString(),
+                'status' => 'Vigente'
             ];
-    
+
             $credit = Credit::create($creditData);
-    
+
             $totalAmount = $credit->credit_value + $credit->total_interest;
             $quotaAmount = (($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value) / $credit->number_installments;
-    
+
             $dueDate = Carbon::parse($credit->first_quota_date);
             $excludedDayNames = json_decode($credit->excluded_days, true) ?? [];
-    
+
             $dayMap = [
                 'Domingo' => 0,
                 'Lunes' => 1,
@@ -57,18 +58,18 @@ class CreditService
                 'Viernes' => 5,
                 'Sábado' => 6
             ];
-            
+
             $excludedDayNumbers = [];
             foreach ($excludedDayNames as $dayName) {
                 if (isset($dayMap[$dayName])) {
                     $excludedDayNumbers[] = $dayMap[$dayName];
                 }
             }
-    
+
             while (in_array($dueDate->dayOfWeek, $excludedDayNumbers)) {
                 $dueDate->addDay();
             }
-    
+
             for ($i = 1; $i <= $credit->number_installments; $i++) {
                 Installment::create([
                     'credit_id' => $credit->id,
@@ -77,7 +78,7 @@ class CreditService
                     'quota_amount' => round($quotaAmount, 2),
                     'status' => 'Pendiente'
                 ]);
-    
+
                 if ($i < $credit->number_installments) {
                     switch ($credit->payment_frequency) {
                         case 'Diaria':
@@ -341,6 +342,27 @@ class CreditService
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             return $this->handlerException('Error al obtener los créditos del cliente');
+        }
+    }
+
+    public function getSellerCreditsByDate(int $sellerId, ?string $date = null)
+    {
+        try {
+            $filterDate = $date ? Carbon::parse($date)->toDateString() : Carbon::today()->toDateString();
+
+            $credits = Credit::with(['client', 'installments', 'payments'])
+                ->where('seller_id', $sellerId)
+                ->whereDate('created_at', $filterDate)
+                ->get();
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Créditos obtenidos correctamente para el vendedor y fecha especificados',
+                'data' => $credits
+            ]);
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->errorResponse('Error al obtener los créditos del vendedor: ' . $e->getMessage(), 500);
         }
     }
 }
