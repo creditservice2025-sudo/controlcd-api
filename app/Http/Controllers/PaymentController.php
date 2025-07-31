@@ -195,7 +195,7 @@ class PaymentController extends Controller
         // 5. Gastos
         $expensesQuery = DB::table('expenses')
             ->select(DB::raw('COALESCE(SUM(value), 0) as total_expenses'))
-            ->whereDate('created_at', $date)
+            ->whereDate('updated_at', $date)
             ->where('status', 'Aprobado');
 
 

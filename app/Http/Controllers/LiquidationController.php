@@ -41,60 +41,74 @@ class LiquidationController extends Controller
 
     public function storeLiquidation(Request $request)
     {
+        $user = Auth::user();
+    
         $request->validate([
             'date' => 'required|date',
             'seller_id' => 'required|exists:sellers,id',
             'cash_delivered' => 'required|numeric|min:0',
-            'initial_cash' => 'required|numeric|min:0',
+            'initial_cash' => 'required|numeric',
             'base_delivered' => 'required|numeric|min:0',
             'total_collected' => 'required|numeric|min:0',
             'total_expenses' => 'required|numeric|min:0',
             'new_credits' => 'required|numeric|min:0'
         ]);
-
+    
         // Verificar si ya existe liquidación para este día
         $existingLiquidation = Liquidation::where('seller_id', $request->seller_id)
             ->whereDate('date', $request->date)
             ->first();
-
+    
         if ($existingLiquidation) {
             return response()->json([
                 'success' => false,
                 'message' => 'Ya existe una liquidación para este vendedor en la fecha seleccionada'
             ], 422);
         }
-
+    
+        $pendingExpenses = Expense::where('user_id', $user->id)
+            ->whereDate('created_at', $request->date)
+            ->where('status', 'Pendiente')
+            ->exists();
+    
+        if ($pendingExpenses) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No se puede liquidar porque tienes gastos pendientes de aprobación en la fecha seleccionada'
+            ], 422);
+        }
+    
         // Calcular el valor real a entregar
         $realToDeliver = $request->initial_cash + $request->total_collected
             - $request->total_expenses - $request->new_credits;
-
+    
         // Calcular faltante/sobrante
         $shortage = 0;
         $surplus = 0;
-
+    
         if ($request->cash_delivered < $realToDeliver) {
             $shortage = $realToDeliver - $request->cash_delivered;
         } else {
             $surplus = $request->cash_delivered - $realToDeliver;
         }
-
+    
         // Crear liquidación
         $liquidation = Liquidation::create([
             'date' => $request->date,
             'seller_id' => $request->seller_id,
-            'collection_target' => $request->collection_target, // Método para obtener meta diaria
+            'collection_target' => $request->collection_target,
             'initial_cash' => $request->initial_cash,
             'base_delivered' => $request->base_delivered,
             'total_collected' => $request->total_collected,
             'total_expenses' => $request->total_expenses,
             'new_credits' => $request->new_credits,
             'real_to_deliver' => $realToDeliver,
-            'shortage' => $request->shortage,
-            'surplus' => $request->surplus,
+            'shortage' => $shortage,
+            'surplus' => $surplus,
             'cash_delivered' => $request->cash_delivered,
             'status' => 'pending'
         ]);
-
+    
         return response()->json([
             'success' => true,
             'data' => $liquidation,
@@ -272,7 +286,7 @@ class LiquidationController extends Controller
 
         // Obtener gastos
         $totals['total_expenses'] = (float)Expense::where('user_id', $user->id)
-            ->whereDate('created_at', $date)
+            ->whereDate('updated_at', $date)
             ->where('status', 'Aprobado')
             ->sum('value');
 

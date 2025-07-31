@@ -12,7 +12,6 @@ class Expense extends Model
 
     protected $fillable = [
         'value',
-        'concept',
         'description',
         'user_id',
         'category_id',

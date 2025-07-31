@@ -21,24 +21,28 @@ class ExpenseService
         try {
             $validated = $request->validate([
                 'value' => 'required|numeric|min:0',
-                'concept' => 'required|string|max:25',
                 'description' => 'required|string',
                 'category_id' => 'required|numeric',
+                'user_id' => 'nullable|numeric' 
             ]);
-
+    
             $user = Auth::user();
-
-            $status = in_array($user->role_id, [1, 2]) ? 'Aprobado' : 'Pendiente';
-
+            $isAdmin = in_array($user->role_id, [1, 2]);
+    
+            $userId = $isAdmin && $request->has('user_id') 
+                     ? $validated['user_id'] 
+                     : $user->id;
+    
+            $status = $isAdmin ? 'Aprobado' : 'Pendiente';
+    
             $expense = Expense::create([
                 'value' => $validated['value'],
-                'concept' => $validated['concept'],
                 'description' => $validated['description'],
-                'user_id' => $user->id,
+                'user_id' => $userId,
                 'category_id' => $validated['category_id'],
                 'status' => $status,
             ]);
-
+    
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Gasto creado con éxito',
@@ -59,8 +63,8 @@ class ExpenseService
             }
 
             $validated = $request->validate([
+                'category_id' => 'required|numeric',
                 'value' => 'required|numeric|min:0',
-                'concept' => 'required|string|max:25',
                 'description' => 'required|string',
             ]);
 
@@ -148,8 +152,7 @@ class ExpenseService
 
             $expensesQuery = Expense::with(['user', 'category'])
                 ->where(function ($query) use ($search) {
-                    $query->where('concept', 'like', "%{$search}%")
-                        ->orWhere('description', 'like', "%{$search}%")
+                    $query->where('description', 'like', "%{$search}%")
                         ->orWhereHas('user', function ($q) use ($search) {
                             $q->where('name', 'like', "%{$search}%");
                         });
@@ -212,7 +215,7 @@ class ExpenseService
 
             $recentExpenses = $query->orderBy('created_at', 'desc')
                 ->limit(5)
-                ->get(['concept', 'value', 'created_at']);
+                ->get(['description', 'value', 'created_at']);
 
             return $this->successResponse([
                 'success' => true,

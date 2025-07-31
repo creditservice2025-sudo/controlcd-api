@@ -389,6 +389,7 @@ class PaymentService
                 'payments.payment_reference',
                 'payments.status',
                 'payments.amount',
+                'payments.created_at',
                 DB::raw('GROUP_CONCAT(installments.quota_number ORDER BY installments.quota_number) as quotas'),
                 DB::raw('COALESCE(SUM(payment_installments.applied_amount), 0) as total_applied')
             )
@@ -406,9 +407,18 @@ class PaymentService
                 'payments.amount',
                 'payments.payment_method',
                 'payments.payment_reference',
+                'payments.created_at',
                 'payments.status'
             )
             ->orderBy('payments.payment_date', 'desc');
+
+        if ($request->has('date') || !$request->has('date')) {
+            $filterDate = $request->date
+                ? Carbon::parse($request->date)->toDateString()
+                : Carbon::today()->toDateString();
+
+            $paymentsQuery->whereDate('payments.payment_date', $filterDate);
+        }
 
         if ($request->has('status') && in_array($request->status, ['Abonado', 'Pagado'])) {
             $paymentsQuery->where('payments.status', $request->status);
