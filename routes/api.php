@@ -33,6 +33,7 @@ Route::middleware('auth:api')->group(function () {
     Route::get('dashboard/counter-entities', [DashboardController::class, 'loadDahsboardData']);
     Route::get('/dashboard/financial-summary', [DashboardController::class, 'loadFinancialSummary']);
     Route::get('/dashboard/weekly-movements', [DashboardController::class, 'loadWeeklyMovements']);
+    Route::get('/dashboard/pending-portfolios', [DashboardController::class, 'getPendingPortfolios']);
     // route crud
     Route::get('routes', [SellerController::class, 'index']);
     Route::get('routes/select', [SellerController::class, 'getRoutesSelect']);

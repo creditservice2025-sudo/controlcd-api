@@ -25,6 +25,16 @@ class DashboardController extends Controller
         }
     }
 
+    public function getPendingPortfolios(Request $request)
+    {
+        try {
+            return $this->dashboardService->loadPendingPortfolios();
+        } catch (Exception $e) {
+            \Log::error("Error in getPendingPortfolios: " . $e->getMessage());
+            return $this->errorResponse('Error al obtener las carteras pendientes.', 500);
+        }
+    }
+
     public function loadFinancialSummary(Request $request)
     {
         try {
@@ -44,6 +54,8 @@ class DashboardController extends Controller
             return $this->errorResponse('Error al cargar el resumen financiero.', 500);
         }
     }
+
+
 
     
 }
