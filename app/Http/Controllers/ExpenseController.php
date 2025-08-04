@@ -70,8 +70,7 @@ class ExpenseController extends Controller
 
     public function getSellerExpensesByDate(Request $request, int $sellerId)
     {
-        $date = $request->query('date'); 
         
-        return $this->expenseService->getSellerExpensesByDate($sellerId, $date);
+        return $this->expenseService->getSellerExpensesByDate($sellerId, $request);
     }
 }

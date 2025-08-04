@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\LiquidationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -11,9 +12,15 @@ use App\Models\Expense;
 use App\Models\Credit;
 use App\Models\Seller;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 
 class LiquidationController extends Controller
 {
+    protected $liquidationService;
+    public function __construct(LiquidationService $liquidationService)
+    {
+        $this->liquidationService = $liquidationService;
+    }
     public function calculateLiquidation(Request $request)
     {
         $request->validate([
@@ -42,7 +49,7 @@ class LiquidationController extends Controller
     public function storeLiquidation(Request $request)
     {
         $user = Auth::user();
-    
+
         $request->validate([
             'date' => 'required|date',
             'seller_id' => 'required|exists:sellers,id',
@@ -53,45 +60,45 @@ class LiquidationController extends Controller
             'total_expenses' => 'required|numeric|min:0',
             'new_credits' => 'required|numeric|min:0'
         ]);
-    
+
         // Verificar si ya existe liquidación para este día
         $existingLiquidation = Liquidation::where('seller_id', $request->seller_id)
             ->whereDate('date', $request->date)
             ->first();
-    
+
         if ($existingLiquidation) {
             return response()->json([
                 'success' => false,
                 'message' => 'Ya existe una liquidación para este vendedor en la fecha seleccionada'
             ], 422);
         }
-    
+
         $pendingExpenses = Expense::where('user_id', $user->id)
             ->whereDate('created_at', $request->date)
             ->where('status', 'Pendiente')
             ->exists();
-    
+
         if ($pendingExpenses) {
             return response()->json([
                 'success' => false,
                 'message' => 'No se puede liquidar porque tienes gastos pendientes de aprobación en la fecha seleccionada'
             ], 422);
         }
-    
+
         // Calcular el valor real a entregar
         $realToDeliver = $request->initial_cash + $request->total_collected
             - $request->total_expenses - $request->new_credits;
-    
+
         // Calcular faltante/sobrante
         $shortage = 0;
         $surplus = 0;
-    
+
         if ($request->cash_delivered < $realToDeliver) {
             $shortage = $realToDeliver - $request->cash_delivered;
         } else {
             $surplus = $request->cash_delivered - $realToDeliver;
         }
-    
+
         // Crear liquidación
         $liquidation = Liquidation::create([
             'date' => $request->date,
@@ -108,7 +115,7 @@ class LiquidationController extends Controller
             'cash_delivered' => $request->cash_delivered,
             'status' => 'pending'
         ]);
-    
+
         return response()->json([
             'success' => true,
             'data' => $liquidation,
@@ -307,6 +314,69 @@ class LiquidationController extends Controller
         Log::info($totals['expected_total']);
 
         return $totals;
+    }
+
+    public function getBySeller(Request $request, $sellerId)
+    {
+        try {
+            $perPage = $request->input('per_page', 20);
+
+
+            $response = $this->liquidationService->getLiquidationsBySeller(
+                $sellerId,
+                $request,
+                $perPage
+            );
+
+            return $response;
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al obtener liquidaciones: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Obtiene estadísticas de un vendedor
+     *
+     * @param int $sellerId
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function getSellerStats($sellerId)
+    {
+        try {
+            $response = $this->liquidationService->getSellerStats($sellerId);
+            return $response;
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al obtener estadísticas: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Muestra una liquidación específica
+     *
+     * @param int $id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function show($id)
+    {
+        try {
+            $liquidation = Liquidation::with('seller')->findOrFail($id);
+
+            return response()->json([
+                'success' => true,
+                'data' => $liquidation
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Liquidación no encontrada'
+            ], 404);
+        }
     }
 
     // Método para formatear respuesta de liquidación existente

@@ -278,36 +278,43 @@ class ExpenseService
             return $this->errorResponse('Error al generar reporte mensual', 500);
         }
     }
-    public function getSellerExpensesByDate(int $sellerId, ?string $date = null)
-    {
-        try {
-            $filterDate = $date ? Carbon::parse($date)->toDateString() : Carbon::today()->toDateString();
-    
-            $sellerUserId = Seller::where('id', $sellerId)->value('user_id');
-    
-            if (!$sellerUserId) {
-                return $this->successResponse([
-                    'success' => true,
-                    'message' => 'No se encontró el usuario asociado a este ID de vendedor.',
-                    'data' => []
-                ]);
-            }
-    
-            $userIds = [$sellerUserId]; 
-    
-            $expenses = Expense::with(['user', 'category'])
-                ->whereIn('user_id', $userIds) 
-                ->whereDate('created_at', $filterDate)
-                ->get();
-    
+    public function getSellerExpensesByDate(int $sellerId, Request $request)
+{
+    try {
+        $sellerUserId = Seller::where('id', $sellerId)->value('user_id');
+
+        if (!$sellerUserId) {
             return $this->successResponse([
                 'success' => true,
-                'message' => 'Gastos obtenidos correctamente para el vendedor y fecha especificados',
-                'data' => $expenses
+                'message' => 'No se encontró el usuario asociado a este ID de vendedor.',
+                'data' => []
             ]);
-        } catch (\Exception $e) {
-            Log::error($e->getMessage());
-            return $this->errorResponse('Error al obtener los gastos del vendedor: ' . $e->getMessage(), 500);
         }
+
+        $expensesQuery = Expense::with(['user', 'category'])
+            ->where('user_id', $sellerUserId);
+
+        if ($request->has('start_date') && $request->has('end_date')) {
+            $startDate = Carbon::parse($request->get('start_date'))->startOfDay();
+            $endDate = Carbon::parse($request->get('end_date'))->endOfDay();
+            $expensesQuery->whereBetween('created_at', [$startDate, $endDate]);
+        } elseif ($request->has('date')) {
+            $filterDate = Carbon::parse($request->get('date'))->toDateString();
+            $expensesQuery->whereDate('created_at', $filterDate);
+        } else {
+            $expensesQuery->whereDate('created_at', Carbon::today()->toDateString());
+        }
+
+        $expenses = $expensesQuery->get();
+
+        return $this->successResponse([
+            'success' => true,
+            'message' => 'Gastos obtenidos correctamente para el vendedor y fecha(s) especificadas',
+            'data' => $expenses
+        ]);
+    } catch (\Exception $e) {
+        Log::error($e->getMessage());
+        return $this->errorResponse('Error al obtener los gastos del vendedor: ' . $e->getMessage(), 500);
     }
+}
 }

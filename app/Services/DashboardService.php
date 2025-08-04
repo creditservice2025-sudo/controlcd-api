@@ -8,6 +8,7 @@ use App\Models\Credit;
 use App\Models\Expense;
 use App\Models\Liquidation;
 use App\Models\Payment;
+use App\Models\PaymentInstallment;
 use App\Models\Seller;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
@@ -134,82 +135,113 @@ class DashboardService
 
         return "$city, $country";
     }
-    public function loadFinancialSummary(Request $request)
-    {
-        try {
-            $user = Auth::user();
-            $role = $user->role_id;
-            $today = now()->toDateString();
+ public function loadFinancialSummary(Request $request)
+{
+    try {
+        $user = Auth::user();
+        $role = $user->role_id;
+        $today = now()->toDateString();
 
-            $totalBalance = 0;
-            $capital = 0;
-            $profit = 0;
-            $currentCash = 0;
+        $totalBalance = 0;
+        $capitalPending = 0;
+        $profitPending = 0;
+        $currentCash = 0;
 
-            if ($role === 1 || $role === 2) {
-                $totalBalance = Credit::where('status', '!=', 'Liquidado')->sum('credit_value');
-                $capital = Credit::sum('credit_value');
-                $profit = Credit::sum(DB::raw('credit_value * total_interest / 100'));
-
-                $lastLiquidation = Liquidation::orderBy('date', 'desc')->first();
-                $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
-
-                $cashPayments = Payment::whereDate('created_at', $today)->sum('amount');
-
-                $expenses = Expense::whereDate('created_at', $today)->sum('value');
-
-                $newCredits = Credit::whereDate('created_at', $today)->sum('credit_value');
-
-                $currentCash = $initialCash + $cashPayments - $expenses - $newCredits;
-            } elseif ($role === 5) {
-                $seller = $user->seller;
-
-                if ($seller) {
-                    $totalBalance = $seller->credits()->where('status', '!=', 'Liquidado')->sum('credit_value');
-                    $capital = $seller->credits()->sum('credit_value');
-                    $profit = $seller->credits()->sum(DB::raw('credit_value * total_interest / 100'));
-
-                    $lastLiquidation = Liquidation::where('seller_id', $seller->id)
-                        ->orderBy('date', 'desc')
-                        ->first();
-
-                    $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
-
-                    $creditIds = $seller->credits()->pluck('id');
-
-                    $cashPayments = 0;
-                    if ($creditIds->isNotEmpty()) {
-                        $cashPayments = Payment::whereIn('credit_id', $creditIds)
-                            ->whereDate('created_at', $today)
-                            ->sum('amount');
-                    }
-
-                    $expenses = Expense::where('user_id', $user->id)
-                        ->whereDate('created_at', $today)
-                        ->sum('value');
-
-                    $newCredits = $seller->credits()
-                        ->whereDate('created_at', $today)
-                        ->sum('credit_value');
-
-                    $currentCash = $initialCash + $cashPayments - $expenses - $newCredits;
-                }
+        if ($role === 1 || $role === 2) {
+            // Obtener IDs de créditos no liquidados
+            $creditIds = Credit::where('status', '!=', 'Liquidado')->pluck('id');
+            
+            if ($creditIds->isNotEmpty()) {
+                // Calcular totales
+                $totalBalance = Credit::whereIn('id', $creditIds)->sum('credit_value');
+                
+                // Calcular capital pagado (suma de aplicado a capital en installments)
+                $totalCapitalPaid = PaymentInstallment::whereIn('installment_id', function($query) use ($creditIds) {
+                    $query->select('id')
+                        ->from('installments')
+                        ->whereIn('credit_id', $creditIds);
+                })->sum('applied_amount');
+                
+                // Calcular utilidad pagada (suma de pagos menos capital pagado)
+                $totalPayments = Payment::whereIn('credit_id', $creditIds)->sum('amount');
+                $totalProfitPaid = $totalPayments - $totalCapitalPaid;
+                
+                // Calcular pendientes
+                $capitalPending = $totalBalance - $totalCapitalPaid;
+                $totalExpectedProfit = Credit::whereIn('id', $creditIds)
+                    ->sum(DB::raw('credit_value * total_interest / 100'));
+                $profitPending = $totalExpectedProfit - $totalProfitPaid;
             }
 
-            return $this->successResponse([
-                'success' => true,
-                'data' => [
-                    'totalBalance' => (float) number_format($totalBalance, 2, '.', ''),
-                    'capital' => (float) number_format($capital, 2, '.', ''),
-                    'profit' => (float) number_format($profit, 2, '.', ''),
-                    'currentCash' => (float) number_format($currentCash, 2, '.', ''),
-                ]
-            ]);
-        } catch (\Exception $e) {
-            \Log::error("Error loading financial summary: " . $e->getMessage());
-            return $this->errorResponse('Error al obtener el resumen financiero.', 500);
+            // Cálculo de caja actual (se mantiene igual)
+            $lastLiquidation = Liquidation::orderBy('date', 'desc')->first();
+            $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
+            $cashPayments = Payment::whereDate('created_at', $today)->sum('amount');
+            $expenses = Expense::whereDate('created_at', $today)->sum('value');
+            $newCredits = Credit::whereDate('created_at', $today)->sum('credit_value');
+            $currentCash = $initialCash + $cashPayments - $expenses - $newCredits;
+
+        } elseif ($role === 5) {
+            $seller = $user->seller;
+            if ($seller) {
+                // Obtener IDs de créditos del vendedor no liquidados
+                $creditIds = $seller->credits()
+                    ->where('status', '!=', 'Liquidado')
+                    ->pluck('id');
+                
+                if ($creditIds->isNotEmpty()) {
+                    $totalBalance = Credit::whereIn('id', $creditIds)->sum('credit_value');
+                    
+                    // Calcular capital pagado
+                    $totalCapitalPaid = PaymentInstallment::whereIn('installment_id', function($query) use ($creditIds) {
+                        $query->select('id')
+                            ->from('installments')
+                            ->whereIn('credit_id', $creditIds);
+                    })->sum('applied_amount');
+                    
+                    // Calcular utilidad pagada
+                    $totalPayments = Payment::whereIn('credit_id', $creditIds)->sum('amount');
+                    $totalProfitPaid = $totalPayments - $totalCapitalPaid;
+                    
+                    // Calcular pendientes
+                    $capitalPending = $totalBalance - $totalCapitalPaid;
+                    $totalExpectedProfit = Credit::whereIn('id', $creditIds)
+                        ->sum(DB::raw('credit_value * total_interest / 100'));
+                    $profitPending = $totalExpectedProfit - $totalProfitPaid;
+                }
+
+                // Cálculo de caja actual para vendedor (se mantiene igual)
+                $lastLiquidation = Liquidation::where('seller_id', $seller->id)
+                    ->orderBy('date', 'desc')
+                    ->first();
+                $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
+                $cashPayments = Payment::whereIn('credit_id', $creditIds)
+                    ->whereDate('created_at', $today)
+                    ->sum('amount');
+                $expenses = Expense::where('user_id', $user->id)
+                    ->whereDate('created_at', $today)
+                    ->sum('value');
+                $newCredits = $seller->credits()
+                    ->whereDate('created_at', $today)
+                    ->sum('credit_value');
+                $currentCash = $initialCash + $cashPayments - $expenses - $newCredits;
+            }
         }
+
+        return $this->successResponse([
+            'success' => true,
+            'data' => [
+                'totalBalance' => (float) number_format($totalBalance, 2, '.', ''),
+                'capital' => (float) number_format($capitalPending, 2, '.', ''),
+                'profit' => (float) number_format($profitPending, 2, '.', ''),
+                'currentCash' => (float) number_format($currentCash, 2, '.', ''),
+            ]
+        ]);
+    } catch (\Exception $e) {
+        \Log::error("Error loading financial summary: " . $e->getMessage());
+        return $this->errorResponse('Error al obtener el resumen financiero.', 500);
     }
+}
     public function weeklyMovements(Request $request)
     {
         try {

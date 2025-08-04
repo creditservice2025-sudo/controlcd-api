@@ -364,12 +364,14 @@ class PaymentService
         $seller = Seller::find($sellerId);
 
         if (!$seller) {
-            throw new \Exception('El vendedor no existe.');
+            return $this->successResponse([
+                'success' => false,
+                'message' => 'El vendedor no existe.',
+                'data' => null
+            ], 404);
         }
 
         $paymentsQuery = Payment::query()
-            ->leftJoin('payment_installments', 'payments.id', '=', 'payment_installments.payment_id')
-            ->leftJoin('installments', 'payment_installments.installment_id', '=', 'installments.id')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
             ->join('clients', 'credits.client_id', '=', 'clients.id')
             ->where('clients.seller_id', $sellerId)
@@ -390,34 +392,20 @@ class PaymentService
                 'payments.status',
                 'payments.amount',
                 'payments.created_at',
-                DB::raw('GROUP_CONCAT(installments.quota_number ORDER BY installments.quota_number) as quotas'),
-                DB::raw('COALESCE(SUM(payment_installments.applied_amount), 0) as total_applied')
-            )
-            ->groupBy(
-                'payments.id',
-                'clients.name',
-                'clients.dni',
-                'credits.id',
-                'credits.credit_value',
-                'credits.total_interest',
-                'credits.total_amount',
-                'credits.number_installments',
-                'credits.start_date',
-                'payments.payment_date',
-                'payments.amount',
-                'payments.payment_method',
-                'payments.payment_reference',
-                'payments.created_at',
-                'payments.status'
+
             )
             ->orderBy('payments.payment_date', 'desc');
 
-        if ($request->has('date') || !$request->has('date')) {
-            $filterDate = $request->date
-                ? Carbon::parse($request->date)->toDateString()
-                : Carbon::today()->toDateString();
-
+        // Lógica de filtro de fechas
+        if ($request->has('start_date') && $request->has('end_date')) {
+            $startDate = Carbon::parse($request->get('start_date'))->startOfDay();
+            $endDate = Carbon::parse($request->get('end_date'))->endOfDay();
+            $paymentsQuery->whereBetween('payments.payment_date', [$startDate, $endDate]);
+        } elseif ($request->has('date')) {
+            $filterDate = Carbon::parse($request->get('date'))->toDateString();
             $paymentsQuery->whereDate('payments.payment_date', $filterDate);
+        } else {
+            $paymentsQuery->whereDate('payments.payment_date', Carbon::today());
         }
 
         if ($request->has('status') && in_array($request->status, ['Abonado', 'Pagado'])) {
@@ -425,6 +413,35 @@ class PaymentService
         }
 
         $payments = $paymentsQuery->paginate($perPage, ['*']);
+
+        // Mapear los resultados para adjuntar los detalles de las cuotas
+        $payments->getCollection()->transform(function ($payment) {
+            // Inicializar la variable de detalles de cuotas
+            $installmentsDetails = collect();
+
+            // Si el pago tiene el estado 'Pagado', buscamos las cuotas asociadas.
+            // Si el estado es 'Abonado', la lista de cuotas queda vacía, lo cual es el comportamiento deseado.
+            if ($payment->status === 'Pagado') {
+                $installmentsDetails = DB::table('payment_installments')
+                    ->join('installments', 'payment_installments.installment_id', '=', 'installments.id')
+                    ->join('payments', 'payment_installments.payment_id', '=', 'payments.id')
+                    ->where('payment_installments.payment_id', $payment->id)
+                    ->select(
+                        'installments.*',
+                        'payment_installments.applied_amount',
+                        'payment_installments.created_at',
+                        'payments.payment_date',
+                        'payments.payment_method',
+
+                    )
+                    ->get();
+            }
+
+            $payment->installments_details = $installmentsDetails;
+            $payment->total_applied = $installmentsDetails->sum('applied_amount');
+
+            return $payment;
+        });
 
         return $this->successResponse([
             'success' => true,

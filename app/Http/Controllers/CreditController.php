@@ -103,7 +103,7 @@ class CreditController extends Controller
     {
         try {
             $date = $request->query('date');
-            return $this->creditService->getSellerCreditsByDate($sellerId, $date);
+            return $this->creditService->getSellerCreditsByDate($sellerId, $request);
         } catch (Exception $e) {
             \Log::error($e->getMessage());
             return $this->errorResponse('Error al obtener los créditos del vendedor: ' . $e->getMessage(), 500);

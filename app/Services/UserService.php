@@ -5,6 +5,7 @@ namespace App\Services;
 use Hash;
 use App\Models\User;
 use App\Models\Client;
+use App\Models\Liquidation;
 use App\Models\UserRoute;
 use App\Traits\ApiResponse;
 use Spatie\Permission\Models\Role;
@@ -240,6 +241,105 @@ class UserService {
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             return $this->errorResponse('Error al actualizar el estado del miembro', 500);
+        }
+    }
+
+    public function getLiquidationsBySeller(int $sellerId, array $filters = [], int $perPage = 20)
+    {
+        try {
+            $query = Liquidation::with(['seller'])
+                ->where('seller_id', $sellerId);
+
+            // Aplicar filtros adicionales
+            $this->applyFilters($query, $filters);
+
+            // Ordenar por defecto por fecha descendente
+            $query->orderBy('date', 'desc');
+
+            $liquidations = $query->paginate($perPage);
+
+            return $this->successResponse([
+                'success' => true,
+                'data' => $liquidations
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error($e->getMessage());
+            return $this->errorResponse('Error al obtener las liquidaciones', 500);
+        }
+    }
+
+
+     /**
+     * Aplica filtros adicionales a la consulta
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param array $filters
+     */
+    protected function applyFilters($query, array $filters): void
+    {
+        // Filtro por rango de fechas
+        if (!empty($filters['start_date']) && !empty($filters['end_date'])) {
+            $query->whereBetween('date', [
+                $filters['start_date'],
+                $filters['end_date']
+            ]);
+        }
+
+        // Filtro por estado
+        if (!empty($filters['status'])) {
+            $query->where('status', $filters['status']);
+        }
+
+        // Filtro por faltantes
+        if (isset($filters['has_shortage'])) {
+            $query->where('shortage', '>', 0);
+        }
+
+        // Filtro por sobrantes
+        if (isset($filters['has_surplus'])) {
+            $query->where('surplus', '>', 0);
+        }
+
+        // Filtro por búsqueda general
+        if (!empty($filters['search'])) {
+            $searchTerm = '%' . $filters['search'] . '%';
+            $query->where(function ($q) use ($searchTerm) {
+                $q->where('status', 'like', $searchTerm)
+                  ->orWhere('date', 'like', $searchTerm);
+            });
+        }
+    }
+
+    /**
+     * Obtiene estadísticas de liquidaciones para un vendedor
+     *
+     * @param int $sellerId
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function getSellerStats(int $sellerId)
+    {
+        try {
+            $stats = [
+                'total_liquidations' => Liquidation::where('seller_id', $sellerId)->count(),
+                'pending_count' => Liquidation::where('seller_id', $sellerId)
+                    ->where('status', 'pending')->count(),
+                'average_collected' => Liquidation::where('seller_id', $sellerId)
+                    ->avg('total_collected'),
+                'total_shortage' => Liquidation::where('seller_id', $sellerId)
+                    ->sum('shortage'),
+                'total_surplus' => Liquidation::where('seller_id', $sellerId)
+                    ->sum('surplus'),
+            ];
+
+            return $this->successResponse([
+                'success' => true,
+                'data' => $stats
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error($e->getMessage());
+            return $this->errorResponse('Error al obtener estadísticas', 500);
         }
     }
 

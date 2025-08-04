@@ -12,8 +12,10 @@ use Illuminate\Support\Str;
 use App\Models\Credit;
 use App\Http\Requests\Credit\CreditRequest;
 use App\Models\Installment;
+use App\Models\Liquidation;
 use App\Models\Payment;
 use Carbon\Carbon;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 
 class CreditService
@@ -130,16 +132,44 @@ class CreditService
     public function delete($creditId)
     {
         try {
-            $credit = Credit::find($creditId);
+            DB::beginTransaction();
+
+            $credit = Credit::with('seller')->find($creditId);
+
+            if (!$credit) {
+                DB::rollBack();
+                return $this->errorResponse('El crédito no existe.', 404);
+            }
+
+            $liquidationExists = Liquidation::where('seller_id', $credit->seller_id)
+                ->whereDate('created_at', Carbon::today())
+                ->exists();
+
+            if ($liquidationExists) {
+                DB::rollBack();
+                return $this->errorResponse(
+                    'No se puede eliminar el crédito. El vendedor ya tiene una liquidación registrada para el día de hoy.',
+                    403
+                );
+            }
+
+            if ($credit->payments) {
+                $credit->payments()->forceDelete();
+            }
             $credit->installments()->forceDelete();
+
             $credit->forceDelete();
+
+            DB::commit();
+
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Crédito eliminado correctamente',
             ]);
         } catch (\Exception $e) {
-            \Log::error($e->getMessage());
-            return $this->handlerException('Error al eliminar el crédito');
+            DB::rollBack();
+            Log::error("Error al eliminar el crédito con ID {$creditId}: " . $e->getMessage());
+            return $this->errorResponse('Error al eliminar el crédito: ' . $e->getMessage(), 500);
         }
     }
 
@@ -345,24 +375,34 @@ class CreditService
         }
     }
 
-    public function getSellerCreditsByDate(int $sellerId, ?string $date = null)
-    {
-        try {
-            $filterDate = $date ? Carbon::parse($date)->toDateString() : Carbon::today()->toDateString();
+public function getSellerCreditsByDate(int $sellerId, Request $request)
+{
+    try {
+        $creditsQuery = Credit::with(['client', 'installments', 'payments'])
+            ->where('seller_id', $sellerId);
 
-            $credits = Credit::with(['client', 'installments', 'payments'])
-                ->where('seller_id', $sellerId)
-                ->whereDate('created_at', $filterDate)
-                ->get();
-
-            return $this->successResponse([
-                'success' => true,
-                'message' => 'Créditos obtenidos correctamente para el vendedor y fecha especificados',
-                'data' => $credits
-            ]);
-        } catch (\Exception $e) {
-            \Log::error($e->getMessage());
-            return $this->errorResponse('Error al obtener los créditos del vendedor: ' . $e->getMessage(), 500);
+        // Lógica de filtro de fechas
+        if ($request->has('start_date') && $request->has('end_date')) {
+            $startDate = Carbon::parse($request->get('start_date'))->startOfDay();
+            $endDate = Carbon::parse($request->get('end_date'))->endOfDay();
+            $creditsQuery->whereBetween('created_at', [$startDate, $endDate]);
+        } elseif ($request->has('date')) {
+            $filterDate = Carbon::parse($request->get('date'))->toDateString();
+            $creditsQuery->whereDate('created_at', $filterDate);
+        } else {
+            $creditsQuery->whereDate('created_at', Carbon::today()->toDateString());
         }
+
+        $credits = $creditsQuery->get();
+
+        return $this->successResponse([
+            'success' => true,
+            'message' => 'Créditos obtenidos correctamente para el vendedor y fecha(s) especificadas',
+            'data' => $credits
+        ]);
+    } catch (\Exception $e) {
+        \Log::error($e->getMessage());
+        return $this->errorResponse('Error al obtener los créditos del vendedor: ' . $e->getMessage(), 500);
     }
+}
 }

@@ -497,23 +497,25 @@ class ClientService
             ->groupBy('clients.id');
 
         $clientsQuery = Client::query()
-            ->select('clients.*')
+            ->select('clients.*', 'clients.routing_order') 
             ->selectSub('
-                CASE 
-                    WHEN payment_priority.has_overdue = 1 THEN 1
-                    WHEN payment_priority.has_pending = 1 THEN 2
-                    ELSE 3
-                END', 'payment_priority')
+        CASE 
+            WHEN payment_priority.has_overdue = 1 THEN 1
+            WHEN payment_priority.has_pending = 1 THEN 2
+            ELSE 3
+        END', 'payment_priority')
             ->leftJoinSub($paymentPrioritySubquery, 'payment_priority', function ($join) {
                 $join->on('clients.id', '=', 'payment_priority.client_id');
+            })
+            ->whereHas('credits', function ($query) {
+                $query->where('status', '!=', 'liquidado');
             })
             ->with([
                 'guarantors',
                 'images',
                 'credits' => function ($query) use ($frequency, $paymentStatus) {
                     $query->with(['installments', 'payments', 'payments.installments'])
-                        ->where('status', '!=', 'liquidado')
-                        ->orderBy('created_at', 'desc');
+                        ->where('status', '!=', 'liquidado');
 
                     if (!empty($frequency)) {
                         $query->where('payment_frequency', $frequency);
@@ -522,15 +524,10 @@ class ClientService
                     if (!empty($paymentStatus)) {
                         $query->whereHas('installments', function ($q) use ($paymentStatus) {
                             if ($paymentStatus === 'paid') {
-
-                                $q->where(function ($subQuery) {
-                                    $subQuery->where('status', 'Pagado');
-                                });
+                                $q->where('status', 'Pagado');
                             } elseif ($paymentStatus === 'unpaid') {
-                                $q->where(function ($subQuery) {
-                                    $subQuery->where('status', 'Pendiente')
-                                        ->where('due_date', '<=', now()->toDateString());
-                                });
+                                $q->where('status', 'Pendiente')
+                                    ->where('due_date', '<=', now()->toDateString());
                             }
                         });
                     }
@@ -576,11 +573,15 @@ class ClientService
             });
         }
 
+
+
         if ($user->role_id == 5 && $seller) {
             $clientsQuery->where('seller_id', $seller->id);
         }
 
-        if ($orderBy === 'routing') {
+        $clientsQuery->orderBy('clients.routing_order', 'asc');
+
+        /*  if ($orderBy === 'routing') {
             $clientsQuery->orderBy('payment_priority')
                 ->orderBy('clients.name');
         } else {
@@ -590,7 +591,7 @@ class ClientService
                 : 'desc';
 
             $clientsQuery->orderBy($orderBy, $orderDirection);
-        }
+        } */
 
         $clients = $clientsQuery->paginate($perpage, ['*'], 'page', $page);
 
@@ -655,8 +656,16 @@ class ClientService
         $today = now()->format('Y-m-d');
         $user = Auth::user();
         $seller = $user->seller;
+        $sellerId = $seller ? $seller->id : null;
 
-        $applyFilters = function ($query, $excludePaymentStatus = false) use ($search, $filter, $frequency, $paymentStatus, $user, $seller) {
+        $applyFilters = function ($query, $excludePaymentStatus = false) use (
+            $search,
+            $filter,
+            $frequency,
+            $paymentStatus,
+            $user,
+            $sellerId
+        ) {
             if (!empty($search)) {
                 $query->where(function ($q) use ($search) {
                     $q->where('clients.name', 'like', "%{$search}%")
@@ -673,37 +682,23 @@ class ClientService
                 $query->where('credits.payment_frequency', $frequency);
             }
 
-          /*   if (!empty($paymentStatus)) {
-                if ($paymentStatus === 'paid') {
-                    $query->where(function ($q) {
-                        $q->where('installments.status', 'Pagado')
-                            ->where('installments.due_date', '<=', now()->toDateString());
-                    });
-                } elseif ($paymentStatus === 'unpaid') {
-                    $query->where(function ($q) {
-                        $q->where('installments.status', 'Pendiente')
-                            ->where('installments.due_date', '<=', now()->toDateString());
-                    });
-                }
-            } */
-
             if (!$excludePaymentStatus && !empty($paymentStatus)) {
                 if ($paymentStatus === 'paid') {
                     $query->where('installments.status', 'Pagado')
-                          ->where('installments.due_date', '<=', now()->toDateString());
+                        ->where('installments.due_date', '<=', now()->toDateString());
                 } elseif ($paymentStatus === 'unpaid') {
                     $query->where('installments.status', 'Pendiente')
-                          ->where('installments.due_date', '<=', now()->toDateString());
+                        ->where('installments.due_date', '<=', now()->toDateString());
                 }
             }
 
-            if ($user->role_id == 5 && $seller) {
-                $query->where('credits.seller_id', $seller->id);
+            // Filtro por seller_id (si existe)
+            if ($sellerId) {
+                $query->where('credits.seller_id', $sellerId);
             }
-            
         };
 
-        // 1. TOTAL ESPERADO (Cuotas con vencimiento hoy o pendientes)
+        // 1. TOTAL ESPERADO
         $expectedQuery = DB::table('installments')
             ->selectRaw('COALESCE(SUM(quota_amount), 0) as total_expected')
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
@@ -713,28 +708,31 @@ class ClientService
                 $query->whereDate('due_date', $today)
                     ->orWhere(function ($q) use ($today) {
                         $q->where('installments.status', 'Pendiente')
-                            ->whereDate('due_date', '===', $today);
+                            ->whereDate('due_date', '<=', $today);
                     });
             });
 
         $applyFilters($expectedQuery);
         $expected = $expectedQuery->first();
 
-        $today = now()->format('Y-m-d');
+        // 2. PAGOS DEL DÍA
+        $todayPaymentsQuery = DB::table('payments')
+            ->selectRaw('
+                COALESCE(SUM(payments.amount), 0) as total_collected_today,
+                COALESCE(SUM(CASE WHEN payments.status = "Pagado" THEN payments.amount ELSE 0 END), 0) as total_paid_today,
+                COALESCE(SUM(CASE WHEN payments.status = "Abonado" THEN payments.amount ELSE 0 END), 0) as total_deposits_today,
+                COUNT(DISTINCT credits.client_id) as clients_paid_today
+            ')
+            ->join('credits', 'payments.credit_id', '=', 'credits.id')
+            ->join('clients', 'credits.client_id', '=', 'clients.id')
+            ->whereDate('payments.payment_date', $today)
+            ->whereIn('payments.status', ['Pagado', 'Abonado'])
+            ->where('credits.status', '!=', 'liquidado');
 
-            $todayPaymentsQuery = DB::table('payments')
-        ->selectRaw('
-            COALESCE(SUM(payments.amount), 0) as total_collected_today,
-            COALESCE(SUM(CASE WHEN payments.status = "Pagado" THEN payments.amount ELSE 0 END), 0) as total_paid_today,
-            COALESCE(SUM(CASE WHEN payments.status = "Abonado" THEN payments.amount ELSE 0 END), 0) as total_deposits_today,
-            COUNT(DISTINCT credits.client_id) as clients_paid_today
-        ')
-        ->join('credits', 'payments.credit_id', '=', 'credits.id')
-        ->join('clients', 'credits.client_id', '=', 'clients.id')
-        ->whereDate('payments.payment_date', $today)
-        ->whereIn('payments.status', ['Pagado', 'Abonado'])
-        ->where('credits.status', '!=', 'liquidado');
+        $applyFilters($todayPaymentsQuery, true);
+        $todayPayments = $todayPaymentsQuery->first();
 
+        // 3. PAGOS NO PAGADOS HOY
         $todayUnpaidPaymentsQuery = DB::table('payments')
             ->selectRaw('COALESCE(SUM(installments.quota_amount), 0) as total_unpaid_today')
             ->join('payment_installments', 'payments.id', '=', 'payment_installments.payment_id')
@@ -748,29 +746,24 @@ class ClientService
         $applyFilters($todayUnpaidPaymentsQuery);
         $todayUnpaidPayments = $todayUnpaidPaymentsQuery->first();
 
-
-
-
+        // 4. ABONOS HOY
         $todayAbonosQuery = DB::table('payments')
             ->selectRaw('COALESCE(SUM(payments.amount), 0) as total_deposits_today')
+            ->join('credits', 'payments.credit_id', '=', 'credits.id') // Agregado join con credits
+            ->join('clients', 'credits.client_id', '=', 'clients.id')  // Agregado join con clients
             ->whereDate('payments.payment_date', $today)
             ->where('payments.status', 'Abonado');
 
-        // Ejecutar la consulta y obtener el resultado
+        $applyFilters($todayAbonosQuery, true); // Aplicar filtros con exclusión de estado de pago
         $todayAbonos = $todayAbonosQuery->first();
 
-
-
-        $applyFilters($todayPaymentsQuery, true);
-        $todayPayments = $todayPaymentsQuery->first();
-
-        // 3. RECAUDACIÓN DE CUOTAS QUE VENCEN HOY O ESTÁN PENDIENTES
+        // 5. RECAUDACIÓN DE CUOTAS VENCIDAS HOY
         $todayDueCollectedQuery = DB::table('payment_installments')
             ->selectRaw('
-            COALESCE(SUM(payment_installments.applied_amount), 0) as total_collected,
-            COALESCE(SUM(CASE WHEN payments.status = "Pagado" THEN payment_installments.applied_amount ELSE 0 END), 0) as total_paid,
-            COALESCE(SUM(CASE WHEN payments.status = "Abonado" THEN payments.amount ELSE 0 END), 0) as total_deposits
-        ')
+                COALESCE(SUM(payment_installments.applied_amount), 0) as total_collected,
+                COALESCE(SUM(CASE WHEN payments.status = "Pagado" THEN payment_installments.applied_amount ELSE 0 END), 0) as total_paid,
+                COALESCE(SUM(CASE WHEN payments.status = "Abonado" THEN payments.amount ELSE 0 END), 0) as total_deposits
+            ')
             ->join('installments', 'payment_installments.installment_id', '=', 'installments.id')
             ->join('payments', 'payment_installments.payment_id', '=', 'payments.id')
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
@@ -788,15 +781,15 @@ class ClientService
         $applyFilters($todayDueCollectedQuery);
         $todayDueCollected = $todayDueCollectedQuery->first();
 
-
+        // 6. ESTADÍSTICAS DE CLIENTES
         $clientsQuery = DB::table('clients')
             ->selectRaw('
-            COUNT(DISTINCT clients.id) as total_clients,
-            COUNT(DISTINCT CASE WHEN payments.id IS NOT NULL THEN clients.id END) as clients_served,
-            COUNT(DISTINCT CASE WHEN payments.status = "Abonado" THEN clients.id END) as pending_clients,
-            COUNT(DISTINCT CASE WHEN payments.id IS NOT NULL AND payments.status != "Pagado" 
-                                THEN clients.id END) as defaulted_clients
-        ')
+                COUNT(DISTINCT clients.id) as total_clients,
+                COUNT(DISTINCT CASE WHEN payments.id IS NOT NULL THEN clients.id END) as clients_served,
+                COUNT(DISTINCT CASE WHEN payments.status = "Abonado" THEN clients.id END) as pending_clients,
+                COUNT(DISTINCT CASE WHEN payments.id IS NOT NULL AND payments.status != "Pagado" 
+                                    THEN clients.id END) as defaulted_clients
+            ')
             ->join('credits', 'clients.id', '=', 'credits.client_id')
             ->join('installments', 'credits.id', '=', 'installments.credit_id')
             ->leftJoin('payment_installments', function ($join) {
@@ -815,7 +808,11 @@ class ClientService
             })
             ->where('credits.status', '!=', 'liquidado');
 
-        $attendedToday = DB::table('payments')
+        $applyFilters($clientsQuery);
+        $clientCounts = $clientsQuery->first();
+
+        // 7. CLIENTES ATENDIDOS HOY (CON FILTRO POR SELLER)
+        $attendedTodayQuery = DB::table('payments')
             ->selectRaw('COUNT(DISTINCT credits.client_id) as attended_today')
             ->leftJoin('payment_installments', 'payments.id', '=', 'payment_installments.payment_id')
             ->leftJoin('installments', 'payment_installments.installment_id', '=', 'installments.id')
@@ -827,11 +824,16 @@ class ClientService
             ->where(function ($query) {
                 $query->where('credits.status', '!=', 'liquidado')
                     ->orWhereNull('credits.status');
-            })
-            ->value('attended_today') ?? 0;
+            });
 
-        // 2. Clientes Pendientes Hoy (excluye atendidos hoy)
-        $pendingToday = DB::table('clients')
+        // Aplicar filtro por seller_id
+        if ($sellerId) {
+            $attendedTodayQuery->where('credits.seller_id', $sellerId);
+        }
+        $attendedToday = $attendedTodayQuery->value('attended_today') ?? 0;
+
+        // 8. CLIENTES PENDIENTES HOY (CON FILTRO POR SELLER)
+        $pendingTodayQuery = DB::table('clients')
             ->selectRaw('COUNT(DISTINCT clients.id) as pending_today')
             ->join('credits', 'clients.id', '=', 'credits.client_id')
             ->join('installments', 'credits.id', '=', 'installments.credit_id')
@@ -851,53 +853,50 @@ class ClientService
                             });
                     })
                     ->whereDate('payments.created_at', $today);
-            })
-            ->value('pending_today') ?? 0;
+            });
 
-        // Basada en pagos del día de hoy que NO están 'Pagado' o 'Abonado'
-        $defaultedClientsCount = DB::table('clients')
+        // Aplicar filtro por seller_id
+        if ($sellerId) {
+            $pendingTodayQuery->where('credits.seller_id', $sellerId);
+        }
+        $pendingToday = $pendingTodayQuery->value('pending_today') ?? 0;
+
+        // 9. CLIENTES EN MORA HOY (CON FILTRO POR SELLER)
+        $defaultedClientsCountQuery = DB::table('clients')
             ->join('credits', 'clients.id', '=', 'credits.client_id')
             ->join('installments', 'credits.id', '=', 'installments.credit_id')
             ->join('payment_installments', 'installments.id', '=', 'payment_installments.installment_id')
             ->join('payments', 'payment_installments.payment_id', '=', 'payments.id')
-            ->whereDate('payments.created_at', $today) // Asumiendo que quieres pagos CREADOS hoy
+            ->whereDate('payments.created_at', $today)
             ->where(function ($query) {
                 $query->where('payments.status', '!=', 'Pagado')
                     ->where('payments.status', '!=', 'Abonado');
             })
-            ->where('credits.status', '!=', 'liquidado') // Mantenemos esta condición si es relevante
-            ->distinct('clients.id') // Contamos clientes distintos
-            ->count();
+            ->where('credits.status', '!=', 'liquidado');
 
+        // Aplicar filtro por seller_id
+        if ($sellerId) {
+            $defaultedClientsCountQuery->where('credits.seller_id', $sellerId);
+        }
+        $defaultedClientsCount = $defaultedClientsCountQuery->distinct()->count('clients.id');
 
-
-        $applyFilters($clientsQuery);
-        $clientCounts = $clientsQuery->first();
-
+        // RESULTADO FINAL
         $summary = [
-            // Obligaciones del día (cuotas que vencen hoy o pendientes)
             'totalExpected'        => $expected->total_expected ?? 0,
             'totalCollectedForDue' => $todayDueCollected->total_collected ?? 0,
             'totalPaidForDue'      => $todayDueCollected->total_paid ?? 0,
             'totalDepositsForDue'  => $todayDueCollected->total_deposits ?? 0,
             'totalUnpaid'          => ($expected->total_expected ?? 0) - ($todayDueCollected->total_collected ?? 0),
-
             'defaultedClientsCount'       => $defaultedClientsCount ?? 0,
-
-            // Pagos realizados hoy (todos los pagos del día)
             'totalCollectedToday'  => $todayPayments->total_collected_today ?? 0,
             'totalPaidToday'       => $todayPayments->total_paid_today ?? 0,
             'totalDepositsToday'   => $todayAbonos->total_deposits_today ?? 0,
             'clientsPaidToday'     => $todayPayments->clients_paid_today ?? 0,
             'totalUnpaidPaymentAmountToday' => $todayUnpaidPayments->total_unpaid_today ?? 0,
-
-            // Conteo de clientes con cuotas que vencen hoy o pendientes
             'clientsServed'       => $attendedToday ?? 0,
             'pendingClients'      => $clientCounts->pending_clients ?? 0,
             'defaultedClients'    => $clientCounts->defaulted_clients ?? 0,
             'totalClients'        => $pendingToday ?? 0,
-
-            // Nuevos campos para filtros
             'totalPaid'           => $todayPayments->total_paid_today ?? 0,
             'totalDeposits'       => $todayPayments->total_deposits_today ?? 0,
             'totalUnpaidClients'  => $clientCounts->defaulted_clients ?? 0

@@ -120,6 +120,12 @@ Route::middleware('auth:api')->group(function () {
         Route::post('calculate', [LiquidationController::class, 'calculateLiquidation']);
         Route::post('store', [LiquidationController::class, 'storeLiquidation']);
         Route::get('history', [LiquidationController::class, 'getLiquidationHistory']);
+        
+        Route::prefix('seller/{sellerId}')->group(function () {
+            Route::get('/', [LiquidationController::class, 'getBySeller']);
+            Route::get('/stats', [LiquidationController::class, 'getSellerStats']);
+        });
+        
         Route::get('/{sellerId}/{date}', [LiquidationController::class, 'getLiquidationData']);
     });
 
