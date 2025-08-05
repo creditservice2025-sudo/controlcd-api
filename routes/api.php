@@ -17,6 +17,7 @@ use App\Http\Controllers\InstallmentController;
 use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\CountriesController;
+use App\Http\Controllers\IncomeController;
 
 // Auth routes
 Route::post('login', [AuthController::class, 'login']);
@@ -97,6 +98,9 @@ Route::middleware('auth:api')->group(function () {
     Route::get('credits/clients', [CreditController::class, 'getClientCredits']);
     Route::get('credits/client/{client}', [CreditController::class, 'getCredits']);
     Route::get('credits/seller/{sellerId}', [CreditController::class, 'getSellerCredits']);
+    Route::get('/credits/seller/{sellerId}/by-date', [CreditController::class, 'getSellerCredits']);
+
+
     //route expense
     Route::get('expenses', [ExpenseController::class, 'index']);
     Route::post('expense/create', [ExpenseController::class, 'store']);
@@ -109,6 +113,17 @@ Route::middleware('auth:api')->group(function () {
     Route::put('/expenses/{expense}/{status}', [ExpenseController::class, 'changeStatus'])
         ->where('status', 'Aprobado|Rechazado');
     Route::get('expenses/seller/{sellerId}', [ExpenseController::class, 'getSellerExpensesByDate']);
+    Route::get('expenses/seller/{sellerId}/by-date', [ExpenseController::class, 'getSellerExpensesByDate']);
+
+    //route income
+    Route::get('income', [IncomeController::class, 'index']);
+    Route::post('income/create', [IncomeController::class, 'store']);
+    Route::get('income/{id}', [IncomeController::class, 'show']);
+    Route::put('income/update/{id}', [IncomeController::class, 'update']);
+    Route::delete('income/delete/{id}', [IncomeController::class, 'destroy']);
+    Route::get('income/summary', [IncomeController::class, 'summary']);
+    Route::get('income/report/monthly', [IncomeController::class, 'monthlyReport']);
+    Route::get('income/seller/{sellerId}', [IncomeController::class, 'getSellerIncomeByDate']);
 
     //route categories
     Route::get('categories', [CategoryController::class, 'index']);
@@ -120,12 +135,12 @@ Route::middleware('auth:api')->group(function () {
         Route::post('calculate', [LiquidationController::class, 'calculateLiquidation']);
         Route::post('store', [LiquidationController::class, 'storeLiquidation']);
         Route::get('history', [LiquidationController::class, 'getLiquidationHistory']);
-        
+
         Route::prefix('seller/{sellerId}')->group(function () {
             Route::get('/', [LiquidationController::class, 'getBySeller']);
             Route::get('/stats', [LiquidationController::class, 'getSellerStats']);
         });
-        
+
         Route::get('/{sellerId}/{date}', [LiquidationController::class, 'getLiquidationData']);
     });
 

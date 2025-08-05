@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Traits\ApiResponse;
 use App\Models\Expense;
+use App\Models\Liquidation;
 use App\Models\Seller;
 use App\Models\User;
 use Carbon\Carbon;
@@ -23,18 +24,18 @@ class ExpenseService
                 'value' => 'required|numeric|min:0',
                 'description' => 'required|string',
                 'category_id' => 'required|numeric',
-                'user_id' => 'nullable|numeric' 
+                'user_id' => 'nullable|numeric'
             ]);
-    
+
             $user = Auth::user();
             $isAdmin = in_array($user->role_id, [1, 2]);
-    
-            $userId = $isAdmin && $request->has('user_id') 
-                     ? $validated['user_id'] 
-                     : $user->id;
-    
+
+            $userId = $isAdmin && $request->has('user_id')
+                ? $validated['user_id']
+                : $user->id;
+
             $status = $isAdmin ? 'Aprobado' : 'Pendiente';
-    
+
             $expense = Expense::create([
                 'value' => $validated['value'],
                 'description' => $validated['description'],
@@ -42,7 +43,7 @@ class ExpenseService
                 'category_id' => $validated['category_id'],
                 'status' => $status,
             ]);
-    
+
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Gasto creado con éxito',
@@ -60,6 +61,21 @@ class ExpenseService
             $expense = Expense::find($expenseId);
             if (!$expense) {
                 return $this->errorNotFoundResponse('Gasto no encontrado');
+            }
+
+            // Obtener el vendedor asociado al usuario del ingreso
+            $seller = Seller::where('user_id', $expense->user_id)->first();
+
+            // Verificar si existe liquidación aprobada para la fecha del gasto
+            $liquidation = Liquidation::where('seller_id', $seller->id)
+                ->whereDate('date', $expense->created_at->format('Y-m-d'))
+                ->first();
+
+            if ($liquidation) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No se puede editar el gasto porque ya existe una liquidación aprobada para esta fecha'
+                ], 422);
             }
 
             $validated = $request->validate([
@@ -87,6 +103,22 @@ class ExpenseService
             $expense = Expense::find($expenseId);
             if (!$expense) {
                 return $this->errorNotFoundResponse('Gasto no encontrado');
+            }
+            // Obtener el vendedor asociado al usuario del ingreso
+            $seller = Seller::where('user_id', $expense->user_id)->first();
+
+            // Verificar si existe liquidación aprobada para la fecha del gasto
+            $liquidation = Liquidation::where('seller_id', $seller->id)
+                ->whereDate('date', $expense->created_at->format('Y-m-d'))
+                ->first();
+
+
+
+            if ($liquidation) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No se puede eliminar el gasto porque ya existe una liquidación aprobada para esta fecha'
+                ], 422);
             }
 
             $expense->delete();
@@ -142,6 +174,7 @@ class ExpenseService
     }
 
     public function index(
+        Request $request,
         string $search,
         int $perpage,
         string $orderBy = 'created_at',
@@ -158,8 +191,17 @@ class ExpenseService
                         });
                 });
 
-            if ($user->role_id == 5) {
+            // Filtrar por vendedor si se proporciona seller_id
+            if ($request->has('seller_id') && $request->seller_id) {
+                $expensesQuery->where('user_id', $request->seller_id);
+            }
+            // Para usuarios vendedores (role 5), mostrar solo sus gastos
+            else if ($user->role_id == 5) {
                 $expensesQuery->where('user_id', $user->id);
+            }
+            // Para administradores sin filtro, mostrar todos los gastos
+            else {
+                // No se aplica filtro adicional
             }
 
             $validOrderDirections = ['asc', 'desc'];
@@ -278,43 +320,43 @@ class ExpenseService
             return $this->errorResponse('Error al generar reporte mensual', 500);
         }
     }
-    public function getSellerExpensesByDate(int $sellerId, Request $request)
-{
-    try {
-        $sellerUserId = Seller::where('id', $sellerId)->value('user_id');
+    public function getSellerExpensesByDate(int $sellerId, Request $request, int $perpage)
+    {
+        try {
+            $sellerUserId = Seller::where('id', $sellerId)->value('user_id');
 
-        if (!$sellerUserId) {
+            if (!$sellerUserId) {
+                return $this->successResponse([
+                    'success' => true,
+                    'message' => 'No se encontró el usuario asociado a este ID de vendedor.',
+                    'data' => []
+                ]);
+            }
+
+            $expensesQuery = Expense::with(['user', 'category'])
+                ->where('user_id', $sellerUserId);
+
+            if ($request->has('start_date') && $request->has('end_date')) {
+                $startDate = Carbon::parse($request->get('start_date'))->startOfDay();
+                $endDate = Carbon::parse($request->get('end_date'))->endOfDay();
+                $expensesQuery->whereBetween('created_at', [$startDate, $endDate]);
+            } elseif ($request->has('date')) {
+                $filterDate = Carbon::parse($request->get('date'))->toDateString();
+                $expensesQuery->whereDate('created_at', $filterDate);
+            } else {
+                $expensesQuery->whereDate('created_at', Carbon::today()->toDateString());
+            }
+
+            $expenses = $expensesQuery->paginate($perpage);
+
             return $this->successResponse([
                 'success' => true,
-                'message' => 'No se encontró el usuario asociado a este ID de vendedor.',
-                'data' => []
+                'message' => 'Gastos obtenidos correctamente para el vendedor y fecha(s) especificadas',
+                'data' => $expenses
             ]);
+        } catch (\Exception $e) {
+            Log::error($e->getMessage());
+            return $this->errorResponse('Error al obtener los gastos del vendedor: ' . $e->getMessage(), 500);
         }
-
-        $expensesQuery = Expense::with(['user', 'category'])
-            ->where('user_id', $sellerUserId);
-
-        if ($request->has('start_date') && $request->has('end_date')) {
-            $startDate = Carbon::parse($request->get('start_date'))->startOfDay();
-            $endDate = Carbon::parse($request->get('end_date'))->endOfDay();
-            $expensesQuery->whereBetween('created_at', [$startDate, $endDate]);
-        } elseif ($request->has('date')) {
-            $filterDate = Carbon::parse($request->get('date'))->toDateString();
-            $expensesQuery->whereDate('created_at', $filterDate);
-        } else {
-            $expensesQuery->whereDate('created_at', Carbon::today()->toDateString());
-        }
-
-        $expenses = $expensesQuery->get();
-
-        return $this->successResponse([
-            'success' => true,
-            'message' => 'Gastos obtenidos correctamente para el vendedor y fecha(s) especificadas',
-            'data' => $expenses
-        ]);
-    } catch (\Exception $e) {
-        Log::error($e->getMessage());
-        return $this->errorResponse('Error al obtener los gastos del vendedor: ' . $e->getMessage(), 500);
     }
-}
 }

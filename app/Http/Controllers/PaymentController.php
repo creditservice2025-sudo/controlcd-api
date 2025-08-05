@@ -45,8 +45,7 @@ class PaymentController extends Controller
     public function indexBySeller(Request $request, $sellerId)
     {
         try {
-            $page = $request->get('page', 1);
-            $perPage = $request->get('perPage', 5);
+            $perPage = $request->get('perPage', 10);
 
             return $this->paymentService->getPaymentsBySeller($sellerId, $request, $perPage);
         } catch (\Exception $e) {

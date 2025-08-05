@@ -375,7 +375,7 @@ class CreditService
         }
     }
 
-public function getSellerCreditsByDate(int $sellerId, Request $request)
+public function getSellerCreditsByDate(int $sellerId, Request $request, int $perpage)
 {
     try {
         $creditsQuery = Credit::with(['client', 'installments', 'payments'])
@@ -393,7 +393,7 @@ public function getSellerCreditsByDate(int $sellerId, Request $request)
             $creditsQuery->whereDate('created_at', Carbon::today()->toDateString());
         }
 
-        $credits = $creditsQuery->get();
+        $credits = $creditsQuery->paginate($perpage);
 
         return $this->successResponse([
             'success' => true,
