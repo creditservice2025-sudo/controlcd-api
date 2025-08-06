@@ -195,19 +195,16 @@ class ClientController extends Controller
         }
     }
 
-    public function getForCollectionSummary(ClientRequest $request)
+    public function getForCollectionSummary(Request $request)
     {
         try {
-            $search = (string) $request->input('search', '');
-            $filter = (string) $request->input('filter', 'all');
+            $date = (string) $request->input('date', '');
+        /*     $filter = (string) $request->input('filter', 'all');
             $frequency = (string) $request->input('frequency', '');
-            $paymentStatus = (string) $request->input('payment_status', '');
+            $paymentStatus = (string) $request->input('payment_status', ''); */
 
             return $this->clientService->getCollectionSummary(
-                $search,
-                $filter,
-                $frequency,
-                $paymentStatus
+                $date
             );
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
