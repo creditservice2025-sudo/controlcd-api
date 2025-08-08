@@ -33,7 +33,7 @@ class Client extends Model
         'geolocation' => 'array',
     ];
 
-      public static function boot()
+    public static function boot()
     {
         parent::boot();
 
@@ -55,8 +55,7 @@ class Client extends Model
                                 ->where('routing_order', '>=', $newOrder)
                                 ->where('id', '!=', $clientId)
                                 ->increment('routing_order');
-                        } 
-                        else {
+                        } else {
                             self::where('seller_id', $sellerId)
                                 ->where('routing_order', '>', $originalOrder)
                                 ->where('routing_order', '<=', $newOrder)
@@ -71,7 +70,7 @@ class Client extends Model
         static::deleting(function ($client) {
             $sellerId = $client->seller_id;
             $order = $client->routing_order;
-            
+
             DB::transaction(function () use ($sellerId, $order) {
                 self::where('seller_id', $sellerId)
                     ->where('routing_order', '>', $order)
@@ -105,5 +104,21 @@ class Client extends Model
     public function credits()
     {
         return $this->hasMany(Credit::class);
+    }
+
+    public function payments()
+    {
+        return $this->hasManyThrough(
+            Payment::class,
+            Credit::class,
+            'client_id',
+            'credit_id',
+            'id',
+            'id'
+        );
+    }
+    public function getCoordinatesAttribute()
+    {
+        return $this->geolocation;
     }
 }

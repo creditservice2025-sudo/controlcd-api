@@ -28,6 +28,27 @@ class CreditService
             $params = $request->validated();
             \Log::info('Datos recibidos para crédito:', $params);
 
+            $firstQuotaDate = $params['first_installment_date'] ?? null;
+            if (!$firstQuotaDate) {
+                $today = now();
+                switch ($params['payment_frequency']) {
+                    case 'Diaria':
+                        $firstQuotaDate = $today->addDay()->format('Y-m-d');
+                        break;
+                    case 'Semanal':
+                        $firstQuotaDate = $today->addWeek()->format('Y-m-d');
+                        break;
+                    case 'Quincenal':
+                        $firstQuotaDate = $today->addDays(15)->format('Y-m-d');
+                        break;
+                    case 'Mensual':
+                        $firstQuotaDate = $today->addMonth()->format('Y-m-d');
+                        break;
+                    default:
+                        $firstQuotaDate = $today->addDay()->format('Y-m-d');
+                }
+            }
+
             $creditData = [
                 'client_id' => $params['client_id'],
                 'seller_id' => $params['seller_id'],
@@ -36,29 +57,28 @@ class CreditService
                 'total_interest' => $params['interest_rate'],
                 'number_installments' => $params['installment_count'],
                 'payment_frequency' => $params['payment_frequency'],
-                'excluded_days' => json_encode($params['excluded_days'] ?? []), // Guardar como nombres
+                'excluded_days' => json_encode($params['excluded_days'] ?? []),
                 'micro_insurance_percentage' => $params['micro_insurance_percentage'] ?? null,
                 'micro_insurance_amount' => $params['micro_insurance_amount'] ?? null,
-                'first_quota_date' => $params['first_installment_date'] ?? now()->addDay()->toDateString(),
+                'first_quota_date' => $firstQuotaDate,
                 'status' => 'Vigente'
             ];
 
             $credit = Credit::create($creditData);
 
-            $totalAmount = $credit->credit_value + $credit->total_interest;
             $quotaAmount = (($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value) / $credit->number_installments;
 
             $dueDate = Carbon::parse($credit->first_quota_date);
             $excludedDayNames = json_decode($credit->excluded_days, true) ?? [];
 
             $dayMap = [
-                'Domingo' => 0,
-                'Lunes' => 1,
-                'Martes' => 2,
-                'Miércoles' => 3,
-                'Jueves' => 4,
-                'Viernes' => 5,
-                'Sábado' => 6
+                'Domingo' => Carbon::SUNDAY,
+                'Lunes' => Carbon::MONDAY,
+                'Martes' => Carbon::TUESDAY,
+                'Miércoles' => Carbon::WEDNESDAY,
+                'Jueves' => Carbon::THURSDAY,
+                'Viernes' => Carbon::FRIDAY,
+                'Sábado' => Carbon::SATURDAY
             ];
 
             $excludedDayNumbers = [];
@@ -68,11 +88,13 @@ class CreditService
                 }
             }
 
+            // Ajustar fecha inicial si es día excluido
             while (in_array($dueDate->dayOfWeek, $excludedDayNumbers)) {
                 $dueDate->addDay();
             }
 
             for ($i = 1; $i <= $credit->number_installments; $i++) {
+                // Crear cuota
                 Installment::create([
                     'credit_id' => $credit->id,
                     'quota_number' => $i,
@@ -85,9 +107,6 @@ class CreditService
                     switch ($credit->payment_frequency) {
                         case 'Diaria':
                             $dueDate->addDay();
-                            while (in_array($dueDate->dayOfWeek, $excludedDayNumbers)) {
-                                $dueDate->addDay();
-                            }
                             break;
                         case 'Semanal':
                             $dueDate->addWeek();
@@ -100,6 +119,10 @@ class CreditService
                             break;
                         default:
                             $dueDate->addMonth();
+                    }
+
+                    while (in_array($dueDate->dayOfWeek, $excludedDayNumbers)) {
+                        $dueDate->addDay();
                     }
                 }
             }
@@ -375,34 +398,34 @@ class CreditService
         }
     }
 
-public function getSellerCreditsByDate(int $sellerId, Request $request, int $perpage)
-{
-    try {
-        $creditsQuery = Credit::with(['client', 'installments', 'payments'])
-            ->where('seller_id', $sellerId);
+    public function getSellerCreditsByDate(int $sellerId, Request $request, int $perpage)
+    {
+        try {
+            $creditsQuery = Credit::with(['client', 'installments', 'payments'])
+                ->where('seller_id', $sellerId);
 
-        // Lógica de filtro de fechas
-        if ($request->has('start_date') && $request->has('end_date')) {
-            $startDate = Carbon::parse($request->get('start_date'))->startOfDay();
-            $endDate = Carbon::parse($request->get('end_date'))->endOfDay();
-            $creditsQuery->whereBetween('created_at', [$startDate, $endDate]);
-        } elseif ($request->has('date')) {
-            $filterDate = Carbon::parse($request->get('date'))->toDateString();
-            $creditsQuery->whereDate('created_at', $filterDate);
-        } else {
-            $creditsQuery->whereDate('created_at', Carbon::today()->toDateString());
+            // Lógica de filtro de fechas
+            if ($request->has('start_date') && $request->has('end_date')) {
+                $startDate = Carbon::parse($request->get('start_date'))->startOfDay();
+                $endDate = Carbon::parse($request->get('end_date'))->endOfDay();
+                $creditsQuery->whereBetween('created_at', [$startDate, $endDate]);
+            } elseif ($request->has('date')) {
+                $filterDate = Carbon::parse($request->get('date'))->toDateString();
+                $creditsQuery->whereDate('created_at', $filterDate);
+            } else {
+                $creditsQuery->whereDate('created_at', Carbon::today()->toDateString());
+            }
+
+            $credits = $creditsQuery->paginate($perpage);
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Créditos obtenidos correctamente para el vendedor y fecha(s) especificadas',
+                'data' => $credits
+            ]);
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->errorResponse('Error al obtener los créditos del vendedor: ' . $e->getMessage(), 500);
         }
-
-        $credits = $creditsQuery->paginate($perpage);
-
-        return $this->successResponse([
-            'success' => true,
-            'message' => 'Créditos obtenidos correctamente para el vendedor y fecha(s) especificadas',
-            'data' => $credits
-        ]);
-    } catch (\Exception $e) {
-        \Log::error($e->getMessage());
-        return $this->errorResponse('Error al obtener los créditos del vendedor: ' . $e->getMessage(), 500);
     }
-}
 }

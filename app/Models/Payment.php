@@ -9,6 +9,7 @@ use Spatie\Permission\Traits\HasRoles;
 use Laravel\Passport\HasApiTokens;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Builder;
 
 class Payment extends Model
 {
@@ -21,7 +22,9 @@ class Payment extends Model
         'amount',
         'status',
         'payment_method',
-        'payment_reference'
+        'payment_reference',
+        'latitude',
+        'longitude',
     ];
 
     public function installment()
@@ -38,5 +41,17 @@ class Payment extends Model
     public function installments(): HasMany
     {
         return $this->hasMany(PaymentInstallment::class);
+    }
+
+    public function scopeBeyondDistance(Builder $query, $latitude, $longitude, $distance = 10)
+    {
+        $earthRadius = 6371000; 
+
+        return $query->whereRaw("
+        ST_Distance_Sphere(
+            POINT(?, ?),
+            POINT(latitude, longitude)
+        ) > ?
+    ", [$longitude, $latitude, $distance * $earthRadius]);
     }
 }

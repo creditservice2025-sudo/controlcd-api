@@ -199,7 +199,7 @@ class ClientController extends Controller
     {
         try {
             $date = (string) $request->input('date', '');
-        /*     $filter = (string) $request->input('filter', 'all');
+            /*     $filter = (string) $request->input('filter', 'all');
             $frequency = (string) $request->input('frequency', '');
             $paymentStatus = (string) $request->input('payment_status', ''); */
 
@@ -208,6 +208,27 @@ class ClientController extends Controller
             );
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+    public function getSellerClientsForMap(Request $request, $sellerId)
+    {
+        try {
+            $search = $request->input('search', '');
+
+            $clients = $this->clientService->getAllClientsBySeller($sellerId, $search);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Clientes obtenidos exitosamente',
+                'data' => $clients
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al obtener clientes',
+                'error' => $e->getMessage()
+            ], 500);
         }
     }
 }

@@ -26,7 +26,6 @@ class PaymentService
     {
         try {
             DB::beginTransaction();
-
             $params = $request->validated();
             $credit = Credit::find($request->credit_id);
             $cacheKey = null;
@@ -44,6 +43,8 @@ class PaymentService
                     'status' => 'No pagado',
                     'payment_method' => $request->payment_method,
                     'payment_reference' => $request->payment_reference ?: 'Registro de no pago',
+                    'latitude' => $request->latitude,
+                    'longitude' => $request->longitude
                 ]);
 
                 $nextInstallment = Installment::where('credit_id', $credit->id)
@@ -93,6 +94,8 @@ class PaymentService
                 'status' => $isAbono ? 'Abonado' : 'Pagado',
                 'payment_method' => $request->payment_method,
                 'payment_reference' => $request->payment_reference ?: '',
+                'latitude' => $request->latitude,
+                'longitude' => $request->longitude
             ]);
 
             if (!$isAbono) {

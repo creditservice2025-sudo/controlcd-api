@@ -12,7 +12,8 @@ use Spatie\Permission\Models\Role;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
-class UserService {
+class UserService
+{
 
     use ApiResponse;
 
@@ -44,13 +45,11 @@ class UserService {
                 'message' => "Miembro creado con éxito",
                 'data' => $user
             ]);
-
         } catch (\Exception $e) {
             DB::rollback();
             \Log::error($e->getMessage());
             return $this->errorResponse('Error al crear el miembro', 500);
         }
-
     }
 
     public function update($userId, $params)
@@ -81,7 +80,6 @@ class UserService {
                 'message' => "Miembro actualizado con éxito",
                 'data' => $user
             ]);
-
         } catch (\Exception $e) {
             DB::rollback();
             \Log::error($e->getMessage());
@@ -94,13 +92,13 @@ class UserService {
         try {
             $user = User::find($userId);
 
-            if($user == null) {
+            if ($user == null) {
                 return $this->errorNotFoundResponse('Miembro no encontrado');
             }
 
             $userRoute = UserRoute::where('user_id', $userId)->get();
 
-            foreach($userRoute as $route){
+            foreach ($userRoute as $route) {
                 $route->delete();
             }
 
@@ -110,58 +108,61 @@ class UserService {
                 'success' => true,
                 'message' => "Miembro eliminado con éxito",
             ]);
-
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             $this->handlerException('Error al eliminar el miembro');
         }
     }
 
-    public function getUsers(string $search, int $perpage){
+    public function getUsers(string $search, int $perpage)
+    {
         try {
-            $superAdminRoleId = Role::where('name', 'super-admin')->value('id');
-    
+            $excludedRoleIds = Role::whereIn('name', ['super-admin', 'cobrador'])
+                ->pluck('id')
+                ->toArray();
+
+
             $users = User::query()
-            ->leftJoin('roles', 'roles.id', '=', 'users.role_id')
-            ->select(
-                'users.id',
-                'users.uuid',
-                'users.name',
-                'users.email',
-                'users.phone',
-                'users.address',
-                'users.dni',
-                'users.city_id',
-                'users.parent_id',
-                'users.role_id',
-                'users.status',
-                'roles.name as role_name'
-            )
-           /*  ->with(['routes:id,name,sector']) */
-            ->where(function ($query) use ($search) {
-                $query->where('users.name', 'like', '%'.$search.'%')
-                    ->orWhere('users.email', 'like', '%'.$search.'%')
-                    ->orWhere('users.phone', 'like', '%'.$search.'%')
-                    ->orWhere('users.address', 'like', '%'.$search.'%')
-                    ->orWhere('users.dni', 'like', '%'.$search.'%');
-            })
-            ->whereNull('users.deleted_at')
-            ->where('users.role_id', '!=', $superAdminRoleId)
-            ->orderByDesc('users.created_at')
-            ->paginate($perpage);
+                ->leftJoin('roles', 'roles.id', '=', 'users.role_id')
+                ->select(
+                    'users.id',
+                    'users.uuid',
+                    'users.name',
+                    'users.email',
+                    'users.phone',
+                    'users.address',
+                    'users.dni',
+                    'users.city_id',
+                    'users.parent_id',
+                    'users.role_id',
+                    'users.status',
+                    'roles.name as role_name'
+                )
+                /*  ->with(['routes:id,name,sector']) */
+                ->where(function ($query) use ($search) {
+                    $query->where('users.name', 'like', '%' . $search . '%')
+                        ->orWhere('users.email', 'like', '%' . $search . '%')
+                        ->orWhere('users.phone', 'like', '%' . $search . '%')
+                        ->orWhere('users.address', 'like', '%' . $search . '%')
+                        ->orWhere('users.dni', 'like', '%' . $search . '%');
+                })
+                ->whereNull('users.deleted_at')
+                ->whereNotIn('users.role_id', $excludedRoleIds)
+                ->orderByDesc('users.created_at')
+                ->paginate($perpage);
 
             return $this->successResponse([
                 'success' => true,
                 'data' => $users
             ]);
-    
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             $this->handlerException('Error al obtener los miembros');
         }
     }
 
-    public function getUser($userId){
+    public function getUser($userId)
+    {
         try {
 
             $user = User::select([
@@ -177,13 +178,13 @@ class UserService {
                 'users.role_id',
                 'roles.name as role_name' // Agregamos el nombre del rol
             ])
-            ->leftJoin('roles', 'roles.id', '=', 'users.role_id')
-            ->with(['city'/* , 'routes' */]) // Incluye relaciones necesarias
-            ->where('users.id', $userId)
-            ->orWhere('users.uuid', $userId)
-            ->first();
+                ->leftJoin('roles', 'roles.id', '=', 'users.role_id')
+                ->with(['city'/* , 'routes' */]) // Incluye relaciones necesarias
+                ->where('users.id', $userId)
+                ->orWhere('users.uuid', $userId)
+                ->first();
 
-            if($user == null) {
+            if ($user == null) {
                 return $this->errorNotFoundResponse('Miembro no encontrado');
             }
 
@@ -191,35 +192,34 @@ class UserService {
                 'success' => true,
                 'data' => $user
             ]);
-
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             $this->handlerException('Error al obtener el miembro');
         }
     }
 
-    public function getUsersSelect(){
+    public function getUsersSelect()
+    {
         try {
-
-            $superAdminRoleId = Role::where('name', 'super-admin')->value('id');
+            $excludedRoleIds = Role::whereIn('name', ['super-admin', 'cobrador'])
+                ->pluck('id')
+                ->toArray();
 
             $users = User::select('id', 'name')
-            ->whereNull('deleted_at')
-            ->whereDoesntHave('roles', function ($query) use ($superAdminRoleId) {
-                $query->where('id', $superAdminRoleId);
-            })
-            ->get();
+                ->whereNull('deleted_at')
+                ->whereNotIn('role_id', $excludedRoleIds)
+                ->get();
 
             return $this->successResponse([
                 'success' => true,
                 'data' => $users
             ]);
-
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
-            $this->handlerException('Error al obtener los miembros');
+            return $this->handlerException('Error al obtener los miembros');
         }
     }
+
 
     public function toggleStatus($userId, $status)
     {
@@ -262,7 +262,6 @@ class UserService {
                 'success' => true,
                 'data' => $liquidations
             ]);
-
         } catch (\Exception $e) {
             Log::error($e->getMessage());
             return $this->errorResponse('Error al obtener las liquidaciones', 500);
@@ -270,7 +269,7 @@ class UserService {
     }
 
 
-     /**
+    /**
      * Aplica filtros adicionales a la consulta
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
@@ -306,7 +305,7 @@ class UserService {
             $searchTerm = '%' . $filters['search'] . '%';
             $query->where(function ($q) use ($searchTerm) {
                 $q->where('status', 'like', $searchTerm)
-                  ->orWhere('date', 'like', $searchTerm);
+                    ->orWhere('date', 'like', $searchTerm);
             });
         }
     }
@@ -336,11 +335,9 @@ class UserService {
                 'success' => true,
                 'data' => $stats
             ]);
-
         } catch (\Exception $e) {
             Log::error($e->getMessage());
             return $this->errorResponse('Error al obtener estadísticas', 500);
         }
     }
-
 }

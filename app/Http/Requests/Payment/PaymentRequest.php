@@ -29,9 +29,11 @@ class PaymentRequest extends FormRequest
             'status' => 'required|string|in:Abonado,Pagado,No Pagado,Devuelto,Aplicado',
             'payment_reference' => 'nullable|string',
             'credit_id' => 'required|exists:credits,id',
+            'latitude' => 'nullable',
+            'longitude' => 'nullable',
         ];
 
-        if($this->isMethod('put')){
+        if ($this->isMethod('put')) {
             $rules['installment_id'] = 'nullable|exists:installments,id';
             $rules['amount'] = 'nullable|numeric|min:0';
             $rules['payment_date'] = 'nullable|date';
