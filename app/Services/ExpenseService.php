@@ -2,8 +2,10 @@
 
 namespace App\Services;
 
+use App\Helpers\Helper;
 use App\Traits\ApiResponse;
 use App\Models\Expense;
+use App\Models\ExpenseImage;
 use App\Models\Liquidation;
 use App\Models\Seller;
 use App\Models\User;
@@ -24,7 +26,8 @@ class ExpenseService
                 'value' => 'required|numeric|min:0',
                 'description' => 'required|string',
                 'category_id' => 'required|numeric',
-                'user_id' => 'nullable|numeric'
+                'user_id' => 'nullable|numeric',
+                'image' => 'nullable|image|max:2048',
             ]);
 
             $user = Auth::user();
@@ -34,15 +37,26 @@ class ExpenseService
                 ? $validated['user_id']
                 : $user->id;
 
-            $status = $isAdmin ? 'Aprobado' : 'Pendiente';
 
             $expense = Expense::create([
                 'value' => $validated['value'],
                 'description' => $validated['description'],
                 'user_id' => $userId,
                 'category_id' => $validated['category_id'],
-                'status' => $status,
+                'status' => 'Aprobado',
             ]);
+
+            if ($request->hasFile('image')) {
+                $imageFile = $request->file('image');
+
+                $imagePath = Helper::uploadFile($imageFile, 'expenses');
+
+                ExpenseImage::create([
+                    'expense_id' => $expense->id,
+                    'user_id' => $userId,
+                    'path' => $imagePath
+                ]);
+            }
 
             return $this->successResponse([
                 'success' => true,

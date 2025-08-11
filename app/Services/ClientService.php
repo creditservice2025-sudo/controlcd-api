@@ -442,7 +442,7 @@ class ClientService
 
     private function calculateDistance($lat1, $lon1, $lat2, $lon2)
     {
-        $earthRadius = 6371000; 
+        $earthRadius = 6371000;
 
         $dLat = deg2rad($lat2 - $lat1);
         $dLon = deg2rad($lon2 - $lon1);
@@ -453,7 +453,7 @@ class ClientService
 
         $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
 
-        return $earthRadius * $c; 
+        return $earthRadius * $c;
     }
 
 
@@ -571,14 +571,16 @@ class ClientService
                 $join->on('credits.id', '=', 'installments.credit_id');
             })
             ->selectRaw('
-            clients.id as client_id,
-            MAX(CASE WHEN installments.due_date < CURDATE() THEN 1 ELSE 0 END) as has_overdue,
-            MAX(CASE WHEN installments.due_date >= CURDATE() THEN 1 ELSE 0 END) as has_pending
-        ')
+                clients.id as client_id,
+                MAX(CASE WHEN installments.due_date < CURDATE() THEN 1 ELSE 0 END) as has_overdue,
+                MAX(CASE WHEN installments.due_date >= CURDATE() THEN 1 ELSE 0 END) as has_pending
+            ')
             ->groupBy('clients.id');
 
-        $clientsQuery = Client::query()
-            ->select('clients.*', 'clients.routing_order')
+        // Consulta principal de CRÉDITOS
+        $creditsQuery = Credit::query()
+            ->select('credits.*')
+            ->join('clients', 'clients.id', '=', 'credits.client_id')
             ->selectSub('
             CASE 
                 WHEN payment_priority.has_overdue = 1 THEN 1
@@ -588,62 +590,40 @@ class ClientService
             ->leftJoinSub($paymentPrioritySubquery, 'payment_priority', function ($join) {
                 $join->on('clients.id', '=', 'payment_priority.client_id');
             })
-            ->whereHas('credits', function ($query) {
-                $query->where('status', '!=', 'liquidado');
-            })
             ->with([
-                'guarantors',
-                'images',
-                'credits' => function ($query) use ($frequency, $paymentStatus) {
-                    $query->with(['installments', 'payments', 'payments.installments'])
-                        ->where('status', '!=', 'liquidado');
-
-                    if (!empty($frequency)) {
-                        $query->where('payment_frequency', $frequency);
-                    }
-
-                    if ($paymentStatus === 'paid') {
-                        $query->whereHas('payments', function ($q) {
-                            $q->whereDate('payment_date', now()->toDateString())
-                                ->whereIn('status', ['Pagado', 'Abonado']);
-                        });
-                    } elseif ($paymentStatus === 'unpaid') {
-                        $query->whereDoesntHave('payments', function ($q) {
-                            $q->whereDate('payment_date', now()->toDateString());
-                        });
-                    } elseif ($paymentStatus === 'notpaid') {
-                        $query->whereHas('payments', function ($q) {
-                            $q->whereDate('payment_date', now()->toDateString())
-                                ->where('status', 'No pagado');
-                        });
-                    }
-                },
-                'seller',
-                'seller.city'
-            ]);
-
-
-        if (!empty($frequency)) {
-            $clientsQuery->whereHas('credits', function ($query) use ($frequency) {
-                $query->where('payment_frequency', $frequency)
-                    ->where('status', '!=', 'liquidado');
+                'client.guarantors',
+                'client.images',
+                'client.seller',
+                'client.seller.city',
+                'installments',
+                'payments',
+                'payments.installments'
+            ])
+            ->where(function ($query) {
+                $query->where('credits.status', '!=', 'liquidado')
+                    ->orWhere(function ($q) {
+                        $q->where('credits.status', 'liquidado')
+                            ->whereDate('credits.updated_at', now()->toDateString());
+                    });
             });
+
+        // Aplicar filtros
+        if (!empty($frequency)) {
+            $creditsQuery->where('payment_frequency', $frequency);
         }
 
         if (!empty($paymentStatus)) {
             if ($paymentStatus === 'paid') {
-                $clientsQuery->whereHas('credits.payments', function ($query) {
+                $creditsQuery->whereHas('payments', function ($query) {
                     $query->whereDate('payment_date', now()->toDateString())
                         ->whereIn('status', ['Pagado', 'Abonado']);
                 });
             } elseif ($paymentStatus === 'unpaid') {
-                $clientsQuery->where(function ($query) {
-                    $query->whereDoesntHave('credits.payments', function ($q) {
-                        $q->whereDate('payment_date', now()->toDateString());
-                    });
+                $creditsQuery->whereDoesntHave('payments', function ($q) {
+                    $q->whereDate('payment_date', now()->toDateString());
                 });
             } elseif ($paymentStatus === 'notpaid') {
-                $clientsQuery->whereHas('credits.payments', function ($query) {
+                $creditsQuery->whereHas('payments', function ($query) {
                     $query->whereDate('payment_date', now()->toDateString())
                         ->where('status', 'No pagado');
                 });
@@ -651,90 +631,67 @@ class ClientService
         }
 
         if (!empty($search)) {
-            $clientsQuery->where(function ($query) use ($search) {
-                $query->where('name', 'like', "%{$search}%")
-                    ->orWhere('dni', 'like', "%{$search}%")
-                    ->orWhere('email', 'like', "%{$search}%");
+            $creditsQuery->where(function ($query) use ($search) {
+                $query->whereHas('client', function ($q) use ($search) {
+                    $q->where('name', 'like', "%{$search}%")
+                        ->orWhere('dni', 'like', "%{$search}%")
+                        ->orWhere('email', 'like', "%{$search}%");
+                });
             });
         }
 
         if ($filter !== 'all') {
-            $clientsQuery->whereHas('credits', function ($query) use ($filter) {
-                $query->where('status', $filter)
-                    ->where('status', '!=', 'liquidado');
+            $creditsQuery->where('status', $filter);
+        }
+
+        if ($user->role_id == 5 && $seller) {
+            $creditsQuery->whereHas('client', function ($query) use ($seller) {
+                $query->where('seller_id', $seller->id);
             });
         }
 
+        // Ordenación
+        $creditsQuery->orderBy('clients.routing_order', 'asc');
 
+        // Paginación de créditos
+        $credits = $creditsQuery->paginate($perpage, ['*'], 'page', $page);
 
-        if ($user->role_id == 5 && $seller) {
-            $clientsQuery->where('seller_id', $seller->id);
-        }
+        // Resumen de pagos
+        $paymentSummary = Payment::whereIn('credit_id', $credits->getCollection()->pluck('id'))
+            ->select(
+                'credit_id',
+                'status',
+                DB::raw('SUM(amount) as total_amount')
+            )
+            ->groupBy('credit_id', 'status')
+            ->get()
+            ->groupBy('credit_id');
 
-        $clientsQuery->orderBy('clients.routing_order', 'asc');
-
-        /*  if ($orderBy === 'routing') {
-            $clientsQuery->orderBy('payment_priority')
-                ->orderBy('clients.name');
-        } else {
-            $validOrderDirections = ['asc', 'desc'];
-            $orderDirection = in_array(strtolower($orderDirection), $validOrderDirections)
-                ? $orderDirection
-                : 'desc';
-
-            $clientsQuery->orderBy($orderBy, $orderDirection);
-        } */
-
-        $clients = $clientsQuery->paginate($perpage, ['*'], 'page', $page);
-
-        $creditIds = $clients->getCollection()
-            ->pluck('credits')
-            ->flatten()
-            ->pluck('id')
-            ->unique()
-            ->values();
-
-        $paymentSummary = collect();
-        if ($creditIds->isNotEmpty()) {
-            $paymentSummary = Payment::whereIn('credit_id', $creditIds)
-                ->select(
-                    'credit_id',
-                    'status',
-                    DB::raw('SUM(amount) as total_amount')
-                )
-                ->groupBy('credit_id', 'status')
-                ->get()
-                ->groupBy('credit_id');
-        }
-
-        $transformedItems = $clients->getCollection()->map(function ($client) use ($paymentSummary) {
-            if ($client->credits) {
-                $client->credits->transform(function ($credit) use ($paymentSummary) {
-                    $summary = $paymentSummary->get($credit->id, collect());
-                    foreach ($summary as $item) {
-                        $credit->{$item->status} = $item->total_amount;
-                    }
-
-                    $credit->installment = $credit->installments;
-                    unset($credit->installments);
-
-                    return $credit;
-                });
+        // Transformar items
+        $transformedItems = $credits->getCollection()->map(function ($credit) use ($paymentSummary) {
+            $summary = $paymentSummary->get($credit->id, collect());
+            foreach ($summary as $item) {
+                $credit->{$item->status} = $item->total_amount;
             }
-            return $client;
+
+            // Mover installments a un alias
+            $credit->installment = $credit->installments;
+            unset($credit->installments);
+
+            return $credit;
         });
 
-        $clients->setCollection($transformedItems);
+        $credits->setCollection($transformedItems);
 
         return response()->json([
             'success' => true,
-            'message' => 'Clientes encontrados',
-            'data' => $clients->items(),
+            'message' => 'Creditos encontrados',
+            'data' => $credits->items(),
             'pagination' => [
-                'total' => $clients->total(),
-                'per_page' => $clients->perPage(),
-                'current_page' => $clients->currentPage(),
-                'last_page' => $clients->lastPage(),
+                'total' => $credits->total(),
+                'per_page' => $credits->perPage(),
+                'current_page' => $credits->currentPage(),
+                'last_page' => $credits->lastPage(),
             ]
         ]);
     }

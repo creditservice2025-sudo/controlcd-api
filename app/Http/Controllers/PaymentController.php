@@ -197,13 +197,19 @@ class PaymentController extends Controller
             ->whereDate('updated_at', $date)
             ->where('status', 'Aprobado');
 
+        $incomeQuery = DB::table('incomes')
+            ->select(DB::raw('COALESCE(SUM(value), 0) as total_income'))
+            ->whereDate('updated_at', $date);
+
 
         if ($user->role_id == 5) {
             $expensesQuery->where('user_id', $user->id);
+            $incomeQuery->where('user_id', $user->id);
         }
 
         $expensesResult = $expensesQuery->first();
         $totals['total_expenses'] = (float)($expensesResult->total_expenses ?? 0);
+        $totals['total_income'] = (float)($incomeQuery->first()->total_income ?? 0);
 
         // 6. Cálculo de saldos (Reestructurado según requerimiento)
         $initialCash = 0;
@@ -217,9 +223,10 @@ class PaymentController extends Controller
         }
 
         $realToDeliver = $initialCash
-            + $totals['collected_total']
-            - $totals['created_credits_value']
-            - $totals['total_expenses'];
+            + ($totals['total_income'] + $totals['collected_total'])
+            - ($totals['created_credits_value']
+                + $totals['total_expenses']);
+
 
         $totals['initial_cash'] = $initialCash;
         $totals['real_to_deliver'] = $realToDeliver;

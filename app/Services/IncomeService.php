@@ -2,6 +2,8 @@
 
 namespace App\Services;
 
+use App\Helpers\Helper;
+use App\Models\IncomeImage;
 use App\Traits\ApiResponse;
 use App\Models\Income;
 use App\Models\Liquidation;
@@ -23,7 +25,8 @@ class IncomeService
             $validated = $request->validate([
                 'value' => 'required|numeric|min:0',
                 'description' => 'required|string',
-                'user_id' => 'nullable|numeric'
+                'user_id' => 'nullable|numeric',
+                'image' => 'nullable|image|max:2048',
             ]);
 
             $user = Auth::user();
@@ -40,6 +43,18 @@ class IncomeService
                 'user_id' => $userId,
             ]);
 
+            if ($request->hasFile('image')) {
+                $imageFile = $request->file('image');
+
+                $imagePath = Helper::uploadFile($imageFile, 'expenses');
+
+                IncomeImage::create([
+                    'income_id' => $income->id,
+                    'user_id' => $userId,
+                    'path' => $imagePath
+                ]);
+            }
+
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Ingreso creado con éxito',
@@ -47,93 +62,93 @@ class IncomeService
             ]);
         } catch (\Exception $e) {
             Log::error($e->getMessage());
-            return $this->errorResponse('Error al crear el gasto', 500);
+            return $this->errorResponse('Error al crear el ingreso', 500);
         }
     }
 
-  public function update(Request $request, $incomeId)
-{
-    try {
-        $income = Income::find($incomeId);
-        if (!$income) {
-            return $this->errorNotFoundResponse('Ingreso no encontrado');
+    public function update(Request $request, $incomeId)
+    {
+        try {
+            $income = Income::find($incomeId);
+            if (!$income) {
+                return $this->errorNotFoundResponse('Ingreso no encontrado');
+            }
+
+            // Obtener el vendedor asociado al usuario del ingreso
+            $seller = Seller::where('user_id', $income->user_id)->first();
+
+            if (!$seller) {
+                return $this->errorResponse('No se encontró el vendedor asociado a este ingreso', 422);
+            }
+
+            // Verificar si existe liquidación aprobada para la fecha del ingreso y este vendedor
+            $liquidation = Liquidation::where('seller_id', $seller->id)
+                ->whereDate('date', $income->created_at->format('Y-m-d'))
+                ->first();
+
+            if ($liquidation) {
+                return $this->errorResponse(
+                    'No se puede editar el ingreso porque ya existe una liquidación aprobada para esta fecha',
+                    422
+                );
+            }
+
+            $validated = $request->validate([
+                'value' => 'required|numeric|min:0',
+                'description' => 'required|string',
+            ]);
+
+            $income->update($validated);
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Ingreso actualizado con éxito',
+                'data' => $income
+            ]);
+        } catch (\Exception $e) {
+            Log::error($e->getMessage());
+            return $this->errorResponse('Error al actualizar el ingreso', 500);
         }
-
-        // Obtener el vendedor asociado al usuario del ingreso
-        $seller = Seller::where('user_id', $income->user_id)->first();
-
-        if (!$seller) {
-            return $this->errorResponse('No se encontró el vendedor asociado a este ingreso', 422);
-        }
-
-        // Verificar si existe liquidación aprobada para la fecha del ingreso y este vendedor
-        $liquidation = Liquidation::where('seller_id', $seller->id)
-            ->whereDate('date', $income->created_at->format('Y-m-d'))
-            ->first();
-
-        if ($liquidation) {
-            return $this->errorResponse(
-                'No se puede editar el ingreso porque ya existe una liquidación aprobada para esta fecha', 
-                422
-            );
-        }
-
-        $validated = $request->validate([
-            'value' => 'required|numeric|min:0',
-            'description' => 'required|string',
-        ]);
-
-        $income->update($validated);
-
-        return $this->successResponse([
-            'success' => true,
-            'message' => 'Ingreso actualizado con éxito',
-            'data' => $income
-        ]);
-    } catch (\Exception $e) {
-        Log::error($e->getMessage());
-        return $this->errorResponse('Error al actualizar el ingreso', 500);
     }
-}
 
-public function delete($incomeId)
-{
-    try {
-        $income = Income::find($incomeId);
-        if (!$income) {
-            return $this->errorNotFoundResponse('Ingreso no encontrado');
+    public function delete($incomeId)
+    {
+        try {
+            $income = Income::find($incomeId);
+            if (!$income) {
+                return $this->errorNotFoundResponse('Ingreso no encontrado');
+            }
+
+            // Obtener el vendedor asociado al usuario del ingreso
+            $seller = Seller::where('user_id', $income->user_id)->first();
+
+            if (!$seller) {
+                return $this->errorResponse('No se encontró el vendedor asociado a este ingreso', 422);
+            }
+
+            // Verificar si existe liquidación aprobada para la fecha del ingreso y este vendedor
+            $liquidation = Liquidation::where('seller_id', $seller->id)
+                ->whereDate('date', $income->created_at->format('Y-m-d'))
+                ->first();
+
+            if ($liquidation) {
+                return $this->errorResponse(
+                    'No se puede eliminar el ingreso porque ya existe una liquidación aprobada para esta fecha',
+                    422
+                );
+            }
+
+            $income->delete();
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => "Ingreso eliminado con éxito",
+            ]);
+        } catch (\Exception $e) {
+            Log::error($e->getMessage());
+            return $this->errorResponse('Error al eliminar el ingreso', 500);
         }
-
-        // Obtener el vendedor asociado al usuario del ingreso
-        $seller = Seller::where('user_id', $income->user_id)->first();
-
-        if (!$seller) {
-            return $this->errorResponse('No se encontró el vendedor asociado a este ingreso', 422);
-        }
-
-        // Verificar si existe liquidación aprobada para la fecha del ingreso y este vendedor
-        $liquidation = Liquidation::where('seller_id', $seller->id)
-            ->whereDate('date', $income->created_at->format('Y-m-d'))
-            ->first();
-
-        if ($liquidation) {
-            return $this->errorResponse(
-                'No se puede eliminar el ingreso porque ya existe una liquidación aprobada para esta fecha', 
-                422
-            );
-        }
-
-        $income->delete();
-
-        return $this->successResponse([
-            'success' => true,
-            'message' => "Ingreso eliminado con éxito",
-        ]);
-    } catch (\Exception $e) {
-        Log::error($e->getMessage());
-        return $this->errorResponse('Error al eliminar el ingreso', 500);
     }
-}
 
 
     public function index(

@@ -147,6 +147,9 @@ class DashboardService
             $capitalPending = 0;
             $profitPending = 0;
             $currentCash = 0;
+            $incomeTotal = 0;
+            $expenseTotal = 0;
+
 
             if ($role === 1 || $role === 2) {
                 // Obtener IDs de créditos no liquidados
@@ -155,6 +158,9 @@ class DashboardService
                 if ($creditIds->isNotEmpty()) {
                     // Calcular totales
                     $totalBalance = Credit::whereIn('id', $creditIds)->sum('credit_value');
+                    $incomeTotal = Income::sum('value');
+                    $expenseTotal = Expense::sum('value');
+
 
                     // Calcular capital pagado (suma de aplicado a capital en installments)
                     $totalCapitalPaid = PaymentInstallment::whereIn('installment_id', function ($query) use ($creditIds) {
@@ -179,8 +185,10 @@ class DashboardService
                 $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
                 $cashPayments = Payment::whereDate('created_at', $today)->sum('amount');
                 $expenses = Expense::whereDate('created_at', $today)->sum('value');
+                $income = Income::whereDate('created_at', $today)->sum('value');
                 $newCredits = Credit::whereDate('created_at', $today)->sum('credit_value');
-                $currentCash = $initialCash + $cashPayments - $expenses - $newCredits;
+                /* $currentCash = $initialCash + $cashPayments - $expenses - $newCredits; */
+                $currentCash = $initialCash + ($income + $cashPayments) - ($expenses + $newCredits);
             } elseif ($role === 5) {
                 $seller = $user->seller;
                 if ($seller) {
@@ -210,6 +218,10 @@ class DashboardService
                         $profitPending = $totalExpectedProfit - $totalProfitPaid;
                     }
 
+                    $incomeTotal = Income::where('user_id', $user->id)->sum('value');
+                    $expenseTotal = Expense::where('user_id', $user->id)->sum('value');
+
+
                     // Cálculo de caja actual para vendedor (se mantiene igual)
                     $lastLiquidation = Liquidation::where('seller_id', $seller->id)
                         ->orderBy('date', 'desc')
@@ -220,11 +232,17 @@ class DashboardService
                         ->sum('amount');
                     $expenses = Expense::where('user_id', $user->id)
                         ->whereDate('created_at', $today)
+                        ->where('status', 'Aprobado')
+                        ->sum('value');
+                    $income = Income::where('user_id', $user->id)
+                        ->whereDate('created_at', $today)
                         ->sum('value');
                     $newCredits = $seller->credits()
                         ->whereDate('created_at', $today)
                         ->sum('credit_value');
-                    $currentCash = $initialCash + $cashPayments - $expenses - $newCredits;
+                    /*  $currentCash = $initialCash + $cashPayments - $expenses - $newCredits; */
+
+                    $currentCash = $initialCash + ($income + $cashPayments) - ($expenses + $newCredits);
                 }
             }
 
@@ -235,6 +253,9 @@ class DashboardService
                     'capital' => (float) number_format($capitalPending, 2, '.', ''),
                     'profit' => (float) number_format($profitPending, 2, '.', ''),
                     'currentCash' => (float) number_format($currentCash, 2, '.', ''),
+                    'income' => (float) number_format($incomeTotal, 2, '.', ''),
+                    'expenses' => (float) number_format($expenseTotal, 2, '.', '')
+
                 ]
             ]);
         } catch (\Exception $e) {
