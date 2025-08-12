@@ -54,4 +54,9 @@ class Payment extends Model
         ) > ?
     ", [$longitude, $latitude, $distance * $earthRadius]);
     }
+
+    public function image(): HasMany
+    {
+        return $this->hasMany(PaymentImage::class);
+    }
 }

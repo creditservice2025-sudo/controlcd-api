@@ -46,7 +46,7 @@ class IncomeService
             if ($request->hasFile('image')) {
                 $imageFile = $request->file('image');
 
-                $imagePath = Helper::uploadFile($imageFile, 'expenses');
+                $imagePath = Helper::uploadFile($imageFile, 'incomes');
 
                 IncomeImage::create([
                     'income_id' => $income->id,
@@ -161,7 +161,7 @@ class IncomeService
         try {
             $user = Auth::user();
 
-            $incomeQuery = Income::with(['user'])
+            $incomeQuery = Income::with(['user', 'images'])
                 ->where(function ($query) use ($search) {
                     $query->where('description', 'like', "%{$search}%")
                         ->orWhereHas('user', function ($q) use ($search) {
@@ -307,7 +307,7 @@ class IncomeService
                 ]);
             }
 
-            $incomeQuery = Income::with(['user'])
+            $incomeQuery = Income::with(['user', 'images'])
                 ->where('user_id', $sellerUserId);
 
             if ($request->has('start_date') && $request->has('end_date')) {

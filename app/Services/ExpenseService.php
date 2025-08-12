@@ -197,7 +197,7 @@ class ExpenseService
         try {
             $user = Auth::user();
 
-            $expensesQuery = Expense::with(['user', 'category'])
+            $expensesQuery = Expense::with(['user', 'category', 'images'])
                 ->where(function ($query) use ($search) {
                     $query->where('description', 'like', "%{$search}%")
                         ->orWhereHas('user', function ($q) use ($search) {
@@ -347,7 +347,7 @@ class ExpenseService
                 ]);
             }
 
-            $expensesQuery = Expense::with(['user', 'category'])
+            $expensesQuery = Expense::with(['user', 'category', 'images'])
                 ->where('user_id', $sellerUserId);
 
             if ($request->has('start_date') && $request->has('end_date')) {

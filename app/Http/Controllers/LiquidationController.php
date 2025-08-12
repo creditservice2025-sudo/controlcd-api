@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Income;
 use App\Services\LiquidationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -85,18 +86,29 @@ class LiquidationController extends Controller
             ], 422);
         }
 
-        // Calcular el valor real a entregar
-        $realToDeliver = $request->initial_cash + $request->total_collected
+        $realToDeliver = $request->initial_cash + ($request->total_income + $request->total_collected)
             - $request->total_expenses - $request->new_credits;
 
-        // Calcular faltante/sobrante
         $shortage = 0;
         $surplus = 0;
+        $pendingDebt = 0;
 
-        if ($request->cash_delivered < $realToDeliver) {
-            $shortage = $realToDeliver - $request->cash_delivered;
+        if ($realToDeliver > 0) {
+            if ($request->cash_delivered < $realToDeliver) {
+                $shortage = $realToDeliver - $request->cash_delivered;
+            } else {
+                $surplus = $request->cash_delivered - $realToDeliver;
+            }
         } else {
-            $surplus = $request->cash_delivered - $realToDeliver;
+            $debtAmount = abs($realToDeliver); 
+            
+            if ($request->cash_delivered > $debtAmount) {
+                $surplus = $request->cash_delivered - $debtAmount;
+                $pendingDebt = 0;
+            } else {
+                $pendingDebt = $debtAmount - $request->cash_delivered;
+                $shortage = $pendingDebt; 
+            }
         }
 
         // Crear liquidación
@@ -165,11 +177,13 @@ class LiquidationController extends Controller
 
         $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
 
+        Log::info('INcome: ' . $dailyTotals['total_income']);
+        Log::info('Initial Cash: ' . $initialCash);
         // 4. Calcular valor real a entregar
         $realToDeliver = $initialCash
-            + $dailyTotals['collected_total']
-            - $dailyTotals['created_credits_value']
-            - $dailyTotals['total_expenses'];
+            + ($dailyTotals['total_income'] + $dailyTotals['collected_total'])
+            - ($dailyTotals['created_credits_value']
+                - $dailyTotals['total_expenses']);
 
         // 5. Estructurar respuesta completa
         return [
@@ -178,6 +192,7 @@ class LiquidationController extends Controller
             'base_delivered' => $dailyTotals['base_value'],
             'total_collected' => $dailyTotals['collected_total'],
             'total_expenses' => $dailyTotals['total_expenses'],
+            'total_income' => $dailyTotals['total_income'],
             'new_credits' => $dailyTotals['created_credits_value'],
             'real_to_deliver' => $realToDeliver,
             'date' => $date,
@@ -297,6 +312,10 @@ class LiquidationController extends Controller
             ->where('status', 'Aprobado')
             ->sum('value');
 
+        $totals['total_income'] = (float)Income::where('user_id', $user->id)
+            ->whereDate('updated_at', $date)
+            ->sum('value');
+
         // Obtener total clientes
         $totals['total_clients'] = (int)DB::table('clients')
             ->whereExists(function ($query) use ($sellerId) {
@@ -403,6 +422,7 @@ class LiquidationController extends Controller
             'base_delivered' => $liquidation->base_delivered,
             'total_collected' => $liquidation->total_collected,
             'total_expenses' => $liquidation->total_expenses,
+            'total_income' => $liquidation->total_income,
             'new_credits' => $liquidation->new_credits,
             'real_to_deliver' => $liquidation->real_to_deliver,
             'date' => $liquidation->date,

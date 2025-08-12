@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Helpers\Helper;
 use App\Traits\ApiResponse;
 use App\Models\Client;
 use Illuminate\Support\Facades\DB;
@@ -12,9 +13,11 @@ use Carbon\Carbon;
 use App\Models\Payment;
 use App\Http\Requests\Payment\PaymentRequest;
 use App\Models\Installment;
+use App\Models\PaymentImage;
 use App\Models\PaymentInstallment;
 use App\Models\Seller;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Redis;
 
@@ -30,6 +33,7 @@ class PaymentService
             $credit = Credit::find($request->credit_id);
             $cacheKey = null;
             $cachePaymentsKey = null;
+            $user = Auth::user();
 
             if (!$credit) {
                 throw new \Exception('El crédito no existe.');
@@ -266,6 +270,18 @@ class PaymentService
             }
             $credit->save();
 
+            if ($request->hasFile('image')) {
+                $imageFile = $request->file('image');
+
+                $imagePath = Helper::uploadFile($imageFile, 'payments');
+
+                PaymentImage::create([
+                    'payment_id' => $payment->id,
+                    'user_id' => $user->id,
+                    'path' => $imagePath
+                ]);
+            }
+
             DB::commit();
 
             return $this->successResponse([
@@ -295,6 +311,7 @@ class PaymentService
                 ->leftJoin('installments', 'payment_installments.installment_id', '=', 'installments.id')
                 ->join('credits', 'payments.credit_id', '=', 'credits.id')
                 ->join('clients', 'credits.client_id', '=', 'clients.id')
+                ->leftJoin('payment_images', 'payments.id', '=', 'payment_images.payment_id')
                 ->where('credits.id', $creditId)
                 ->select(
                     'payments.id',
@@ -305,11 +322,14 @@ class PaymentService
                     'credits.total_amount',
                     'credits.number_installments',
                     'credits.start_date',
+                    'payment_images.path as image_path',
                     'payments.payment_date',
+                    'payments.created_at',
                     'payments.amount as total_payment',
                     'payments.payment_method',
                     'payments.payment_reference',
                     'payments.status',
+
                     DB::raw('GROUP_CONCAT(installments.quota_number ORDER BY installments.quota_number) as quotas'),
                     DB::raw('COALESCE(SUM(payment_installments.applied_amount), 0) as total_applied')
                 )
@@ -326,9 +346,12 @@ class PaymentService
                     'payments.amount',
                     'payments.payment_method',
                     'payments.payment_reference',
-                    'payments.status'
+                    'payments.status',
+                    'payments.created_at',
+                    'payment_images.path'
+
                 )
-                ->orderBy('payments.payment_date', 'desc');
+                ->orderBy('payments.created_at', 'desc');
 
 
             if ($request->has('status') && $request->status === 'Abonado') {
@@ -378,6 +401,7 @@ class PaymentService
         $paymentsQuery = Payment::query()
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
             ->join('clients', 'credits.client_id', '=', 'clients.id')
+            ->leftJoin('payment_images', 'payments.id', '=', 'payment_images.payment_id')
             ->where('clients.seller_id', $sellerId)
             ->select(
                 'payments.id',
@@ -398,6 +422,7 @@ class PaymentService
                 'payments.status',
                 'payments.amount',
                 'payments.created_at',
+                'payment_images.path as image_path'
             )
             ->orderBy('clients.name')
             ->orderBy('credits.id')
@@ -483,7 +508,8 @@ class PaymentService
                             'amount' => $payment->amount,
                             'created_at' => $payment->created_at,
                             'installments_details' => $payment->installments_details,
-                            'total_applied' => $payment->total_applied
+                            'total_applied' => $payment->total_applied,
+                            'image_path' => $payment->image_path
                         ];
                     })->values()
                 ]);
@@ -521,6 +547,7 @@ class PaymentService
                 ->join('credits', 'installments.credit_id', '=', 'credits.id')
                 ->join('clients', 'credits.client_id', '=', 'clients.id')
                 ->join('guarantors', 'credits.guarantor_id', '=', 'guarantors.id')
+                ->leftJoin('payment_images', 'payments.id', '=', 'payment_images.payment_id')
                 ->where('credits.id', $creditId)
                 ->where('payments.id', $paymentId)
                 ->select(
