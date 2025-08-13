@@ -58,4 +58,9 @@ class Credit extends Model
     {
         return $this->hasMany(Payment::class);
     }
+    public function paymentsToday()
+    {
+        return $this->hasMany(Payment::class)
+            ->whereDate('payment_date', now()->format('Y-m-d'));
+    }
 }

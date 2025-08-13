@@ -389,10 +389,12 @@ class ClientService
     public function getAllClientsBySeller($sellerId, $search = '')
     {
         try {
+            $today = now()->format('Y-m-d');
+
             $clients = Client::with([
                 'guarantors',
                 'images',
-                'credits.payments',
+                'credits.payments.installments',
                 'seller',
                 'seller.city'
             ])
@@ -405,17 +407,46 @@ class ClientService
                 ->orderBy('routing_order', 'asc')
                 ->get();
 
-            $clients->each(function ($client) {
+            $clients->each(function ($client) use ($today) {
                 $client->distantPayments = collect();
+                $client->todayPayments = collect();
 
-                // Verificar si existen coordenadas
-                if ($client->coordinates && isset($client->coordinates['latitude'], $client->coordinates['longitude'])) {
-                    $clientLat = $client->coordinates['latitude'];
-                    $clientLon = $client->coordinates['longitude'];
+                foreach ($client->credits as $credit) {
+                    $todaysPayments = $credit->payments->filter(function ($payment) use ($today) {
+                        return $payment->payment_date &&
+                            \Carbon\Carbon::parse($payment->payment_date)->isSameDay($today);
+                    });
+                    foreach ($todaysPayments as $payment) {
+                        $installmentsInfo = $payment->installments->map(function ($installment) {
+                            return "Cuota #{$installment->installment->quota_number}";
+                        })->join(', ');
+                        $installmentInfo = $payment->installments->isNotEmpty()
+                            ? $installmentsInfo
+                            : "N/A";
 
-                    foreach ($client->credits as $credit) {
-                        foreach ($credit->payments as $payment) {
-                            // Verificar que el pago tenga coordenadas
+
+                        $paymentTime = ($payment->payment_date instanceof \DateTimeInterface)
+                            ? $payment->payment_date->format('H:i:s')
+                            : \Carbon\Carbon::parse($payment->payment_date)->format('H:i:s');
+
+                        $client->todayPayments->push([
+                            'client_id' => $client->id,
+                            'client_name' => $client->name,
+                            'credit_id' => $credit->id,
+                            'payment_id' => $payment->id,
+                            'amount' => $payment->amount,
+                            'payment_date' => $payment->payment_date,
+                            'payment_time' => $payment->created_at,
+                            'installment' => $installmentInfo,
+                            'installment_details' => $payment->installment,
+                            'latitude' => $payment->latitude,
+                            'longitude' => $payment->longitude
+                        ]);
+
+                        if ($client->coordinates && isset($client->coordinates['latitude'], $client->coordinates['longitude'])) {
+                            $clientLat = $client->coordinates['latitude'];
+                            $clientLon = $client->coordinates['longitude'];
+
                             if ($payment->latitude && $payment->longitude) {
                                 $distance = $this->calculateDistance(
                                     $clientLat,
@@ -425,7 +456,20 @@ class ClientService
                                 );
 
                                 if ($distance > 10) {
-                                    $client->distantPayments->push($payment);
+                                    $client->distantPayments->push([
+                                        'client_id' => $client->id,
+                                        'client_name' => $client->name,
+                                        'credit_id' => $credit->id,
+                                        'payment_id' => $payment->id,
+                                        'amount' => $payment->amount,
+                                        'payment_date' => $payment->payment_date,
+                                        'payment_time' => $payment->created_at,
+                                        'installment' => $installmentInfo,
+                                        'installment_details' => $payment->installment,
+                                        'latitude' => $payment->latitude,
+                                        'longitude' => $payment->longitude,
+                                        'distance' => $distance
+                                    ]);
                                 }
                             }
                         }
