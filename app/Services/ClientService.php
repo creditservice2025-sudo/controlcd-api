@@ -386,103 +386,101 @@ class ClientService
         }
     }
 
-    public function getAllClientsBySeller($sellerId, $search = '')
-    {
-        try {
-            $today = now()->format('Y-m-d');
+   public function getAllClientsBySeller($sellerId, $search = '', $date = null)
+{
+    try {
+        $filterDate = $date ? Carbon::parse($date) : Carbon::today();
 
-            $clients = Client::with([
-                'guarantors',
-                'images',
-                'credits.payments.installments',
-                'seller',
-                'seller.city'
-            ])
-                ->where('seller_id', $sellerId)
-                ->where(function ($query) use ($search) {
-                    $query->where('name', 'like', "%{$search}%")
-                        ->orWhere('dni', 'like', "%{$search}%")
-                        ->orWhere('email', 'like', "%{$search}%");
-                })
-                ->orderBy('routing_order', 'asc')
-                ->get();
+        $clients = Client::with([
+            'guarantors',
+            'images',
+            'credits' => function ($query) {
+                $query->withCount([
+                    'installments as paid_installments_count' => function ($query) {
+                        $query->where('status', 'Pagado');
+                    }
+                ]);
+            },
+            'credits.payments.installments.installment', 
+            'seller',
+            'seller.city'
+        ])
+            ->where('seller_id', $sellerId)
+            ->where(function ($query) use ($search) {
+                $query->where('name', 'like', "%{$search}%")
+                    ->orWhere('dni', 'like', "%{$search}%")
+                    ->orWhere('email', 'like', "%{$search}%");
+            })
+            ->orderBy('routing_order', 'asc')
+            ->get();
 
-            $clients->each(function ($client) use ($today) {
-                $client->distantPayments = collect();
-                $client->todayPayments = collect();
+        $clients->each(function ($client) use ($filterDate) {
+            $client->distantPayments = collect();
+            $client->todayPayments = collect();
 
-                foreach ($client->credits as $credit) {
-                    $todaysPayments = $credit->payments->filter(function ($payment) use ($today) {
-                        return $payment->payment_date &&
-                            \Carbon\Carbon::parse($payment->payment_date)->isSameDay($today);
-                    });
-                    foreach ($todaysPayments as $payment) {
-                        $installmentsInfo = $payment->installments->map(function ($installment) {
-                            return "Cuota #{$installment->installment->quota_number}";
-                        })->join(', ');
-                        $installmentInfo = $payment->installments->isNotEmpty()
-                            ? $installmentsInfo
-                            : "N/A";
+            foreach ($client->credits as $credit) {
+                $credit->pending_installments = $credit->number_installments - $credit->paid_installments_count;
+                
+                $datePayments = $credit->payments->filter(function ($payment) use ($filterDate) {
+                    return $payment->payment_date &&
+                        Carbon::parse($payment->payment_date)->isSameDay($filterDate);
+                });
 
+                foreach ($datePayments as $payment) {
+                    $paidQuotaNumbers = $payment->installments->map(function ($installment) {
+                        return $installment->installment->quota_number ?? 'N/A';
+                    })->filter()->join(', ');
+                    
+                    $paymentTime = ($payment->payment_date instanceof \DateTimeInterface)
+                        ? $payment->payment_date->format('H:i:s')
+                        : Carbon::parse($payment->payment_date)->format('H:i:s');
 
-                        $paymentTime = ($payment->payment_date instanceof \DateTimeInterface)
-                            ? $payment->payment_date->format('H:i:s')
-                            : \Carbon\Carbon::parse($payment->payment_date)->format('H:i:s');
+                    $paymentData = [
+                        'client_id' => $client->id,
+                        'client_name' => $client->name,
+                        'credit_id' => $credit->id,
+                        'payment_id' => $payment->id,
+                        'amount' => $payment->amount,
+                        'payment_date' => $payment->payment_date,
+                        'payment_time' => $payment->created_at,
+                        'installment' => $paidQuotaNumbers ?: "N/A",
+                        'installment_details' => $payment->installments,
+                        'latitude' => $payment->latitude,
+                        'longitude' => $payment->longitude,
+                        'paid_installments' => $credit->paid_installments_count,
+                        'pending_installments' => $credit->pending_installments
+                    ];
 
-                        $client->todayPayments->push([
-                            'client_id' => $client->id,
-                            'client_name' => $client->name,
-                            'credit_id' => $credit->id,
-                            'payment_id' => $payment->id,
-                            'amount' => $payment->amount,
-                            'payment_date' => $payment->payment_date,
-                            'payment_time' => $payment->created_at,
-                            'installment' => $installmentInfo,
-                            'installment_details' => $payment->installment,
-                            'latitude' => $payment->latitude,
-                            'longitude' => $payment->longitude
-                        ]);
+                    $client->todayPayments->push($paymentData);
 
-                        if ($client->coordinates && isset($client->coordinates['latitude'], $client->coordinates['longitude'])) {
-                            $clientLat = $client->coordinates['latitude'];
-                            $clientLon = $client->coordinates['longitude'];
+                    if ($client->coordinates && isset($client->coordinates['latitude'], $client->coordinates['longitude'])) {
+                        $clientLat = $client->coordinates['latitude'];
+                        $clientLon = $client->coordinates['longitude'];
 
-                            if ($payment->latitude && $payment->longitude) {
-                                $distance = $this->calculateDistance(
-                                    $clientLat,
-                                    $clientLon,
-                                    $payment->latitude,
-                                    $payment->longitude
-                                );
+                        if ($payment->latitude && $payment->longitude) {
+                            $distance = $this->calculateDistance(
+                                $clientLat,
+                                $clientLon,
+                                $payment->latitude,
+                                $payment->longitude
+                            );
 
-                                if ($distance > 10) {
-                                    $client->distantPayments->push([
-                                        'client_id' => $client->id,
-                                        'client_name' => $client->name,
-                                        'credit_id' => $credit->id,
-                                        'payment_id' => $payment->id,
-                                        'amount' => $payment->amount,
-                                        'payment_date' => $payment->payment_date,
-                                        'payment_time' => $payment->created_at,
-                                        'installment' => $installmentInfo,
-                                        'installment_details' => $payment->installment,
-                                        'latitude' => $payment->latitude,
-                                        'longitude' => $payment->longitude,
-                                        'distance' => $distance
-                                    ]);
-                                }
+                            if ($distance > 10) {
+                                $paymentData['distance'] = $distance;
+                                $client->distantPayments->push($paymentData);
                             }
                         }
                     }
                 }
-            });
+            }
+        });
 
-            return $clients;
-        } catch (\Exception $e) {
-            Log::error($e->getMessage());
-            throw $e;
-        }
+        return $clients;
+    } catch (\Exception $e) {
+        Log::error($e->getMessage());
+        throw $e;
     }
+}
 
     private function calculateDistance($lat1, $lon1, $lat2, $lon2)
     {

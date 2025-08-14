@@ -215,8 +215,8 @@ class ClientController extends Controller
     {
         try {
             $search = $request->input('search', '');
-
-            $clients = $this->clientService->getAllClientsBySeller($sellerId, $search);
+            $date = $request->input('date', null);
+            $clients = $this->clientService->getAllClientsBySeller($sellerId, $search, $date);
 
             return response()->json([
                 'success' => true,
