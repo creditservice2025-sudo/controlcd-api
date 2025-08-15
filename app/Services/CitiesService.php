@@ -5,6 +5,8 @@ namespace App\Services;
 use App\Http\Requests\City\CityRequest;
 use App\Traits\ApiResponse;
 use App\Models\City;
+use App\Models\Seller;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class CitiesService
@@ -56,7 +58,7 @@ class CitiesService
 
             $city = City::create($params);
             DB::commit();
-            
+
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Ciudad creada con éxito',
@@ -105,6 +107,29 @@ class CitiesService
             return $this->successResponse($query->get());
         } catch (Exception $e) {
             throw new Exception("Error obteniendo ciudades: " . $e->getMessage());
+        }
+    }
+
+    public function getSellersByCity($city_id, Request $request)
+    {
+        try {
+            $search = $request->query('search', '');
+            $query = Seller::with('user')
+                ->where('city_id', $city_id);
+
+            if (!empty($search)) {
+                $query->where('name', 'LIKE', "%{$search}%");
+            }
+
+            return response()->json([
+                'success' => true,
+                'data' => $query->get()
+            ]);
+        } catch (Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error obteniendo vendedores: ' . $e->getMessage()
+            ], 500);
         }
     }
 

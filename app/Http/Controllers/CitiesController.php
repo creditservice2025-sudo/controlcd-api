@@ -82,4 +82,16 @@ class CitiesController extends Controller
             return $this->handlerException($e->getMessage());
         }
     }
+
+    public function getByCities(Request $request, $city_id)
+    {
+        try {
+            return $this->citiesService->getSellersByCity(
+                $city_id,
+                $request,
+            );
+        } catch (Exception $e) {
+            return $this->handlerException($e->getMessage());
+        }
+    }
 }

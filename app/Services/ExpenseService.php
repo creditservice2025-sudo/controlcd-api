@@ -205,17 +205,12 @@ class ExpenseService
                         });
                 });
 
-            // Filtrar por vendedor si se proporciona seller_id
             if ($request->has('seller_id') && $request->seller_id) {
                 $expensesQuery->where('user_id', $request->seller_id);
-            }
-            // Para usuarios vendedores (role 5), mostrar solo sus gastos
-            else if ($user->role_id == 5) {
-                $expensesQuery->where('user_id', $user->id);
-            }
-            // Para administradores sin filtro, mostrar todos los gastos
-            else {
-                // No se aplica filtro adicional
+            } else if ($user->role_id == 5) {
+                $expensesQuery->where('user_id', $user->id)
+                    ->whereDate('created_at', Carbon::today());
+            } else {
             }
 
             $validOrderDirections = ['asc', 'desc'];

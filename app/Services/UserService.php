@@ -8,6 +8,7 @@ use App\Models\Client;
 use App\Models\Liquidation;
 use App\Models\UserRoute;
 use App\Traits\ApiResponse;
+use Illuminate\Http\Request;
 use Spatie\Permission\Models\Role;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -28,6 +29,13 @@ class UserService
 
             $params['password'] = Hash::make($params['password']);
             $user = User::create($params);
+
+            if (isset($params['seller_id']) && $params['seller_id']) {
+                UserRoute::create([
+                    'user_id' => $user->id,
+                    'seller_id' => $params['seller_id']
+                ]);
+            }
 
             // Asignar rutas al usuario
             if (!empty($params['routes'])) {
@@ -121,7 +129,6 @@ class UserService
                 ->pluck('id')
                 ->toArray();
 
-
             $users = User::query()
                 ->leftJoin('roles', 'roles.id', '=', 'users.role_id')
                 ->select(
@@ -138,7 +145,7 @@ class UserService
                     'users.status',
                     'roles.name as role_name'
                 )
-                /*  ->with(['routes:id,name,sector']) */
+                ->with(['city', 'city.country'])
                 ->where(function ($query) use ($search) {
                     $query->where('users.name', 'like', '%' . $search . '%')
                         ->orWhere('users.email', 'like', '%' . $search . '%')
@@ -198,17 +205,24 @@ class UserService
         }
     }
 
-    public function getUsersSelect()
+    public function getUsersSelect(Request $request)
     {
         try {
             $excludedRoleIds = Role::whereIn('name', ['super-admin', 'cobrador'])
                 ->pluck('id')
                 ->toArray();
 
-            $users = User::select('id', 'name')
+            $query = User::select('id', 'name')
                 ->whereNull('deleted_at')
-                ->whereNotIn('role_id', $excludedRoleIds)
-                ->get();
+                ->whereNotIn('role_id', $excludedRoleIds);
+
+            if ($request->has('city_id') && !empty($request->city_id)) {
+                $query->whereHas('city', function ($q) use ($request) {
+                    $q->where('id', $request->city_id);
+                });
+            }
+
+            $users = $query->get();
 
             return $this->successResponse([
                 'success' => true,

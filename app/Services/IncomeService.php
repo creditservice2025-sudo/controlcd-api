@@ -169,13 +169,13 @@ class IncomeService
                         });
                 });
 
-
             if ($request->has('seller_id') && $request->seller_id) {
                 $incomeQuery->where('user_id', $request->seller_id);
             }
 
             if ($user->role_id == 5) {
-                $incomeQuery->where('user_id', $user->id);
+                $incomeQuery->where('user_id', $user->id)
+                    ->whereDate('created_at', Carbon::today());
             }
 
             $validOrderDirections = ['asc', 'desc'];

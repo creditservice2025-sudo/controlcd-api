@@ -58,6 +58,7 @@ Route::middleware('auth:api')->group(function () {
     Route::put('/cities/{id}', [CitiesController::class, 'update']);
     Route::delete('/cities/delete/{id}', [CitiesController::class, 'destroy']);
     Route::get('/cities/country/{country_id}', [CitiesController::class, 'getByCountry']);
+    Route::get('/sellers/city/{city_id}', [CitiesController::class, 'getByCities']);
 
     //route countries
     Route::get('/countries', [CountriesController::class, 'index']);

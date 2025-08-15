@@ -67,10 +67,10 @@ class UserController extends Controller
         }
     }
 
-    public function getUsersSelect()
+    public function getUsersSelect(Request $request)
     {
         try {
-            return $this->userService->getUsersSelect();
+            return $this->userService->getUsersSelect($request);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
@@ -88,5 +88,4 @@ class UserController extends Controller
             return $this->errorResponse($e->getMessage(), 500);
         }
     }
-
 }
