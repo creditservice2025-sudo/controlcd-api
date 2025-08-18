@@ -23,6 +23,7 @@ class ClientService
 {
     use ApiResponse;
 
+
     public function create(ClientRequest $request)
     {
         try {
@@ -51,7 +52,6 @@ class ClientService
                 $guarantorId = $guarantor->id;
             }
 
-
             $clientData = [
                 'name' => $params['name'],
                 'dni' => $params['dni'],
@@ -66,7 +66,6 @@ class ClientService
             ];
 
             $client = Client::create($clientData);
-
 
             if (!empty($params['credit_value'])) {
                 $firstQuotaDate = $params['first_installment_date'] ?? null;
@@ -112,7 +111,6 @@ class ClientService
 
                 $quotaAmount = (($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value) / $credit->number_installments;
 
-                $dueDate = Carbon::parse($credit->first_quota_date);
                 $excludedDayNames = json_decode($credit->excluded_days, true) ?? [];
 
                 $dayMap = [
@@ -132,11 +130,20 @@ class ClientService
                     }
                 }
 
-                while (in_array($dueDate->dayOfWeek, $excludedDayNumbers)) {
-                    $dueDate->addDay();
-                }
+                $adjustForExcludedDays = function ($date) use ($excludedDayNumbers) {
+                    while (in_array($date->dayOfWeek, $excludedDayNumbers)) {
+                        $date->addDay();
+                    }
+                    return $date;
+                };
+
+                $dueDate = $adjustForExcludedDays(Carbon::parse($credit->first_quota_date));
+
+                \Log::info("Fecha primera cuota ajustada: " . $dueDate->format('Y-m-d'));
 
                 for ($i = 1; $i <= $credit->number_installments; $i++) {
+                    \Log::info("Creando cuota $i para fecha: " . $dueDate->format('Y-m-d'));
+
                     Installment::create([
                         'credit_id' => $credit->id,
                         'quota_number' => $i,
@@ -164,14 +171,10 @@ class ClientService
                                 $dueDate->addMonth();
                         }
 
-                        // Saltar días excluidos
-                        while (in_array($dueDate->dayOfWeek, $excludedDayNumbers)) {
-                            $dueDate->addDay();
-                        }
+                        $dueDate = $adjustForExcludedDays($dueDate);
                     }
                 }
             }
-
 
             if ($request->has('images')) {
                 $images = $request->input('images');
@@ -193,8 +196,9 @@ class ClientService
                 'data' => $client,
             ]);
         } catch (\Exception $e) {
-            \Log::error($e->getMessage());
-            return $this->errorResponse('Error al crear el cliente', 500);
+            \Log::error("Error al crear cliente: " . $e->getMessage());
+            \Log::error($e->getTraceAsString());
+            return $this->errorResponse('Error al crear el cliente: ' . $e->getMessage(), 500);
         }
     }
 
@@ -386,101 +390,101 @@ class ClientService
         }
     }
 
-   public function getAllClientsBySeller($sellerId, $search = '', $date = null)
-{
-    try {
-        $filterDate = $date ? Carbon::parse($date) : Carbon::today();
+    public function getAllClientsBySeller($sellerId, $search = '', $date = null)
+    {
+        try {
+            $filterDate = $date ? Carbon::parse($date) : Carbon::today();
 
-        $clients = Client::with([
-            'guarantors',
-            'images',
-            'credits' => function ($query) {
-                $query->withCount([
-                    'installments as paid_installments_count' => function ($query) {
-                        $query->where('status', 'Pagado');
-                    }
-                ]);
-            },
-            'credits.payments.installments.installment', 
-            'seller',
-            'seller.city'
-        ])
-            ->where('seller_id', $sellerId)
-            ->where(function ($query) use ($search) {
-                $query->where('name', 'like', "%{$search}%")
-                    ->orWhere('dni', 'like', "%{$search}%")
-                    ->orWhere('email', 'like', "%{$search}%");
-            })
-            ->orderBy('routing_order', 'asc')
-            ->get();
+            $clients = Client::with([
+                'guarantors',
+                'images',
+                'credits' => function ($query) {
+                    $query->withCount([
+                        'installments as paid_installments_count' => function ($query) {
+                            $query->where('status', 'Pagado');
+                        }
+                    ]);
+                },
+                'credits.payments.installments.installment',
+                'seller',
+                'seller.city'
+            ])
+                ->where('seller_id', $sellerId)
+                ->where(function ($query) use ($search) {
+                    $query->where('name', 'like', "%{$search}%")
+                        ->orWhere('dni', 'like', "%{$search}%")
+                        ->orWhere('email', 'like', "%{$search}%");
+                })
+                ->orderBy('routing_order', 'asc')
+                ->get();
 
-        $clients->each(function ($client) use ($filterDate) {
-            $client->distantPayments = collect();
-            $client->todayPayments = collect();
+            $clients->each(function ($client) use ($filterDate) {
+                $client->distantPayments = collect();
+                $client->todayPayments = collect();
 
-            foreach ($client->credits as $credit) {
-                $credit->pending_installments = $credit->number_installments - $credit->paid_installments_count;
-                
-                $datePayments = $credit->payments->filter(function ($payment) use ($filterDate) {
-                    return $payment->payment_date &&
-                        Carbon::parse($payment->payment_date)->isSameDay($filterDate);
-                });
+                foreach ($client->credits as $credit) {
+                    $credit->pending_installments = $credit->number_installments - $credit->paid_installments_count;
 
-                foreach ($datePayments as $payment) {
-                    $paidQuotaNumbers = $payment->installments->map(function ($installment) {
-                        return $installment->installment->quota_number ?? 'N/A';
-                    })->filter()->join(', ');
-                    
-                    $paymentTime = ($payment->payment_date instanceof \DateTimeInterface)
-                        ? $payment->payment_date->format('H:i:s')
-                        : Carbon::parse($payment->payment_date)->format('H:i:s');
+                    $datePayments = $credit->payments->filter(function ($payment) use ($filterDate) {
+                        return $payment->payment_date &&
+                            Carbon::parse($payment->payment_date)->isSameDay($filterDate);
+                    });
 
-                    $paymentData = [
-                        'client_id' => $client->id,
-                        'client_name' => $client->name,
-                        'credit_id' => $credit->id,
-                        'payment_id' => $payment->id,
-                        'amount' => $payment->amount,
-                        'payment_date' => $payment->payment_date,
-                        'payment_time' => $payment->created_at,
-                        'installment' => $paidQuotaNumbers ?: "N/A",
-                        'installment_details' => $payment->installments,
-                        'latitude' => $payment->latitude,
-                        'longitude' => $payment->longitude,
-                        'paid_installments' => $credit->paid_installments_count,
-                        'pending_installments' => $credit->pending_installments
-                    ];
+                    foreach ($datePayments as $payment) {
+                        $paidQuotaNumbers = $payment->installments->map(function ($installment) {
+                            return $installment->installment->quota_number ?? 'N/A';
+                        })->filter()->join(', ');
 
-                    $client->todayPayments->push($paymentData);
+                        $paymentTime = ($payment->payment_date instanceof \DateTimeInterface)
+                            ? $payment->payment_date->format('H:i:s')
+                            : Carbon::parse($payment->payment_date)->format('H:i:s');
 
-                    if ($client->coordinates && isset($client->coordinates['latitude'], $client->coordinates['longitude'])) {
-                        $clientLat = $client->coordinates['latitude'];
-                        $clientLon = $client->coordinates['longitude'];
+                        $paymentData = [
+                            'client_id' => $client->id,
+                            'client_name' => $client->name,
+                            'credit_id' => $credit->id,
+                            'payment_id' => $payment->id,
+                            'amount' => $payment->amount,
+                            'payment_date' => $payment->payment_date,
+                            'payment_time' => $payment->created_at,
+                            'installment' => $paidQuotaNumbers ?: "N/A",
+                            'installment_details' => $payment->installments,
+                            'latitude' => $payment->latitude,
+                            'longitude' => $payment->longitude,
+                            'paid_installments' => $credit->paid_installments_count,
+                            'pending_installments' => $credit->pending_installments
+                        ];
 
-                        if ($payment->latitude && $payment->longitude) {
-                            $distance = $this->calculateDistance(
-                                $clientLat,
-                                $clientLon,
-                                $payment->latitude,
-                                $payment->longitude
-                            );
+                        $client->todayPayments->push($paymentData);
 
-                            if ($distance > 10) {
-                                $paymentData['distance'] = $distance;
-                                $client->distantPayments->push($paymentData);
+                        if ($client->coordinates && isset($client->coordinates['latitude'], $client->coordinates['longitude'])) {
+                            $clientLat = $client->coordinates['latitude'];
+                            $clientLon = $client->coordinates['longitude'];
+
+                            if ($payment->latitude && $payment->longitude) {
+                                $distance = $this->calculateDistance(
+                                    $clientLat,
+                                    $clientLon,
+                                    $payment->latitude,
+                                    $payment->longitude
+                                );
+
+                                if ($distance > 10) {
+                                    $paymentData['distance'] = $distance;
+                                    $client->distantPayments->push($paymentData);
+                                }
                             }
                         }
                     }
                 }
-            }
-        });
+            });
 
-        return $clients;
-    } catch (\Exception $e) {
-        Log::error($e->getMessage());
-        throw $e;
+            return $clients;
+        } catch (\Exception $e) {
+            Log::error($e->getMessage());
+            throw $e;
+        }
     }
-}
 
     private function calculateDistance($lat1, $lon1, $lat2, $lon2)
     {
@@ -709,16 +713,38 @@ class ClientService
             ->get()
             ->groupBy('credit_id');
 
-        // Transformar items
         $transformedItems = $credits->getCollection()->map(function ($credit) use ($paymentSummary) {
             $summary = $paymentSummary->get($credit->id, collect());
             foreach ($summary as $item) {
                 $credit->{$item->status} = $item->total_amount;
             }
 
-            // Mover installments a un alias
             $credit->installment = $credit->installments;
             unset($credit->installments);
+
+            $overdueInstallments = $credit->installment->filter(function ($installment) {
+                return $installment->due_date < now()->toDateString() && $installment->status !== 'Pagado';
+            });
+
+            $totalInstallments = $credit->installment->count();
+            $remainingInstallments = $credit->installment->filter(function ($installment) {
+                return $installment->status !== 'Pagado';
+            })->count();
+
+            if ($overdueInstallments->count() > 0) {
+                // El crédito tiene cuotas vencidas
+                $credit->credit_status = 'Overdue';
+            } elseif ($remainingInstallments <= 4 && $overdueInstallments->count() === 0) {
+                // Faltan 4 o menos cuotas para terminar y no tiene cuotas vencidas
+                $credit->credit_status = 'Renewal_pending';
+            } elseif ($overdueInstallments->count() <= 2) {
+                // El crédito está al día y tiene 2 o menos cuotas atrasadas
+                $credit->credit_status = 'On_time';
+            } else {
+                // Cualquier otro caso por defecto, puedes ajustarlo si lo necesitas
+                $credit->credit_status = 'Normal';
+            }
+
 
             return $credit;
         });

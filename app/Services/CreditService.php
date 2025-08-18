@@ -28,6 +28,7 @@ class CreditService
             $params = $request->validated();
             \Log::info('Datos recibidos para crédito:', $params);
 
+            // Calcular fecha de primera cuota si no se proporciona
             $firstQuotaDate = $params['first_installment_date'] ?? null;
             if (!$firstQuotaDate) {
                 $today = now();
@@ -68,7 +69,6 @@ class CreditService
 
             $quotaAmount = (($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value) / $credit->number_installments;
 
-            $dueDate = Carbon::parse($credit->first_quota_date);
             $excludedDayNames = json_decode($credit->excluded_days, true) ?? [];
 
             $dayMap = [
@@ -88,13 +88,20 @@ class CreditService
                 }
             }
 
-            // Ajustar fecha inicial si es día excluido
-            while (in_array($dueDate->dayOfWeek, $excludedDayNumbers)) {
-                $dueDate->addDay();
-            }
+            $adjustForExcludedDays = function ($date) use ($excludedDayNumbers) {
+                while (in_array($date->dayOfWeek, $excludedDayNumbers)) {
+                    $date->addDay();
+                }
+                return $date;
+            };
+
+            $dueDate = $adjustForExcludedDays(Carbon::parse($credit->first_quota_date));
+
+            \Log::info("Fecha primera cuota ajustada: " . $dueDate->format('Y-m-d'));
 
             for ($i = 1; $i <= $credit->number_installments; $i++) {
-                // Crear cuota
+                \Log::info("Creando cuota $i para fecha: " . $dueDate->format('Y-m-d'));
+
                 Installment::create([
                     'credit_id' => $credit->id,
                     'quota_number' => $i,
@@ -121,9 +128,8 @@ class CreditService
                             $dueDate->addMonth();
                     }
 
-                    while (in_array($dueDate->dayOfWeek, $excludedDayNumbers)) {
-                        $dueDate->addDay();
-                    }
+                    // Ajustar la nueva fecha si cae en día excluido
+                    $dueDate = $adjustForExcludedDays($dueDate);
                 }
             }
 
@@ -144,11 +150,17 @@ class CreditService
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Crédito creado con éxito',
-                'data' => $credit
+                'data' => [
+                    'credit' => $credit,
+                    'first_quota_date' => $credit->first_quota_date,
+                    'adjusted_first_date' => $dueDate->format('Y-m-d'),
+                    'total_installments' => $credit->number_installments
+                ]
             ]);
         } catch (\Exception $e) {
-            \Log::error($e->getMessage());
-            return $this->errorResponse('Error al crear el crédito', 500);
+            \Log::error("Error al crear crédito: " . $e->getMessage());
+            \Log::error($e->getTraceAsString());
+            return $this->errorResponse('Error al crear el crédito: ' . $e->getMessage(), 500);
         }
     }
 

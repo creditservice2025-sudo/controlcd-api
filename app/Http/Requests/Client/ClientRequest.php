@@ -69,9 +69,9 @@ class ClientRequest extends FormRequest
             $rules = [
                 'name' => 'nullable|string',
                 'address' => 'nullable|string',
-                'dni' => 'nullable|numeric|unique:clients,dni,' . $this->route('clientId'),
+                'dni' => 'nullable|numeric|unique:clients,dni,' . $this->route('id'),
                 'phone' => 'nullable|numeric',
-                'email' => 'nullable|email|unique:clients,email,' . $this->route('clientId'),
+                'email' => 'nullable|email|unique:clients,email,' . $this->route('id'),
                 'geolocation' => 'nullable|array',
                 'geolocation.latitude' => 'nullable|numeric',
                 'geolocation.longitude' => 'nullable|numeric',
