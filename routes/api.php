@@ -11,6 +11,7 @@ use App\Http\Controllers\UserController;
 use App\Http\Controllers\CitiesController;
 use App\Http\Controllers\RoleController;
 use App\Http\Controllers\ClientController;
+use App\Http\Controllers\CompanyController;
 use App\Http\Controllers\GuarantorController;
 use App\Http\Controllers\CreditController;
 use App\Http\Controllers\InstallmentController;
@@ -144,6 +145,17 @@ Route::middleware('auth:api')->group(function () {
         });
 
         Route::get('/{sellerId}/{date}', [LiquidationController::class, 'getLiquidationData']);
+    });
+
+    Route::prefix('companies')->group(function () {
+        Route::get('/', [CompanyController::class, 'index']);
+        Route::post('/', [CompanyController::class, 'create']);
+        Route::get('/select', [CompanyController::class, 'getCompaniesSelect']);
+        Route::get('/{companyId}', [CompanyController::class, 'show']);
+        Route::put('/{companyId}', [CompanyController::class, 'update']);
+        Route::delete('/{companyId}', [CompanyController::class, 'delete']);
+        Route::post('/validate-code', [CompanyController::class, 'validateCompanyCode']);
+        Route::post('/validate-ruc', [CompanyController::class, 'validateCompanyRuc']);
     });
 
     //route installment
