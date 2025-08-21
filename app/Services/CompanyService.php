@@ -197,6 +197,10 @@ class CompanyService
                 return $this->errorNotFoundResponse('Empresa no encontrada');
             }
 
+            if ($company->sellers()->exists()) {
+                return $this->errorResponse('No se puede eliminar la empresa porque tiene vendedores asociados', 422);
+            }
+
             if ($company->logo_path) {
                 Helper::deleteFile($company->logo_path);
             }

@@ -34,15 +34,33 @@ class DashboardService
                 'clients' => 0,
             ];
 
-            if ($role === 1 || $role === 2) {
-                $data['members'] = User::all()->count();
-                $data['routes'] = Seller::all()->count();
-                $data['credits'] = Credit::all()->count();
-                $data['clients'] = Client::all()->count();
+            if ($role === 1) {
+                $data['members'] = User::count();
+                $data['routes'] = Seller::count();
+                $data['credits'] = Credit::count();
+                $data['clients'] = Client::count();
+            } elseif ($role === 2) {
+                if (!$user->company) {
+                    return $this->successResponse([
+                        'success' => true,
+                        'data' => $data,
+                        'message' => 'Usuario no tiene compañía asociada'
+                    ]);
+                }
+
+                $companyId = $user->company->id;
+
+                $data['routes'] = Seller::where('company_id', $companyId)->count();
+
+                $data['members'] = User::whereHas('seller', function ($query) use ($companyId) {
+                    $query->where('company_id', $companyId);
+                })->count();
+
+                $sellerIds = Seller::where('company_id', $companyId)->pluck('id');
+                $data['credits'] = Credit::whereIn('seller_id', $sellerIds)->count();
+                $data['clients'] = Client::whereIn('seller_id', $sellerIds)->count();
             } elseif ($role === 5) {
-
                 $seller = $user->seller;
-
                 if ($seller) {
                     $data['clients'] = $seller->clients()->count();
                     $data['credits'] = $seller->credits()->count();
@@ -59,71 +77,94 @@ class DashboardService
         }
     }
 
-    public function loadPendingPortfolios()
-    {
-        try {
-            $sellers = Seller::with([
-                'clients',
-                'credits',
-                'city' => function ($query) {
-                    $query->select('id', 'name', 'country_id');
-                },
-                'city.country' => function ($query) {
-                    $query->select('id', 'name');
-                }
-            ])->orderBy('created_at', 'desc')
-                ->take(10)
-                ->get();
+   public function loadPendingPortfolios()
+{
+    try {
+        $user = Auth::user();
+        $role = $user->role_id;
 
-            $result = [];
-
-            foreach ($sellers as $seller) {
-                $location = $this->getSellerLocation($seller);
-
-                $sellerData = [
-                    'route' => $seller->name,
-                    'location' => $location,
-                    'capital' => 0,
-                    'utility' => 0,
-                    'credits' => count($seller->credits),
-                    'name' => $seller->user ? $seller->user->name : 'Sin nombre',
-                    'total' => 0
-                ];
-
-                foreach ($seller->credits as $credit) {
-                    $totalPaid = Payment::where('credit_id', $credit->id)
-                        ->sum('amount');
-
-                    $utility = $credit->credit_value  * $credit->total_interest / 100;
-                    $capitalPayable = $credit->credit_value + $utility - $totalPaid;
-                    $totalPortfolio = $capitalPayable + $utility;
-
-
-                    $sellerData['capital'] += $capitalPayable;
-                    $sellerData['utility'] += $utility;
-                    $sellerData['total'] += $totalPortfolio;
-                }
-
-                // Formatear valores
-                $sellerData['capital'] = '$ ' . number_format($sellerData['capital'], 2, ',', '.');
-                $sellerData['utility'] = '$ ' . number_format($sellerData['utility'], 2, ',', '.');
-                $sellerData['total'] = '$ ' . number_format($sellerData['total'], 2, ',', '.');
-
-                $result[] = $sellerData;
+        $sellersQuery = Seller::with([
+            'clients',
+            'credits',
+            'city' => function ($query) {
+                $query->select('id', 'name', 'country_id');
+            },
+            'city.country' => function ($query) {
+                $query->select('id', 'name');
+            },
+            'user' => function ($query) {
+                $query->select('id', 'name');
             }
+        ])->orderBy('created_at', 'desc');
 
+        if ($role === 1) {
+        } elseif ($role === 2) {
+            if (!$user->company) {
+                return response()->json([
+                    'success' => true,
+                    'data' => []
+                ]);
+            }
+            
+            $sellersQuery->where('company_id', $user->company->id);
+        } elseif ($role === 5) {
+            $sellersQuery->where('user_id', $user->id);
+        } else {
             return response()->json([
                 'success' => true,
-                'data' => $result
+                'data' => []
             ]);
-        } catch (\Exception $e) {
-            \Log::error("Error fetching pending portfolios: " . $e->getMessage());
-            return response()->json([
-                'success' => false,
-                'message' => 'Error al obtener las carteras pendientes'
-            ], 500);
         }
+
+        $sellers = $sellersQuery->take(10)->get();
+
+        $result = [];
+
+        foreach ($sellers as $seller) {
+            $location = $this->getSellerLocation($seller);
+
+            $sellerData = [
+                'route' => $seller->name,
+                'location' => $location,
+                'capital' => 0,
+                'utility' => 0,
+                'credits' => count($seller->credits),
+                'name' => $seller->user ? $seller->user->name : 'Sin nombre',
+                'total' => 0
+            ];
+
+            foreach ($seller->credits as $credit) {
+                $totalPaid = Payment::where('credit_id', $credit->id)
+                    ->sum('amount');
+
+                $utility = $credit->credit_value  * $credit->total_interest / 100;
+                $capitalPayable = $credit->credit_value + $utility - $totalPaid;
+                $totalPortfolio = $capitalPayable + $utility;
+
+                $sellerData['capital'] += $capitalPayable;
+                $sellerData['utility'] += $utility;
+                $sellerData['total'] += $totalPortfolio;
+            }
+
+            $sellerData['capital'] = '$ ' . number_format($sellerData['capital'], 2, ',', '.');
+            $sellerData['utility'] = '$ ' . number_format($sellerData['utility'], 2, ',', '.');
+            $sellerData['total'] = '$ ' . number_format($sellerData['total'], 2, ',', '.');
+
+            $result[] = $sellerData;
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => $result
+        ]);
+    } catch (\Exception $e) {
+        \Log::error("Error fetching pending portfolios: " . $e->getMessage());
+        return response()->json([
+            'success' => false,
+            'message' => 'Error al obtener las carteras pendientes'
+        ], 500);
     }
+}
 
     private function getSellerLocation($seller)
     {
@@ -150,49 +191,107 @@ class DashboardService
             $incomeTotal = 0;
             $expenseTotal = 0;
 
-
-            if ($role === 1 || $role === 2) {
-                // Obtener IDs de créditos no liquidados
+            if ($role === 1) {
                 $creditIds = Credit::where('status', '!=', 'Liquidado')->pluck('id');
 
                 if ($creditIds->isNotEmpty()) {
-                    // Calcular totales
                     $totalBalance = Credit::whereIn('id', $creditIds)->sum('credit_value');
                     $incomeTotal = Income::sum('value');
                     $expenseTotal = Expense::sum('value');
 
-
-                    // Calcular capital pagado (suma de aplicado a capital en installments)
                     $totalCapitalPaid = PaymentInstallment::whereIn('installment_id', function ($query) use ($creditIds) {
                         $query->select('id')
                             ->from('installments')
                             ->whereIn('credit_id', $creditIds);
                     })->sum('applied_amount');
 
-                    // Calcular utilidad pagada (suma de pagos menos capital pagado)
                     $totalPayments = Payment::whereIn('credit_id', $creditIds)->sum('amount');
                     $totalProfitPaid = $totalPayments - $totalCapitalPaid;
 
-                    // Calcular pendientes
                     $capitalPending = $totalBalance - $totalCapitalPaid;
                     $totalExpectedProfit = Credit::whereIn('id', $creditIds)
                         ->sum(DB::raw('credit_value * total_interest / 100'));
                     $profitPending = $totalExpectedProfit - $totalProfitPaid;
                 }
 
-                // Cálculo de caja actual (se mantiene igual)
                 $lastLiquidation = Liquidation::orderBy('date', 'desc')->first();
                 $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
                 $cashPayments = Payment::whereDate('created_at', $today)->sum('amount');
                 $expenses = Expense::whereDate('created_at', $today)->sum('value');
                 $income = Income::whereDate('created_at', $today)->sum('value');
                 $newCredits = Credit::whereDate('created_at', $today)->sum('credit_value');
-                /* $currentCash = $initialCash + $cashPayments - $expenses - $newCredits; */
                 $currentCash = $initialCash + ($income + $cashPayments) - ($expenses + $newCredits);
+            } elseif ($role === 2) {
+                if (!$user->company) {
+                    return $this->successResponse([
+                        'success' => true,
+                        'data' => [
+                            'totalBalance' => 0,
+                            'capital' => 0,
+                            'profit' => 0,
+                            'currentCash' => 0,
+                            'income' => 0,
+                            'expenses' => 0
+                        ],
+                        'message' => 'Usuario no tiene compañía asociada'
+                    ]);
+                }
+
+                $companyId = $user->company->id;
+                $sellerIds = Seller::where('company_id', $companyId)->pluck('id');
+
+                if ($sellerIds->isNotEmpty()) {
+                    $creditIds = Credit::whereIn('seller_id', $sellerIds)
+                        ->where('status', '!=', 'Liquidado')
+                        ->pluck('id');
+
+                    if ($creditIds->isNotEmpty()) {
+                        $totalBalance = Credit::whereIn('id', $creditIds)->sum('credit_value');
+
+                        $totalCapitalPaid = PaymentInstallment::whereIn('installment_id', function ($query) use ($creditIds) {
+                            $query->select('id')
+                                ->from('installments')
+                                ->whereIn('credit_id', $creditIds);
+                        })->sum('applied_amount');
+
+                        $totalPayments = Payment::whereIn('credit_id', $creditIds)->sum('amount');
+                        $totalProfitPaid = $totalPayments - $totalCapitalPaid;
+
+                        $capitalPending = $totalBalance - $totalCapitalPaid;
+                        $totalExpectedProfit = Credit::whereIn('id', $creditIds)
+                            ->sum(DB::raw('credit_value * total_interest / 100'));
+                        $profitPending = $totalExpectedProfit - $totalProfitPaid;
+                    }
+
+                    $userIds = User::whereHas('seller', function ($query) use ($companyId) {
+                        $query->where('company_id', $companyId);
+                    })->pluck('id');
+
+                    $incomeTotal = Income::whereIn('user_id', $userIds)->sum('value');
+                    $expenseTotal = Expense::whereIn('user_id', $userIds)->sum('value');
+
+                    $lastLiquidation = Liquidation::whereIn('seller_id', $sellerIds)
+                        ->orderBy('date', 'desc')
+                        ->first();
+                    $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
+                    $cashPayments = Payment::whereIn('credit_id', $creditIds ?? [])
+                        ->whereDate('created_at', $today)
+                        ->sum('amount');
+                    $expenses = Expense::whereIn('user_id', $userIds)
+                        ->whereDate('created_at', $today)
+                        ->where('status', 'Aprobado')
+                        ->sum('value');
+                    $income = Income::whereIn('user_id', $userIds)
+                        ->whereDate('created_at', $today)
+                        ->sum('value');
+                    $newCredits = Credit::whereIn('seller_id', $sellerIds)
+                        ->whereDate('created_at', $today)
+                        ->sum('credit_value');
+                    $currentCash = $initialCash + ($income + $cashPayments) - ($expenses + $newCredits);
+                }
             } elseif ($role === 5) {
                 $seller = $user->seller;
                 if ($seller) {
-                    // Obtener IDs de créditos del vendedor no liquidados
                     $creditIds = $seller->credits()
                         ->where('status', '!=', 'Liquidado')
                         ->pluck('id');
@@ -200,18 +299,15 @@ class DashboardService
                     if ($creditIds->isNotEmpty()) {
                         $totalBalance = Credit::whereIn('id', $creditIds)->sum('credit_value');
 
-                        // Calcular capital pagado
                         $totalCapitalPaid = PaymentInstallment::whereIn('installment_id', function ($query) use ($creditIds) {
                             $query->select('id')
                                 ->from('installments')
                                 ->whereIn('credit_id', $creditIds);
                         })->sum('applied_amount');
 
-                        // Calcular utilidad pagada
                         $totalPayments = Payment::whereIn('credit_id', $creditIds)->sum('amount');
                         $totalProfitPaid = $totalPayments - $totalCapitalPaid;
 
-                        // Calcular pendientes
                         $capitalPending = $totalBalance - $totalCapitalPaid;
                         $totalExpectedProfit = Credit::whereIn('id', $creditIds)
                             ->sum(DB::raw('credit_value * total_interest / 100'));
@@ -221,13 +317,11 @@ class DashboardService
                     $incomeTotal = Income::where('user_id', $user->id)->sum('value');
                     $expenseTotal = Expense::where('user_id', $user->id)->sum('value');
 
-
-                    // Cálculo de caja actual para vendedor (se mantiene igual)
                     $lastLiquidation = Liquidation::where('seller_id', $seller->id)
                         ->orderBy('date', 'desc')
                         ->first();
                     $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
-                    $cashPayments = Payment::whereIn('credit_id', $creditIds)
+                    $cashPayments = Payment::whereIn('credit_id', $creditIds ?? [])
                         ->whereDate('created_at', $today)
                         ->sum('amount');
                     $expenses = Expense::where('user_id', $user->id)
@@ -240,8 +334,6 @@ class DashboardService
                     $newCredits = $seller->credits()
                         ->whereDate('created_at', $today)
                         ->sum('credit_value');
-                    /*  $currentCash = $initialCash + $cashPayments - $expenses - $newCredits; */
-
                     $currentCash = $initialCash + ($income + $cashPayments) - ($expenses + $newCredits);
                 }
             }
@@ -255,7 +347,6 @@ class DashboardService
                     'currentCash' => (float) number_format($currentCash, 2, '.', ''),
                     'income' => (float) number_format($incomeTotal, 2, '.', ''),
                     'expenses' => (float) number_format($expenseTotal, 2, '.', '')
-
                 ]
             ]);
         } catch (\Exception $e) {
@@ -263,55 +354,70 @@ class DashboardService
             return $this->errorResponse('Error al obtener el resumen financiero.', 500);
         }
     }
-    public function weeklyMovements(Request $request)
-    {
-        try {
-            $user = Auth::user();
-            $role = $user->role_id;
+   public function weeklyMovements(Request $request)
+{
+    try {
+        $user = Auth::user();
+        $role = $user->role_id;
 
-            $startOfWeek = now()->startOfWeek()->toDateString();
-            $endOfWeek = now()->endOfWeek()->toDateString();
+        $startOfWeek = now()->startOfWeek()->toDateString();
+        $endOfWeek = now()->endOfWeek()->toDateString();
 
-            $income = 0;
-            $expenses = 0;
+        $income = 0;
+        $expenses = 0;
 
-            if ($role === 1 || $role === 2) {
-                $income = Income::whereBetween('created_at', [$startOfWeek, $endOfWeek])
-                    ->sum('value');
+        if ($role === 1) {
+            $income = Income::whereBetween('created_at', [$startOfWeek, $endOfWeek])
+                ->sum('value');
 
-                $expenses = Expense::whereBetween('created_at', [$startOfWeek, $endOfWeek])
-                    ->sum('value');
-            } elseif ($role === 5) {
-                $seller = $user->seller;
-
-                if ($seller) {
-                    $creditIds = $seller->credits()->pluck('id');
-
-                    /*  if ($creditIds->isNotEmpty()) {
-                        $income = Payment::whereIn('credit_id', $creditIds)
-                            ->whereBetween('created_at', [$startOfWeek, $endOfWeek])
-                            ->sum('amount');
-                    } */
-                    $income = Income::where('user_id', $user->id)
-                        ->whereBetween('created_at', [$startOfWeek, $endOfWeek])
-                        ->sum('value');
-
-                    $expenses = Expense::where('user_id', $user->id)
-                        ->whereBetween('created_at', [$startOfWeek, $endOfWeek])
-                        ->sum('value');
-                }
+            $expenses = Expense::whereBetween('created_at', [$startOfWeek, $endOfWeek])
+                ->sum('value');
+        } elseif ($role === 2) {
+            if (!$user->company) {
+                return $this->successResponse([
+                    'success' => true,
+                    'income' => 0,
+                    'expenses' => 0,
+                    'message' => 'Usuario no tiene compañía asociada'
+                ]);
             }
-            return $this->successResponse([
-                'success' => true,
-                'income' => (float) $income,
-                'expenses' => (float) $expenses
-            ]);
-        } catch (\Exception $e) {
-            \Log::error("Error loading weekly movements: " . $e->getMessage());
-            return response()->json([
-                'success' => false,
-                'message' => 'Error al obtener movimientos semanales'
-            ], 500);
+            
+            $companyId = $user->company->id;
+            $userIds = User::whereHas('seller', function ($query) use ($companyId) {
+                $query->where('company_id', $companyId);
+            })->pluck('id');
+
+            if ($userIds->isNotEmpty()) {
+                $income = Income::whereIn('user_id', $userIds)
+                    ->whereBetween('created_at', [$startOfWeek, $endOfWeek])
+                    ->sum('value');
+
+                $expenses = Expense::whereIn('user_id', $userIds)
+                    ->whereBetween('created_at', [$startOfWeek, $endOfWeek])
+                    ->sum('value');
+            }
+        } elseif ($role === 5) {
+            // Vendedor
+            $income = Income::where('user_id', $user->id)
+                ->whereBetween('created_at', [$startOfWeek, $endOfWeek])
+                ->sum('value');
+
+            $expenses = Expense::where('user_id', $user->id)
+                ->whereBetween('created_at', [$startOfWeek, $endOfWeek])
+                ->sum('value');
         }
+
+        return $this->successResponse([
+            'success' => true,
+            'income' => (float) $income,
+            'expenses' => (float) $expenses
+        ]);
+    } catch (\Exception $e) {
+        \Log::error("Error loading weekly movements: " . $e->getMessage());
+        return response()->json([
+            'success' => false,
+            'message' => 'Error al obtener movimientos semanales'
+        ], 500);
     }
+}
 }

@@ -151,52 +151,68 @@ class IncomeService
     }
 
 
-    public function index(
-        Request $request,
-        string $search,
-        int $perpage,
-        string $orderBy = 'created_at',
-        string $orderDirection = 'desc'
-    ) {
-        try {
-            $user = Auth::user();
+public function index(
+    Request $request,
+    string $search,
+    int $perpage,
+    string $orderBy = 'created_at',
+    string $orderDirection = 'desc'
+) {
+    try {
+        $user = Auth::user();
+        $role = $user->role_id;
 
-            $incomeQuery = Income::with(['user', 'images'])
-                ->where(function ($query) use ($search) {
-                    $query->where('description', 'like', "%{$search}%")
-                        ->orWhereHas('user', function ($q) use ($search) {
-                            $q->where('name', 'like', "%{$search}%");
-                        });
-                });
+        $incomeQuery = Income::with(['user', 'images'])
+            ->where(function ($query) use ($search) {
+                $query->where('description', 'like', "%{$search}%")
+                    ->orWhereHas('user', function ($q) use ($search) {
+                        $q->where('name', 'like', "%{$search}%");
+                    });
+            });
 
-            if ($request->has('seller_id') && $request->seller_id) {
-                $incomeQuery->where('user_id', $request->seller_id);
+        if ($role === 2) {
+            if (!$user->company) {
+                return $this->successResponse([
+                    'success' => true,
+                    'message' => 'Ingresos encontrados',
+                    'data' => new \Illuminate\Pagination\LengthAwarePaginator([], 0, $perpage)
+                ]);
             }
+            
+            $companyId = $user->company->id;
+            $userIds = User::whereHas('seller', function ($query) use ($companyId) {
+                $query->where('company_id', $companyId);
+            })->pluck('id');
 
-            if ($user->role_id == 5) {
-                $incomeQuery->where('user_id', $user->id)
-                    ->whereDate('created_at', Carbon::today());
-            }
-
-            $validOrderDirections = ['asc', 'desc'];
-            $orderDirection = in_array(strtolower($orderDirection), $validOrderDirections)
-                ? $orderDirection
-                : 'desc';
-
-            $incomeQuery->orderBy($orderBy, $orderDirection);
-
-            $income = $incomeQuery->paginate($perpage);
-
-            return $this->successResponse([
-                'success' => true,
-                'message' => 'Ingresos encontrados',
-                'data' => $income
-            ]);
-        } catch (\Exception $e) {
-            Log::error($e->getMessage());
-            return $this->errorResponse('Error al obtener los ingresos', 500);
+            $incomeQuery->whereIn('user_id', $userIds);
+        } elseif ($role === 5) {
+            $incomeQuery->where('user_id', $user->id)
+                ->whereDate('created_at', Carbon::today());
         }
+
+        if ($request->has('seller_id') && $request->seller_id) {
+            $incomeQuery->where('user_id', $request->seller_id);
+        }
+
+        $validOrderDirections = ['asc', 'desc'];
+        $orderDirection = in_array(strtolower($orderDirection), $validOrderDirections)
+            ? $orderDirection
+            : 'desc';
+
+        $incomeQuery->orderBy($orderBy, $orderDirection);
+
+        $income = $incomeQuery->paginate($perpage);
+
+        return $this->successResponse([
+            'success' => true,
+            'message' => 'Ingresos encontrados',
+            'data' => $income
+        ]);
+    } catch (\Exception $e) {
+        Log::error($e->getMessage());
+        return $this->errorResponse('Error al obtener los ingresos', 500);
     }
+}
 
     public function show($expenseId)
     {

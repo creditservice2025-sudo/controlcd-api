@@ -196,6 +196,7 @@ class ExpenseService
     ) {
         try {
             $user = Auth::user();
+            $role = $user->role_id;
 
             $expensesQuery = Expense::with(['user', 'category', 'images'])
                 ->where(function ($query) use ($search) {
@@ -205,12 +206,28 @@ class ExpenseService
                         });
                 });
 
-            if ($request->has('seller_id') && $request->seller_id) {
-                $expensesQuery->where('user_id', $request->seller_id);
-            } else if ($user->role_id == 5) {
+            if ($role === 2) {
+                if (!$user->company) {
+                    return $this->successResponse([
+                        'success' => true,
+                        'message' => 'Gastos encontrados',
+                        'data' => new \Illuminate\Pagination\LengthAwarePaginator([], 0, $perpage)
+                    ]);
+                }
+
+                $companyId = $user->company->id;
+                $userIds = User::whereHas('seller', function ($query) use ($companyId) {
+                    $query->where('company_id', $companyId);
+                })->pluck('id');
+
+                $expensesQuery->whereIn('user_id', $userIds);
+            } elseif ($role === 5) {
                 $expensesQuery->where('user_id', $user->id)
                     ->whereDate('created_at', Carbon::today());
-            } else {
+            }
+
+            if ($request->has('seller_id') && $request->seller_id) {
+                $expensesQuery->where('user_id', $request->seller_id);
             }
 
             $validOrderDirections = ['asc', 'desc'];
