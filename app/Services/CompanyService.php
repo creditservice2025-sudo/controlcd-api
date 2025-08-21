@@ -99,7 +99,7 @@ class CompanyService
                 'code' => $params['code'],
                 'ruc' => $params['ruc'],
                 'name' => $params['company_name'],
-                'phone' => $params['company_phone'] ?? '+51',
+                'phone' => $params['company_phone'] ?? '',
                 'email' => $params['company_email'],
                 'logo_path' => $logoPath
             ]);
