@@ -28,4 +28,14 @@ class Company extends Model
     {
         return $this->belongsTo(User::class);
     }
+
+    public function sellers()
+    {
+        return $this->hasMany(Seller::class);
+    }
+
+    public function credits()
+    {
+        return $this->hasManyThrough(Credit::class, Seller::class);
+    }
 }

@@ -9,6 +9,7 @@ use App\Models\Seller;
 use App\Models\User;
 use App\Models\UserRoute;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Log;
@@ -44,6 +45,7 @@ class SellerService
             $seller = Seller::create([
                 'user_id' => $user->id,
                 'city_id' => $params['city_id'],
+                'company_id' => $params['company_id'],
                 'status' => 'ACTIVE'
             ]);
 
@@ -107,7 +109,7 @@ class SellerService
             ]);
 
             $memberIds = array_map('intval', $params['members'] ?? []);
-            $memberIds = array_filter($memberIds); // Eliminar valores 0/null
+            $memberIds = array_filter($memberIds);
 
             $this->syncMembers($seller, $memberIds);
 
@@ -239,31 +241,41 @@ class SellerService
     public function getRoutes($page = 1, $perPage = 10, $search = null)
     {
         try {
-            $routes = Seller::with('userRoutes.user', 'city.country', 'user', 'images')
+            $user = Auth::user();
+            $company = $user->company;
+
+            $routes = Seller::with('userRoutes.user', 'city.country', 'user', 'images', 'company')
                 ->whereNull('deleted_at')
                 ->orderBy('created_at', 'desc')
-                // ->withCount(['credits as total_credits' => function ($query) {
-                //     $query->where('active', true);
-                // }])
-                // ->with(['userRoutes.user' => function ($query) {
-                //     $query->select('id', 'name');
-                // }])
-                ->select('id', 'user_id', 'city_id', 'status', 'created_at');
-            // ->withSum(['credits as total_credits' => function ($query) {
-            //     $query->where('active', true);
-            // }], 'total_value')
-            /*  ->where(function ($query) use ($search) {
-                    $query->where('name', 'like', '%' . $search . '%')
-                        ->orWhere('sector', 'like', '%' . $search . '%');
-                }) */
+                ->select('id', 'user_id', 'city_id', 'company_id', 'status', 'created_at');
 
-            /*      foreach ($routes as $route) {
-                $route->total_credits = $route->total_credits ?? 0;
-            } */
+            switch ($user->role_id) {
+                case 1:
+                    break;
 
+                case 2:
+                    $routes->where('company_id', $company->id);
+                    break;
+
+                case 3:
+                    $routes->where('user_id', $user->id);
+                    break;
+
+                default:
+                    return $this->successResponse([
+                        'data' => [],
+                        'pagination' => [
+                            'total' => 0,
+                            'current_page' => 1,
+                            'per_page' => $perPage,
+                            'last_page' => 1,
+                        ]
+                    ]);
+            }
+
+            // Resto del código de búsqueda y paginación...
             if ($search) {
                 $searchTerm = Str::lower($search);
-
                 $routes->where(function ($query) use ($searchTerm) {
                     $query->whereHas('user', function ($q) use ($searchTerm) {
                         $q->whereRaw('LOWER(name) LIKE ?', ["%{$searchTerm}%"]);
@@ -275,19 +287,14 @@ class SellerService
                 });
             }
 
-
-
-
-
             $routesQuery = $routes->paginate(
                 $perPage,
-                ['id', 'user_id', 'city_id', 'status', 'created_at'],
+                ['id', 'user_id', 'city_id', 'company_id', 'status', 'created_at'],
                 'page',
                 $page
             );
 
             return $this->successResponse([
-
                 'data' => $routesQuery->items(),
                 'pagination' => [
                     'total' => $routesQuery->total(),

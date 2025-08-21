@@ -40,7 +40,8 @@ class SellerRequest extends FormRequest
             ],
             'city_id' => 'required|exists:cities,id',
             'members' => 'nullable|array',
-            'members.*' => 'exists:users,id'
+            'members.*' => 'exists:users,id',
+            'company_id' => 'required|exists:companies,id',
         ];
 
 
@@ -80,7 +81,8 @@ class SellerRequest extends FormRequest
             'city_id.exists' => 'Ciudad seleccionada no válida',
             'password.required' => 'La contraseña es requerida',
             'password.min' => 'La contraseña debe tener al menos 8 caracteres',
-            'members.*.exists' => 'Uno o más miembros seleccionados son inválidos'
+            'members.*.exists' => 'Uno o más miembros seleccionados son inválidos',
+            'company_id.required' => 'La empresa es requerida',
         ];
     }
 }

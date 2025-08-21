@@ -18,6 +18,8 @@ class Seller extends Model
     protected $fillable = [
         'user_id',
         'city_id',
+        'seller_id',
+        'company_id',
         'status'
     ];
 
@@ -35,6 +37,11 @@ class Seller extends Model
     {
         return $this->belongsTo(User::class);
     }
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class, 'company_id');
+    }
     public function clients()
     {
         return $this->hasMany(Client::class);
@@ -50,7 +57,8 @@ class Seller extends Model
         return $this->hasMany(Image::class);
     }
 
-    public function expenses() {
+    public function expenses()
+    {
         return $this->hasMany(Expense::class);
     }
 }

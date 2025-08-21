@@ -47,37 +47,19 @@ class CompanyController extends Controller
         }
     }
 
-    public function index(Request $request)
-    {
-        try {
-            $search = $request->input('search', '');
-            $perPage = $request->input('perPage', 10);
-            $orderBy = $request->input('orderBy', 'created_at');
-            $orderDirection = $request->input('orderDirection', 'desc');
+  public function index(Request $request)
+{
+    try {
+        $search = $request->input('search', '');
+        $perPage = $request->input('perPage', 10);
+        $orderBy = $request->input('orderBy', 'created_at');
+        $orderDirection = $request->input('orderDirection', 'desc');
 
-            $companies = Company::with('user')
-                ->when($search, function ($query, $search) {
-                    return $query->where('name', 'like', "%{$search}%")
-                                 ->orWhere('code', 'like', "%{$search}%")
-                                 ->orWhere('ruc', 'like', "%{$search}%")
-                                 ->orWhere('email', 'like', "%{$search}%")
-                                 ->orWhereHas('user', function ($q) use ($search) {
-                                     $q->where('name', 'like', "%{$search}%")
-                                       ->orWhere('dni', 'like', "%{$search}%");
-                                 });
-                })
-                ->orderBy($orderBy, $orderDirection)
-                ->paginate($perPage);
-
-            return $this->successResponse([
-                'success' => true,
-                'message' => 'Empresas obtenidas exitosamente',
-                'data' => $companies
-            ]);
-        } catch (\Exception $e) {
-            return $this->errorResponse($e->getMessage(), 500);
-        }
+        return $this->companyService->index($search, $perPage, $orderBy, $orderDirection);
+    } catch (\Exception $e) {
+        return $this->errorResponse($e->getMessage(), 500);
     }
+}
 
     public function show($companyId)
     {
@@ -148,4 +130,6 @@ class CompanyController extends Controller
             'message' => 'RUC válido'
         ]);
     }
+
+
 }

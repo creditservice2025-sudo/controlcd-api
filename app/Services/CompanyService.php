@@ -17,6 +17,55 @@ class CompanyService
 {
     use ApiResponse;
 
+    public function index(
+        string $search = '',
+        int $perPage = 10,
+        string $orderBy = 'created_at',
+        string $orderDirection = 'desc'
+    ) {
+        try {
+            $companies = Company::with('user')
+                ->withCount(['sellers'])
+                ->withSum('credits as total_credits_value', 'credit_value')
+                ->with(['credits' => function ($query) {
+                    $query->select('company_id', 'total_interest');
+                }])
+                ->when($search, function ($query, $search) {
+                    return $query->where('name', 'like', "%{$search}%")
+                        ->orWhere('code', 'like', "%{$search}%")
+                        ->orWhere('ruc', 'like', "%{$search}%")
+                        ->orWhere('email', 'like', "%{$search}%")
+                        ->orWhereHas('user', function ($q) use ($search) {
+                            $q->where('name', 'like', "%{$search}%")
+                                ->orWhere('dni', 'like', "%{$search}%");
+                        });
+                })
+                ->orderBy($orderBy, $orderDirection)
+                ->paginate($perPage);
+
+            $transformedCompanies = $companies->getCollection()->transform(function ($company) {
+                $totalInterest = $company->credits->sum('total_interest');
+
+                $company->total_with_interest = $company->total_credits_value +
+                    ($company->total_credits_value * $totalInterest / 100);
+
+                $company->credits_count = $company->credits->count();
+
+                return $company;
+            });
+
+            $companies->setCollection($transformedCompanies);
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Empresas obtenidas exitosamente',
+                'data' => $companies
+            ]);
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->errorResponse('Error al obtener las empresas', 500);
+        }
+    }
     public function create(CompanyRequest $request)
     {
         DB::beginTransaction();
@@ -37,7 +86,7 @@ class CompanyService
                 'dni' => $params['dni'],
                 'phone' => $params['phone'] ?? null,
                 'password' => Hash::make($params['password']),
-                'role_id' => $params['role_id'] ?? 2 
+                'role_id' => $params['role_id'] ?? 2
             ]);
 
             $logoPath = null;
@@ -56,11 +105,11 @@ class CompanyService
             ]);
 
             DB::commit();
-            
+
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Empresa creada con éxito',
-                'data' => $company 
+                'data' => $company
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
@@ -89,7 +138,7 @@ class CompanyService
                 if ($company->logo_path) {
                     Helper::deleteFile($company->logo_path);
                 }
-                
+
                 $logoPath = Helper::uploadFile($request->file('logo'), 'companies/logos');
                 $params['logo_path'] = $logoPath;
             }
@@ -140,7 +189,7 @@ class CompanyService
     public function delete($companyId)
     {
         DB::beginTransaction();
-        
+
         try {
             $company = Company::with('user')->find($companyId);
 
