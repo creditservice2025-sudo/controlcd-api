@@ -489,7 +489,7 @@ class CreditService
             $reportData[] = [
                 'no' => $index + 1,
                 'client_name' => $credit->client->name,
-                'credit_id' => `#00` + $credit->id,
+                'credit_id' =>  $credit->id,
                 'payment_frequency' => $credit->payment_frequency,
                 'quota_amount' => $quotaAmount,
                 'remaining_amount' => $credit->remaining_amount,
@@ -526,8 +526,8 @@ class CreditService
     {
         $safeDate = Carbon::parse($reportData['report_date'])->format('Y-m-d');
         $filename = 'daily_collection_report_' . $safeDate . '.pdf';
-    
-        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('reports.daily-collection', $reportData);
+
+        $pdf = Pdf::loadView('reports.daily-collection', $reportData);
         return $pdf->download($filename);
     }
     public function getReport($request)
