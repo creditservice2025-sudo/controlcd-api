@@ -526,18 +526,10 @@ class CreditService
     {
         $safeDate = Carbon::parse($reportData['report_date'])->format('Y-m-d');
         $filename = 'daily_collection_report_' . $safeDate . '.pdf';
-
-        if (class_exists('Barryvdh\DomPDF\Facade\Pdf')) {
-            $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('reports.daily-collection', $reportData);
-            return $pdf->download($filename);
-        }
-
-        $html = view('reports.daily-collection', $reportData)->render();
-        return response($html, 200)
-            ->header('Content-Type', 'text/html')
-            ->header('Content-Disposition', 'attachment; filename="' . $filename . '"');
+    
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('reports.daily-collection', $reportData);
+        return $pdf->download($filename);
     }
-
     public function getReport($request)
     {
         $date = $request->date ?? Carbon::today()->format('Y-m-d');
