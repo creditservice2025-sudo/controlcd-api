@@ -109,4 +109,15 @@ class CreditController extends Controller
             return $this->errorResponse('Error al obtener los créditos del vendedor: ' . $e->getMessage(), 500);
         }
     }
+
+    public function dailyCollectionReport(Request $request)
+    {
+        try {
+            return $this->creditService->getReport($request);
+        } catch (\Exception $e) {
+            return response()->json([
+                'error' => $e->getMessage()
+            ], 400);
+        }
+    }
 }

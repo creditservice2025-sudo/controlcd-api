@@ -23,17 +23,17 @@ class SellerService
     public function create(SellerRequest $request)
     {
         DB::beginTransaction();
-
+    
         try {
             $params = $request->validated();
-
+    
             if ($request->has('images')) {
                 $validationResponse = $this->validateImages($request);
                 if ($validationResponse !== true) {
                     return $validationResponse;
                 }
             }
-
+    
             $user = User::create([
                 'name' => $params['name'],
                 'email' => $params['email'],
@@ -41,41 +41,35 @@ class SellerService
                 'password' => Hash::make($params['password']),
                 'role_id' => 5
             ]);
-
+    
             $seller = Seller::create([
                 'user_id' => $user->id,
                 'city_id' => $params['city_id'],
                 'company_id' => $params['company_id'],
                 'status' => 'ACTIVE'
             ]);
-
+    
             if (isset($params['members']) && is_array($params['members'])) {
-                foreach ($params['members'] as $user) {
-                    $userSeller = new UserRoute();
-                    $userSeller->user_id = $user;
-                    $userSeller->seller_id = $seller->id;
-                    $userSeller->save();
+                foreach ($params['members'] as $memberId) {
+                    UserRoute::create([
+                        'user_id' => $memberId,
+                        'seller_id' => $seller->id
+                    ]);
                 }
             }
-
-
-
+    
             if ($request->has('images')) {
                 $images = $request->input('images');
                 foreach ($images as $index => $imageData) {
                     $imageFile = $request->file("images.{$index}.file");
-
                     $imagePath = Helper::uploadFile($imageFile, 'clients');
-
                     $seller->images()->create([
                         'path' => $imagePath,
                         'type' => $imageData['type']
                     ]);
                 }
             }
-
-
-
+    
             DB::commit();
             return $this->successResponse([
                 'success' => true,

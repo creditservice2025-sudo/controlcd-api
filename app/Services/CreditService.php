@@ -14,9 +14,11 @@ use App\Http\Requests\Credit\CreditRequest;
 use App\Models\Installment;
 use App\Models\Liquidation;
 use App\Models\Payment;
+use App\Models\Seller;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Barryvdh\DomPDF\Facade\Pdf;
 
 class CreditService
 {
@@ -439,5 +441,114 @@ class CreditService
             \Log::error($e->getMessage());
             return $this->errorResponse('Error al obtener los créditos del vendedor: ' . $e->getMessage(), 500);
         }
+    }
+
+    public function generateDailyReport($date, $sellerId = null)
+    {
+        $maxDate = Carbon::today();
+        $minDate = Carbon::today()->subDays(7);
+        $reportDate = Carbon::parse($date);
+
+        if ($reportDate->lt($minDate) || $reportDate->gt($maxDate)) {
+            throw new \Exception('Solo se pueden consultar fechas dentro de los últimos 7 días');
+        }
+
+        $creditsQuery = Credit::with(['client', 'installments'])
+            ->whereHas('payments', function ($query) use ($reportDate) {
+                $query->whereDate('payment_date', $reportDate->toDateString());
+            });
+
+        if ($sellerId) {
+            $creditsQuery->whereHas('client', function ($query) use ($sellerId) {
+                $query->where('seller_id', $sellerId);
+            });
+        }
+
+        $credits = $creditsQuery->get();
+
+        $reportData = [];
+        $totalCollected = 0;
+        $withPayment = 0;
+        $withoutPayment = 0;
+
+        foreach ($credits as $index => $credit) {
+            $quotaAmount = (($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value) / $credit->number_installments;
+
+            $dayPayments = $credit->payments()->whereDate('payment_date', $reportDate->toDateString())->get();
+            $paidToday = $dayPayments->sum('amount');
+            $paymentTime = $dayPayments->isNotEmpty() ? $dayPayments->last()->created_at->format('H:i:s') : null;
+
+            if ($paidToday > 0) {
+                $withPayment++;
+            } else {
+                $withoutPayment++;
+            }
+
+            $totalCollected += $paidToday;
+
+            $reportData[] = [
+                'no' => $index + 1,
+                'client_name' => $credit->client->name,
+                'credit_id' => `#00` + $credit->id,
+                'payment_frequency' => $credit->payment_frequency,
+                'quota_amount' => $quotaAmount,
+                'remaining_amount' => $credit->remaining_amount,
+                'paid_today' => $paidToday,
+                'payment_time' => $paymentTime,
+            ];
+        }
+
+        $newCredits = Credit::whereDate('created_at', $reportDate->toDateString());
+
+
+        if ($sellerId) {
+            $newCredits->whereHas('client', function ($query) use ($sellerId) {
+                $query->where('seller_id', $sellerId);
+            });
+        }
+
+        $newCredits = $newCredits->get();
+        $totalNewCredits = $newCredits->sum('credit_value');
+
+        return [
+            'report_date' => $date,
+            'report_data' => $reportData,
+            'total_collected' => $totalCollected,
+            'with_payment' => $withPayment,
+            'without_payment' => $withoutPayment,
+            'total_credits' => count($reportData),
+            'new_credits' => $newCredits,
+            'total_new_credits' => $totalNewCredits,
+            'seller' => $sellerId ? Seller::find($sellerId) : null
+        ];
+    }
+    public function generatePDF($reportData)
+    {
+        $safeDate = Carbon::parse($reportData['report_date'])->format('Y-m-d');
+        $filename = 'daily_collection_report_' . $safeDate . '.pdf';
+
+        if (class_exists('Barryvdh\DomPDF\Facade\Pdf')) {
+            $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('reports.daily-collection', $reportData);
+            return $pdf->download($filename);
+        }
+
+        $html = view('reports.daily-collection', $reportData)->render();
+        return response($html, 200)
+            ->header('Content-Type', 'text/html')
+            ->header('Content-Disposition', 'attachment; filename="' . $filename . '"');
+    }
+
+    public function getReport($request)
+    {
+        $date = $request->date ?? Carbon::today()->format('Y-m-d');
+        $sellerId = $request->seller_id ?? null;
+
+        $reportData = $this->generateDailyReport($date, $sellerId);
+
+        if ($request->has('download') && $request->download == 'pdf') {
+            return $this->generatePDF($reportData);
+        }
+
+        return $reportData;
     }
 }

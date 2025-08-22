@@ -169,4 +169,7 @@ Route::middleware('auth:api')->group(function () {
     Route::get('payment/{creditId}/{paymentId}', [PaymentController::class, 'show']);
     Route::get('payments/seller/{sellerId}', [PaymentController::class, 'indexBySeller']);
     Route::get('payments/total/{creditId}', [PaymentController::class, 'getTotalWithoutInstallments']);
+
+    //reports
+    Route::get('reports/daily-collection', [CreditController::class, 'dailyCollectionReport']);
 });
