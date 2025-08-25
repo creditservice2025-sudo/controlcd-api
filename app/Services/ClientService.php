@@ -333,38 +333,38 @@ class ClientService
 
     public function index(
         string $search,
-        int $perpage,
+        int $perpage, 
         string $orderBy = 'created_at',
         string $orderDirection = 'desc'
     ) {
         try {
             $user = Auth::user();
             $seller = $user->seller;
-
+    
             $clientsQuery = Client::with(['guarantors', 'images', 'credits', 'seller', 'seller.city'])
                 ->where(function ($query) use ($search) {
                     $query->where('name', 'like', "%{$search}%")
                         ->orWhere('dni', 'like', "%{$search}%")
                         ->orWhere('email', 'like', "%{$search}%");
                 });
-
+    
             if ($user->role_id == 5 && $seller) {
                 $clientsQuery->where('seller_id', $seller->id);
             }
-
+    
             $validOrderDirections = ['asc', 'desc'];
             $orderDirection = in_array(strtolower($orderDirection), $validOrderDirections)
                 ? $orderDirection
                 : 'desc';
-
+    
             $clientsQuery->orderBy($orderBy, $orderDirection);
-
-            $clients = $clientsQuery->paginate($perpage);
-
+    
+            $clients = $clientsQuery->get();
+    
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Clientes encontrados',
-                'data' => $clients
+                'data' => $clients 
             ]);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
@@ -768,17 +768,20 @@ class ClientService
     {
         // Usar fecha actual si no se proporciona
         $date = $date ?: now()->format('Y-m-d');
-
+    
         $user = Auth::user();
         $seller = $user->seller;
         $sellerId = $seller ? $seller->id : null;
         $userId = $user->id;
-
-        // 1. TOTAL ESPERADO
+    
+        // 1. TOTAL ESPERADO (considerando soft deletes)
         $expectedQuery = DB::table('installments')
             ->selectRaw('COALESCE(SUM(quota_amount), 0) as total_expected')
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
             ->join('clients', 'credits.client_id', '=', 'clients.id')
+            ->whereNull('installments.deleted_at')
+            ->whereNull('credits.deleted_at')
+            ->whereNull('clients.deleted_at')
             ->where('credits.status', '!=', 'liquidado')
             ->where(function ($query) use ($date) {
                 $query->whereDate('due_date', $date)
@@ -787,71 +790,87 @@ class ClientService
                             ->whereDate('due_date', '=', $date);
                     });
             });
-
+    
         if ($sellerId) {
             $expectedQuery->where('credits.seller_id', $sellerId);
         }
         $expected = $expectedQuery->first();
-
-        // 2. PAGOS DEL DÍA
+    
+        // 2. PAGOS DEL DÍA (considerando soft deletes)
         $todayPaymentsQuery = DB::table('payments')
             ->selectRaw('
-            COALESCE(SUM(payments.amount), 0) as total_collected_today,
-            COALESCE(SUM(CASE WHEN payments.status = "Pagado" THEN payments.amount ELSE 0 END), 0) as total_paid_today,
-            COALESCE(SUM(CASE WHEN payments.status = "Abonado" THEN payments.amount ELSE 0 END), 0) as total_deposits_today,
-            COUNT(DISTINCT credits.client_id) as clients_paid_today
-        ')
+                COALESCE(SUM(payments.amount), 0) as total_collected_today,
+                COALESCE(SUM(CASE WHEN payments.status = "Pagado" THEN payments.amount ELSE 0 END), 0) as total_paid_today,
+                COALESCE(SUM(CASE WHEN payments.status = "Abonado" THEN payments.amount ELSE 0 END), 0) as total_deposits_today,
+                COUNT(DISTINCT credits.client_id) as clients_paid_today
+            ')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
             ->join('clients', 'credits.client_id', '=', 'clients.id')
+            ->whereNull('payments.deleted_at')
+            ->whereNull('credits.deleted_at')
+            ->whereNull('clients.deleted_at')
             ->whereDate('payments.payment_date', $date)
             ->whereIn('payments.status', ['Pagado', 'Abonado'])
             ->where('credits.status', '!=', 'liquidado');
-
+    
         if ($sellerId) {
             $todayPaymentsQuery->where('credits.seller_id', $sellerId);
         }
         $todayPayments = $todayPaymentsQuery->first();
-
-        // 3. PAGOS NO PAGADOS HOY
+    
+        // 3. PAGOS NO PAGADOS HOY (considerando soft deletes)
         $todayUnpaidPaymentsQuery = DB::table('payments')
             ->selectRaw('COALESCE(SUM(installments.quota_amount), 0) as total_unpaid_today')
             ->join('payment_installments', 'payments.id', '=', 'payment_installments.payment_id')
             ->join('installments', 'payment_installments.installment_id', '=', 'installments.id')
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
             ->join('clients', 'credits.client_id', '=', 'clients.id')
+            ->whereNull('payments.deleted_at')
+            ->whereNull('payment_installments.deleted_at')
+            ->whereNull('installments.deleted_at')
+            ->whereNull('credits.deleted_at')
+            ->whereNull('clients.deleted_at')
             ->whereDate('payments.payment_date', $date)
             ->where('payments.status', 'No Pagado')
             ->where('credits.status', '!=', 'liquidado');
-
+    
         if ($sellerId) {
             $todayUnpaidPaymentsQuery->where('credits.seller_id', $sellerId);
         }
         $todayUnpaidPayments = $todayUnpaidPaymentsQuery->first();
-
-        // 4. ABONOS HOY
+    
+        // 4. ABONOS HOY (considerando soft deletes)
         $todayAbonosQuery = DB::table('payments')
             ->selectRaw('COALESCE(SUM(payments.amount), 0) as total_deposits_today')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
             ->join('clients', 'credits.client_id', '=', 'clients.id')
+            ->whereNull('payments.deleted_at')
+            ->whereNull('credits.deleted_at')
+            ->whereNull('clients.deleted_at')
             ->whereDate('payments.payment_date', $date)
             ->where('payments.status', 'Abonado');
-
+    
         if ($sellerId) {
             $todayAbonosQuery->where('credits.seller_id', $sellerId);
         }
         $todayAbonos = $todayAbonosQuery->first();
-
-        // 5. RECAUDACIÓN DE CUOTAS VENCIDAS HOY
+    
+        // 5. RECAUDACIÓN DE CUOTAS VENCIDAS HOY (considerando soft deletes)
         $todayDueCollectedQuery = DB::table('payment_installments')
             ->selectRaw('
-            COALESCE(SUM(payment_installments.applied_amount), 0) as total_collected,
-            COALESCE(SUM(CASE WHEN payments.status = "Pagado" THEN payment_installments.applied_amount ELSE 0 END), 0) as total_paid,
-            COALESCE(SUM(CASE WHEN payments.status = "Abonado" THEN payments.amount ELSE 0 END), 0) as total_deposits
-        ')
+                COALESCE(SUM(payment_installments.applied_amount), 0) as total_collected,
+                COALESCE(SUM(CASE WHEN payments.status = "Pagado" THEN payment_installments.applied_amount ELSE 0 END), 0) as total_paid,
+                COALESCE(SUM(CASE WHEN payments.status = "Abonado" THEN payments.amount ELSE 0 END), 0) as total_deposits
+            ')
             ->join('installments', 'payment_installments.installment_id', '=', 'installments.id')
             ->join('payments', 'payment_installments.payment_id', '=', 'payments.id')
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
             ->join('clients', 'credits.client_id', '=', 'clients.id')
+            ->whereNull('payment_installments.deleted_at')
+            ->whereNull('installments.deleted_at')
+            ->whereNull('payments.deleted_at')
+            ->whereNull('credits.deleted_at')
+            ->whereNull('clients.deleted_at')
             ->where(function ($query) use ($date) {
                 $query->whereDate('installments.due_date', $date)
                     ->orWhere(function ($q) use ($date) {
@@ -861,30 +880,35 @@ class ClientService
             })
             ->whereIn('payments.status', ['Pagado', 'Abonado'])
             ->where('credits.status', '!=', 'liquidado');
-
+    
         if ($sellerId) {
             $todayDueCollectedQuery->where('credits.seller_id', $sellerId);
         }
         $todayDueCollected = $todayDueCollectedQuery->first();
-
-        // 6. ESTADÍSTICAS DE CLIENTES
+    
+        // 6. ESTADÍSTICAS DE CLIENTES (considerando soft deletes)
         $clientsQuery = DB::table('clients')
             ->selectRaw('
-            COUNT(DISTINCT clients.id) as total_clients,
-            COUNT(DISTINCT CASE WHEN payments.id IS NOT NULL THEN clients.id END) as clients_served,
-            COUNT(DISTINCT CASE WHEN payments.status = "Abonado" THEN clients.id END) as pending_clients,
-            COUNT(DISTINCT CASE WHEN payments.id IS NOT NULL AND payments.status != "Pagado" 
-                                THEN clients.id END) as defaulted_clients
-        ')
+                COUNT(DISTINCT clients.id) as total_clients,
+                COUNT(DISTINCT CASE WHEN payments.id IS NOT NULL THEN clients.id END) as clients_served,
+                COUNT(DISTINCT CASE WHEN payments.status = "Abonado" THEN clients.id END) as pending_clients,
+                COUNT(DISTINCT CASE WHEN payments.id IS NOT NULL AND payments.status != "Pagado" 
+                                    THEN clients.id END) as defaulted_clients
+            ')
             ->join('credits', 'clients.id', '=', 'credits.client_id')
             ->join('installments', 'credits.id', '=', 'installments.credit_id')
             ->leftJoin('payment_installments', function ($join) {
-                $join->on('installments.id', '=', 'payment_installments.installment_id');
+                $join->on('installments.id', '=', 'payment_installments.installment_id')
+                    ->whereNull('payment_installments.deleted_at');
             })
             ->leftJoin('payments', function ($join) {
                 $join->on('payment_installments.payment_id', '=', 'payments.id')
+                    ->whereNull('payments.deleted_at')
                     ->whereIn('payments.status', ['Pagado', 'Abonado']);
             })
+            ->whereNull('clients.deleted_at')
+            ->whereNull('credits.deleted_at')
+            ->whereNull('installments.deleted_at')
             ->where(function ($query) use ($date) {
                 $query->whereDate('installments.due_date', $date)
                     ->orWhere(function ($q) use ($date) {
@@ -893,13 +917,13 @@ class ClientService
                     });
             })
             ->where('credits.status', '!=', 'liquidado');
-
+    
         if ($sellerId) {
             $clientsQuery->where('credits.seller_id', $sellerId);
         }
         $clientCounts = $clientsQuery->first();
-
-        // 7. CLIENTES ATENDIDOS HOY
+    
+        // 7. CLIENTES ATENDIDOS HOY (considerando soft deletes)
         $attendedTodayQuery = DB::table('payments')
             ->selectRaw('COUNT(DISTINCT credits.client_id) as attended_today')
             ->leftJoin('payment_installments', 'payments.id', '=', 'payment_installments.payment_id')
@@ -908,84 +932,101 @@ class ClientService
                 $join->on('installments.credit_id', '=', 'credits.id')
                     ->orOn('payments.credit_id', '=', 'credits.id');
             })
+            ->whereNull('payments.deleted_at')
+            ->whereNull('payment_installments.deleted_at')
+            ->whereNull('installments.deleted_at')
+            ->whereNull('credits.deleted_at')
             ->whereDate('payments.created_at', $date)
             ->where(function ($query) {
                 $query->where('credits.status', '!=', 'liquidado')
                     ->orWhereNull('credits.status');
             });
-
+    
         if ($sellerId) {
             $attendedTodayQuery->where('credits.seller_id', $sellerId);
         }
         $attendedToday = $attendedTodayQuery->value('attended_today') ?? 0;
-
-        // 8. CLIENTES PENDIENTES HOY
+    
+        // 8. CLIENTES PENDIENTES HOY (considerando soft deletes)
         $pendingTodayQuery = DB::table('clients')
             ->selectRaw('COUNT(DISTINCT clients.id) as pending_today')
             ->join('credits', 'clients.id', '=', 'credits.client_id')
             ->join('installments', 'credits.id', '=', 'installments.credit_id')
+            ->whereNull('clients.deleted_at')
+            ->whereNull('credits.deleted_at')
+            ->whereNull('installments.deleted_at')
             ->where('credits.status', '!=', 'liquidado')
             ->whereDate('installments.due_date', $date)
             ->whereNotExists(function ($query) use ($date) {
                 $query->select(DB::raw(1))
                     ->from('payments')
+                    ->whereNull('payments.deleted_at')
                     ->where(function ($q) {
                         $q->whereColumn('payments.credit_id', 'credits.id')
                             ->orWhereExists(function ($sub) {
                                 $sub->select(DB::raw(1))
                                     ->from('payment_installments')
                                     ->join('installments as i', 'payment_installments.installment_id', '=', 'i.id')
+                                    ->whereNull('payment_installments.deleted_at')
+                                    ->whereNull('i.deleted_at')
                                     ->whereColumn('i.credit_id', 'credits.id')
                                     ->whereColumn('payment_installments.payment_id', 'payments.id');
                             });
                     })
                     ->whereDate('payments.created_at', $date);
             });
-
+    
         if ($sellerId) {
             $pendingTodayQuery->where('credits.seller_id', $sellerId);
         }
         $pendingToday = $pendingTodayQuery->value('pending_today') ?? 0;
-
-        // 9. CRÉDITOS ACTIVOS CREADOS HOY
+    
+        // 9. CRÉDITOS ACTIVOS CREADOS HOY (considerando soft deletes)
         $activeCreditsTodayQuery = DB::table('credits')
             ->selectRaw('COUNT(credits.id) as total_active_credits_today')
+            ->whereNull('credits.deleted_at')
             ->whereDate('credits.created_at', $date)
             ->where('credits.status', 'Vigente');
-
+    
         if ($sellerId) {
             $activeCreditsTodayQuery->where('credits.seller_id', $sellerId);
         }
         $activeCreditsToday = $activeCreditsTodayQuery->first();
-
-        // 10. GASTOS DEL DÍA
+    
+        // 10. GASTOS DEL DÍA (considerando soft deletes)
         $dailyExpensesQuery = DB::table('expenses')
             ->selectRaw('COALESCE(SUM(expenses.value), 0) as total_expenses_today')
+            ->whereNull('expenses.deleted_at')
             ->whereDate('expenses.created_at', $date);
-
+    
         if ($sellerId) {
             $dailyExpensesQuery->where('expenses.user_id', $userId);
         }
         $dailyExpenses = $dailyExpensesQuery->first();
-
-        // 11. CLIENTES EN MORA HOY
+    
+        // 11. CLIENTES EN MORA HOY (considerando soft deletes)
         $defaultedClientsCountQuery = DB::table('clients')
             ->join('credits', 'clients.id', '=', 'credits.client_id')
             ->join('installments', 'credits.id', '=', 'installments.credit_id')
             ->join('payment_installments', 'installments.id', '=', 'payment_installments.installment_id')
             ->join('payments', 'payment_installments.payment_id', '=', 'payments.id')
+            ->whereNull('clients.deleted_at')
+            ->whereNull('credits.deleted_at')
+            ->whereNull('installments.deleted_at')
+            ->whereNull('payment_installments.deleted_at')
+            ->whereNull('payments.deleted_at')
             ->whereDate('payments.created_at', $date)
             ->where(function ($query) {
                 $query->where('payments.status', '!=', 'Pagado')
                     ->where('payments.status', '!=', 'Abonado');
             })
             ->where('credits.status', '!=', 'liquidado');
-
+    
         if ($sellerId) {
             $defaultedClientsCountQuery->where('credits.seller_id', $sellerId);
         }
         $defaultedClientsCount = $defaultedClientsCountQuery->distinct()->count('clients.id');
-
+    
         // RESULTADO FINAL
         $summary = [
             'totalExpected' => $expected->total_expected ?? 0,
@@ -1009,7 +1050,7 @@ class ClientService
             'totalActiveCreditsToday' => $activeCreditsToday->total_active_credits_today ?? 0,
             'totalExpensesToday' => $dailyExpenses->total_expenses_today ?? 0,
         ];
-
+    
         return response()->json([
             'success' => true,
             'message' => 'Resumen de cobranza diaria',

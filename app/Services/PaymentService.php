@@ -13,6 +13,7 @@ use Carbon\Carbon;
 use App\Models\Payment;
 use App\Http\Requests\Payment\PaymentRequest;
 use App\Models\Installment;
+use App\Models\Liquidation;
 use App\Models\PaymentImage;
 use App\Models\PaymentInstallment;
 use App\Models\Seller;
@@ -578,6 +579,150 @@ class PaymentService
             ]);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+    public function delete($paymentId)
+    {
+        try {
+            DB::beginTransaction();
+
+            $payment = Payment::with(['credit.client', 'installments.installment'])->find($paymentId);
+
+            if (!$payment) {
+                throw new \Exception('El pago no existe.');
+            }
+
+            $today = Carbon::today();
+            $paymentDate = Carbon::parse($payment->created_at)->startOfDay();
+
+            if (!$paymentDate->equalTo($today)) {
+                throw new \Exception('Solo se pueden eliminar pagos creados el día de hoy.');
+            }
+
+            // Verificar si existe una liquidación para el vendedor en la fecha del pago
+            $credit = $payment->credit;
+            $sellerId = $credit->client->seller_id;
+
+            $liquidationExists = Liquidation::where('seller_id', $sellerId)
+                ->whereDate('created_at', $paymentDate)
+                ->exists();
+
+            if ($liquidationExists) {
+                throw new \Exception('No se puede eliminar el pago. El vendedor ya tiene una liquidación registrada para el día de hoy.');
+            }
+
+            // Validación adicional: Verificar si hay pagos posteriores que dependan de este
+            $laterPayments = Payment::where('credit_id', $payment->credit_id)
+                ->where('created_at', '>', $payment->created_at)
+                ->exists();
+
+            if ($laterPayments) {
+                throw new \Exception('No se puede eliminar este pago porque existen pagos posteriores en el mismo crédito. Debe eliminar primero los pagos más recientes.');
+            }
+
+            // Validación para abonos acumulados
+            if ($payment->status === 'Abonado') {
+                $cacheKey = "credit:{$credit->id}:pending_payments";
+                $cachePaymentsKey = "credit:{$credit->id}:pending_payments_list";
+
+                $pendingPayments = Cache::get($cachePaymentsKey, []);
+
+                // Verificar si este pago está en la lista de abonos pendientes
+                $isInPending = collect($pendingPayments)->contains('payment_id', $paymentId);
+
+                if ($isInPending && count($pendingPayments) > 1) {
+                    // Encontrar la posición de este pago en la lista
+                    $paymentIndex = null;
+                    foreach ($pendingPayments as $index => $pendingPayment) {
+                        if ($pendingPayment['payment_id'] == $paymentId) {
+                            $paymentIndex = $index;
+                            break;
+                        }
+                    }
+
+                    // Si no es el último pago, no se puede eliminar
+                    if ($paymentIndex !== null && $paymentIndex < count($pendingPayments) - 1) {
+                        throw new \Exception('No se puede eliminar este abono porque existen abonos posteriores que dependen de él. Debe eliminar primero los abonos más recientes.');
+                    }
+                }
+            }
+
+            // Revertir los montos aplicados a las cuotas
+            foreach ($payment->installments as $paymentInstallment) {
+                $installment = $paymentInstallment->installment;
+
+                if ($installment) {
+                    // Revertir el monto aplicado a la cuota
+                    $installment->paid_amount = max(0, $installment->paid_amount - $paymentInstallment->applied_amount);
+
+                    // Actualizar el estado de la cuota
+                    if ($installment->paid_amount <= 0) {
+                        // Si no se ha pagado nada, determinar estado según fecha de vencimiento
+                        $dueDate = Carbon::parse($installment->due_date);
+                        $installment->status = $dueDate->isPast() ? 'Atrasado' : 'Pendiente';
+                    } elseif ($installment->paid_amount < $installment->quota_amount) {
+                        $installment->status = 'Parcial';
+                    } else {
+                        $installment->status = 'Pagado';
+                    }
+
+                    $installment->save();
+                }
+            }
+
+            // Eliminar registros relacionados
+            PaymentInstallment::where('payment_id', $paymentId)->delete();
+            PaymentImage::where('payment_id', $paymentId)->delete();
+
+            // Revertir el pago en el crédito
+            $credit->remaining_amount += $payment->amount;
+
+            // Si el crédito estaba marcado como Liquidado, volver a estado Vigente
+            if ($credit->status === 'Liquidado') {
+                $credit->status = 'Vigente';
+            }
+
+            $credit->save();
+
+            // Si era un abono pendiente, actualizar la caché
+            if ($payment->status === 'Abonado') {
+                $cacheKey = "credit:{$credit->id}:pending_payments";
+                $cachePaymentsKey = "credit:{$credit->id}:pending_payments_list";
+
+                $accumulated = Cache::get($cacheKey, 0);
+                $pendingPayments = Cache::get($cachePaymentsKey, []);
+
+                // Restar el monto del acumulado
+                $newAccumulated = max($accumulated - $payment->amount, 0);
+
+                // Remover este pago de la lista
+                $pendingPayments = array_filter($pendingPayments, function ($p) use ($paymentId) {
+                    return $p['payment_id'] != $paymentId;
+                });
+
+                if ($newAccumulated > 0) {
+                    Cache::put($cacheKey, $newAccumulated);
+                    Cache::put($cachePaymentsKey, $pendingPayments);
+                } else {
+                    Cache::forget($cacheKey);
+                    Cache::forget($cachePaymentsKey);
+                }
+            }
+
+            // Eliminar el pago
+            $payment->delete();
+
+            DB::commit();
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Pago eliminado correctamente',
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error("Error al eliminar el pago con ID {$paymentId}: " . $e->getMessage());
             return $this->errorResponse($e->getMessage(), 500);
         }
     }

@@ -11,6 +11,8 @@ use App\Models\Guarantor;
 use Illuminate\Support\Str;
 use App\Models\Credit;
 use App\Http\Requests\Credit\CreditRequest;
+use App\Models\Expense;
+use App\Models\Income;
 use App\Models\Installment;
 use App\Models\Liquidation;
 use App\Models\Payment;
@@ -178,6 +180,14 @@ class CreditService
                 return $this->errorResponse('El crédito no existe.', 404);
             }
 
+            if ($credit->payments()->exists()) {
+                DB::rollBack();
+                return $this->errorResponse(
+                    'No se puede eliminar el crédito porque tiene pagos registrados.',
+                    403
+                );
+            }
+
             $liquidationExists = Liquidation::where('seller_id', $credit->seller_id)
                 ->whereDate('created_at', Carbon::today())
                 ->exists();
@@ -190,11 +200,7 @@ class CreditService
                 );
             }
 
-            if ($credit->payments) {
-                $credit->payments()->forceDelete();
-            }
             $credit->installments()->forceDelete();
-
             $credit->forceDelete();
 
             DB::commit();
@@ -415,6 +421,7 @@ class CreditService
     public function getSellerCreditsByDate(int $sellerId, Request $request, int $perpage)
     {
         try {
+
             $creditsQuery = Credit::with(['client', 'installments', 'payments'])
                 ->where('seller_id', $sellerId);
 
@@ -445,71 +452,121 @@ class CreditService
 
     public function generateDailyReport($date, $sellerId = null)
     {
+        $user = Auth::user();
         $maxDate = Carbon::today();
         $minDate = Carbon::today()->subDays(7);
         $reportDate = Carbon::parse($date);
-
+    
         if ($reportDate->lt($minDate) || $reportDate->gt($maxDate)) {
             throw new \Exception('Solo se pueden consultar fechas dentro de los últimos 7 días');
         }
-
+    
+        // Obtener créditos con pagos en la fecha especificada
         $creditsQuery = Credit::with(['client', 'installments'])
             ->whereHas('payments', function ($query) use ($reportDate) {
                 $query->whereDate('payment_date', $reportDate->toDateString());
             });
-
+    
         if ($sellerId) {
             $creditsQuery->whereHas('client', function ($query) use ($sellerId) {
                 $query->where('seller_id', $sellerId);
             });
         }
-
+    
         $credits = $creditsQuery->get();
-
+    
+        // Obtener gastos del día
+        $expensesQuery = Expense::whereDate('created_at', $reportDate->toDateString());
+        if ($user) {
+            $expensesQuery->where('user_id', $user->id);
+        }
+        $expenses = $expensesQuery->get();
+        $totalExpenses = $expenses->sum('value');
+    
+        // Obtener ingresos del día
+        $incomesQuery = Income::whereDate('created_at', $reportDate->toDateString());
+        if ($user) {
+            $incomesQuery->where('user_id', $user->id);
+        }
+        $incomes = $incomesQuery->get();
+        $totalIncomes = $incomes->sum('value');
+    
         $reportData = [];
         $totalCollected = 0;
         $withPayment = 0;
         $withoutPayment = 0;
-
+        $totalCapital = 0;
+        $totalInterest = 0;
+        $totalMicroInsurance = 0;
+        $capitalCollected = 0;
+        $interestCollected = 0;
+        $microInsuranceCollected = 0;
+    
         foreach ($credits as $index => $credit) {
-            $quotaAmount = (($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value) / $credit->number_installments;
-
+            $interestAmount = $credit->credit_value * ($credit->total_interest / 100);
+            $quotaAmount = ($credit->credit_value + $interestAmount + $credit->micro_insurance_amount) / $credit->number_installments;
+    
             $dayPayments = $credit->payments()->whereDate('payment_date', $reportDate->toDateString())->get();
             $paidToday = $dayPayments->sum('amount');
             $paymentTime = $dayPayments->isNotEmpty() ? $dayPayments->last()->created_at->format('H:i:s') : null;
-
+    
             if ($paidToday > 0) {
                 $withPayment++;
             } else {
                 $withoutPayment++;
             }
-
+    
             $totalCollected += $paidToday;
-
+            $totalCapital += $credit->credit_value;
+            $totalInterest += $interestAmount;
+            $totalMicroInsurance += $credit->micro_insurance_amount;
+    
+            // Calcular distribución del pago entre capital, interés y microseguro
+            $totalCreditAmount = $credit->credit_value + $interestAmount + $credit->micro_insurance_amount;
+            
+            if ($totalCreditAmount > 0) {
+                $capitalRatio = $credit->credit_value / $totalCreditAmount;
+                $interestRatio = $interestAmount / $totalCreditAmount;
+                $microInsuranceRatio = $credit->micro_insurance_amount / $totalCreditAmount;
+            } else {
+                $capitalRatio = $interestRatio = $microInsuranceRatio = 0;
+            }
+    
+            $capitalCollected += $paidToday * $capitalRatio;
+            $interestCollected += $paidToday * $interestRatio;
+            $microInsuranceCollected += $paidToday * $microInsuranceRatio;
+    
             $reportData[] = [
                 'no' => $index + 1,
                 'client_name' => $credit->client->name,
-                'credit_id' =>  $credit->id,
+                'credit_id' => $credit->id,
                 'payment_frequency' => $credit->payment_frequency,
+                'capital' => $credit->credit_value,
+                'interest' => $interestAmount,
+                'micro_insurance' => $credit->micro_insurance_amount,
+                'total_credit' => $credit->credit_value + $interestAmount + $credit->micro_insurance_amount,
                 'quota_amount' => $quotaAmount,
                 'remaining_amount' => $credit->remaining_amount,
                 'paid_today' => $paidToday,
                 'payment_time' => $paymentTime,
             ];
         }
-
+    
+        // Obtener nuevos créditos del día
         $newCredits = Credit::whereDate('created_at', $reportDate->toDateString());
-
-
         if ($sellerId) {
             $newCredits->whereHas('client', function ($query) use ($sellerId) {
                 $query->where('seller_id', $sellerId);
             });
         }
-
         $newCredits = $newCredits->get();
         $totalNewCredits = $newCredits->sum('credit_value');
-
+    
+        // Calcular utilidad neta y neto entregado al cobrador
+        $netUtility = $totalCollected + $totalIncomes - $totalExpenses;
+        $netAmount = $totalCollected - $totalExpenses;
+        $netUtilityPlusCapital = $netUtility + $totalCapital;
+    
         return [
             'report_date' => $date,
             'report_data' => $reportData,
@@ -519,7 +576,19 @@ class CreditService
             'total_credits' => count($reportData),
             'new_credits' => $newCredits,
             'total_new_credits' => $totalNewCredits,
-            'seller' => $sellerId ? Seller::find($sellerId) : null
+            'seller' => $sellerId ? Seller::find($sellerId) : null,
+            'expenses' => $expenses,
+            'total_expenses' => $totalExpenses,
+            'incomes' => $incomes,
+            'total_incomes' => $totalIncomes,
+            'total_capital' => $totalCapital,
+            'total_interest' => $totalInterest,
+            'total_micro_insurance' => $totalMicroInsurance,
+            'capital_collected' => $capitalCollected,
+            'interest_collected' => $interestCollected,
+            'microinsurance_collected' => $microInsuranceCollected,
+            'net_utility' => $netUtility,
+            'net_utility_plus_capital' => $netUtilityPlusCapital,
         ];
     }
     public function generatePDF($reportData)
