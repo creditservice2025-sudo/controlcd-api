@@ -462,7 +462,7 @@ class CreditService
         }
     
         // Obtener créditos con pagos en la fecha especificada
-        $creditsQuery = Credit::with(['client', 'installments'])
+        $creditsQuery = Credit::with(['client', 'installments', 'payments'])
             ->whereHas('payments', function ($query) use ($reportDate) {
                 $query->whereDate('payment_date', $reportDate->toDateString());
             });
@@ -505,6 +505,11 @@ class CreditService
         foreach ($credits as $index => $credit) {
             $interestAmount = $credit->credit_value * ($credit->total_interest / 100);
             $quotaAmount = ($credit->credit_value + $interestAmount + $credit->micro_insurance_amount) / $credit->number_installments;
+            
+            // Calcular el saldo actual (valor total - pagos realizados)
+            $totalCreditValue = $credit->credit_value + $interestAmount + $credit->micro_insurance_amount;
+            $totalPaid = $credit->payments->sum('amount');
+            $remainingAmount = $totalCreditValue - $totalPaid;
     
             $dayPayments = $credit->payments()->whereDate('payment_date', $reportDate->toDateString())->get();
             $paidToday = $dayPayments->sum('amount');
@@ -544,9 +549,9 @@ class CreditService
                 'capital' => $credit->credit_value,
                 'interest' => $interestAmount,
                 'micro_insurance' => $credit->micro_insurance_amount,
-                'total_credit' => $credit->credit_value + $interestAmount + $credit->micro_insurance_amount,
+                'total_credit' => $totalCreditValue,
                 'quota_amount' => $quotaAmount,
-                'remaining_amount' => $credit->remaining_amount,
+                'remaining_amount' => $remainingAmount, 
                 'paid_today' => $paidToday,
                 'payment_time' => $paymentTime,
             ];
@@ -577,6 +582,7 @@ class CreditService
             'new_credits' => $newCredits,
             'total_new_credits' => $totalNewCredits,
             'seller' => $sellerId ? Seller::find($sellerId) : null,
+            'user' => $user,
             'expenses' => $expenses,
             'total_expenses' => $totalExpenses,
             'incomes' => $incomes,

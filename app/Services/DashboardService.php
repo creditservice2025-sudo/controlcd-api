@@ -124,6 +124,7 @@ class DashboardService
             $location = $this->getSellerLocation($seller);
 
             $sellerData = [
+                'id' => $seller->id,
                 'route' => $seller->name,
                 'location' => $location,
                 'capital' => 0,
