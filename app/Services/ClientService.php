@@ -180,12 +180,13 @@ class ClientService
                 $images = $request->input('images');
                 foreach ($images as $index => $imageData) {
                     $imageFile = $request->file("images.{$index}.file");
+                    $imageType = $imageData['type'];
 
                     $imagePath = Helper::uploadFile($imageFile, 'clients');
 
                     $client->images()->create([
                         'path' => $imagePath,
-                        'type' => $imageData['type']
+                        'type' => $imageType
                     ]);
                 }
             }
@@ -206,6 +207,8 @@ class ClientService
 
     public function update(ClientRequest $request, $clientId)
     {
+        DB::beginTransaction();
+
         try {
             $client = Client::find($clientId);
             if (!$client) {
@@ -213,23 +216,30 @@ class ClientService
             }
 
             $params = $request->validated();
-
             $client->update($params);
+
             if ($request->has('images')) {
                 $validationResponse = $this->validateImages($request);
                 if ($validationResponse !== true) {
+                    DB::rollBack();
                     return $validationResponse;
                 }
-
-                $client->images()->delete();
 
                 $images = $request->input('images');
                 foreach ($images as $index => $imageData) {
                     $imageFile = $request->file("images.{$index}.file");
+                    $imageType = $imageData['type'];
+
+                    $existingImage = $client->images()->where('type', $imageType)->first();
+                    if ($existingImage) {
+                        Helper::deleteFile($existingImage->path);
+                        $existingImage->delete();
+                    }
+
                     $imagePath = Helper::uploadFile($imageFile, 'clients');
                     $client->images()->create([
                         'path' => $imagePath,
-                        'type' => $imageData['type']
+                        'type' => $imageType
                     ]);
                 }
             }
@@ -238,17 +248,15 @@ class ClientService
                 $client->guarantors()->sync($request->input('guarantors_ids'));
             }
 
+            DB::commit();
+
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Cliente actualizado con éxito',
                 'data' => $client
             ]);
         } catch (\Exception $e) {
-            if (isset($uploadedImagePaths)) {
-                foreach ($uploadedImagePaths as $path) {
-                    Helper::deleteFile($path);
-                }
-            }
+            DB::rollBack();
             \Log::error($e->getMessage());
             return $this->errorResponse('Error al actualizar el cliente', 500);
         }
@@ -295,8 +303,8 @@ class ClientService
                 return $this->errorResponse('Formato incorrecto de imágenes.', 400);
             } */
 
-            if (!in_array($imageData['type'], ['profile', 'gallery'])) {
-                return $this->errorResponse('El tipo de imagen es requerido y debe ser "profile" o "gallery".', 400);
+            if (!in_array($imageData['type'], ['profile', 'gallery', 'money_in_hand', 'business', 'document'])) {
+                return $this->errorResponse('El tipo de imagen es requerido y debe ser "profile", "gallery", "money_in_hand", "business" o "document".', 400);
             }
         }
 
@@ -333,38 +341,38 @@ class ClientService
 
     public function index(
         string $search,
-        int $perpage, 
+        int $perpage,
         string $orderBy = 'created_at',
         string $orderDirection = 'desc'
     ) {
         try {
             $user = Auth::user();
             $seller = $user->seller;
-    
+
             $clientsQuery = Client::with(['guarantors', 'images', 'credits', 'seller', 'seller.city'])
                 ->where(function ($query) use ($search) {
                     $query->where('name', 'like', "%{$search}%")
                         ->orWhere('dni', 'like', "%{$search}%")
                         ->orWhere('email', 'like', "%{$search}%");
                 });
-    
+
             if ($user->role_id == 5 && $seller) {
                 $clientsQuery->where('seller_id', $seller->id);
             }
-    
+
             $validOrderDirections = ['asc', 'desc'];
             $orderDirection = in_array(strtolower($orderDirection), $validOrderDirections)
                 ? $orderDirection
                 : 'desc';
-    
+
             $clientsQuery->orderBy($orderBy, $orderDirection);
-    
+
             $clients = $clientsQuery->get();
-    
+
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Clientes encontrados',
-                'data' => $clients 
+                'data' => $clients
             ]);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
@@ -372,9 +380,10 @@ class ClientService
         }
     }
 
-    public function getClientsBySeller($sellerId, $search, $perpage)
+    public function getClientsBySeller($sellerId, $search)
     {
         try {
+            // Se elimina el parámetro de paginación $perpage
             return Client::with(['guarantors', 'images', 'credits', 'seller', 'seller.city'])
                 ->where('seller_id', $sellerId)
                 ->where(function ($query) use ($search) {
@@ -383,7 +392,7 @@ class ClientService
                         ->orWhere('email', 'like', "%{$search}%");
                 })
                 ->orderBy('created_at', 'desc')
-                ->paginate($perpage);
+                ->get();
         } catch (\Exception $e) {
             Log::error($e->getMessage());
             throw $e;
@@ -768,12 +777,12 @@ class ClientService
     {
         // Usar fecha actual si no se proporciona
         $date = $date ?: now()->format('Y-m-d');
-    
+
         $user = Auth::user();
         $seller = $user->seller;
         $sellerId = $seller ? $seller->id : null;
         $userId = $user->id;
-    
+
         // 1. TOTAL ESPERADO (considerando soft deletes)
         $expectedQuery = DB::table('installments')
             ->selectRaw('COALESCE(SUM(quota_amount), 0) as total_expected')
@@ -790,12 +799,12 @@ class ClientService
                             ->whereDate('due_date', '=', $date);
                     });
             });
-    
+
         if ($sellerId) {
             $expectedQuery->where('credits.seller_id', $sellerId);
         }
         $expected = $expectedQuery->first();
-    
+
         // 2. PAGOS DEL DÍA (considerando soft deletes)
         $todayPaymentsQuery = DB::table('payments')
             ->selectRaw('
@@ -812,12 +821,12 @@ class ClientService
             ->whereDate('payments.payment_date', $date)
             ->whereIn('payments.status', ['Pagado', 'Abonado'])
             ->where('credits.status', '!=', 'liquidado');
-    
+
         if ($sellerId) {
             $todayPaymentsQuery->where('credits.seller_id', $sellerId);
         }
         $todayPayments = $todayPaymentsQuery->first();
-    
+
         // 3. PAGOS NO PAGADOS HOY (considerando soft deletes)
         $todayUnpaidPaymentsQuery = DB::table('payments')
             ->selectRaw('COALESCE(SUM(installments.quota_amount), 0) as total_unpaid_today')
@@ -833,12 +842,12 @@ class ClientService
             ->whereDate('payments.payment_date', $date)
             ->where('payments.status', 'No Pagado')
             ->where('credits.status', '!=', 'liquidado');
-    
+
         if ($sellerId) {
             $todayUnpaidPaymentsQuery->where('credits.seller_id', $sellerId);
         }
         $todayUnpaidPayments = $todayUnpaidPaymentsQuery->first();
-    
+
         // 4. ABONOS HOY (considerando soft deletes)
         $todayAbonosQuery = DB::table('payments')
             ->selectRaw('COALESCE(SUM(payments.amount), 0) as total_deposits_today')
@@ -849,12 +858,12 @@ class ClientService
             ->whereNull('clients.deleted_at')
             ->whereDate('payments.payment_date', $date)
             ->where('payments.status', 'Abonado');
-    
+
         if ($sellerId) {
             $todayAbonosQuery->where('credits.seller_id', $sellerId);
         }
         $todayAbonos = $todayAbonosQuery->first();
-    
+
         // 5. RECAUDACIÓN DE CUOTAS VENCIDAS HOY (considerando soft deletes)
         $todayDueCollectedQuery = DB::table('payment_installments')
             ->selectRaw('
@@ -880,12 +889,12 @@ class ClientService
             })
             ->whereIn('payments.status', ['Pagado', 'Abonado'])
             ->where('credits.status', '!=', 'liquidado');
-    
+
         if ($sellerId) {
             $todayDueCollectedQuery->where('credits.seller_id', $sellerId);
         }
         $todayDueCollected = $todayDueCollectedQuery->first();
-    
+
         // 6. ESTADÍSTICAS DE CLIENTES (considerando soft deletes)
         $clientsQuery = DB::table('clients')
             ->selectRaw('
@@ -917,12 +926,12 @@ class ClientService
                     });
             })
             ->where('credits.status', '!=', 'liquidado');
-    
+
         if ($sellerId) {
             $clientsQuery->where('credits.seller_id', $sellerId);
         }
         $clientCounts = $clientsQuery->first();
-    
+
         // 7. CLIENTES ATENDIDOS HOY (considerando soft deletes)
         $attendedTodayQuery = DB::table('payments')
             ->selectRaw('COUNT(DISTINCT credits.client_id) as attended_today')
@@ -941,12 +950,12 @@ class ClientService
                 $query->where('credits.status', '!=', 'liquidado')
                     ->orWhereNull('credits.status');
             });
-    
+
         if ($sellerId) {
             $attendedTodayQuery->where('credits.seller_id', $sellerId);
         }
         $attendedToday = $attendedTodayQuery->value('attended_today') ?? 0;
-    
+
         // 8. CLIENTES PENDIENTES HOY (considerando soft deletes)
         $pendingTodayQuery = DB::table('clients')
             ->selectRaw('COUNT(DISTINCT clients.id) as pending_today')
@@ -975,35 +984,35 @@ class ClientService
                     })
                     ->whereDate('payments.created_at', $date);
             });
-    
+
         if ($sellerId) {
             $pendingTodayQuery->where('credits.seller_id', $sellerId);
         }
         $pendingToday = $pendingTodayQuery->value('pending_today') ?? 0;
-    
+
         // 9. CRÉDITOS ACTIVOS CREADOS HOY (considerando soft deletes)
         $activeCreditsTodayQuery = DB::table('credits')
             ->selectRaw('COUNT(credits.id) as total_active_credits_today')
             ->whereNull('credits.deleted_at')
             ->whereDate('credits.created_at', $date)
             ->where('credits.status', 'Vigente');
-    
+
         if ($sellerId) {
             $activeCreditsTodayQuery->where('credits.seller_id', $sellerId);
         }
         $activeCreditsToday = $activeCreditsTodayQuery->first();
-    
+
         // 10. GASTOS DEL DÍA (considerando soft deletes)
         $dailyExpensesQuery = DB::table('expenses')
             ->selectRaw('COALESCE(SUM(expenses.value), 0) as total_expenses_today')
             ->whereNull('expenses.deleted_at')
             ->whereDate('expenses.created_at', $date);
-    
+
         if ($sellerId) {
             $dailyExpensesQuery->where('expenses.user_id', $userId);
         }
         $dailyExpenses = $dailyExpensesQuery->first();
-    
+
         // 11. CLIENTES EN MORA HOY (considerando soft deletes)
         $defaultedClientsCountQuery = DB::table('clients')
             ->join('credits', 'clients.id', '=', 'credits.client_id')
@@ -1021,12 +1030,12 @@ class ClientService
                     ->where('payments.status', '!=', 'Abonado');
             })
             ->where('credits.status', '!=', 'liquidado');
-    
+
         if ($sellerId) {
             $defaultedClientsCountQuery->where('credits.seller_id', $sellerId);
         }
         $defaultedClientsCount = $defaultedClientsCountQuery->distinct()->count('clients.id');
-    
+
         // RESULTADO FINAL
         $summary = [
             'totalExpected' => $expected->total_expected ?? 0,
@@ -1050,7 +1059,7 @@ class ClientService
             'totalActiveCreditsToday' => $activeCreditsToday->total_active_credits_today ?? 0,
             'totalExpensesToday' => $dailyExpenses->total_expenses_today ?? 0,
         ];
-    
+
         return response()->json([
             'success' => true,
             'message' => 'Resumen de cobranza diaria',

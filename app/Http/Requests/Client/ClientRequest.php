@@ -55,7 +55,7 @@ class ClientRequest extends FormRequest
             /* 'guarantors_ids' => 'array', */
             'images' => 'nullable|array',
             /*  'images.*.file' => 'nullable|file|mimes:jpg,jpeg,png|max:2048',  */
-            'images.*.type' => 'nullable|string|in:profile,gallery'
+              'images.*.type' => 'required|string|in:profile,money_in_hand,business,document'
         ];
 
         if ($this->isMethod('get')) {

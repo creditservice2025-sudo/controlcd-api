@@ -53,15 +53,15 @@ class PaymentService
                 ]);
 
                 $nextInstallment = Installment::where('credit_id', $credit->id)
-                    ->whereIn('status', ['Pendiente', 'Parcial'])
+                    ->whereIn('status', ['Pendiente', 'Parcial' , 'Atrasado'])
                     ->orderBy('due_date', 'asc')
                     ->first();
 
                 if ($nextInstallment) {
-                    if (now()->gt($nextInstallment->due_date)) {
+                    /* if (now()->gt($nextInstallment->due_date)) {
                         $nextInstallment->status = 'Atrasado';
                         $nextInstallment->save();
-                    }
+                    } */
 
                     PaymentInstallment::create([
                         'payment_id' => $payment->id,

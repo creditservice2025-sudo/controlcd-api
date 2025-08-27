@@ -115,16 +115,15 @@ class ClientController extends Controller
     public function getClientsBySeller($sellerId, Request $request)
     {
         try {
-            $perpage = $request->input('perpage', 10);
             $search = $request->input('search', '');
-
+    
             $seller = Seller::find($sellerId);
             if (!$seller) {
                 return $this->errorResponse('Vendedor no encontrado', 404);
             }
-
-            $clients = $this->clientService->getClientsBySeller($sellerId, $search, $perpage);
-
+    
+            $clients = $this->clientService->getClientsBySeller($sellerId, $search);
+    
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Clientes encontrados',
