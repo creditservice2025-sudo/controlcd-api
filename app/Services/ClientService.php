@@ -340,21 +340,26 @@ class ClientService
 
 
     public function index(
-        string $search,
-        int $perpage,
+        $search = '',
+        int $perpage = 5,
         string $orderBy = 'created_at',
         string $orderDirection = 'desc'
     ) {
         try {
+            $search = (string) $search;
+
             $user = Auth::user();
             $seller = $user->seller;
 
-            $clientsQuery = Client::with(['guarantors', 'images', 'credits', 'seller', 'seller.city'])
-                ->where(function ($query) use ($search) {
+            $clientsQuery = Client::with(['guarantors', 'images', 'credits', 'seller', 'seller.city']);
+
+            if (!empty(trim($search))) {
+                $clientsQuery->where(function ($query) use ($search) {
                     $query->where('name', 'like', "%{$search}%")
                         ->orWhere('dni', 'like', "%{$search}%")
                         ->orWhere('email', 'like', "%{$search}%");
                 });
+            }
 
             if ($user->role_id == 5 && $seller) {
                 $clientsQuery->where('seller_id', $seller->id);
@@ -543,11 +548,19 @@ class ClientService
     public function getClientsSelect(string $search = '')
     {
         try {
+
+            $user = Auth::user();
+
             $clients = Client::where('name', 'like', "%{$search}%")
                 ->orWhere('dni', 'like', "%{$search}%")
                 ->orWhere('email', 'like', "%{$search}%")
                 ->select('id', 'name')
                 ->get();
+
+            if ($user->role_id == 5) {
+                $seller = $user->seller;
+                $clients->where('seller_id', $seller->id);
+            }
 
             if ($clients->isEmpty()) {
                 return $this->errorNotFoundResponse('No se encontraron clientes');
@@ -604,6 +617,56 @@ class ClientService
             return $this->errorResponse('Error al obtener el cliente', 500);
         }
     }
+
+
+
+    public function getClientDetails($clientId)
+    {
+        try {
+            $client = Client::with([
+                'credits' => function ($query) {
+                    $query->with(['payments' => function ($q) {
+                        $q->select('*') 
+                          ->with(['installments.installment' => function ($innerQ) {
+                              $innerQ->select('*');
+                          }]);
+                    }]);
+                },
+                'seller' => function ($query) {
+                    $query->select('*'); 
+                },
+                'seller.city' => function ($query) {
+                    $query->select('id', 'name');
+                },
+                'guarantors' => function ($query) {
+                    $query->select('*');
+                },
+                'images' => function ($query) {
+                    $query->select('*');
+                }
+            ])
+            ->find($clientId);
+    
+            if (!$client) {
+                return [
+                    'success' => false,
+                    'message' => 'Cliente no encontrado',
+                    'data' => null
+                ];
+            }
+            
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Cliente encontrado',
+                'data' => $client
+            ]);
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->errorResponse('Error al obtener el cliente', 500);
+        }
+    }
+
+
     public function getForCollections(
         string $search = '',
         int $perpage = 10,

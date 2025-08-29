@@ -71,18 +71,30 @@ Route::middleware('auth:api')->group(function () {
     Route::apiResource('roles', RoleController::class);
 
     //route client
-    Route::get('clients', [ClientController::class, 'index']);
-    Route::get('clients/total', [ClientController::class, 'totalClients']);
-    Route::get('clients/select', [ClientController::class, 'getClientsSelect']);
-    Route::post('client/create', [ClientController::class, 'create']);
-    Route::get('clients/seller/{seller}', [ClientController::class, 'getClientsBySeller']);
-    Route::put('client/update/{id}', [ClientController::class, 'update']);
-    Route::delete('client/delete/{id}', [ClientController::class, 'delete']);
-    Route::get('client/{id}', [ClientController::class, 'show']);
-    Route::post('/clients/update-order', [ClientController::class, 'updateOrder']);
-    Route::get('/clients/for-collections', [ClientController::class, 'getForCollections']);
-    Route::get('/clients/for-collections-summary', [ClientController::class, 'getForCollectionSummary']);
-    Route::get('/clients/{sellerId}/clients-for-map', [ClientController::class, 'getSellerClientsForMap']);
+    Route::prefix('clients')->group(function () {
+        // Listado principal
+        Route::get('/', [ClientController::class, 'index']);
+        Route::get('/total', [ClientController::class, 'totalClients']);
+        Route::get('/select', [ClientController::class, 'getClientsSelect']);
+
+        // Por vendedor
+        Route::get('/seller/{sellerId}', [ClientController::class, 'getClientsBySeller']);
+        Route::get('/{sellerId}/clients-for-map', [ClientController::class, 'getSellerClientsForMap']);
+
+        // Colecciones
+        Route::get('/for-collections', [ClientController::class, 'getForCollections']);
+        Route::get('/for-collections-summary', [ClientController::class, 'getForCollectionSummary']);
+
+        // CRUD individual
+        Route::post('/create', [ClientController::class, 'create']);
+        Route::get('/{id}', [ClientController::class, 'show']);
+        Route::get('/{id}/details', [ClientController::class, 'getClientDetails']);
+        Route::put('/update/{id}', [ClientController::class, 'update']);
+        Route::delete('/delete/{id}', [ClientController::class, 'delete']);
+
+        // Orden de ruta
+        Route::post('/update-order', [ClientController::class, 'updateOrder']);
+    });
 
     //route guarantor
     Route::get('guarantors', [GuarantorController::class, 'index']);

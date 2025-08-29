@@ -97,15 +97,14 @@ class ClientController extends Controller
             return $this->errorResponse($e->getMessage(), 500);
         }
     }
-
     public function index(ClientRequest $request)
     {
         try {
-            $search = $request->input('search', '');
-            $perPage = $request->get('perPage') ?? 5;
+            $search = (string) $request->input('search', '');
+            $perPage = $request->get('perPage', 5);
             $orderBy = $request->input('orderBy', 'created_at');
             $orderDirection = $request->input('orderDirection', 'desc');
-
+    
             return $this->clientService->index($search, $perPage, $orderBy, $orderDirection);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
@@ -116,14 +115,14 @@ class ClientController extends Controller
     {
         try {
             $search = $request->input('search', '');
-    
+
             $seller = Seller::find($sellerId);
             if (!$seller) {
                 return $this->errorResponse('Vendedor no encontrado', 404);
             }
-    
+
             $clients = $this->clientService->getClientsBySeller($sellerId, $search);
-    
+
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Clientes encontrados',
@@ -155,10 +154,21 @@ class ClientController extends Controller
         }
     }
 
+
+
     public function show($clientId)
     {
         try {
             return $this->clientService->show($clientId);
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+    public function getClientDetails($clientId)
+    {
+        try {
+            return $this->clientService->getClientDetails($clientId);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
