@@ -174,6 +174,21 @@ class ClientController extends Controller
         }
     }
 
+    public function getDebtorClientsBySeller($sellerId)
+{
+    try {
+        $seller = Seller::find($sellerId);
+        if (!$seller) {
+            return $this->errorResponse('Vendedor no encontrado', 404);
+        }
+
+        return $this->clientService->getDebtorClientsBySeller($sellerId);
+    } catch (\Exception $e) {
+        \Log::error($e->getMessage());
+        return $this->errorResponse('Error al obtener los clientes morosos', 500);
+    }
+}
+
 
 
     public function getForCollections(ClientRequest $request)

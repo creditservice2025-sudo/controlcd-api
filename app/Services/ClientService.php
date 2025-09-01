@@ -626,14 +626,14 @@ class ClientService
             $client = Client::with([
                 'credits' => function ($query) {
                     $query->with(['payments' => function ($q) {
-                        $q->select('*') 
-                          ->with(['installments.installment' => function ($innerQ) {
-                              $innerQ->select('*');
-                          }]);
+                        $q->select('*')
+                            ->with(['installments.installment' => function ($innerQ) {
+                                $innerQ->select('*');
+                            }]);
                     }]);
                 },
                 'seller' => function ($query) {
-                    $query->select('*'); 
+                    $query->select('*');
                 },
                 'seller.city' => function ($query) {
                     $query->select('id', 'name');
@@ -645,8 +645,8 @@ class ClientService
                     $query->select('*');
                 }
             ])
-            ->find($clientId);
-    
+                ->find($clientId);
+
             if (!$client) {
                 return [
                     'success' => false,
@@ -654,7 +654,7 @@ class ClientService
                     'data' => null
                 ];
             }
-            
+
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Cliente encontrado',
@@ -835,6 +835,243 @@ class ClientService
             ]
         ]);
     }
+
+    public function getDebtorClientsBySeller($sellerId)
+    {
+        try {
+           
+
+            $clients = Client::with([
+                'credits' => function ($query) {
+                    $query->with([
+                        'installments' => function ($q) {
+                            $q->select('*')
+                                ->orderBy('due_date', 'asc');
+                        }
+                    ]);
+                },
+                'seller' => function ($query) {
+                    $query->select('*')
+                        ->with(['user' => function ($userQuery) {
+                            $userQuery->select('id', 'name');
+                        }]);
+                },
+                'seller.user' => function ($query) {
+                    $query->select('id', 'name');
+                },
+                'guarantors' => function ($query) {
+                    $query->select('*');
+                }
+            ])
+                ->where('seller_id', $sellerId)
+                ->get();
+
+
+            if ($clients->isEmpty()) {
+                return [
+                    'success' => false,
+                    'message' => 'No se encontraron clientes para este vendedor',
+                    'data' => []
+                ];
+            }
+
+            $debtorClients = $clients->map(function ($client) {
+                $delinquencyInfo = $this->calculateDelinquencyDetails($client);
+
+                $debtorCredits = $this->getDebtorCredits($client);
+
+                if (empty($debtorCredits)) {
+                    return null;
+                }
+
+                $clientEntries = [];
+                foreach ($debtorCredits as $credit) {
+                    $clientEntries[] = [
+                        'client_id' => $client->id,
+                        'client_name' => $client->name,
+                        'client_code' => $client->id,
+                        'seller_name' => $client->seller->user->name ?? 'Sin vendedor',
+                        'credit_info' => $credit, 
+                        'delinquency' => [
+                            'credit_days_delayed' => max(array_column($credit['installments'], 'days_delayed')),
+                            'credit_amount_due' => array_sum(array_column($credit['installments'], 'amount')),
+                            'installments_count' => count($credit['installments'])
+                        ]
+                    ];
+                }
+
+                return $clientEntries;
+            })
+                ->filter()
+                ->flatten(1) 
+                ->filter(function ($clientData) {
+                    return $clientData['delinquency']['credit_days_delayed'] > 1;
+                })
+                ->values();
+
+
+            $totals = $this->calculateTotals($debtorClients);
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Créditos morosos encontrados',
+                'debug' => [
+                    'total_clientes' => $clients->count(),
+                    'creditos_con_mora' => $debtorClients->count(),
+                    'seller_id' => $sellerId
+                ],
+                'data' => [
+                    'debtor_credits' => $debtorClients, 
+                    'totals' => $totals,
+                    'summary' => [
+                        'total_debtor_credits' => $debtorClients->count(),
+                        'total_amount_due' => $totals['total_amount_due'],
+                        'total_collected' => 0,
+                        'report_date' => now()->format('Y-m-d H:i:s')
+                    ]
+                ]
+            ]);
+        } catch (\Exception $e) {
+            \Log::error("Error en getDebtorClientsBySeller: " . $e->getMessage());
+            \Log::error($e->getTraceAsString());
+            return $this->errorResponse('Error al obtener los clientes morosos', 500);
+        }
+    }
+
+    private function calculateTotals($debtorCredits)
+    {
+        $totals = [
+            'total_debtor_credits' => $debtorCredits->count(),
+            'total_amount_due' => 0,
+            'total_pending_installments' => 0
+        ];
+
+        foreach ($debtorCredits as $credit) {
+            $totals['total_amount_due'] += $credit['delinquency']['credit_amount_due'];
+            $totals['total_pending_installments'] += $credit['delinquency']['installments_count'];
+        }
+
+        return $totals;
+    }
+    private function calculateDelinquencyDetails($client)
+    {
+        $totalDaysDelayed = 0;
+        $maxDaysDelayed = 0;
+        $debtorCredits = 0;
+        $totalPendingInstallments = 0;
+        $totalAmountDue = 0;
+        $delinquencyLevel = 'Al día';
+
+        \Log::info("Calculando morosidad para cliente: {$client->id}");
+        \Log::info("  Créditos: " . ($client->credits));
+        foreach ($client->credits as $credit) {
+            $hasDelinquentInstallments = false;
+            \Log::info("  Analizando crédito: {$credit->id}");
+
+            if ($credit->installments) {
+                foreach ($credit->installments as $installment) {
+                    \Log::info("    Analizando cuota: {$installment->number}");
+                    if ($installment->status !== 'Pagado' && $installment->due_date) {
+                        $dueDate = \Carbon\Carbon::parse($installment->due_date);
+                        $daysDelayed = now()->diffInDays($dueDate, false) * -1;
+
+                        \Log::info("    Cuota {$installment->number}: Estado={$installment->status}, Vence={$installment->due_date}, Días mora={$daysDelayed}");
+
+                        if ($daysDelayed > 1) {
+                            $hasDelinquentInstallments = true;
+                            $totalPendingInstallments++;
+                            $totalAmountDue += $installment->amount;
+                            $totalDaysDelayed += $daysDelayed;
+                            $maxDaysDelayed = max($maxDaysDelayed, $daysDelayed);
+
+                            \Log::info("    ✓ CUOTA MOROSA: {$daysDelayed} días de mora, Monto: {$installment->amount}");
+                        }
+                    }
+                }
+
+                if ($hasDelinquentInstallments) {
+                    $debtorCredits++;
+                    \Log::info("  ✓ CRÉDITO MOROSO: Tiene cuotas con mora");
+                } else {
+                    \Log::info("  ✗ Crédito sin cuotas morosas");
+                }
+            } else {
+                \Log::info("  ✗ Crédito sin cuotas");
+            }
+        }
+
+        if ($maxDaysDelayed > 0) {
+            if ($maxDaysDelayed <= 15) {
+                $delinquencyLevel = 'Morosidad Leve (2-15 días)';
+            } elseif ($maxDaysDelayed <= 30) {
+                $delinquencyLevel = 'Morosidad Moderada (16-30 días)';
+            } elseif ($maxDaysDelayed <= 60) {
+                $delinquencyLevel = 'Morosidad Grave (31-60 días)';
+            } else {
+                $delinquencyLevel = 'Morosidad Crítica (+60 días)';
+            }
+        }
+
+        \Log::info("Resultado cliente {$client->id}: Max días={$maxDaysDelayed}, Nivel={$delinquencyLevel}, Créditos morosos={$debtorCredits}");
+
+        return [
+            'total_days_delayed' => $totalDaysDelayed,
+            'max_days_delayed' => $maxDaysDelayed,
+            'debtor_credits_count' => $debtorCredits,
+            'pending_installments_count' => $totalPendingInstallments,
+            'total_amount_due' => $totalAmountDue,
+            'delinquency_level' => $delinquencyLevel,
+            'has_delinquency' => $maxDaysDelayed > 1
+        ];
+    }
+
+    private function getDebtorCredits($client)
+    {
+        $debtorCredits = [];
+
+        foreach ($client->credits as $credit) {
+            $creditDelinquency = [
+                'credit_id' => $credit->id,
+                'credit_code' => $credit->code ?? '#00' . $credit->id,
+                'total_amount' => ($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value,
+                'balance' => $credit->remaining_amount ?? $credit->balance,
+                'number_installments' => $credit->number_installments,
+                'installments' => []
+            ];
+
+            $hasDelinquentInstallments = false;
+
+            if ($credit->installments) {
+                foreach ($credit->installments as $installment) {
+                    if ($installment->status !== 'Pagado' && $installment->due_date) {
+                        $dueDate = \Carbon\Carbon::parse($installment->due_date);
+                        $daysDelayed = now()->diffInDays($dueDate, false) * -1;
+
+                        if ($daysDelayed > 1) {
+                            $hasDelinquentInstallments = true;
+                            $creditDelinquency['installments'][] = [
+                                'installment_number' => $installment->number,
+                                'due_date' => $installment->due_date,
+                                'amount' => $installment->quota_amount,
+                                'days_delayed' => $daysDelayed,
+                                'status' => $installment->status,
+                                'created_at' => $installment->created_at,
+                                'quota_number' => $installment->quota_number
+                            ];
+                        }
+                    }
+                }
+
+                if ($hasDelinquentInstallments && !empty($creditDelinquency['installments'])) {
+                    $debtorCredits[] = $creditDelinquency;
+                }
+            }
+        }
+
+        return $debtorCredits;
+    }
+
+
 
     public function getCollectionSummary(string $date = null)
     {
