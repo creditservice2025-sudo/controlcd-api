@@ -15,10 +15,12 @@ class Income extends Model
         'value',
         'description',
         'user_id',
+        'created_at',
     ];
 
     protected $casts = [
-        'value' => 'decimal:2'
+        'value' => 'decimal:2',
+        'created_at' => 'datetime',
     ];
 
     public function user(): BelongsTo

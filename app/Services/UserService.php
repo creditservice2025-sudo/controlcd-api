@@ -234,6 +234,49 @@ class UserService
         }
     }
 
+    public function getVendorsSelect(Request $request)
+    {
+        try {
+            $cobradorRoleId = Role::where('name', 'cobrador')->value('id');
+            
+            if (empty($cobradorRoleId)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Rol "cobrador" no encontrado'
+                ], 404);
+            }
+
+            $query = User::select('id', 'name', 'email')
+                ->whereNull('deleted_at')
+                ->where('role_id', $cobradorRoleId);
+
+            if ($request->has('city_id') && !empty($request->city_id)) {
+                $query->whereHas('city', function ($q) use ($request) {
+                    $q->where('id', $request->city_id);
+                });
+            }
+
+            if ($request->has('country_id') && !empty($request->country_id)) {
+                $query->whereHas('city.country', function ($q) use ($request) {
+                    $q->where('id', $request->country_id);
+                });
+            }
+
+            $vendors = $query->get();
+
+            return response()->json([
+                'success' => true,
+                'data' => $vendors
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error obteniendo vendedores: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al obtener los vendedores'
+            ], 500);
+        }
+    }
+
 
     public function toggleStatus($userId, $status)
     {

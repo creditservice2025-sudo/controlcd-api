@@ -28,6 +28,7 @@ class ExpenseService
                 'category_id' => 'required|numeric',
                 'user_id' => 'nullable|numeric',
                 'image' => 'nullable|image|max:2048',
+                'created_at' => 'nullable|date',
             ]);
 
             $user = Auth::user();
@@ -37,14 +38,20 @@ class ExpenseService
                 ? $validated['user_id']
                 : $user->id;
 
-
-            $expense = Expense::create([
+            $expenseData = [
                 'value' => $validated['value'],
                 'description' => $validated['description'],
                 'user_id' => $userId,
                 'category_id' => $validated['category_id'],
                 'status' => 'Aprobado',
-            ]);
+            ];
+
+            if ($request->has('created_at')) {
+                $expenseData['created_at'] = $validated['created_at'];
+            }
+
+            $expense = Expense::create($expenseData);
+
 
             if ($request->hasFile('image')) {
                 $imageFile = $request->file('image');

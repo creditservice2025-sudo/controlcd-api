@@ -76,6 +76,15 @@ class UserController extends Controller
         }
     }
 
+    public function getSellersSelect(Request $request)
+    {
+        try {
+            return $this->userService->getVendorsSelect($request);
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
     public function toggleStatus(Request $request, $userId)
     {
         try {

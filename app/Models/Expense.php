@@ -16,11 +16,13 @@ class Expense extends Model
         'description',
         'user_id',
         'category_id',
-        'status'
+        'status',
+        'created_at'
     ];
 
     protected $casts = [
-        'value' => 'decimal:2'
+        'value' => 'decimal:2',
+        'created_at' => 'datetime',
     ];
 
     public function user(): BelongsTo

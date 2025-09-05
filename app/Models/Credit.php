@@ -31,6 +31,7 @@ class Credit extends Model
         'excluded_days',
         'micro_insurance_percentage',
         'micro_insurance_amount',
+        'created_at',
 
     ];
 

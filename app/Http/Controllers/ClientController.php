@@ -104,7 +104,7 @@ class ClientController extends Controller
             $perPage = $request->get('perPage', 5);
             $orderBy = $request->input('orderBy', 'created_at');
             $orderDirection = $request->input('orderDirection', 'desc');
-    
+
             return $this->clientService->index($search, $perPage, $orderBy, $orderDirection);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
@@ -175,19 +175,19 @@ class ClientController extends Controller
     }
 
     public function getDebtorClientsBySeller($sellerId)
-{
-    try {
-        $seller = Seller::find($sellerId);
-        if (!$seller) {
-            return $this->errorResponse('Vendedor no encontrado', 404);
-        }
+    {
+        try {
+            $seller = Seller::find($sellerId);
+            if (!$seller) {
+                return $this->errorResponse('Vendedor no encontrado', 404);
+            }
 
-        return $this->clientService->getDebtorClientsBySeller($sellerId);
-    } catch (\Exception $e) {
-        \Log::error($e->getMessage());
-        return $this->errorResponse('Error al obtener los clientes morosos', 500);
+            return $this->clientService->getDebtorClientsBySeller($sellerId);
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->errorResponse('Error al obtener los clientes morosos', 500);
+        }
     }
-}
 
 
 
@@ -253,6 +253,27 @@ class ClientController extends Controller
                 'message' => 'Error al obtener clientes',
                 'error' => $e->getMessage()
             ], 500);
+        }
+    }
+    public function getLiquidationWithAllClients($sellerId, $date, $userId)
+    {
+        try {
+            $seller = Seller::find($sellerId);
+            if (!$seller) {
+                return $this->errorResponse('Vendedor no encontrado', 404);
+            }
+
+            $result = $this->clientService->getLiquidationWithAllClients($sellerId, $date, $userId);
+
+
+                 return response()->json([
+                'success' => true,
+                'message' => 'Clientes obtenidos exitosamente',
+                'data' => $result
+            ]);
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->errorResponse('Error al obtener los datos de liquidación y clientes', 500);
         }
     }
 }

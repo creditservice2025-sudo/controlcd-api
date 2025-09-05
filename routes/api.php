@@ -47,6 +47,7 @@ Route::middleware('auth:api')->group(function () {
     //route user
     Route::get('users', [UserController::class, 'index']);
     Route::get('users/select', [UserController::class, 'getUsersSelect']);
+    Route::get('users/seller/select', [UserController::class, 'getSellersSelect']);
     Route::post('user/create', [UserController::class, 'create']);
     Route::put('user/update/{id}', [UserController::class, 'update']);
     Route::delete('user/delete/{id}', [UserController::class, 'delete']);
@@ -82,6 +83,7 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/{sellerId}/clients-for-map', [ClientController::class, 'getSellerClientsForMap']);
         
         Route::get('/seller/{sellerId}/debtor', [ClientController::class, 'getDebtorClientsBySeller']);
+        Route::get('/liquidation-with-clients/{sellerId}/{date}/{userId}', [ClientController::class, 'getLiquidationWithAllClients']);
     
         // Colecciones
         Route::get('/for-collections', [ClientController::class, 'getForCollections']);

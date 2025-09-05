@@ -22,6 +22,12 @@ use Illuminate\Support\Facades\Auth;
 class ClientService
 {
     use ApiResponse;
+    protected $liquidationService;
+
+    public function __construct(LiquidationService $liquidationService)
+    {
+        $this->liquidationService = $liquidationService;
+    }
 
 
     public function create(ClientRequest $request)
@@ -839,7 +845,7 @@ class ClientService
     public function getDebtorClientsBySeller($sellerId)
     {
         try {
-           
+
 
             $clients = Client::with([
                 'credits' => function ($query) {
@@ -891,7 +897,7 @@ class ClientService
                         'client_name' => $client->name,
                         'client_code' => $client->id,
                         'seller_name' => $client->seller->user->name ?? 'Sin vendedor',
-                        'credit_info' => $credit, 
+                        'credit_info' => $credit,
                         'delinquency' => [
                             'credit_days_delayed' => max(array_column($credit['installments'], 'days_delayed')),
                             'credit_amount_due' => array_sum(array_column($credit['installments'], 'amount')),
@@ -903,7 +909,7 @@ class ClientService
                 return $clientEntries;
             })
                 ->filter()
-                ->flatten(1) 
+                ->flatten(1)
                 ->filter(function ($clientData) {
                     return $clientData['delinquency']['credit_days_delayed'] > 1;
                 })
@@ -921,7 +927,7 @@ class ClientService
                     'seller_id' => $sellerId
                 ],
                 'data' => [
-                    'debtor_credits' => $debtorClients, 
+                    'debtor_credits' => $debtorClients,
                     'totals' => $totals,
                     'summary' => [
                         'total_debtor_credits' => $debtorClients->count(),
@@ -1069,6 +1075,319 @@ class ClientService
         }
 
         return $debtorCredits;
+    }
+
+    public function getLiquidationWithAllClients($sellerId, $date, $userId)
+    {
+        try {
+            $user = Auth::user();
+
+            // Verificar permisos del usuario
+            if (!in_array($user->role_id, [1, 2, 5])) {
+                return response()->json([
+                    'error' => 'Unauthorized'
+                ], 403);
+            }
+
+            // Si es vendedor, verificar que solo acceda a sus datos
+            if ($user->role_id == 5 && $user->seller->id != $sellerId) {
+                return response()->json([
+                    'error' => 'Solo puede acceder a sus propios datos'
+                ], 403);
+            }
+
+            // 1. Obtener datos de liquidación para la fecha
+            $liquidationData = $this->liquidationService->getLiquidationData($sellerId, $date, $userId);
+
+            // 2. Obtener todos los clientes del vendedor con sus créditos filtrados por fecha
+            $allClients = $this->getAllClientsBySellerAndDate($sellerId, $date);
+
+            // 3. Combinar los resultados
+            $totalClients = count($allClients);
+            return [
+                'liquidation' => $liquidationData,
+                'clients' => $allClients,
+                'summary' => array_merge(
+                    $liquidationData['summary'] ?? [],
+                    ['total_clients' => $totalClients]
+                )
+            ];
+        } catch (\Exception $e) {
+            \Log::error("Error en getLiquidationWithAllClients: " . $e->getMessage());
+            \Log::error($e->getTraceAsString());
+            return $this->errorResponse('Error al obtener los datos de liquidación y clientes', 500);
+        }
+    }
+
+    private function getAllClientsBySellerAndDate($sellerId, $date)
+    {
+        $referenceDate = \Carbon\Carbon::parse($date);
+
+        $clients = Client::with([
+            'credits.installments' => function ($query) {
+                $query->orderBy('due_date', 'asc');
+            },
+            'credits.payments',
+            'seller.user:id,name',
+            'guarantors'
+        ])->where('seller_id', $sellerId)->get();
+
+        Log::info('Clients data:', $clients->toArray());
+
+        $result = [];
+        foreach ($clients as $client) {
+            $delinquencyInfo = $this->calculateDelinquencyDetailsForDate($client, $referenceDate);
+
+            foreach ($client->credits as $credit) {
+                $creditInfo = $this->getCreditInfoForDate($credit, $referenceDate);
+                $result[] = [
+                    'client' => $client,
+                    'client_id' => $client->id,
+                    'credit_id' => $credit->id,
+                    'client_name' => $client->name,
+                    'client_code' => $client->id,
+                    'credit_info' => $credit,
+                    'installment' => $credit->installments,
+                    'seller_name' => $client->seller->user->name ?? 'Sin vendedor',
+                    'credit' => $creditInfo,
+                    'delinquency_summary' => $delinquencyInfo
+                ];
+            }
+        }
+
+        return $result;
+    }
+    private function isCreditActiveOnDate($credit, $referenceDate)
+    {
+        $creditDate = \Carbon\Carbon::parse($credit->created_at);
+        $creditEndDate = $creditDate->copy()->addMonths($credit->number_installments);
+
+        return $referenceDate->between($creditDate, $creditEndDate);
+    }
+
+    private function getCreditInfoForDate($credit, $referenceDate)
+    {
+        // Calcular el monto total pagado del crédito hasta la fecha de referencia
+        $paidAmount = $credit->payments
+            ->where('payment_date', '<=', $referenceDate->format('Y-m-d'))
+            ->sum('amount');
+
+        $todayPayments = $credit->payments
+            ->where('payment_date', $referenceDate->format('Y-m-d'));
+        $paidToday = $todayPayments->sum('amount');
+
+        $lastPaymentToday = $todayPayments->sortByDesc('created_at')->first();
+        $paymentMethodToday = $lastPaymentToday ? $lastPaymentToday->payment_method : null;
+
+        $totalAmount = ($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value;
+        $balance = $totalAmount - $paidAmount;
+
+        $creditInfo = [
+            'credit_id' => $credit->id,
+            'credit_code' => $credit->code ?? '#00' . $credit->id,
+            'total_amount' => $totalAmount,
+            'paid_amount' => $paidAmount,
+            'payment_frequency' => $credit->payment_frequency,
+            'balance' => $balance,
+            'paid_today' => $paidToday,
+            'created_at' => $credit->created_at,
+            'payment_method_today' => $paymentMethodToday,
+            'number_installments' => $credit->number_installments,
+            'status' => $credit->status,
+            'installments' => [],
+            'payments' => []
+
+        ];
+
+        foreach ($credit->payments as $payment) {
+            $paymentDate = \Carbon\Carbon::parse($payment->payment_date);
+            $daysDelayed = max(0, $referenceDate->diffInDays($paymentDate, false) * -1);
+
+            $creditInfo['payments'][] = [
+                'payment_id' => $payment->id,
+                'payment_date' => $payment->payment_date,
+                'amount' => $payment->amount,
+                'days_delayed' => $daysDelayed,
+                'created_at' => $payment->created_at
+            ];
+        }
+
+        foreach ($credit->installments as $installment) {
+            $dueDate = \Carbon\Carbon::parse($installment->due_date);
+            $daysDelayed = max(0, $referenceDate->diffInDays($dueDate, false) * -1);
+
+            // Determinar el estado de la cuota basado en pagos hasta la fecha de referencia
+            $installmentStatus = $this->getInstallmentStatusOnDate($installment, $referenceDate);
+            $paidAmountInstallment = $this->getInstallmentPaidAmount($installment, $referenceDate);
+
+            $creditInfo['installments'][] = [
+                'installment_number' => $installment->number,
+                'due_date' => $installment->due_date,
+                'amount' => $installment->quota_amount,
+                'days_delayed' => $daysDelayed,
+                'status' => $installmentStatus,
+                'paid_amount' => $paidAmountInstallment,
+                'created_at' => $installment->created_at,
+                'quota_number' => $installment->quota_number
+            ];
+        }
+
+        return $creditInfo;
+    }
+
+    private function getCreditStatusOnDate($credit, $referenceDate, $balance)
+    {
+        if ($balance <= 0) {
+            return 'Pagado';
+        }
+
+        // Obtener la última cuota vencida
+        $lastInstallment = $credit->installments
+            ->where('due_date', '<=', $referenceDate->format('Y-m-d'))
+            ->sortByDesc('due_date')
+            ->first();
+
+        if (!$lastInstallment) {
+            return 'En curso';
+        }
+
+        $lastDueDate = \Carbon\Carbon::parse($lastInstallment->due_date);
+
+        if ($referenceDate->gt($lastDueDate)) {
+            return 'Vencido';
+        }
+
+        return 'En curso';
+    }
+
+    private function getInstallmentStatusOnDate($installment, $referenceDate)
+    {
+        $dueDate = \Carbon\Carbon::parse($installment->due_date);
+        $paidAmount = $this->getInstallmentPaidAmount($installment, $referenceDate);
+
+        // Si se pagó completo hasta la fecha de referencia
+        if ($paidAmount >= $installment->quota_amount) {
+            return 'Pagado';
+        }
+
+        // Si la fecha de referencia es posterior a la fecha de vencimiento y no está pagado
+        if ($referenceDate->gt($dueDate)) {
+            return 'Vencido';
+        }
+
+        return 'Pendiente';
+    }
+
+    private function getInstallmentPaidAmount($installment, $referenceDate)
+    {
+        if (!isset($installment->payments)) {
+            return 0;
+        }
+
+        return $installment->payments
+            ->filter(function ($paymentInstallment) use ($referenceDate) {
+                return $paymentInstallment->payment &&
+                    $paymentInstallment->payment->payment_date <= $referenceDate->format('Y-m-d');
+            })
+            ->sum('applied_amount');
+    }
+
+
+
+    private function getCreditsInfoForDate($client, $referenceDate)
+    {
+        $creditsInfo = [];
+
+        foreach ($client->credits as $credit) {
+            $creditInfo = [
+                'credit_id' => $credit->id,
+                'credit_code' => $credit->code ?? '#00' . $credit->id,
+                'total_amount' => ($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value,
+                'balance' => $credit->remaining_amount ?? $credit->balance,
+                'number_installments' => $credit->number_installments,
+                'installments' => []
+            ];
+
+            if ($credit->installments) {
+                foreach ($credit->installments as $installment) {
+                    $dueDate = \Carbon\Carbon::parse($installment->due_date);
+                    $daysDelayed = $referenceDate->diffInDays($dueDate, false) * -1;
+
+                    $creditInfo['installments'][] = [
+                        'installment_number' => $installment->number,
+                        'due_date' => $installment->due_date,
+                        'amount' => $installment->quota_amount,
+                        'days_delayed' => $daysDelayed > 0 ? $daysDelayed : 0,
+                        'status' => $installment->status,
+                        'created_at' => $installment->created_at,
+                        'quota_number' => $installment->quota_number
+                    ];
+                }
+            }
+
+            $creditsInfo[] = $creditInfo;
+        }
+
+        return $creditsInfo;
+    }
+
+    private function calculateDelinquencyDetailsForDate($client, $referenceDate)
+    {
+        $totalDaysDelayed = 0;
+        $maxDaysDelayed = 0;
+        $debtorCredits = 0;
+        $totalPendingInstallments = 0;
+        $totalAmountDue = 0;
+        $delinquencyLevel = 'Al día';
+
+        foreach ($client->credits as $credit) {
+            $hasDelinquentInstallments = false;
+
+            if ($credit->installments) {
+                foreach ($credit->installments as $installment) {
+                    $dueDate = \Carbon\Carbon::parse($installment->due_date);
+                    $daysDelayed = $referenceDate->diffInDays($dueDate, false) * -1;
+
+                    // Solo considerar cuotas vencidas y no pagadas completamente hasta la fecha de referencia
+                    $installmentStatus = $this->getInstallmentStatusOnDate($installment, $referenceDate);
+                    $paidAmount = $this->getInstallmentPaidAmount($installment, $referenceDate);
+
+                    if ($installmentStatus === 'Vencido') {
+                        $hasDelinquentInstallments = true;
+                        $totalPendingInstallments++;
+                        $totalAmountDue += ($installment->quota_amount - $paidAmount);
+                        $totalDaysDelayed += $daysDelayed;
+                        $maxDaysDelayed = max($maxDaysDelayed, $daysDelayed);
+                    }
+                }
+
+                if ($hasDelinquentInstallments) {
+                    $debtorCredits++;
+                }
+            }
+        }
+
+        if ($maxDaysDelayed > 0) {
+            if ($maxDaysDelayed <= 15) {
+                $delinquencyLevel = 'Morosidad Leve (2-15 días)';
+            } elseif ($maxDaysDelayed <= 30) {
+                $delinquencyLevel = 'Morosidad Moderada (16-30 días)';
+            } elseif ($maxDaysDelayed <= 60) {
+                $delinquencyLevel = 'Morosidad Grave (31-60 días)';
+            } else {
+                $delinquencyLevel = 'Morosidad Crítica (+60 días)';
+            }
+        }
+
+        return [
+            'total_days_delayed' => $totalDaysDelayed,
+            'max_days_delayed' => $maxDaysDelayed,
+            'debtor_credits_count' => $debtorCredits,
+            'pending_installments_count' => $totalPendingInstallments,
+            'total_amount_due' => $totalAmountDue,
+            'delinquency_level' => $delinquencyLevel,
+            'has_delinquency' => $maxDaysDelayed > 1
+        ];
     }
 
 
