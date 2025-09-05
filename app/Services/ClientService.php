@@ -777,11 +777,13 @@ class ClientService
         // Ordenación
         $creditsQuery->orderBy('clients.routing_order', 'asc');
 
+        $credits = $creditsQuery->get();
+
         // Paginación de créditos
-        $credits = $creditsQuery->paginate($perpage, ['*'], 'page', $page);
+        /*    $credits = $creditsQuery->paginate($perpage, ['*'], 'page', $page); */
 
         // Resumen de pagos
-        $paymentSummary = Payment::whereIn('credit_id', $credits->getCollection()->pluck('id'))
+        $paymentSummary = Payment::whereIn('credit_id', $credits->pluck('id'))
             ->select(
                 'credit_id',
                 'status',
@@ -791,7 +793,7 @@ class ClientService
             ->get()
             ->groupBy('credit_id');
 
-        $transformedItems = $credits->getCollection()->map(function ($credit) use ($paymentSummary) {
+        $transformedItems = $credits->map(function ($credit) use ($paymentSummary) {
             $summary = $paymentSummary->get($credit->id, collect());
             foreach ($summary as $item) {
                 $credit->{$item->status} = $item->total_amount;
@@ -810,35 +812,25 @@ class ClientService
             })->count();
 
             if ($overdueInstallments->count() > 0) {
-                // El crédito tiene cuotas vencidas
                 $credit->credit_status = 'Overdue';
             } elseif ($remainingInstallments <= 4 && $overdueInstallments->count() === 0) {
-                // Faltan 4 o menos cuotas para terminar y no tiene cuotas vencidas
                 $credit->credit_status = 'Renewal_pending';
             } elseif ($overdueInstallments->count() <= 2) {
-                // El crédito está al día y tiene 2 o menos cuotas atrasadas
                 $credit->credit_status = 'On_time';
             } else {
-                // Cualquier otro caso por defecto, puedes ajustarlo si lo necesitas
                 $credit->credit_status = 'Normal';
             }
-
 
             return $credit;
         });
 
-        $credits->setCollection($transformedItems);
+        /* $credits->setCollection($transformedItems); */
 
         return response()->json([
             'success' => true,
             'message' => 'Creditos encontrados',
-            'data' => $credits->items(),
-            'pagination' => [
-                'total' => $credits->total(),
-                'per_page' => $credits->perPage(),
-                'current_page' => $credits->currentPage(),
-                'last_page' => $credits->lastPage(),
-            ]
+            'data' => $transformedItems,
+
         ]);
     }
 

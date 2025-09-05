@@ -22,6 +22,7 @@ class Liquidation extends Model
         'surplus',
         'cash_delivered',
         'status',
+        'created_at'
     ];
 
     protected $casts = [
@@ -36,6 +37,7 @@ class Liquidation extends Model
         'shortage' => 'decimal:2',
         'surplus' => 'decimal:2',
         'cash_delivered' => 'decimal:2',
+        'created_at' => 'datetime',
     ];
 
     // Relación con el vendedor

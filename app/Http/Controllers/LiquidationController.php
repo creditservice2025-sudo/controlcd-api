@@ -59,7 +59,8 @@ class LiquidationController extends Controller
             'base_delivered' => 'required|numeric|min:0',
             'total_collected' => 'required|numeric|min:0',
             'total_expenses' => 'required|numeric|min:0',
-            'new_credits' => 'required|numeric|min:0'
+            'new_credits' => 'required|numeric|min:0',
+            'created_at' => 'nullable|date',
         ]);
 
         // Verificar si ya existe liquidación para este día
@@ -100,19 +101,115 @@ class LiquidationController extends Controller
                 $surplus = $request->cash_delivered - $realToDeliver;
             }
         } else {
-            $debtAmount = abs($realToDeliver); 
-            
+            $debtAmount = abs($realToDeliver);
+
             if ($request->cash_delivered > $debtAmount) {
                 $surplus = $request->cash_delivered - $debtAmount;
                 $pendingDebt = 0;
             } else {
                 $pendingDebt = $debtAmount - $request->cash_delivered;
-                $shortage = $pendingDebt; 
+                $shortage = $pendingDebt;
             }
         }
 
-        // Crear liquidación
-        $liquidation = Liquidation::create([
+        $liquidationData = [
+            'date' => $request->date,
+            'seller_id' => $request->seller_id,
+            'collection_target' => $request->collection_target,
+            'initial_cash' => $request->initial_cash,
+            'base_delivered' => $request->base_delivered,
+            'total_collected' => $request->total_collected,
+            'total_expenses' => $request->total_expenses,
+            'new_credits' => $request->new_credits,
+            'real_to_deliver' => $realToDeliver,
+            'shortage' => $shortage,
+            'surplus' => $surplus,
+            'cash_delivered' => $request->cash_delivered,
+            'status' => 'pending'
+        ];
+
+        if ($request->has('created_at')) {
+            $liquidationData['created_at'] = $request->created_at;
+        }
+
+        $liquidation = Liquidation::create($liquidationData);
+
+
+
+        return response()->json([
+            'success' => true,
+            'data' => $liquidation,
+            'message' => 'Liquidación guardada correctamente'
+        ]);
+    }
+
+    public function updateLiquidation(Request $request, $id)
+    {
+        $user = Auth::user();
+
+        $request->validate([
+            'date' => 'required|date',
+            'seller_id' => 'required|exists:sellers,id',
+            'cash_delivered' => 'required|numeric|min:0',
+            'initial_cash' => 'required|numeric',
+            'base_delivered' => 'required|numeric|min:0',
+            'total_collected' => 'required|numeric|min:0',
+            'total_expenses' => 'required|numeric|min:0',
+            'new_credits' => 'required|numeric|min:0',
+            'total_income' => 'required|numeric|min:0',
+            'created_at' => 'nullable|date',
+        ]);
+
+        $liquidation = Liquidation::findOrFail($id);
+
+        $existingLiquidation = Liquidation::where('seller_id', $request->seller_id)
+            ->whereDate('date', $request->date)
+            ->where('id', '!=', $id)
+            ->first();
+
+        if ($existingLiquidation && $user->role_id != 1 && $user->role_id != 2) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Ya existe otra liquidación para este vendedor en la fecha seleccionada'
+            ], 422);
+        }
+
+        $pendingExpenses = Expense::where('user_id', $user->id)
+            ->whereDate('created_at', $request->date)
+            ->where('status', 'Pendiente')
+            ->exists();
+
+        if ($pendingExpenses) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No se puede liquidar porque tienes gastos pendientes de aprobación en la fecha seleccionada'
+            ], 422);
+        }
+
+        $realToDeliver = $request->initial_cash +
+            ($request->total_income + $request->total_collected) -
+            $request->total_expenses -
+            $request->new_credits;
+
+        $shortage = 0;
+        $surplus = 0;
+
+        if ($realToDeliver > 0) {
+            if ($request->cash_delivered < $realToDeliver) {
+                $shortage = $realToDeliver - $request->cash_delivered;
+            } else {
+                $surplus = $request->cash_delivered - $realToDeliver;
+            }
+        } else {
+            $debtAmount = abs($realToDeliver);
+            if ($request->cash_delivered > $debtAmount) {
+                $surplus = $request->cash_delivered - $debtAmount;
+            } else {
+                $shortage = $debtAmount - $request->cash_delivered;
+            }
+        }
+
+        $liquidation->update([
             'date' => $request->date,
             'seller_id' => $request->seller_id,
             'collection_target' => $request->collection_target,
@@ -131,8 +228,69 @@ class LiquidationController extends Controller
         return response()->json([
             'success' => true,
             'data' => $liquidation,
-            'message' => 'Liquidación guardada correctamente'
+            'message' => 'Liquidación cerrada correctamente'
         ]);
+    }
+
+    public function approveLiquidation($id)
+    {
+        $user = Auth::user();
+
+        $liquidation = Liquidation::findOrFail($id);
+
+        if ($user->role_id != 1 && $user->role_id != 2) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No tienes permisos para aprobar liquidaciones'
+            ], 403);
+        }
+
+        if ($liquidation->status === 'approved') {
+            return response()->json([
+                'success' => false,
+                'message' => 'La liquidación ya ha sido aprobada'
+            ], 422);
+        }
+
+        $liquidation->update([
+            'status' => 'approved',
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'data' => $liquidation,
+            'message' => 'Liquidación cerrada correctamente'
+        ]);
+    }
+
+    public function annulBase(Request $request, $id)
+    {
+
+        $liquidation = Liquidation::findOrFail($id);
+
+        try {
+            DB::beginTransaction();
+
+            $liquidation->update([
+                'base_delivered' => 0,
+
+            ]);
+
+            DB::commit();
+
+            return response()->json([
+                'success' => true,
+                'data' => $liquidation,
+                'message' => 'Base anulada correctamente'
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al anular la base: ' . $e->getMessage()
+            ], 500);
+        }
     }
 
     private function checkAuthorization($user, $sellerId)

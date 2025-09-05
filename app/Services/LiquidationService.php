@@ -288,7 +288,6 @@ class LiquidationService
             )
             ->whereDate('payments.payment_date', $date)
             ->where('credits.seller_id', $sellerId)
-            ->where('payments.status', 'Aprobado')
             ->groupBy('payments.payment_method');
 
         $firstPaymentQuery = DB::table('payments')
