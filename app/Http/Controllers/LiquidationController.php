@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Helpers\Helper;
 use App\Models\Income;
 use App\Services\LiquidationService;
 use Illuminate\Http\Request;
@@ -12,6 +13,8 @@ use App\Models\Liquidation;
 use App\Models\Expense;
 use App\Models\Credit;
 use App\Models\Seller;
+use App\Models\User;
+use App\Notifications\GeneralNotification;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
@@ -55,6 +58,7 @@ class LiquidationController extends Controller
             'date' => 'required|date',
             'seller_id' => 'required|exists:sellers,id',
             'cash_delivered' => 'required|numeric|min:0',
+            'path' => 'nullable|image|max:2048',
             'initial_cash' => 'required|numeric',
             'base_delivered' => 'required|numeric|min:0',
             'total_collected' => 'required|numeric|min:0',
@@ -112,6 +116,8 @@ class LiquidationController extends Controller
             }
         }
 
+
+
         $liquidationData = [
             'date' => $request->date,
             'seller_id' => $request->seller_id,
@@ -124,6 +130,7 @@ class LiquidationController extends Controller
             'real_to_deliver' => $realToDeliver,
             'shortage' => $shortage,
             'surplus' => $surplus,
+            'path' => $request->path,
             'cash_delivered' => $request->cash_delivered,
             'status' => 'pending'
         ];
@@ -132,9 +139,28 @@ class LiquidationController extends Controller
             $liquidationData['created_at'] = $request->created_at;
         }
 
+        if ($request->has('path')) {
+            $imageFile = $request->file('path');
+            $imagePath = Helper::uploadFile($imageFile, 'liquidations');
+            $liquidationData['path'] = $imagePath;
+        }
+
+
         $liquidation = Liquidation::create($liquidationData);
 
+        if ($user->role_id === 5) {
+            $seller = Seller::find($request->seller_id);
 
+            $adminUsers = User::whereIn('role_id', [1, 2])->get();
+
+            foreach ($adminUsers as $adminUser) {
+                $adminUser->notify(new GeneralNotification(
+                    'Solicitud de liquidación ',
+                    'El vendedor ' . $seller->user->name . ' de la ruta ' . $seller->city->country->name . ',' .  $seller->city->name . ' ha creado una nueva liquidación para la fecha ' . $request->date,
+                    '/dashboard/liquidaciones'
+                ));
+            }
+        }
 
         return response()->json([
             'success' => true,

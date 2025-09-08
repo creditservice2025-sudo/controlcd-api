@@ -21,6 +21,7 @@ class Liquidation extends Model
         'shortage',
         'surplus',
         'cash_delivered',
+        'path',
         'status',
         'created_at'
     ];
@@ -38,6 +39,7 @@ class Liquidation extends Model
         'surplus' => 'decimal:2',
         'cash_delivered' => 'decimal:2',
         'created_at' => 'datetime',
+        'path' => 'string',
     ];
 
     // Relación con el vendedor

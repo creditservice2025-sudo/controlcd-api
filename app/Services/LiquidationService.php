@@ -408,9 +408,10 @@ class LiquidationService
             'real_to_deliver' => $liquidation->real_to_deliver,
             'date' => $liquidation->date,
             'seller_id' => $liquidation->seller_id,
+            'path' => $liquidation->path,
             'existing_liquidation' => $isExisting ? $this->formatLiquidationDetails($liquidation) : null,
             'last_liquidation' => $this->getPreviousLiquidation($liquidation->seller_id, $liquidation->date),
-            'is_new' => false, // Indicador de que ya existe
+            'is_new' => false,
             'liquidation_start_date' => $firstPaymentDate
 
         ];

@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 use App\Models\User;
 use App\Mail\ResetPassword;
+use App\Models\Liquidation;
 use DB;
 use Hash;
 use Carbon\Carbon;
@@ -26,27 +27,40 @@ class LoginService
                 'email' => ['required', 'string'],
                 'password' => ['required'],
             ]);
-
+    
             if ($validator->fails()) {
                 return $this->errorResponse($validator->errors(), 422);
             }
-
+    
             $user = User::where('email', 'LIKE', $credentials['email'] . '%')
-            ->with('city', 'seller')
-            ->first();
-
+                ->with('city', 'seller')
+                ->first();
+    
+            // Check user and password first
             if (!$user || !Hash::check($credentials['password'], $user->password)) {
                 return $this->errorResponse(['Los datos introducidos son inválidos, verifica e intenta nuevamente'], 401);
             }
-
+    
+            // Now, check if the user is a seller and has a liquidation today
+            $seller = $user->seller;
+            if ($seller) {
+                $liquidation = Liquidation::where('seller_id', $seller->id)
+                    ->whereDate('created_at', Carbon::today())
+                    ->first();
+    
+                if ($liquidation) {
+                    return $this->errorResponse(['Ya has realizado una liquidación hoy. Intenta nuevamente mañana.'], 401);
+                }
+            }
+    
             $token = $user->createToken('USER_AUTH_TOKEN')->accessToken;
-
+    
             if($user->token_revoked){
                 $user->update([
                     "token_revoked" => 0
                 ]);
             }
-
+    
             return $this->successResponse([
                 'success' => true,
                 'access_token' => $token,

@@ -19,6 +19,7 @@ use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\CountriesController;
 use App\Http\Controllers\IncomeController;
+use App\Http\Controllers\NotificationController;
 
 // Auth routes
 Route::post('login', [AuthController::class, 'login']);
@@ -30,6 +31,12 @@ Route::middleware('auth:api')->group(function () {
 
     //change password
     Route::post('auth/change-password', [AuthController::class, 'changePassword']);
+
+    // notification routes
+    Route::get('/notifications', [NotificationController::class, 'index']);
+    Route::post('/notifications/mark-as-read/{id}', [NotificationController::class, 'markAsRead']);
+    Route::post('/notifications/mark-all-read', [NotificationController::class, 'markAllAsRead']);
+    Route::post('/send-notification', [NotificationController::class, 'sendNotification']);
 
     // dashboard routes
     Route::get('dashboard/counter-entities', [DashboardController::class, 'loadDahsboardData']);
