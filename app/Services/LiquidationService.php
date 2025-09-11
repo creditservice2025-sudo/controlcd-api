@@ -250,7 +250,7 @@ class LiquidationService
         $realToDeliver = $initialCash
             + ($dailyTotals['total_income'] + $dailyTotals['collected_total'])
             - ($dailyTotals['created_credits_value']
-                - $dailyTotals['total_expenses']);
+                + $dailyTotals['total_expenses']);
 
         // 5. Estructurar respuesta completa
         return [
@@ -442,4 +442,145 @@ class LiquidationService
 
         return $lastLiquidation ? $this->formatLiquidationDetails($lastLiquidation) : null;
     }
+
+    public function getReportByCity($startDate, $endDate)
+    {
+        $cities = DB::table('cities')->get();
+        $report = [];
+    
+        foreach ($cities as $city) {
+            $liquidations = Liquidation::whereHas('seller', function($q) use ($city) {
+                $q->where('city_id', $city->id);
+            })
+            ->whereBetween('date', [$startDate, $endDate])
+            ->get();
+    
+            if ($liquidations->count() > 0) {
+                $previous_cash = Liquidation::whereHas('seller', function($q) use ($city) {
+                    $q->where('city_id', $city->id);
+                })
+                ->where('date', '<', $startDate)
+                ->orderBy('date', 'desc')
+                ->value('initial_cash') ?? 0;
+    
+                $collected = $liquidations->sum('total_collected');
+                $loans = $liquidations->sum('new_credits');
+                $expenses = $liquidations->sum('total_expenses');
+                $income = $liquidations->sum('total_income');
+                $current_cash = $liquidations->last()?->cash_delivered ?? 0;
+    
+                // Listar gastos por categoría para la ciudad en el rango
+                $expenseCategories = [
+                    'ALMUERZO', 'EXTORSION', 'GASOLINA', 'MANTENIMIENTO MOTO', 'PAGO DE PLAN', 'RETIRO DE SOCIOS', 'PASAJES'
+                ];
+                $city_expenses = [];
+                foreach ($expenseCategories as $categoryName) {
+                    $categoryId = DB::table('categories')->where('name', $categoryName)->value('id');
+                    $city_expenses[$categoryName] = Expense::where('category_id', $categoryId)
+                        ->whereBetween('created_at', [$startDate, $endDate])
+                        ->sum('value');
+                }
+    
+                $income = Income::whereBetween('created_at', [$startDate, $endDate])
+                    ->whereHas('user', function($q) use ($city) {
+                        $q->where('city_id', $city->id);
+                    })->sum('value');
+    
+                $report[] = [
+                    'city' => $city->name,
+                    'previous_cash' => $previous_cash,
+                    'collected' => $collected,
+                    'loans' => $loans,
+                    'expenses' => $expenses,
+                    'ingresos' => $income,
+                    'gastos_categoria' => $city_expenses,
+                    'current_cash' => $current_cash,
+                ];
+            }
+        }
+        return $report;
+    }
+    public function getAccumulatedByCity($startDate, $endDate)
+    {
+        return DB::table('liquidations')
+            ->join('sellers', 'liquidations.seller_id', '=', 'sellers.id')
+            ->join('cities', 'sellers.city_id', '=', 'cities.id')
+            ->select(
+                'cities.name as city_name',
+                'cities.id as city_id',
+                DB::raw('SUM(liquidations.total_collected) as total_collected'),
+                DB::raw('SUM(liquidations.total_expenses) as total_expenses'),
+                DB::raw('SUM(liquidations.new_credits) as new_credits'),
+                DB::raw('SUM(liquidations.initial_cash) as initial_cash'),
+                DB::raw('SUM(liquidations.base_delivered) as base_delivered'),
+                DB::raw('SUM(liquidations.real_to_deliver) as real_to_deliver'),
+                DB::raw('SUM(liquidations.shortage) as shortage'),
+                DB::raw('SUM(liquidations.surplus) as surplus'),
+                DB::raw('SUM(liquidations.cash_delivered) as cash_delivered')
+            )
+            ->whereBetween('liquidations.date', [$startDate, $endDate])
+            ->groupBy('cities.id', 'cities.name')
+            ->get();
+    }
+
+    public function getAccumulatedBySellerInCity($cityId, $startDate, $endDate)
+    {
+        return DB::table('liquidations')
+            ->join('sellers', 'liquidations.seller_id', '=', 'sellers.id')
+            ->join('cities', 'sellers.city_id', '=', 'cities.id')
+            ->select(
+                'sellers.id as seller_id',
+                'sellers.seller_id as seller_code', 
+                'users.name as seller_name', 
+                DB::raw('SUM(liquidations.total_collected) as total_collected'),
+                DB::raw('SUM(liquidations.total_expenses) as total_expenses'),
+                DB::raw('SUM(liquidations.new_credits) as new_credits'),
+                DB::raw('SUM(liquidations.initial_cash) as initial_cash'),
+                DB::raw('SUM(liquidations.base_delivered) as base_delivered'),
+                DB::raw('SUM(liquidations.real_to_deliver) as real_to_deliver'),
+                DB::raw('SUM(liquidations.shortage) as shortage'),
+                DB::raw('SUM(liquidations.surplus) as surplus'),
+                DB::raw('SUM(liquidations.cash_delivered) as cash_delivered')
+            )
+            ->join('users', 'sellers.user_id', '=', 'users.id') 
+            ->where('cities.id', $cityId)
+            ->whereBetween('liquidations.date', [$startDate, $endDate])
+            ->groupBy('sellers.id', 'sellers.seller_id', 'users.name')
+            ->get();
+    }
+
+    public function getAccumulatedBySellersInCity($cityId, $startDate, $endDate)
+{
+    return DB::table('liquidations')
+        ->join('sellers', 'liquidations.seller_id', '=', 'sellers.id')
+        ->join('cities', 'sellers.city_id', '=', 'cities.id')
+        ->join('users', 'sellers.user_id', '=', 'users.id') 
+        ->select(
+            'sellers.id as seller_id',
+            'users.name as seller_name',
+            'cities.name as city_name',
+            DB::raw('SUM(liquidations.total_collected) as total_collected'),
+            DB::raw('SUM(liquidations.total_expenses) as total_expenses'),
+            DB::raw('SUM(liquidations.new_credits) as new_credits'),
+            DB::raw('SUM(liquidations.initial_cash) as initial_cash'),
+            DB::raw('SUM(liquidations.base_delivered) as base_delivered'),
+            DB::raw('SUM(liquidations.real_to_deliver) as real_to_deliver'),
+            DB::raw('SUM(liquidations.shortage) as shortage'),
+            DB::raw('SUM(liquidations.surplus) as surplus'),
+            DB::raw('SUM(liquidations.cash_delivered) as cash_delivered'),
+            DB::raw('COUNT(liquidations.id) as liquidation_count')
+        )
+        ->where('cities.id', $cityId)
+        ->whereBetween('liquidations.date', [$startDate, $endDate])
+        ->groupBy('sellers.id', 'users.name', 'cities.name')
+        ->get();
+}
+public function getSellerLiquidationsDetail($sellerId, $startDate, $endDate)
+{
+    return Liquidation::with(['seller', 'seller.user'])
+        ->where('seller_id', $sellerId)
+        ->whereBetween('date', [$startDate, $endDate])
+        ->orderBy('date', 'asc')
+        ->get();
+}
 }

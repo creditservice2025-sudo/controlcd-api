@@ -1402,7 +1402,6 @@ class ClientService
             ->whereNull('installments.deleted_at')
             ->whereNull('credits.deleted_at')
             ->whereNull('clients.deleted_at')
-            ->where('credits.status', '!=', 'liquidado')
             ->where(function ($query) use ($date) {
                 $query->whereDate('due_date', $date)
                     ->orWhere(function ($q) use ($date) {
@@ -1430,8 +1429,7 @@ class ClientService
             ->whereNull('credits.deleted_at')
             ->whereNull('clients.deleted_at')
             ->whereDate('payments.payment_date', $date)
-            ->whereIn('payments.status', ['Pagado', 'Abonado'])
-            ->where('credits.status', '!=', 'liquidado');
+            ->whereIn('payments.status', ['Pagado', 'Abonado']);
 
         if ($sellerId) {
             $todayPaymentsQuery->where('credits.seller_id', $sellerId);
@@ -1451,8 +1449,7 @@ class ClientService
             ->whereNull('credits.deleted_at')
             ->whereNull('clients.deleted_at')
             ->whereDate('payments.payment_date', $date)
-            ->where('payments.status', 'No Pagado')
-            ->where('credits.status', '!=', 'liquidado');
+            ->where('payments.status', 'No Pagado');
 
         if ($sellerId) {
             $todayUnpaidPaymentsQuery->where('credits.seller_id', $sellerId);
@@ -1498,8 +1495,7 @@ class ClientService
                             ->whereDate('due_date', '<', $date);
                     });
             })
-            ->whereIn('payments.status', ['Pagado', 'Abonado'])
-            ->where('credits.status', '!=', 'liquidado');
+            ->whereIn('payments.status', ['Pagado', 'Abonado']);
 
         if ($sellerId) {
             $todayDueCollectedQuery->where('credits.seller_id', $sellerId);
@@ -1535,8 +1531,7 @@ class ClientService
                         $q->where('installments.status', 'Pendiente')
                             ->whereDate('installments.due_date', '<', $date);
                     });
-            })
-            ->where('credits.status', '!=', 'liquidado');
+            });
 
         if ($sellerId) {
             $clientsQuery->where('credits.seller_id', $sellerId);
@@ -1556,11 +1551,8 @@ class ClientService
             ->whereNull('payment_installments.deleted_at')
             ->whereNull('installments.deleted_at')
             ->whereNull('credits.deleted_at')
-            ->whereDate('payments.created_at', $date)
-            ->where(function ($query) {
-                $query->where('credits.status', '!=', 'liquidado')
-                    ->orWhereNull('credits.status');
-            });
+            ->whereDate('payments.created_at', $date);
+          
 
         if ($sellerId) {
             $attendedTodayQuery->where('credits.seller_id', $sellerId);
@@ -1575,7 +1567,6 @@ class ClientService
             ->whereNull('clients.deleted_at')
             ->whereNull('credits.deleted_at')
             ->whereNull('installments.deleted_at')
-            ->where('credits.status', '!=', 'liquidado')
             ->whereDate('installments.due_date', $date)
             ->whereNotExists(function ($query) use ($date) {
                 $query->select(DB::raw(1))
@@ -1639,8 +1630,7 @@ class ClientService
             ->where(function ($query) {
                 $query->where('payments.status', '!=', 'Pagado')
                     ->where('payments.status', '!=', 'Abonado');
-            })
-            ->where('credits.status', '!=', 'liquidado');
+            });
 
         if ($sellerId) {
             $defaultedClientsCountQuery->where('credits.seller_id', $sellerId);
@@ -1677,4 +1667,37 @@ class ClientService
             'data' => $summary
         ]);
     }
+
+    public function getClientPortfolioBySeller($sellerId, $startDate, $endDate)
+{
+    return DB::table('credits')
+        ->join('clients', 'credits.client_id', '=', 'clients.id')
+        ->leftJoin('payments', function ($join) use ($startDate, $endDate) {
+            $join->on('credits.id', '=', 'payments.credit_id')
+                 ->whereBetween('payments.payment_date', [$startDate, $endDate]);
+        })
+        ->select(
+            'credits.id as loan_id',
+            'clients.name as client_name',
+            'credits.credit_value as capital',
+            DB::raw('COALESCE(SUM(payments.amount), 0) as paid_value'),
+            DB::raw('COALESCE(credits.remaining_amount, 0) as credit_balance'),
+            DB::raw('COALESCE(credits.total_amount - COALESCE(SUM(payments.amount), 0), 0) as portfolio_balance')
+        )
+        ->where('credits.seller_id', $sellerId)
+        ->whereNull('credits.deleted_at')
+        ->whereNull('clients.deleted_at')
+        ->groupBy('credits.id', 'clients.name', 'credits.credit_value', 'credits.remaining_amount', 'credits.total_amount')
+        ->get();
+}
+
+public function getTotalCollectedBySeller($sellerId, $startDate, $endDate)
+{
+    return DB::table('payments')
+        ->join('credits', 'payments.credit_id', '=', 'credits.id')
+        ->where('credits.seller_id', $sellerId)
+        ->whereBetween('payments.payment_date', [$startDate, $endDate])
+        ->whereNull('payments.deleted_at')
+        ->sum('payments.amount');
+}
 }

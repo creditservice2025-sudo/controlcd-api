@@ -20,6 +20,7 @@ use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\CountriesController;
 use App\Http\Controllers\IncomeController;
 use App\Http\Controllers\NotificationController;
+use App\Http\Controllers\ReportExportController;
 
 // Auth routes
 Route::post('login', [AuthController::class, 'login']);
@@ -162,6 +163,10 @@ Route::middleware('auth:api')->group(function () {
         Route::post('store', [LiquidationController::class, 'storeLiquidation']);
         Route::get('history', [LiquidationController::class, 'getLiquidationHistory']);
 
+        Route::get('accumulated-by-city', [LiquidationController::class, 'getAccumulatedByCity']);
+        Route::get('accumulated-by-city-with-sellers', [LiquidationController::class, 'getAccumulatedByCityWithSellers']);
+        Route::get('sellers-summary-by-city', [LiquidationController::class, 'getSellersSummaryByCity']);
+        Route::get('seller/{sellerId}/liquidations-detail', [LiquidationController::class, 'getSellerLiquidationsDetail']);
         Route::put('{liquidationId}/approve', [LiquidationController::class, 'approveLiquidation']);
         Route::put('{liquidationId}/annul-base', [LiquidationController::class, 'annulBase']);
         Route::put('update/{liquidationId}', [LiquidationController::class, 'updateLiquidation']);
@@ -200,4 +205,9 @@ Route::middleware('auth:api')->group(function () {
 
     //reports
     Route::get('reports/daily-collection', [CreditController::class, 'dailyCollectionReport']);
+    Route::prefix('reports/excel')->group(function () {
+        Route::get('accumulated-by-city', [ReportExportController::class, 'downloadAccumulatedByCityExcel']);
+        Route::get('seller-liquidations/{sellerId}/export-detail', [ReportExportController::class, 'downloadSellerLiquidationsDetailExcel']);
+        Route::get('sellers-summary-by-city/{sellerId}', [ReportExportController::class, 'downloadSellersSummaryByCityExcel']);
+    });
 });

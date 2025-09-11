@@ -14,6 +14,7 @@ use App\Models\Expense;
 use App\Models\Credit;
 use App\Models\Seller;
 use App\Models\User;
+use Illuminate\Support\Facades\Validator;
 use App\Notifications\GeneralNotification;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
@@ -676,4 +677,151 @@ class LiquidationController extends Controller
             'data' => $history
         ]);
     }
+    public function getAccumulatedByCity(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'start_date' => 'required|date',
+            'end_date' => 'required|date|after_or_equal:start_date'
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validación fallida',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        try {
+            $startDate = $request->input('start_date');
+            $endDate = $request->input('end_date');
+
+            $results = $this->liquidationService->getAccumulatedByCity($startDate, $endDate);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Datos obtenidos exitosamente',
+                'data' => $results
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al obtener los datos',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    public function getAccumulatedByCityWithSellers(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'city_id' => 'required|exists:cities,id',
+            'start_date' => 'required|date',
+            'end_date' => 'required|date|after_or_equal:start_date'
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validación fallida',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        try {
+            $cityId = $request->input('city_id');
+            $startDate = $request->input('start_date');
+            $endDate = $request->input('end_date');
+
+            // Llamar al nuevo servicio
+            $results = $this->liquidationService->getAccumulatedBySellerInCity($cityId, $startDate, $endDate);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Datos obtenidos exitosamente',
+                'data' => $results
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al obtener los datos',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+    public function getSellersSummaryByCity(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'start_date' => 'required|date',
+            'end_date' => 'required|date|after_or_equal:start_date'
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validación fallida',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        try {
+            $cityId = $request->input('city_id');
+            $startDate = $request->input('start_date');
+            $endDate = $request->input('end_date');
+
+            $results = $this->liquidationService->getAccumulatedBySellersInCity($cityId, $startDate, $endDate);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Resumen por vendedores obtenido exitosamente',
+                'data' => $results
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al obtener el resumen por vendedores',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    public function getSellerLiquidationsDetail(Request $request, $sellerId)
+{
+    $validator = Validator::make($request->all(), [
+        'start_date' => 'required|date',
+        'end_date' => 'required|date|after_or_equal:start_date'
+    ]);
+
+    if ($validator->fails()) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Validación fallida',
+            'errors' => $validator->errors()
+        ], 422);
+    }
+
+    try {
+        $startDate = $request->input('start_date');
+        $endDate = $request->input('end_date');
+
+        $liquidations = Liquidation::with(['seller', 'seller.user'])
+            ->where('seller_id', $sellerId)
+            ->whereBetween('date', [$startDate, $endDate])
+            ->orderBy('date', 'asc')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Liquidaciones del vendedor obtenidas exitosamente',
+            'data' => $liquidations
+        ]);
+
+    } catch (\Exception $e) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Error al obtener las liquidaciones del vendedor',
+            'error' => $e->getMessage()
+        ], 500);
+    }
+}
 }
