@@ -121,6 +121,7 @@ class ExpenseService
     public function delete($expenseId)
     {
         try {
+            $user = Auth::user();
             $expense = Expense::find($expenseId);
             if (!$expense) {
                 return $this->errorNotFoundResponse('Gasto no encontrado');
@@ -135,7 +136,7 @@ class ExpenseService
 
 
 
-            if ($liquidation) {
+            if ($liquidation && $user->role_id != 1) {
                 return response()->json([
                     'success' => false,
                     'message' => 'No se puede eliminar el gasto porque ya existe una liquidación aprobada para esta fecha'

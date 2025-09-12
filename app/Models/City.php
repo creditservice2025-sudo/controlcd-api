@@ -20,4 +20,8 @@ class City extends Model
     {
         return $this->hasMany(Client::class);
     }
+    public function sellers()
+    {
+        return $this->hasMany(Seller::class);
+    }
 }

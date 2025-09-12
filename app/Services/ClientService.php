@@ -1092,7 +1092,9 @@ class ClientService
             $liquidationData = $this->liquidationService->getLiquidationData($sellerId, $date, $userId);
 
             // 2. Obtener todos los clientes del vendedor con sus créditos filtrados por fecha
-            $allClients = $this->getAllClientsBySellerAndDate($sellerId, $date);
+            $clientsData = $this->getAllClientsBySellerAndDate($sellerId, $date);
+            $allClients = $clientsData['clients'];
+            $totalRecaudarHoy = $clientsData['total_recaudar_hoy'];
 
             // 3. Combinar los resultados
             $totalClients = count($allClients);
@@ -1101,7 +1103,10 @@ class ClientService
                 'clients' => $allClients,
                 'summary' => array_merge(
                     $liquidationData['summary'] ?? [],
-                    ['total_clients' => $totalClients]
+                    [
+                        'total_clients' => $totalClients,
+                        'total_recaudar_hoy' => $totalRecaudarHoy
+                    ]
                 )
             ];
         } catch (\Exception $e) {
@@ -1124,13 +1129,33 @@ class ClientService
             'guarantors'
         ])->where('seller_id', $sellerId)->get();
 
-        Log::info('Clients data:', $clients->toArray());
-
         $result = [];
-        foreach ($clients as $client) {
-            $delinquencyInfo = $this->calculateDelinquencyDetailsForDate($client, $referenceDate);
+        $totalRecaudarHoy = 0;
 
-            foreach ($client->credits as $credit) {
+        foreach ($clients as $client) {
+            $creditsWithDueInstallment = $client->credits->filter(function ($credit) use ($referenceDate) {
+                $pendingInstallments = $credit->installments->filter(function ($installment) use ($referenceDate) {
+                    return $installment->due_date == $referenceDate->format('Y-m-d');
+                });
+
+                if ($pendingInstallments->count() == 0) return false;
+
+                if ($credit->status == 'Liquidado') {
+                    $liquidationDate = \Carbon\Carbon::parse($credit->updated_at)->format('Y-m-d');
+                    return $liquidationDate == $referenceDate->format('Y-m-d');
+                }
+
+                return true;
+            });
+
+            foreach ($creditsWithDueInstallment as $credit) {
+                $cuotasHoy = $credit->installments->filter(function ($installment) use ($referenceDate) {
+                    return $installment->due_date == $referenceDate->format('Y-m-d');
+                });
+                $totalRecaudarHoy += $cuotasHoy->sum('quota_amount');
+
+                $delinquencyInfo = $this->calculateDelinquencyDetailsForDate($client, $referenceDate);
+
                 $creditInfo = $this->getCreditInfoForDate($credit, $referenceDate);
                 $result[] = [
                     'client' => $client,
@@ -1147,7 +1172,10 @@ class ClientService
             }
         }
 
-        return $result;
+        return [
+            'clients' => $result,
+            'total_recaudar_hoy' => $totalRecaudarHoy
+        ];
     }
     private function isCreditActiveOnDate($credit, $referenceDate)
     {
@@ -1159,20 +1187,90 @@ class ClientService
 
     private function getCreditInfoForDate($credit, $referenceDate)
     {
-        // Calcular el monto total pagado del crédito hasta la fecha de referencia
+        // PAGOS DEL DÍA
+        $todayPayments = $credit->payments->where('payment_date', $referenceDate->format('Y-m-d'));
+        $paidToday = $todayPayments->sum('amount');
+
+        // PAGOS DEL DÍA POR MÉTODO
+        $paidTodayEfectivo = $todayPayments->where('payment_method', 'Efectivo')->sum('amount');
+        $paidTodayTransferencia = $todayPayments->where('payment_method', 'Transferencia')->sum('amount');
+        $imagenTransferencia = null;
+        $lastTransferenciaPago = $todayPayments->where('payment_method', 'Transferencia')->sortByDesc('created_at')->first();
+        $imagenTransferencia = null;
+        if ($lastTransferenciaPago) {
+            $paymentImage = $lastTransferenciaPago->image;
+            if ($paymentImage) {
+                $imagenTransferencia = $paymentImage->path; // Cambia a tu campo real
+            }
+        }
+
+        // CUOTAS PAGADAS HOY
+        $installmentsPaidToday = [];
+        foreach ($todayPayments as $payment) {
+            // Cada pago puede tener varias cuotas (PaymentInstallment)
+            foreach ($payment->installments as $paymentInstallment) {
+                \Log::info('PaymentInstallment:', $paymentInstallment->toArray());
+                // Accede a la cuota real
+                $installment = $paymentInstallment->installment;
+                if ($installment) {
+                    $installmentsPaidToday[] = [
+                        'quota_number' => $installment->quota_number,
+                        'installment_id' => $installment->id,
+                        'applied_amount' => $paymentInstallment->applied_amount,
+                    ];
+                    \Log::info('Cuota pagada hoy:', [
+                        'quota_number' => $installment->quota_number,
+                        'installment_id' => $installment->id,
+                        'applied_amount' => $paymentInstallment->applied_amount,
+                        'payment_id' => $payment->id
+                    ]);
+                }
+            }
+        }
+
+
+        // ÚLTIMO PAGO DEL DÍA
+        $lastPaymentToday = $todayPayments->sortByDesc('created_at')->first();
+        $ultimoPagoMetodo = $lastPaymentToday ? $lastPaymentToday->payment_method : null;
+        $ultimoPagoMonto = $lastPaymentToday ? $lastPaymentToday->amount : null;
+
+        // METAS DEL DÍA: sumar cuotas con due_date = referenceDate
+        $metaRecaudarHoy = $credit->installments->where('due_date', $referenceDate->format('Y-m-d'))->sum('quota_amount');
+        $faltantePorRecaudarHoy = $metaRecaudarHoy - ($paidTodayEfectivo + $paidTodayTransferencia);
+
         $paidAmount = $credit->payments
             ->where('payment_date', '<=', $referenceDate->format('Y-m-d'))
             ->sum('amount');
 
-        $todayPayments = $credit->payments
-            ->where('payment_date', $referenceDate->format('Y-m-d'));
-        $paidToday = $todayPayments->sum('amount');
-
-        $lastPaymentToday = $todayPayments->sortByDesc('created_at')->first();
-        $paymentMethodToday = $lastPaymentToday ? $lastPaymentToday->payment_method : null;
-
         $totalAmount = ($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value;
         $balance = $totalAmount - $paidAmount;
+
+        $frequency = $credit->payment_frequency; // diaria, semanal, quincenal, mensual
+        $pagoFrecuencia = "";
+
+        if ($frequency === 'diaria') {
+            $pagoFrecuencia = "Pago diario";
+        } else if ($frequency === 'semanal') {
+            // Buscar el día de la semana de la próxima cuota
+            $nextInstallment = $credit->installments->where('due_date', '>=', $referenceDate->format('Y-m-d'))->sortBy('due_date')->first();
+            if ($nextInstallment) {
+                $dueDate = \Carbon\Carbon::parse($nextInstallment->due_date);
+                $dayName = $dueDate->locale('es')->dayName; // Ejemplo: miércoles
+                $pagoFrecuencia = "Pago semanal - los " . $dayName;
+            } else {
+                $pagoFrecuencia = "Pago semanal";
+            }
+        } else if ($frequency === 'quincenal' || $frequency === 'mensual') {
+            // Buscar el día del mes de la próxima cuota
+            $nextInstallment = $credit->installments->where('due_date', '>=', $referenceDate->format('Y-m-d'))->sortBy('due_date')->first();
+            if ($nextInstallment) {
+                $dueDate = \Carbon\Carbon::parse($nextInstallment->due_date);
+                $dayOfMonth = $dueDate->day;
+                $pagoFrecuencia = "Pago " . $frequency . " - el día " . $dayOfMonth;
+            } else {
+                $pagoFrecuencia = "Pago " . $frequency;
+            }
+        }
 
         $creditInfo = [
             'credit_id' => $credit->id,
@@ -1180,15 +1278,23 @@ class ClientService
             'total_amount' => $totalAmount,
             'paid_amount' => $paidAmount,
             'payment_frequency' => $credit->payment_frequency,
+            'payment_day_info' => $pagoFrecuencia,
             'balance' => $balance,
             'paid_today' => $paidToday,
             'created_at' => $credit->created_at,
-            'payment_method_today' => $paymentMethodToday,
+            'payment_method_today' => $ultimoPagoMetodo,
             'number_installments' => $credit->number_installments,
             'status' => $credit->status,
             'installments' => [],
-            'payments' => []
-
+            'payments' => [],
+            'cuotas_pagadas_hoy' => $installmentsPaidToday,
+            'meta_a_recaudar_hoy' => $metaRecaudarHoy,
+            'recaudado_efectivo_hoy' => $paidTodayEfectivo,
+            'recaudado_transferencia_hoy' => $paidTodayTransferencia,
+            'imagen_transferencia_hoy' => $imagenTransferencia,
+            'faltante_por_recaudar_hoy' => $faltantePorRecaudarHoy,
+            'ultimo_pago_metodo_hoy' => $ultimoPagoMetodo,
+            'ultimo_pago_monto_hoy' => $ultimoPagoMonto,
         ];
 
         foreach ($credit->payments as $payment) {
@@ -1552,7 +1658,7 @@ class ClientService
             ->whereNull('installments.deleted_at')
             ->whereNull('credits.deleted_at')
             ->whereDate('payments.created_at', $date);
-          
+
 
         if ($sellerId) {
             $attendedTodayQuery->where('credits.seller_id', $sellerId);
@@ -1669,35 +1775,35 @@ class ClientService
     }
 
     public function getClientPortfolioBySeller($sellerId, $startDate, $endDate)
-{
-    return DB::table('credits')
-        ->join('clients', 'credits.client_id', '=', 'clients.id')
-        ->leftJoin('payments', function ($join) use ($startDate, $endDate) {
-            $join->on('credits.id', '=', 'payments.credit_id')
-                 ->whereBetween('payments.payment_date', [$startDate, $endDate]);
-        })
-        ->select(
-            'credits.id as loan_id',
-            'clients.name as client_name',
-            'credits.credit_value as capital',
-            DB::raw('COALESCE(SUM(payments.amount), 0) as paid_value'),
-            DB::raw('COALESCE(credits.remaining_amount, 0) as credit_balance'),
-            DB::raw('COALESCE(credits.total_amount - COALESCE(SUM(payments.amount), 0), 0) as portfolio_balance')
-        )
-        ->where('credits.seller_id', $sellerId)
-        ->whereNull('credits.deleted_at')
-        ->whereNull('clients.deleted_at')
-        ->groupBy('credits.id', 'clients.name', 'credits.credit_value', 'credits.remaining_amount', 'credits.total_amount')
-        ->get();
-}
+    {
+        return DB::table('credits')
+            ->join('clients', 'credits.client_id', '=', 'clients.id')
+            ->leftJoin('payments', function ($join) use ($startDate, $endDate) {
+                $join->on('credits.id', '=', 'payments.credit_id')
+                    ->whereBetween('payments.payment_date', [$startDate, $endDate]);
+            })
+            ->select(
+                'credits.id as loan_id',
+                'clients.name as client_name',
+                'credits.credit_value as capital',
+                DB::raw('COALESCE(SUM(payments.amount), 0) as paid_value'),
+                DB::raw('COALESCE(credits.remaining_amount, 0) as credit_balance'),
+                DB::raw('COALESCE(credits.total_amount - COALESCE(SUM(payments.amount), 0), 0) as portfolio_balance')
+            )
+            ->where('credits.seller_id', $sellerId)
+            ->whereNull('credits.deleted_at')
+            ->whereNull('clients.deleted_at')
+            ->groupBy('credits.id', 'clients.name', 'credits.credit_value', 'credits.remaining_amount', 'credits.total_amount')
+            ->get();
+    }
 
-public function getTotalCollectedBySeller($sellerId, $startDate, $endDate)
-{
-    return DB::table('payments')
-        ->join('credits', 'payments.credit_id', '=', 'credits.id')
-        ->where('credits.seller_id', $sellerId)
-        ->whereBetween('payments.payment_date', [$startDate, $endDate])
-        ->whereNull('payments.deleted_at')
-        ->sum('payments.amount');
-}
+    public function getTotalCollectedBySeller($sellerId, $startDate, $endDate)
+    {
+        return DB::table('payments')
+            ->join('credits', 'payments.credit_id', '=', 'credits.id')
+            ->where('credits.seller_id', $sellerId)
+            ->whereBetween('payments.payment_date', [$startDate, $endDate])
+            ->whereNull('payments.deleted_at')
+            ->sum('payments.amount');
+    }
 }

@@ -45,7 +45,7 @@ class Payment extends Model
 
     public function scopeBeyondDistance(Builder $query, $latitude, $longitude, $distance = 10)
     {
-        $earthRadius = 6371000; 
+        $earthRadius = 6371000;
 
         return $query->whereRaw("
         ST_Distance_Sphere(
@@ -55,8 +55,10 @@ class Payment extends Model
     ", [$longitude, $latitude, $distance * $earthRadius]);
     }
 
-    public function image(): HasMany
+
+
+    public function image()
     {
-        return $this->hasMany(PaymentImage::class);
+        return $this->hasOne(PaymentImage::class, 'payment_id');
     }
 }

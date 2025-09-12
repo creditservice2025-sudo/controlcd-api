@@ -2,9 +2,12 @@
 
 namespace App\Services;
 
+use App\Models\Credit;
 use App\Models\Expense;
 use App\Models\Income;
 use App\Models\Liquidation;
+use App\Models\Payment;
+use App\Models\Seller;
 use Illuminate\Support\Facades\DB;
 use App\Traits\ApiResponse;
 use Carbon\Carbon;
@@ -229,11 +232,19 @@ class LiquidationService
             ->whereDate('date', $date)
             ->first();
 
+
         // Si existe liquidación, retornar directamente esos datos
         if ($existingLiquidation) {
-            return $this->formatLiquidationResponse($existingLiquidation, true);
-        }
+            // Recalcula los datos de la liquidación antes de devolverlos
+            $this->recalculateLiquidation($sellerId, $date);
 
+            // Vuelve a obtener la liquidación actualizada
+            $updatedLiquidation = Liquidation::where('seller_id', $sellerId)
+                ->whereDate('date', $date)
+                ->first();
+
+            return $this->formatLiquidationResponse($updatedLiquidation, true);
+        }
         // 2. Obtener datos del endpoint dailyPaymentTotals
         $dailyTotals = $this->getDailyTotals($sellerId, $date, $userId);
 
@@ -245,18 +256,28 @@ class LiquidationService
 
         $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
 
+        $baseDelivered = (isset($existingLiquidation) && isset($existingLiquidation->base_delivered))
+            ? $existingLiquidation->base_delivered
+            : 0.00;
 
-        // 4. Calcular valor real a entregar
         $realToDeliver = $initialCash
-            + ($dailyTotals['total_income'] + $dailyTotals['collected_total'])
-            - ($dailyTotals['created_credits_value']
-                + $dailyTotals['total_expenses']);
+            + (
+                $dailyTotals['total_income']
+                + $dailyTotals['collected_total']
+                + $baseDelivered
+            )
+            - (
+                $dailyTotals['created_credits_value']
+                + $dailyTotals['total_expenses']
+            );
+
+
 
         // 5. Estructurar respuesta completa
         return [
             'collection_target' => $dailyTotals['daily_goal'],
             'initial_cash' => $initialCash,
-            'base_delivered' => $dailyTotals['base_value'],
+            'base_delivered' => $existingLiquidation ? $existingLiquidation->base_delivered : "0.00",
             'total_collected' => $dailyTotals['collected_total'],
             'total_expenses' => $dailyTotals['total_expenses'],
             'total_income' => $dailyTotals['total_income'],
@@ -274,6 +295,85 @@ class LiquidationService
             'is_new' => true,
             'liquidation_start_date' => $dailyTotals['liquidation_start_date']
         ];
+    }
+
+    public function recalculateLiquidation($sellerId, $date)
+    {
+        // Busca la liquidación del vendedor en esa fecha
+        $liquidation = Liquidation::where('seller_id', $sellerId)
+            ->whereDate('date', $date)
+            ->first();
+
+        if (!$liquidation) return;
+
+        // 1. Obtener el user_id del vendedor
+        $seller = Seller::find($sellerId);
+        $userId = $seller ? $seller->user_id : null;
+
+        // 2. Recalcula los totales actuales desde la BD
+        $totalExpenses = $userId
+            ? Expense::where('user_id', $userId)->whereDate('created_at', $date)->sum('value')
+            : 0;
+
+        $totalIncome = $userId
+            ? Income::where('user_id', $userId)->whereDate('created_at', $date)->sum('value')
+            : 0;
+
+        $newCredits = Credit::where('seller_id', $sellerId)
+            ->whereDate('created_at', $date)
+            ->sum('credit_value');
+
+        $totalCollected = Payment::join('credits', 'payments.credit_id', '=', 'credits.id')
+            ->where('credits.seller_id', $sellerId)
+            ->whereDate('payments.created_at', $date)
+            ->sum('payments.amount');
+
+        $realToDeliver = $liquidation->initial_cash
+            + $liquidation->base_delivered
+            + ($totalIncome + $totalCollected)
+            - $totalExpenses
+            - $newCredits;
+
+        $cashDelivered = $liquidation->cash_delivered;
+        $shortage = 0;
+        $surplus = 0;
+        if ($realToDeliver > 0) {
+            if ($cashDelivered < $realToDeliver) {
+                $shortage = $realToDeliver - $cashDelivered;
+            } else {
+                $surplus = $cashDelivered - $realToDeliver;
+            }
+        } else {
+            $debtAmount = abs($realToDeliver);
+            if ($cashDelivered > $debtAmount) {
+                $surplus = $cashDelivered - $debtAmount;
+            } else {
+                $shortage = $debtAmount - $cashDelivered;
+            }
+        }
+
+        // Solo actualiza si hubo cambios en los totales
+        if (
+            $liquidation->total_expenses == $totalExpenses &&
+            $liquidation->new_credits == $newCredits &&
+            $liquidation->total_income == $totalIncome &&
+            $liquidation->total_collected == $totalCollected &&
+            $liquidation->real_to_deliver == $realToDeliver &&
+            $liquidation->shortage == $shortage &&
+            $liquidation->surplus == $surplus
+        ) {
+            return; // No hay cambios, no actualizar
+        }
+
+        $liquidation->update([
+            'total_expenses'      => $totalExpenses,
+            'new_credits'         => $newCredits,
+            'total_income'        => $totalIncome,
+            'total_collected'     => $totalCollected,
+            'real_to_deliver'     => $realToDeliver,
+            'shortage'            => $shortage,
+            'surplus'             => $surplus,
+        ]);
     }
 
     protected function getDailyTotals($sellerId, $date, $userId)
@@ -333,10 +433,7 @@ class LiquidationService
         // Obtener créditos creados
         $credits = DB::table('credits')
             ->where('seller_id', $sellerId)
-            ->whereBetween('created_at', [
-                $targetDate->startOfDay()->format('Y-m-d H:i:s'),
-                $targetDate->endOfDay()->format('Y-m-d H:i:s')
-            ])
+            ->whereDate('created_at', $date)
             ->select([
                 DB::raw('COALESCE(SUM(credit_value), 0) as value'),
                 DB::raw('COALESCE(SUM(
@@ -397,6 +494,9 @@ class LiquidationService
                 $firstPaymentDate = $firstPaymentQuery->created_at;
             }
         }
+
+        \Log::debug('Liquidation object:', ['liquidation' => json_decode(json_encode($liquidation), true)]);
+
         return [
             'collection_target' => $liquidation->collection_target,
             'initial_cash' => $liquidation->initial_cash,
@@ -424,6 +524,7 @@ class LiquidationService
             'real_to_deliver' => $liquidation->real_to_deliver,
             'total_collected' => $liquidation->total_collected,
             'total_expenses' => $liquidation->total_expenses,
+            'total_income' => $liquidation->total_income,
             'new_credits' => $liquidation->new_credits,
             'base_delivered' => $liquidation->base_delivered,
             'shortage' => $liquidation->shortage,
@@ -447,31 +548,37 @@ class LiquidationService
     {
         $cities = DB::table('cities')->get();
         $report = [];
-    
+
         foreach ($cities as $city) {
-            $liquidations = Liquidation::whereHas('seller', function($q) use ($city) {
+            $liquidations = Liquidation::whereHas('seller', function ($q) use ($city) {
                 $q->where('city_id', $city->id);
             })
-            ->whereBetween('date', [$startDate, $endDate])
-            ->get();
-    
+                ->whereBetween('date', [$startDate, $endDate])
+                ->get();
+
             if ($liquidations->count() > 0) {
-                $previous_cash = Liquidation::whereHas('seller', function($q) use ($city) {
+                $previous_cash = Liquidation::whereHas('seller', function ($q) use ($city) {
                     $q->where('city_id', $city->id);
                 })
-                ->where('date', '<', $startDate)
-                ->orderBy('date', 'desc')
-                ->value('initial_cash') ?? 0;
-    
+                    ->where('date', '<', $startDate)
+                    ->orderBy('date', 'desc')
+                    ->value('initial_cash') ?? 0;
+
                 $collected = $liquidations->sum('total_collected');
                 $loans = $liquidations->sum('new_credits');
                 $expenses = $liquidations->sum('total_expenses');
                 $income = $liquidations->sum('total_income');
                 $current_cash = $liquidations->last()?->cash_delivered ?? 0;
-    
+
                 // Listar gastos por categoría para la ciudad en el rango
                 $expenseCategories = [
-                    'ALMUERZO', 'EXTORSION', 'GASOLINA', 'MANTENIMIENTO MOTO', 'PAGO DE PLAN', 'RETIRO DE SOCIOS', 'PASAJES'
+                    'ALMUERZO',
+                    'EXTORSION',
+                    'GASOLINA',
+                    'MANTENIMIENTO MOTO',
+                    'PAGO DE PLAN',
+                    'RETIRO DE SOCIOS',
+                    'PASAJES'
                 ];
                 $city_expenses = [];
                 foreach ($expenseCategories as $categoryName) {
@@ -480,12 +587,12 @@ class LiquidationService
                         ->whereBetween('created_at', [$startDate, $endDate])
                         ->sum('value');
                 }
-    
+
                 $income = Income::whereBetween('created_at', [$startDate, $endDate])
-                    ->whereHas('user', function($q) use ($city) {
+                    ->whereHas('user', function ($q) use ($city) {
                         $q->where('city_id', $city->id);
                     })->sum('value');
-    
+
                 $report[] = [
                     'city' => $city->name,
                     'previous_cash' => $previous_cash,
@@ -530,8 +637,8 @@ class LiquidationService
             ->join('cities', 'sellers.city_id', '=', 'cities.id')
             ->select(
                 'sellers.id as seller_id',
-                'sellers.seller_id as seller_code', 
-                'users.name as seller_name', 
+                'sellers.seller_id as seller_code',
+                'users.name as seller_name',
                 DB::raw('SUM(liquidations.total_collected) as total_collected'),
                 DB::raw('SUM(liquidations.total_expenses) as total_expenses'),
                 DB::raw('SUM(liquidations.new_credits) as new_credits'),
@@ -542,7 +649,7 @@ class LiquidationService
                 DB::raw('SUM(liquidations.surplus) as surplus'),
                 DB::raw('SUM(liquidations.cash_delivered) as cash_delivered')
             )
-            ->join('users', 'sellers.user_id', '=', 'users.id') 
+            ->join('users', 'sellers.user_id', '=', 'users.id')
             ->where('cities.id', $cityId)
             ->whereBetween('liquidations.date', [$startDate, $endDate])
             ->groupBy('sellers.id', 'sellers.seller_id', 'users.name')
@@ -550,37 +657,37 @@ class LiquidationService
     }
 
     public function getAccumulatedBySellersInCity($cityId, $startDate, $endDate)
-{
-    return DB::table('liquidations')
-        ->join('sellers', 'liquidations.seller_id', '=', 'sellers.id')
-        ->join('cities', 'sellers.city_id', '=', 'cities.id')
-        ->join('users', 'sellers.user_id', '=', 'users.id') 
-        ->select(
-            'sellers.id as seller_id',
-            'users.name as seller_name',
-            'cities.name as city_name',
-            DB::raw('SUM(liquidations.total_collected) as total_collected'),
-            DB::raw('SUM(liquidations.total_expenses) as total_expenses'),
-            DB::raw('SUM(liquidations.new_credits) as new_credits'),
-            DB::raw('SUM(liquidations.initial_cash) as initial_cash'),
-            DB::raw('SUM(liquidations.base_delivered) as base_delivered'),
-            DB::raw('SUM(liquidations.real_to_deliver) as real_to_deliver'),
-            DB::raw('SUM(liquidations.shortage) as shortage'),
-            DB::raw('SUM(liquidations.surplus) as surplus'),
-            DB::raw('SUM(liquidations.cash_delivered) as cash_delivered'),
-            DB::raw('COUNT(liquidations.id) as liquidation_count')
-        )
-        ->where('cities.id', $cityId)
-        ->whereBetween('liquidations.date', [$startDate, $endDate])
-        ->groupBy('sellers.id', 'users.name', 'cities.name')
-        ->get();
-}
-public function getSellerLiquidationsDetail($sellerId, $startDate, $endDate)
-{
-    return Liquidation::with(['seller', 'seller.user'])
-        ->where('seller_id', $sellerId)
-        ->whereBetween('date', [$startDate, $endDate])
-        ->orderBy('date', 'asc')
-        ->get();
-}
+    {
+        return DB::table('liquidations')
+            ->join('sellers', 'liquidations.seller_id', '=', 'sellers.id')
+            ->join('cities', 'sellers.city_id', '=', 'cities.id')
+            ->join('users', 'sellers.user_id', '=', 'users.id')
+            ->select(
+                'sellers.id as seller_id',
+                'users.name as seller_name',
+                'cities.name as city_name',
+                DB::raw('SUM(liquidations.total_collected) as total_collected'),
+                DB::raw('SUM(liquidations.total_expenses) as total_expenses'),
+                DB::raw('SUM(liquidations.new_credits) as new_credits'),
+                DB::raw('SUM(liquidations.initial_cash) as initial_cash'),
+                DB::raw('SUM(liquidations.base_delivered) as base_delivered'),
+                DB::raw('SUM(liquidations.real_to_deliver) as real_to_deliver'),
+                DB::raw('SUM(liquidations.shortage) as shortage'),
+                DB::raw('SUM(liquidations.surplus) as surplus'),
+                DB::raw('SUM(liquidations.cash_delivered) as cash_delivered'),
+                DB::raw('COUNT(liquidations.id) as liquidation_count')
+            )
+            ->where('cities.id', $cityId)
+            ->whereBetween('liquidations.date', [$startDate, $endDate])
+            ->groupBy('sellers.id', 'users.name', 'cities.name')
+            ->get();
+    }
+    public function getSellerLiquidationsDetail($sellerId, $startDate, $endDate)
+    {
+        return Liquidation::with(['seller', 'seller.user'])
+            ->where('seller_id', $sellerId)
+            ->whereBetween('date', [$startDate, $endDate])
+            ->orderBy('date', 'asc')
+            ->get();
+    }
 }

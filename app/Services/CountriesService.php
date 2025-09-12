@@ -45,14 +45,22 @@ class CountriesService
     }
 
 
-    public function getCountries()
+    public function getCountries($withSellerCities = false)
     {
         try {
-            $countries = Country::select('id', 'name')->get();
+            if ($withSellerCities) {
+                $countries = Country::whereHas('cities', function($cityQuery) {
+                    $cityQuery->whereHas('sellers');
+                })
+                ->select('id', 'name')
+                ->get();
+            } else {
+                $countries = Country::select('id', 'name')->get();
+            }
             return $this->successResponse($countries);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
-            $this->handlerException('Error al obtener los países');
+            return $this->handlerException('Error al obtener los países');
         }
     }
 

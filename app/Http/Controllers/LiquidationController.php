@@ -12,6 +12,7 @@ use Carbon\Carbon;
 use App\Models\Liquidation;
 use App\Models\Expense;
 use App\Models\Credit;
+use App\Models\Payment;
 use App\Models\Seller;
 use App\Models\User;
 use Illuminate\Support\Facades\Validator;
@@ -64,6 +65,7 @@ class LiquidationController extends Controller
             'base_delivered' => 'required|numeric|min:0',
             'total_collected' => 'required|numeric|min:0',
             'total_expenses' => 'required|numeric|min:0',
+            'total_income' => 'required|numeric|min:0',
             'new_credits' => 'required|numeric|min:0',
             'created_at' => 'nullable|date',
         ]);
@@ -73,7 +75,7 @@ class LiquidationController extends Controller
             ->whereDate('date', $request->date)
             ->first();
 
-        if ($existingLiquidation) {
+        if ($existingLiquidation && $user->role_id !== 1) {
             return response()->json([
                 'success' => false,
                 'message' => 'Ya existe una liquidación para este vendedor en la fecha seleccionada'
@@ -127,6 +129,7 @@ class LiquidationController extends Controller
             'base_delivered' => $request->base_delivered,
             'total_collected' => $request->total_collected,
             'total_expenses' => $request->total_expenses,
+            'total_income' => $request->total_income,
             'new_credits' => $request->new_credits,
             'real_to_deliver' => $realToDeliver,
             'shortage' => $shortage,
@@ -158,7 +161,13 @@ class LiquidationController extends Controller
                 $adminUser->notify(new GeneralNotification(
                     'Solicitud de liquidación ',
                     'El vendedor ' . $seller->user->name . ' de la ruta ' . $seller->city->country->name . ',' .  $seller->city->name . ' ha creado una nueva liquidación para la fecha ' . $request->date,
-                    '/dashboard/liquidaciones'
+                    '/dashboard/liquidaciones',
+                    [
+                        'country_id' => $seller->city->country->id,
+                        'city_id' => $seller->city->id,
+                        'seller_id' => $seller->id,
+                        'date' => $request->date,
+                    ]
                 ));
             }
         }
@@ -175,22 +184,23 @@ class LiquidationController extends Controller
         $user = Auth::user();
 
         $request->validate([
-            'date' => 'required|date',
-            'seller_id' => 'required|exists:sellers,id',
-            'cash_delivered' => 'required|numeric|min:0',
-            'initial_cash' => 'required|numeric',
-            'base_delivered' => 'required|numeric|min:0',
-            'total_collected' => 'required|numeric|min:0',
-            'total_expenses' => 'required|numeric|min:0',
-            'new_credits' => 'required|numeric|min:0',
-            'total_income' => 'required|numeric|min:0',
+            'date' => 'nullable|date',
+            'seller_id' => 'nullable|exists:sellers,id',
+            'cash_delivered' => 'nullable|numeric|min:0',
+            'initial_cash' => 'nullable|numeric',
+            'base_delivered' => 'nullable|numeric|min:0',
+            'total_collected' => 'nullable|numeric|min:0',
+            'total_expenses' => 'nullable|numeric|min:0',
+            'new_credits' => 'nullable|numeric|min:0',
+            'total_income' => 'nullable|numeric|min:0',
+            'collection_target' => 'nullable|numeric|min:0',
             'created_at' => 'nullable|date',
         ]);
 
         $liquidation = Liquidation::findOrFail($id);
 
-        $existingLiquidation = Liquidation::where('seller_id', $request->seller_id)
-            ->whereDate('date', $request->date)
+        $existingLiquidation = Liquidation::where('seller_id', $request->seller_id ?? $liquidation->seller_id)
+            ->whereDate('date', $request->date ?? $liquidation->date)
             ->where('id', '!=', $id)
             ->first();
 
@@ -202,7 +212,7 @@ class LiquidationController extends Controller
         }
 
         $pendingExpenses = Expense::where('user_id', $user->id)
-            ->whereDate('created_at', $request->date)
+            ->whereDate('created_at', $request->date ?? $liquidation->date)
             ->where('status', 'Pendiente')
             ->exists();
 
@@ -213,44 +223,67 @@ class LiquidationController extends Controller
             ], 422);
         }
 
-        $realToDeliver = $request->initial_cash +
-            ($request->total_income + $request->total_collected) -
-            $request->total_expenses -
-            $request->new_credits;
+        // Usa los valores enviados o los actuales en la BD
+        $initial_cash = $request->has('initial_cash') ? $request->initial_cash : $liquidation->initial_cash;
+        $base_delivered = $request->has('base_delivered') ? $request->base_delivered : $liquidation->base_delivered;
+        $total_collected = $request->has('total_collected') ? $request->total_collected : $liquidation->total_collected;
+        $total_expenses = $request->has('total_expenses') ? $request->total_expenses : $liquidation->total_expenses;
+        $new_credits = $request->has('new_credits') ? $request->new_credits : $liquidation->new_credits;
+        $total_income = $request->has('total_income') ? $request->total_income : $liquidation->total_income;
+        $cash_delivered = $request->has('cash_delivered') ? $request->cash_delivered : $liquidation->cash_delivered;
+        $collection_target = $request->has('collection_target') ? $request->collection_target : $liquidation->collection_target;
 
+        // Calcula realToDeliver con la base entregada
+        $realToDeliver = $initial_cash
+            + $base_delivered
+            + ($total_income + $total_collected)
+            - $total_expenses
+            - $new_credits;
+
+        // shortage/surplus
         $shortage = 0;
         $surplus = 0;
-
         if ($realToDeliver > 0) {
-            if ($request->cash_delivered < $realToDeliver) {
-                $shortage = $realToDeliver - $request->cash_delivered;
+            if ($cash_delivered < $realToDeliver) {
+                $shortage = $realToDeliver - $cash_delivered;
             } else {
-                $surplus = $request->cash_delivered - $realToDeliver;
+                $surplus = $cash_delivered - $realToDeliver;
             }
         } else {
             $debtAmount = abs($realToDeliver);
-            if ($request->cash_delivered > $debtAmount) {
-                $surplus = $request->cash_delivered - $debtAmount;
+            if ($cash_delivered > $debtAmount) {
+                $surplus = $cash_delivered - $debtAmount;
             } else {
-                $shortage = $debtAmount - $request->cash_delivered;
+                $shortage = $debtAmount - $cash_delivered;
             }
         }
 
+        // Actualiza la liquidación
         $liquidation->update([
-            'date' => $request->date,
-            'seller_id' => $request->seller_id,
-            'collection_target' => $request->collection_target,
-            'initial_cash' => $request->initial_cash,
-            'base_delivered' => $request->base_delivered,
-            'total_collected' => $request->total_collected,
-            'total_expenses' => $request->total_expenses,
-            'new_credits' => $request->new_credits,
+            'date' => $request->date ?? $liquidation->date,
+            'seller_id' => $request->seller_id ?? $liquidation->seller_id,
+            'collection_target' => $collection_target,
+            'initial_cash' => $initial_cash,
+            'base_delivered' => $base_delivered,
+            'total_collected' => $total_collected,
+            'total_expenses' => $total_expenses,
+            'new_credits' => $new_credits,
+            'total_income' => $total_income,
             'real_to_deliver' => $realToDeliver,
             'shortage' => $shortage,
             'surplus' => $surplus,
-            'cash_delivered' => $request->cash_delivered,
+            'cash_delivered' => $cash_delivered,
             'status' => 'pending'
         ]);
+
+        // Recalcula todos los campos relevantes con los datos de la BD actual
+        $this->recalculateLiquidation(
+            $request->seller_id ?? $liquidation->seller_id,
+            $request->date ?? $liquidation->date
+        );
+
+        // Actualiza la instancia y retorna los datos
+        $liquidation->refresh();
 
         return response()->json([
             'success' => true,
@@ -259,60 +292,140 @@ class LiquidationController extends Controller
         ]);
     }
 
+    // Tu función de recalculo debe estar en el mismo controlador:
+    public function recalculateLiquidation($sellerId, $date)
+    {
+        // Busca la liquidación del vendedor en esa fecha
+        $liquidation = Liquidation::where('seller_id', $sellerId)
+            ->whereDate('date', $date)
+            ->first();
+
+        if (!$liquidation) return;
+
+        // 1. Obtener el user_id del vendedor
+        $seller = Seller::find($sellerId);
+        $userId = $seller ? $seller->user_id : null;
+
+        // 2. Recalcula los totales actuales desde la BD
+        // Usa user_id para Expense e Income
+        $totalExpenses = $userId
+            ? Expense::where('user_id', $userId)->whereDate('created_at', $date)->sum('value')
+            : 0;
+
+        $totalIncome = $userId
+            ? Income::where('user_id', $userId)->whereDate('created_at', $date)->sum('value')
+            : 0;
+
+        // Los créditos y pagos sí pueden seguir usando seller_id si tienen ese campo
+        $newCredits = Credit::where('seller_id', $sellerId)
+            ->whereDate('created_at', $date)
+            ->sum('credit_value');
+
+
+
+        $totalCollected = Payment::join('credits', 'payments.credit_id', '=', 'credits.id')
+            ->where('credits.seller_id', $sellerId)
+            ->whereDate('payments.created_at', $date)
+            ->sum('payments.amount');
+
+        $realToDeliver = $liquidation->initial_cash
+            + $liquidation->base_delivered
+            + ($totalIncome + $totalCollected)
+            - $totalExpenses
+            - $newCredits;
+
+        $cashDelivered = $liquidation->cash_delivered;
+        $shortage = 0;
+        $surplus = 0;
+        if ($realToDeliver > 0) {
+            if ($cashDelivered < $realToDeliver) {
+                $shortage = $realToDeliver - $cashDelivered;
+            } else {
+                $surplus = $cashDelivered - $realToDeliver;
+            }
+        } else {
+            $debtAmount = abs($realToDeliver);
+            if ($cashDelivered > $debtAmount) {
+                $surplus = $cashDelivered - $debtAmount;
+            } else {
+                $shortage = $debtAmount - $cashDelivered;
+            }
+        }
+
+        // Actualiza la liquidación con todos los campos recalculados
+        $liquidation->update([
+            'total_expenses'      => $totalExpenses,
+            'new_credits'         => $newCredits,
+            'total_income'        => $totalIncome,
+            'total_collected'     => $totalCollected,
+            'real_to_deliver'     => $realToDeliver,
+            'shortage'            => $shortage,
+            'surplus'             => $surplus,
+        ]);
+    }
     public function approveLiquidation($id)
     {
         $user = Auth::user();
-
+    
         $liquidation = Liquidation::findOrFail($id);
-
+    
         if ($user->role_id != 1 && $user->role_id != 2) {
             return response()->json([
                 'success' => false,
                 'message' => 'No tienes permisos para aprobar liquidaciones'
             ], 403);
         }
-
+    
         if ($liquidation->status === 'approved') {
             return response()->json([
                 'success' => false,
                 'message' => 'La liquidación ya ha sido aprobada'
             ], 422);
         }
-
+    
         $liquidation->update([
             'status' => 'approved',
         ]);
-
+    
+        $this->recalculateLiquidation($liquidation->seller_id, $liquidation->date);
+    
+        $liquidation->refresh();
+    
         return response()->json([
             'success' => true,
             'data' => $liquidation,
-            'message' => 'Liquidación cerrada correctamente'
+            'message' => 'Liquidación cerrada y recalculada correctamente'
         ]);
     }
 
     public function annulBase(Request $request, $id)
     {
-
         $liquidation = Liquidation::findOrFail($id);
-
+    
         try {
             DB::beginTransaction();
-
+    
+            // Anula la base
             $liquidation->update([
                 'base_delivered' => 0,
-
             ]);
-
+    
+            // Recalcula la liquidación con los datos actuales
+            $this->recalculateLiquidation($liquidation->seller_id, $liquidation->date);
+    
             DB::commit();
-
+    
+            // Refresca los datos
+            $liquidation->refresh();
+    
             return response()->json([
                 'success' => true,
                 'data' => $liquidation,
-                'message' => 'Base anulada correctamente'
+                'message' => 'Base anulada y liquidación recalculada correctamente'
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
-
+    
             return response()->json([
                 'success' => false,
                 'message' => 'Error al anular la base: ' . $e->getMessage()
@@ -786,42 +899,41 @@ class LiquidationController extends Controller
     }
 
     public function getSellerLiquidationsDetail(Request $request, $sellerId)
-{
-    $validator = Validator::make($request->all(), [
-        'start_date' => 'required|date',
-        'end_date' => 'required|date|after_or_equal:start_date'
-    ]);
-
-    if ($validator->fails()) {
-        return response()->json([
-            'success' => false,
-            'message' => 'Validación fallida',
-            'errors' => $validator->errors()
-        ], 422);
-    }
-
-    try {
-        $startDate = $request->input('start_date');
-        $endDate = $request->input('end_date');
-
-        $liquidations = Liquidation::with(['seller', 'seller.user'])
-            ->where('seller_id', $sellerId)
-            ->whereBetween('date', [$startDate, $endDate])
-            ->orderBy('date', 'asc')
-            ->get();
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Liquidaciones del vendedor obtenidas exitosamente',
-            'data' => $liquidations
+    {
+        $validator = Validator::make($request->all(), [
+            'start_date' => 'required|date',
+            'end_date' => 'required|date|after_or_equal:start_date'
         ]);
 
-    } catch (\Exception $e) {
-        return response()->json([
-            'success' => false,
-            'message' => 'Error al obtener las liquidaciones del vendedor',
-            'error' => $e->getMessage()
-        ], 500);
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validación fallida',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        try {
+            $startDate = $request->input('start_date');
+            $endDate = $request->input('end_date');
+
+            $liquidations = Liquidation::with(['seller', 'seller.user'])
+                ->where('seller_id', $sellerId)
+                ->whereBetween('date', [$startDate, $endDate])
+                ->orderBy('date', 'asc')
+                ->get();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Liquidaciones del vendedor obtenidas exitosamente',
+                'data' => $liquidations
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al obtener las liquidaciones del vendedor',
+                'error' => $e->getMessage()
+            ], 500);
+        }
     }
-}
 }

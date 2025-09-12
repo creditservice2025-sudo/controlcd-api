@@ -121,6 +121,8 @@ class IncomeService
     public function delete($incomeId)
     {
         try {
+            $user = Auth::user();
+
             $income = Income::find($incomeId);
             if (!$income) {
                 return $this->errorNotFoundResponse('Ingreso no encontrado');
@@ -138,7 +140,7 @@ class IncomeService
                 ->whereDate('date', $income->created_at->format('Y-m-d'))
                 ->first();
 
-            if ($liquidation) {
+            if ($liquidation && $user->role_id !== 1) {
                 return $this->errorResponse(
                     'No se puede eliminar el ingreso porque ya existe una liquidación aprobada para esta fecha',
                     422

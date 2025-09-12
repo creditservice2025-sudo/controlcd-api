@@ -16,10 +16,11 @@ class CountriesController extends Controller
         $this->countriesService = $countriesService;
     }
 
-    public function index()
+    public function index(Request $request)
     {
         try {
-            return $this->countriesService->getCountries();
+            $withSellerCities = $request->query('withSellerCities', false);
+            return $this->countriesService->getCountries($withSellerCities);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
