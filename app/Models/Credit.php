@@ -64,4 +64,13 @@ class Credit extends Model
         return $this->hasMany(Payment::class)
             ->whereDate('payment_date', now()->format('Y-m-d'));
     }
+    public function pendingAmount()
+    {
+        $totalCredit = ($this->credit_value ?? 0)
+            + ($this->total_interest ?? 0)
+            + ($this->micro_insurance_amount ?? 0);
+
+        $totalPaid = $this->payments()->sum('amount');
+        return max(0, $totalCredit - $totalPaid);
+    }
 }

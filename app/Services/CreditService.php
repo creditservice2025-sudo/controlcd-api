@@ -30,7 +30,6 @@ class CreditService
     {
         try {
             $params = $request->validated();
-            \Log::info('Datos recibidos para crédito:', $params);
 
             // Calcular fecha de primera cuota si no se proporciona
             $firstQuotaDate = $params['first_installment_date'] ?? null;
@@ -101,10 +100,8 @@ class CreditService
 
             $dueDate = $adjustForExcludedDays(Carbon::parse($credit->first_quota_date));
 
-            \Log::info("Fecha primera cuota ajustada: " . $dueDate->format('Y-m-d'));
 
             for ($i = 1; $i <= $credit->number_installments; $i++) {
-                \Log::info("Creando cuota $i para fecha: " . $dueDate->format('Y-m-d'));
 
                 Installment::create([
                     'credit_id' => $credit->id,
@@ -165,6 +162,139 @@ class CreditService
             \Log::error("Error al crear crédito: " . $e->getMessage());
             \Log::error($e->getTraceAsString());
             return $this->errorResponse('Error al crear el crédito: ' . $e->getMessage(), 500);
+        }
+    }
+
+    public function renew(Request $request)
+    {
+        try {
+            DB::beginTransaction();
+    
+            // 1. Buscar crédito anterior 
+            $oldCredit = Credit::findOrFail($request->old_credit_id);
+            $pendingAmount = $oldCredit->pendingAmount(); 
+    
+            // 2. Crear el nuevo crédito
+            $firstQuotaDate = $request->input('first_installment_date') ?? now()->format('Y-m-d');
+    
+            $newCredit = Credit::create([
+                'client_id'        => $oldCredit->client_id,
+                'seller_id'        => $oldCredit->seller_id,
+                'credit_value'     => $request->new_credit_value,
+                'total_interest'   => $request->input('interest_rate', $oldCredit->total_interest),
+                'number_installments' => $request->input('installment_count', $oldCredit->number_installments),
+                'payment_frequency'   => $request->input('payment_frequency', $oldCredit->payment_frequency),
+                'first_quota_date'    => $firstQuotaDate,
+                'renewed_from_id'     => $oldCredit->id,
+                'status'           => 'Vigente',
+            ]);
+    
+            // 2.1 Generar cuotas del nuevo crédito (igual que en create)
+            $quotaAmount = (($newCredit->credit_value * $newCredit->total_interest / 100) + $newCredit->credit_value) / $newCredit->number_installments;
+    
+            $excludedDayNames = json_decode($newCredit->excluded_days ?? '[]', true) ?? [];
+    
+            $dayMap = [
+                'Domingo' => Carbon::SUNDAY,
+                'Lunes' => Carbon::MONDAY,
+                'Martes' => Carbon::TUESDAY,
+                'Miércoles' => Carbon::WEDNESDAY,
+                'Jueves' => Carbon::THURSDAY,
+                'Viernes' => Carbon::FRIDAY,
+                'Sábado' => Carbon::SATURDAY
+            ];
+    
+            $excludedDayNumbers = [];
+            foreach ($excludedDayNames as $dayName) {
+                if (isset($dayMap[$dayName])) {
+                    $excludedDayNumbers[] = $dayMap[$dayName];
+                }
+            }
+    
+            $adjustForExcludedDays = function ($date) use ($excludedDayNumbers) {
+                while (in_array($date->dayOfWeek, $excludedDayNumbers)) {
+                    $date->addDay();
+                }
+                return $date;
+            };
+    
+            $dueDate = $adjustForExcludedDays(Carbon::parse($newCredit->first_quota_date));
+    
+            for ($i = 1; $i <= $newCredit->number_installments; $i++) {
+                Installment::create([
+                    'credit_id'    => $newCredit->id,
+                    'quota_number' => $i,
+                    'due_date'     => $dueDate->format('Y-m-d'),
+                    'quota_amount' => round($quotaAmount, 2),
+                    'status'       => 'Pendiente'
+                ]);
+    
+                if ($i < $newCredit->number_installments) {
+                    switch ($newCredit->payment_frequency) {
+                        case 'Diaria':
+                            $dueDate->addDay();
+                            break;
+                        case 'Semanal':
+                            $dueDate->addWeek();
+                            break;
+                        case 'Quincenal':
+                            $dueDate->addDays(15);
+                            break;
+                        case 'Mensual':
+                            $dueDate->addMonth();
+                            break;
+                        default:
+                            $dueDate->addMonth();
+                    }
+                    $dueDate = $adjustForExcludedDays($dueDate);
+                }
+            }
+    
+            // 3.1 Marcar cuotas pendientes del crédito anterior como pagadas
+            Installment::where('credit_id', $oldCredit->id)
+                ->where('status', 'Pendiente')
+                ->update(['status' => 'Pagada']); // Usa "Liquidada" si tienes ese estado
+    
+            // 3. Liquidar el crédito anterior
+            $oldCredit->status = 'Renovado';
+            $oldCredit->renewed_to_id = $newCredit->id;
+            $oldCredit->is_renewed = true;
+            $oldCredit->save();
+    
+            // Registrar pago de liquidación
+            Payment::create([
+                'credit_id' => $oldCredit->id,
+                'amount'    => $pendingAmount,
+                'type'      => 'Liquidación por renovación',
+                'payment_date' => now(),
+                'status'    => 'Liquidado',
+            ]);
+    
+            // 4. Registrar desembolso del nuevo crédito
+            $netDisbursement = $request->new_credit_value - $pendingAmount;
+            Payment::create([
+                'credit_id' => $newCredit->id,
+                'amount'    => $netDisbursement,
+                'type'      => 'Desembolso renovación',
+                'payment_date' => now(),
+                'status'    => 'Desembolsado',
+            ]);
+    
+            \DB::commit();
+    
+            // 5. Retornar desglose
+            return $this->successResponse([
+                'success'           => true,
+                'monto_total_nuevo' => $request->new_credit_value,
+                'saldo_pagado'      => $pendingAmount,
+                'desembolso_neto'   => $netDisbursement,
+                'credit'            => $newCredit,
+                'old_credit'        => $oldCredit,
+            ]);
+        } catch (\Exception $e) {
+            \DB::rollBack();
+            \Log::error("Error en renovación de crédito: " . $e->getMessage());
+            return $this->errorResponse('Error en renovación de crédito: ' . $e->getMessage(), 500);
         }
     }
 

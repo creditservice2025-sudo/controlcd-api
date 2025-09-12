@@ -127,6 +127,8 @@ Route::middleware('auth:api')->group(function () {
     Route::get('credits/seller/{sellerId}', [CreditController::class, 'getSellerCredits']);
     Route::get('/credits/seller/{sellerId}/by-date', [CreditController::class, 'getSellerCredits']);
 
+    Route::post('credit/renew', [CreditController::class, 'renew']);
+
 
     //route expense
     Route::get('expenses', [ExpenseController::class, 'index']);

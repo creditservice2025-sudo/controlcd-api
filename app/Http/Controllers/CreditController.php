@@ -29,6 +29,15 @@ class CreditController extends Controller
         }
     }
 
+    public function renew(Request $request)
+{
+    try {
+        return $this->creditService->renew($request);
+    } catch (\Exception $e) {
+        return $this->errorResponse($e->getMessage(), 500);
+    }
+}
+
     public function update(CreditRequest $request, $creditId)
     {
         try {
