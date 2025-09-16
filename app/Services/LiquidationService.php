@@ -293,7 +293,9 @@ class LiquidationService
             'existing_liquidation' => null,
             'last_liquidation' => $lastLiquidation ? $this->formatLiquidationDetails($lastLiquidation) : null,
             'is_new' => true,
-            'liquidation_start_date' => $dailyTotals['liquidation_start_date']
+            'liquidation_start_date' => $dailyTotals['liquidation_start_date'],
+            'total_crossed_credits' => $dailyTotals['total_crossed_credits'],
+            'total_renewal_disbursed' => $dailyTotals['total_renewal_disbursed'],
         ];
     }
 
@@ -399,7 +401,6 @@ class LiquidationService
             $firstPaymentQuery->where('credits.seller_id', $sellerId);
         }
 
-
         $firstPaymentResult = $firstPaymentQuery->first();
         $firstPaymentDate = $firstPaymentResult->first_payment_date;
 
@@ -437,12 +438,12 @@ class LiquidationService
             ->select([
                 DB::raw('COALESCE(SUM(credit_value), 0) as value'),
                 DB::raw('COALESCE(SUM(
-                CASE 
-                    WHEN total_interest IS NOT NULL AND total_interest > 0 
-                    THEN credit_value * (total_interest / 100)
-                    ELSE 0
-                END
-            ), 0) as interest')
+                    CASE 
+                        WHEN total_interest IS NOT NULL AND total_interest > 0 
+                        THEN credit_value * (total_interest / 100)
+                        ELSE 0
+                    END
+                ), 0) as interest')
             ])
             ->first();
 
@@ -473,6 +474,57 @@ class LiquidationService
         $totals['daily_goal'] = $totals['expected_total'];
         $totals['current_balance'] = $totals['collected_total'] - $totals['total_expenses'];
 
+        \Log::info('Cálculo de créditos cruzados - Parámetros:', [
+            'seller_id' => $sellerId,
+            'date' => $date,
+        ]);
+
+        // === Detalle de renovaciones ===
+        $renewalCredits = DB::table('credits')
+            ->where('seller_id', $sellerId)
+            ->whereDate('created_at', $date)
+            ->whereNotNull('renewed_from_id')
+            ->get();
+
+        $detalles_renovaciones = [];
+        $total_renewal_disbursed = 0;
+        $total_pending_absorbed = 0;
+
+        foreach ($renewalCredits as $renewCredit) {
+            $oldCredit = DB::table('credits')->where('id', $renewCredit->renewed_from_id)->first();
+
+            $pendingAmount = 0;
+            $oldCreditTotal = 0;
+            $oldCreditPaid = 0;
+            if ($oldCredit) {
+                $oldCreditTotal = ($oldCredit->credit_value * $oldCredit->total_interest / 100) + $oldCredit->credit_value;
+                $oldCreditPaid = DB::table('payments')->where('credit_id', $oldCredit->id)->sum('amount');
+                $pendingAmount = $oldCreditTotal - $oldCreditPaid;
+                $total_pending_absorbed += $pendingAmount;
+            }
+
+            $netDisbursement = $renewCredit->credit_value - $pendingAmount;
+            $total_renewal_disbursed += $netDisbursement;
+
+            $detalles_renovaciones[] = [
+                'NuevoCreditoID'     => $renewCredit->id,
+                'MontoTotalNuevo_Y'  => $renewCredit->credit_value,
+                'SaldoPendienteAbsorbido' => $pendingAmount,
+                'DesembolsoNeto'     => $netDisbursement,
+                'ClienteID'          => $renewCredit->client_id,
+                'CreditoAnteriorID'  => $renewCredit->renewed_from_id,
+            ];
+        }
+
+        $totals['total_renewal_disbursed'] = $total_renewal_disbursed;
+        $totals['total_crossed_credits'] = $total_pending_absorbed;;
+        $totals['detalle_renovaciones'] = $detalles_renovaciones;
+
+        // Log detallado
+        \Log::info('Desglose de renovaciones:', [
+            'detalle_renovaciones' => $detalles_renovaciones,
+            'total_renewal_disbursed' => $total_renewal_disbursed
+        ]);
 
         return $totals;
     }
@@ -495,6 +547,8 @@ class LiquidationService
             }
         }
 
+        $dailyTotals = $this->getDailyTotals($liquidation->seller_id, $liquidation->date, $liquidation->user_id ?? null);
+
         \Log::debug('Liquidation object:', ['liquidation' => json_decode(json_encode($liquidation), true)]);
 
         return [
@@ -512,7 +566,9 @@ class LiquidationService
             'existing_liquidation' => $isExisting ? $this->formatLiquidationDetails($liquidation) : null,
             'last_liquidation' => $this->getPreviousLiquidation($liquidation->seller_id, $liquidation->date),
             'is_new' => false,
-            'liquidation_start_date' => $firstPaymentDate
+            'liquidation_start_date' => $firstPaymentDate,
+            'total_crossed_credits' => $dailyTotals['total_crossed_credits'],
+            'total_renewal_disbursed' => $dailyTotals['total_renewal_disbursed'],
 
         ];
     }

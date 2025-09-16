@@ -169,14 +169,34 @@ class CreditService
     {
         try {
             DB::beginTransaction();
-    
+
             // 1. Buscar crédito anterior 
             $oldCredit = Credit::findOrFail($request->old_credit_id);
-            $pendingAmount = $oldCredit->pendingAmount(); 
+            $pendingAmount = $oldCredit->pendingAmount();
+
+            $firstQuotaDate = $request->input('first_installment_date');
+            if (!$firstQuotaDate) {
+                $today = now();
+                $paymentFrequency = $request->input('payment_frequency', $oldCredit->payment_frequency);
     
-            // 2. Crear el nuevo crédito
-            $firstQuotaDate = $request->input('first_installment_date') ?? now()->format('Y-m-d');
-    
+                switch ($paymentFrequency) {
+                    case 'Diaria':
+                        $firstQuotaDate = $today->addDay()->format('Y-m-d');
+                        break;
+                    case 'Semanal':
+                        $firstQuotaDate = $today->addWeek()->format('Y-m-d');
+                        break;
+                    case 'Quincenal':
+                        $firstQuotaDate = $today->addDays(15)->format('Y-m-d');
+                        break;
+                    case 'Mensual':
+                        $firstQuotaDate = $today->addMonth()->format('Y-m-d');
+                        break;
+                    default:
+                        $firstQuotaDate = $today->addDay()->format('Y-m-d');
+                }
+            }
+
             $newCredit = Credit::create([
                 'client_id'        => $oldCredit->client_id,
                 'seller_id'        => $oldCredit->seller_id,
@@ -185,15 +205,15 @@ class CreditService
                 'number_installments' => $request->input('installment_count', $oldCredit->number_installments),
                 'payment_frequency'   => $request->input('payment_frequency', $oldCredit->payment_frequency),
                 'first_quota_date'    => $firstQuotaDate,
-                'renewed_from_id'     => $oldCredit->id,
+                'previous_pending_amount' => $pendingAmount,
+                'renewed_from_id'     => $request->old_credit_id,
                 'status'           => 'Vigente',
             ]);
-    
-            // 2.1 Generar cuotas del nuevo crédito (igual que en create)
+
             $quotaAmount = (($newCredit->credit_value * $newCredit->total_interest / 100) + $newCredit->credit_value) / $newCredit->number_installments;
-    
+
             $excludedDayNames = json_decode($newCredit->excluded_days ?? '[]', true) ?? [];
-    
+
             $dayMap = [
                 'Domingo' => Carbon::SUNDAY,
                 'Lunes' => Carbon::MONDAY,
@@ -203,23 +223,23 @@ class CreditService
                 'Viernes' => Carbon::FRIDAY,
                 'Sábado' => Carbon::SATURDAY
             ];
-    
+
             $excludedDayNumbers = [];
             foreach ($excludedDayNames as $dayName) {
                 if (isset($dayMap[$dayName])) {
                     $excludedDayNumbers[] = $dayMap[$dayName];
                 }
             }
-    
+
             $adjustForExcludedDays = function ($date) use ($excludedDayNumbers) {
                 while (in_array($date->dayOfWeek, $excludedDayNumbers)) {
                     $date->addDay();
                 }
                 return $date;
             };
-    
+
             $dueDate = $adjustForExcludedDays(Carbon::parse($newCredit->first_quota_date));
-    
+
             for ($i = 1; $i <= $newCredit->number_installments; $i++) {
                 Installment::create([
                     'credit_id'    => $newCredit->id,
@@ -228,7 +248,7 @@ class CreditService
                     'quota_amount' => round($quotaAmount, 2),
                     'status'       => 'Pendiente'
                 ]);
-    
+
                 if ($i < $newCredit->number_installments) {
                     switch ($newCredit->payment_frequency) {
                         case 'Diaria':
@@ -249,39 +269,39 @@ class CreditService
                     $dueDate = $adjustForExcludedDays($dueDate);
                 }
             }
-    
+
             // 3.1 Marcar cuotas pendientes del crédito anterior como pagadas
             Installment::where('credit_id', $oldCredit->id)
                 ->where('status', 'Pendiente')
-                ->update(['status' => 'Pagada']); // Usa "Liquidada" si tienes ese estado
-    
+                ->update(['status' => 'Pagado']);
+
             // 3. Liquidar el crédito anterior
             $oldCredit->status = 'Renovado';
             $oldCredit->renewed_to_id = $newCredit->id;
             $oldCredit->is_renewed = true;
             $oldCredit->save();
-    
+
             // Registrar pago de liquidación
-            Payment::create([
+            /*    Payment::create([
                 'credit_id' => $oldCredit->id,
                 'amount'    => $pendingAmount,
                 'type'      => 'Liquidación por renovación',
                 'payment_date' => now(),
-                'status'    => 'Liquidado',
-            ]);
-    
+                'status'    => 'Pagado',
+            ]); */
+
             // 4. Registrar desembolso del nuevo crédito
             $netDisbursement = $request->new_credit_value - $pendingAmount;
-            Payment::create([
+            /*        Payment::create([
                 'credit_id' => $newCredit->id,
                 'amount'    => $netDisbursement,
                 'type'      => 'Desembolso renovación',
                 'payment_date' => now(),
-                'status'    => 'Desembolsado',
-            ]);
-    
+                'status'    => 'Pagado',
+            ]); */
+
             \DB::commit();
-    
+
             // 5. Retornar desglose
             return $this->successResponse([
                 'success'           => true,
@@ -586,25 +606,25 @@ class CreditService
         $maxDate = Carbon::today();
         $minDate = Carbon::today()->subDays(7);
         $reportDate = Carbon::parse($date);
-    
+
         if ($reportDate->lt($minDate) || $reportDate->gt($maxDate)) {
             throw new \Exception('Solo se pueden consultar fechas dentro de los últimos 7 días');
         }
-    
+
         // Obtener créditos con pagos en la fecha especificada
         $creditsQuery = Credit::with(['client', 'installments', 'payments'])
             ->whereHas('payments', function ($query) use ($reportDate) {
                 $query->whereDate('payment_date', $reportDate->toDateString());
             });
-    
+
         if ($sellerId) {
             $creditsQuery->whereHas('client', function ($query) use ($sellerId) {
                 $query->where('seller_id', $sellerId);
             });
         }
-    
+
         $credits = $creditsQuery->get();
-    
+
         // Obtener gastos del día
         $expensesQuery = Expense::whereDate('created_at', $reportDate->toDateString());
         if ($user) {
@@ -612,7 +632,7 @@ class CreditService
         }
         $expenses = $expensesQuery->get();
         $totalExpenses = $expenses->sum('value');
-    
+
         // Obtener ingresos del día
         $incomesQuery = Income::whereDate('created_at', $reportDate->toDateString());
         if ($user) {
@@ -620,7 +640,7 @@ class CreditService
         }
         $incomes = $incomesQuery->get();
         $totalIncomes = $incomes->sum('value');
-    
+
         $reportData = [];
         $totalCollected = 0;
         $withPayment = 0;
@@ -631,34 +651,34 @@ class CreditService
         $capitalCollected = 0;
         $interestCollected = 0;
         $microInsuranceCollected = 0;
-    
+
         foreach ($credits as $index => $credit) {
             $interestAmount = $credit->credit_value * ($credit->total_interest / 100);
             $quotaAmount = ($credit->credit_value + $interestAmount + $credit->micro_insurance_amount) / $credit->number_installments;
-            
+
             // Calcular el saldo actual (valor total - pagos realizados)
             $totalCreditValue = $credit->credit_value + $interestAmount + $credit->micro_insurance_amount;
             $totalPaid = $credit->payments->sum('amount');
             $remainingAmount = $totalCreditValue - $totalPaid;
-    
+
             $dayPayments = $credit->payments()->whereDate('payment_date', $reportDate->toDateString())->get();
             $paidToday = $dayPayments->sum('amount');
             $paymentTime = $dayPayments->isNotEmpty() ? $dayPayments->last()->created_at->format('H:i:s') : null;
-    
+
             if ($paidToday > 0) {
                 $withPayment++;
             } else {
                 $withoutPayment++;
             }
-    
+
             $totalCollected += $paidToday;
             $totalCapital += $credit->credit_value;
             $totalInterest += $interestAmount;
             $totalMicroInsurance += $credit->micro_insurance_amount;
-    
+
             // Calcular distribución del pago entre capital, interés y microseguro
             $totalCreditAmount = $credit->credit_value + $interestAmount + $credit->micro_insurance_amount;
-            
+
             if ($totalCreditAmount > 0) {
                 $capitalRatio = $credit->credit_value / $totalCreditAmount;
                 $interestRatio = $interestAmount / $totalCreditAmount;
@@ -666,11 +686,11 @@ class CreditService
             } else {
                 $capitalRatio = $interestRatio = $microInsuranceRatio = 0;
             }
-    
+
             $capitalCollected += $paidToday * $capitalRatio;
             $interestCollected += $paidToday * $interestRatio;
             $microInsuranceCollected += $paidToday * $microInsuranceRatio;
-    
+
             $reportData[] = [
                 'no' => $index + 1,
                 'client_name' => $credit->client->name,
@@ -681,12 +701,12 @@ class CreditService
                 'micro_insurance' => $credit->micro_insurance_amount,
                 'total_credit' => $totalCreditValue,
                 'quota_amount' => $quotaAmount,
-                'remaining_amount' => $remainingAmount, 
+                'remaining_amount' => $remainingAmount,
                 'paid_today' => $paidToday,
                 'payment_time' => $paymentTime,
             ];
         }
-    
+
         // Obtener nuevos créditos del día
         $newCredits = Credit::whereDate('created_at', $reportDate->toDateString());
         if ($sellerId) {
@@ -696,12 +716,12 @@ class CreditService
         }
         $newCredits = $newCredits->get();
         $totalNewCredits = $newCredits->sum('credit_value');
-    
+
         // Calcular utilidad neta y neto entregado al cobrador
         $netUtility = $totalCollected + $totalIncomes - $totalExpenses;
         $netAmount = $totalCollected - $totalExpenses;
         $netUtilityPlusCapital = $netUtility + $totalCapital;
-    
+
         return [
             'report_date' => $date,
             'report_data' => $reportData,

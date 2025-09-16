@@ -1127,7 +1127,8 @@ class ClientService
             'credits.payments',
             'seller.user:id,name',
             'guarantors'
-        ])->where('seller_id', $sellerId)->get();
+        ])->where('seller_id', $sellerId)
+            ->get();
 
         $result = [];
         $totalRecaudarHoy = 0;
@@ -1141,6 +1142,10 @@ class ClientService
                 if ($pendingInstallments->count() == 0) return false;
 
                 if ($credit->status == 'Liquidado') {
+                    $liquidationDate = \Carbon\Carbon::parse($credit->updated_at)->format('Y-m-d');
+                    return $liquidationDate == $referenceDate->format('Y-m-d');
+                }
+                if ($credit->status == 'Renovado') {
                     $liquidationDate = \Carbon\Carbon::parse($credit->updated_at)->format('Y-m-d');
                     return $liquidationDate == $referenceDate->format('Y-m-d');
                 }
@@ -1209,7 +1214,6 @@ class ClientService
         foreach ($todayPayments as $payment) {
             // Cada pago puede tener varias cuotas (PaymentInstallment)
             foreach ($payment->installments as $paymentInstallment) {
-                \Log::info('PaymentInstallment:', $paymentInstallment->toArray());
                 // Accede a la cuota real
                 $installment = $paymentInstallment->installment;
                 if ($installment) {
@@ -1218,12 +1222,6 @@ class ClientService
                         'installment_id' => $installment->id,
                         'applied_amount' => $paymentInstallment->applied_amount,
                     ];
-                    \Log::info('Cuota pagada hoy:', [
-                        'quota_number' => $installment->quota_number,
-                        'installment_id' => $installment->id,
-                        'applied_amount' => $paymentInstallment->applied_amount,
-                        'payment_id' => $payment->id
-                    ]);
                 }
             }
         }
@@ -1276,10 +1274,10 @@ class ClientService
             'credit_id' => $credit->id,
             'credit_code' => $credit->code ?? '#00' . $credit->id,
             'total_amount' => $totalAmount,
-            'paid_amount' => $paidAmount,
+            'paid_amount' => $credit->status === 'Renovado' ? $totalAmount : $paidAmount,
             'payment_frequency' => $credit->payment_frequency,
             'payment_day_info' => $pagoFrecuencia,
-            'balance' => $balance,
+           'balance' => $credit->status === 'Renovado' ? 0 : $balance,
             'paid_today' => $paidToday,
             'created_at' => $credit->created_at,
             'payment_method_today' => $ultimoPagoMetodo,

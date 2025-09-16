@@ -262,11 +262,17 @@ class ClientController extends Controller
             if (!$seller) {
                 return $this->errorResponse('Vendedor no encontrado', 404);
             }
-
+    
+            $today = \Carbon\Carbon::today();
+            $inputDate = \Carbon\Carbon::parse($date);
+    
+            if ($inputDate->gt($today)) {
+                return $this->errorResponse('La fecha seleccionada no puede ser mayor que la fecha actual.', 422);
+            }
+    
             $result = $this->clientService->getLiquidationWithAllClients($sellerId, $date, $userId);
-
-
-                 return response()->json([
+    
+            return response()->json([
                 'success' => true,
                 'message' => 'Clientes obtenidos exitosamente',
                 'data' => $result
