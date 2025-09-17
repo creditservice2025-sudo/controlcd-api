@@ -228,7 +228,7 @@ class LiquidationService
     public function getLiquidationData($sellerId, $date, $userId)
     {
         // 1. Verificar si ya existe liquidación para esta fecha
-        $existingLiquidation = Liquidation::where('seller_id', $sellerId)
+        $existingLiquidation = Liquidation::with('audits')->where('seller_id', $sellerId)
             ->whereDate('date', $date)
             ->first();
 
@@ -239,7 +239,7 @@ class LiquidationService
             $this->recalculateLiquidation($sellerId, $date);
 
             // Vuelve a obtener la liquidación actualizada
-            $updatedLiquidation = Liquidation::where('seller_id', $sellerId)
+            $updatedLiquidation =  Liquidation::with('audits')->where('seller_id', $sellerId)
                 ->whereDate('date', $date)
                 ->first();
 
@@ -569,6 +569,7 @@ class LiquidationService
             'liquidation_start_date' => $firstPaymentDate,
             'total_crossed_credits' => $dailyTotals['total_crossed_credits'],
             'total_renewal_disbursed' => $dailyTotals['total_renewal_disbursed'],
+            'audits' => $liquidation->audits,
 
         ];
     }

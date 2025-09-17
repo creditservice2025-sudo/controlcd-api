@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Helpers\Helper;
 use App\Models\Income;
+use App\Models\LiquidationAudit;
 use App\Services\LiquidationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -152,6 +153,13 @@ class LiquidationController extends Controller
 
         $liquidation = Liquidation::create($liquidationData);
 
+        LiquidationAudit::create([
+            'liquidation_id' => $liquidation->id,
+            'user_id' => $user->id,
+            'action' => 'created',
+            'changes' => json_encode($liquidation->toArray()),
+        ]);
+
         if ($user->role_id === 5) {
             $seller = Seller::find($request->seller_id);
 
@@ -200,7 +208,7 @@ class LiquidationController extends Controller
         $liquidation = Liquidation::findOrFail($id);
 
         $existingLiquidation = Liquidation::where('seller_id', $request->seller_id ?? $liquidation->seller_id)
-            ->whereDate('date', $request->date ?? $liquidation->date)
+            ->where('date', $request->date ?? $liquidation->date)
             ->where('id', '!=', $id)
             ->first();
 
@@ -223,7 +231,8 @@ class LiquidationController extends Controller
             ], 422);
         }
 
-        // Usa los valores enviados o los actuales en la BD
+        $originalData = $liquidation->getOriginal();
+
         $initial_cash = $request->has('initial_cash') ? $request->initial_cash : $liquidation->initial_cash;
         $base_delivered = $request->has('base_delivered') ? $request->base_delivered : $liquidation->base_delivered;
         $total_collected = $request->has('total_collected') ? $request->total_collected : $liquidation->total_collected;
@@ -233,14 +242,12 @@ class LiquidationController extends Controller
         $cash_delivered = $request->has('cash_delivered') ? $request->cash_delivered : $liquidation->cash_delivered;
         $collection_target = $request->has('collection_target') ? $request->collection_target : $liquidation->collection_target;
 
-        // Calcula realToDeliver con la base entregada
         $realToDeliver = $initial_cash
             + $base_delivered
             + ($total_income + $total_collected)
             - $total_expenses
             - $new_credits;
 
-        // shortage/surplus
         $shortage = 0;
         $surplus = 0;
         if ($realToDeliver > 0) {
@@ -275,6 +282,41 @@ class LiquidationController extends Controller
             'cash_delivered' => $cash_delivered,
             'status' => 'pending'
         ]);
+
+        $liquidation->refresh();
+        $changedData = $liquidation->getChanges();
+
+        // Registra la auditoría
+        LiquidationAudit::create([
+            'liquidation_id' => $liquidation->id,
+            'user_id' => $user->id,
+            'action' => 'updated',
+            'changes' => json_encode([
+                'before' => $originalData,
+                'after' => $liquidation->toArray(),
+                'changed_fields' => $changedData,
+            ]),
+        ]);
+
+        if ($user->role_id === 5) {
+            $seller = Seller::find($liquidation->seller_id);
+        
+            $adminUsers = User::whereIn('role_id', [1, 2])->get();
+        
+            foreach ($adminUsers as $adminUser) {
+                $adminUser->notify(new GeneralNotification(
+                    'Solicitud de liquidación ',
+                    'El vendedor ' . $seller->user->name . ' de la ruta ' . $seller->city->country->name . ',' .  $seller->city->name . ' ha actualizado la liquidación para la fecha ' . $liquidation->date,
+                    '/dashboard/liquidaciones',
+                    [
+                        'country_id' => $seller->city->country->id,
+                        'city_id' => $seller->city->id,
+                        'seller_id' => $seller->id,
+                        'date' => $liquidation->date,
+                    ]
+                ));
+            }
+        }
 
         // Recalcula todos los campos relevantes con los datos de la BD actual
         $this->recalculateLiquidation(
@@ -366,31 +408,31 @@ class LiquidationController extends Controller
     public function approveLiquidation($id)
     {
         $user = Auth::user();
-    
+
         $liquidation = Liquidation::findOrFail($id);
-    
+
         if ($user->role_id != 1 && $user->role_id != 2) {
             return response()->json([
                 'success' => false,
                 'message' => 'No tienes permisos para aprobar liquidaciones'
             ], 403);
         }
-    
+
         if ($liquidation->status === 'approved') {
             return response()->json([
                 'success' => false,
                 'message' => 'La liquidación ya ha sido aprobada'
             ], 422);
         }
-    
+
         $liquidation->update([
             'status' => 'approved',
         ]);
-    
+
         $this->recalculateLiquidation($liquidation->seller_id, $liquidation->date);
-    
+
         $liquidation->refresh();
-    
+
         return response()->json([
             'success' => true,
             'data' => $liquidation,
@@ -401,23 +443,23 @@ class LiquidationController extends Controller
     public function annulBase(Request $request, $id)
     {
         $liquidation = Liquidation::findOrFail($id);
-    
+
         try {
             DB::beginTransaction();
-    
+
             // Anula la base
             $liquidation->update([
                 'base_delivered' => 0,
             ]);
-    
+
             // Recalcula la liquidación con los datos actuales
             $this->recalculateLiquidation($liquidation->seller_id, $liquidation->date);
-    
+
             DB::commit();
-    
+
             // Refresca los datos
             $liquidation->refresh();
-    
+
             return response()->json([
                 'success' => true,
                 'data' => $liquidation,
@@ -425,7 +467,7 @@ class LiquidationController extends Controller
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
-    
+
             return response()->json([
                 'success' => false,
                 'message' => 'Error al anular la base: ' . $e->getMessage()
@@ -460,7 +502,12 @@ class LiquidationController extends Controller
 
         // Si existe liquidación, retornar directamente esos datos
         if ($existingLiquidation) {
-            return $this->formatLiquidationResponse($existingLiquidation, true);
+            $updatedLiquidation = Liquidation::where('seller_id', $sellerId)
+            ->whereDate('date', $date)
+            ->first();
+
+
+            return $this->formatLiquidationResponse($updatedLiquidation, true);
         }
 
         // 2. Obtener datos del endpoint dailyPaymentTotals
@@ -503,7 +550,9 @@ class LiquidationController extends Controller
             'existing_liquidation' => null,
             'last_liquidation' => $lastLiquidation ? $this->formatLiquidationDetails($lastLiquidation) : null,
             'is_new' => true,
-            'liquidation_start_date' => $dailyTotals['liquidation_start_date']
+            'liquidation_start_date' => $dailyTotals['liquidation_start_date'],
+            'total_crossed_credits' => $dailyTotals['total_crossed_credits'] ?? 0,
+            'total_renewal_disbursed' => $dailyTotals['total_renewal_disbursed'] ?? 0,
         ];
     }
 
@@ -630,6 +679,36 @@ class LiquidationController extends Controller
 
         Log::info($totals['expected_total']);
 
+        $renewalCredits = DB::table('credits')
+            ->where('seller_id', $sellerId)
+            ->whereDate('created_at', $date)
+            ->whereNotNull('renewed_from_id')
+            ->get();
+
+        $detalles_renovaciones = [];
+        $total_renewal_disbursed = 0;
+        $total_pending_absorbed = 0;
+
+        foreach ($renewalCredits as $renewCredit) {
+            $oldCredit = DB::table('credits')->where('id', $renewCredit->renewed_from_id)->first();
+
+            $pendingAmount = 0;
+            $oldCreditTotal = 0;
+            $oldCreditPaid = 0;
+            if ($oldCredit) {
+                $oldCreditTotal = ($oldCredit->credit_value * $oldCredit->total_interest / 100) + $oldCredit->credit_value;
+                $oldCreditPaid = DB::table('payments')->where('credit_id', $oldCredit->id)->sum('amount');
+                $pendingAmount = $oldCreditTotal - $oldCreditPaid;
+                $total_pending_absorbed += $pendingAmount;
+            }
+
+            $netDisbursement = $renewCredit->credit_value - $pendingAmount;
+            $total_renewal_disbursed += $netDisbursement;
+        }
+
+        $totals['total_renewal_disbursed'] = $total_renewal_disbursed;
+        $totals['total_crossed_credits'] = $total_pending_absorbed;
+
         return $totals;
     }
 
@@ -699,6 +778,7 @@ class LiquidationController extends Controller
     // Método para formatear respuesta de liquidación existente
     protected function formatLiquidationResponse($liquidation, $isExisting = false)
     {
+        $user = Auth::user();
         $firstPaymentDate = null;
         if ($isExisting) {
             $firstPaymentQuery = DB::table('payments')
@@ -714,6 +794,9 @@ class LiquidationController extends Controller
                 $firstPaymentDate = $firstPaymentQuery->created_at;
             }
         }
+
+        $dailyTotals = $this->getDailyTotals($liquidation->seller_id, $liquidation->date, $user);
+
         return [
             'collection_target' => $liquidation->collection_target,
             'initial_cash' => $liquidation->initial_cash,
@@ -727,8 +810,10 @@ class LiquidationController extends Controller
             'seller_id' => $liquidation->seller_id,
             'existing_liquidation' => $isExisting ? $this->formatLiquidationDetails($liquidation) : null,
             'last_liquidation' => $this->getPreviousLiquidation($liquidation->seller_id, $liquidation->date),
-            'is_new' => false, // Indicador de que ya existe
-            'liquidation_start_date' => $firstPaymentDate
+            'is_new' => false,
+            'liquidation_start_date' => $firstPaymentDate,
+            'total_crossed_credits' => $dailyTotals['total_crossed_credits'],
+            'total_renewal_disbursed' => $dailyTotals['total_renewal_disbursed'],
 
         ];
     }

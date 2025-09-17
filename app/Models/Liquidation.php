@@ -50,5 +50,10 @@ class Liquidation extends Model
         return $this->belongsTo(Seller::class);
     }
 
+    public function audits()
+{
+    return $this->hasMany(LiquidationAudit::class, 'liquidation_id');
+}
+
 
 }

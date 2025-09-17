@@ -8,11 +8,11 @@ use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use App\Models\User;
 use App\Mail\ResetPassword;
 use App\Models\Liquidation;
-use DB;
 use Hash;
 use Carbon\Carbon;
 class LoginService
@@ -45,11 +45,25 @@ class LoginService
             $seller = $user->seller;
             if ($seller) {
                 $liquidation = Liquidation::where('seller_id', $seller->id)
-                    ->whereDate('created_at', Carbon::today())
+                    ->where(DB::raw('DATE(created_at)'), Carbon::today()->toDateString())
                     ->first();
     
                 if ($liquidation) {
-                    return $this->errorResponse(['Ya has realizado una liquidación hoy. Intenta nuevamente mañana.'], 401);
+                    // 1. Si la liquidación NO está en pendiente, bloquear
+                    if ($liquidation->status !== 'pending') {
+                        return $this->errorResponse(['Ya has realizado una liquidación hoy. Intenta nuevamente mañana.'], 401);
+                    }
+    
+                    // 2. Si existe un registro en la auditoría de actualización hoy de este usuario para esta liquidación, bloquear
+                    $auditExists = \App\Models\LiquidationAudit::where('liquidation_id', $liquidation->id)
+                        ->where('user_id', $user->id)
+                        ->where('action', 'updated')
+                        ->whereDate('created_at', Carbon::today())
+                        ->exists();
+    
+                    if ($auditExists) {
+                        return $this->errorResponse(['Ya has realizado una liquidación hoy. Intenta nuevamente mañana.'], 401);
+                    }
                 }
             }
     

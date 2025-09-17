@@ -38,6 +38,17 @@ class SellerController extends Controller
         }
     }
 
+    public function listActiveRoutes(Request $request)
+    {
+        try {
+            $hasLiquidation = $request->get('hasLiquidation');
+            $search = $request->get('search');
+            return $this->sellerService->listActiveRoutes($hasLiquidation, $search);
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
     public function delete($routeId)
     {
         try {
