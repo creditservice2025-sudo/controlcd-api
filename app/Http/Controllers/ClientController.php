@@ -101,11 +101,13 @@ class ClientController extends Controller
     {
         try {
             $search = (string) $request->input('search', '');
-            $perPage = $request->get('perPage', 5);
             $orderBy = $request->input('orderBy', 'created_at');
             $orderDirection = $request->input('orderDirection', 'desc');
-
-            return $this->clientService->index($search, $perPage, $orderBy, $orderDirection);
+            $countryId = $request->input('country_id');
+            $cityId = $request->input('city_id');
+            $sellerId = $request->input('seller_id');
+    
+            return $this->clientService->index($search, $orderBy, $orderDirection, $countryId, $cityId, $sellerId);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }

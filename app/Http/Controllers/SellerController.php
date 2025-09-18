@@ -43,7 +43,10 @@ class SellerController extends Controller
         try {
             $hasLiquidation = $request->get('hasLiquidation');
             $search = $request->get('search');
-            return $this->sellerService->listActiveRoutes($hasLiquidation, $search);
+            $countryId = $request->get('country_id');
+            $cityId = $request->get('city_id');
+            $sellerId = $request->get('seller_id');
+            return $this->sellerService->listActiveRoutes($hasLiquidation, $search, $countryId, $cityId, $sellerId);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }

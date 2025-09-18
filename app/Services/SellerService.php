@@ -150,13 +150,11 @@ class SellerService
         }
     }
 
-    public function listActiveRoutes($hasLiquidation = null, $search = null)
+    public function listActiveRoutes($hasLiquidation = null, $search = null, $countryId = null, $cityId = null, $sellerId = null)
     {
         try {
             $user = Auth::user();
             $company = $user->company;
-    
-            \Log::info('Usuario autenticado', ['user_id' => $user->id, 'role_id' => $user->role_id]);
     
             $routes = Seller::with([
                 'user:id,name',
@@ -168,26 +166,19 @@ class SellerService
     
             switch ($user->role_id) {
                 case 1:
-                    \Log::info('Rol: Admin');
                     break;
                 case 2:
-                    \Log::info('Rol: Company', ['company_id' => $company->id]);
                     $routes->where('company_id', $company->id);
                     break;
                 case 3:
-                    \Log::info('Rol: Vendedor', ['seller_user_id' => $user->id]);
                     $routes->where('user_id', $user->id);
                     break;
                 default:
-                    \Log::warning('Rol desconocido', ['role_id' => $user->role_id]);
-                    return $this->successResponse([
-                        'data' => []
-                    ]);
+                    return $this->successResponse(['data' => []]);
             }
     
             if ($search) {
                 $searchTerm = Str::lower($search);
-                \Log::info('Filtro de búsqueda', ['search' => $searchTerm]);
                 $routes->where(function ($query) use ($searchTerm) {
                     $query->whereHas('user', function ($q) use ($searchTerm) {
                         $q->whereRaw('LOWER(name) LIKE ?', ["%{$searchTerm}%"]);
@@ -199,74 +190,103 @@ class SellerService
                 });
             }
     
-            $today = now()->format('Y-m-d');
+            // NUEVOS FILTROS
+            if ($countryId) {
+                $routes->whereHas('city.country', function ($q) use ($countryId) {
+                    $q->where('id', $countryId);
+                });
+            }
+            if ($cityId) {
+                $routes->where('city_id', $cityId);
+            }
+            if ($sellerId) {
+                $routes->where('user_id', $sellerId);
+            }
     
-            // Log antes del whereHas
-            \Log::info('Antes de whereHas credits.payments', ['fecha' => $today]);
+            $today = now()->format('Y-m-d');
     
             $routesList = $routes->whereHas('credits.payments', function ($q) use ($today) {
                 $q->whereDate('payment_date', $today);
             })->get([
-                'id', 'user_id', 'city_id', 'company_id', 'status', 'created_at'
+                'id',
+                'user_id',
+                'city_id',
+                'company_id',
+                'status',
+                'created_at'
             ]);
-    
-            \Log::info('Rutas encontradas después del filtro de pagos hoy', ['count' => $routesList->count()]);
-    
+
+
             $data = $routesList->map(function ($route) use ($today) {
                 $liquidationToday = Liquidation::where('seller_id', $route->id)
                     ->whereDate('created_at', $today)
                     ->first();
-    
-                $closedBySellerToday = false;
-                $liquidationDate = null;
+
+                $liquidationOpen = null;
+                $liquidationClosed = null;
                 $liquidationAuditId = null;
-    
+                $closedBySellerToday = false;
+                $liquidationStatus = null;
+
+                // Buscar el primer pago del día para este vendedor
+                $firstPayment = $route->credits()
+                    ->whereHas('payments', function ($q) use ($today) {
+                        $q->whereDate('payment_date', $today);
+                    })
+                    ->with(['payments' => function ($q) use ($today) {
+                        $q->whereDate('created_at', $today)->orderBy('payment_date', 'asc');
+                    }])
+                    ->get()
+                    ->pluck('payments')
+                    ->flatten()
+                    ->sortBy('created_at')
+                    ->first();
+
+                if ($firstPayment) {
+                    $liquidationOpen = $firstPayment->created_at;
+                }
+
                 if ($liquidationToday) {
-                    $audit = $liquidationToday->audits()
+                    $liquidationStatus = $liquidationToday->status;
+
+                    $lastAudit = $liquidationToday->audits()
                         ->where('user_id', $route->user_id)
                         ->whereDate('created_at', $today)
-                        ->whereIn('action', ['created', 'liquidated'])
+                        ->orderByDesc('created_at')
                         ->first();
-    
-                    if ($audit) {
-                        $closedBySellerToday = true;
-                        $liquidationDate = $liquidationToday->created_at->format('Y-m-d H:i:s');
-                        $liquidationAuditId = $audit->id;
+
+                    if ($lastAudit) {
+                        $liquidationClosed = $lastAudit->created_at->format('Y-m-d H:i:s');
+                        $liquidationAuditId = $lastAudit->id;
+                        $closedBySellerToday = $lastAudit->action === 'updated' || $lastAudit->action === 'created'; 
                     }
                 }
-    
-                \Log::info('Datos de ruta procesada', [
-                    'route_id' => $route->id,
-                    'seller_name' => $route->user->name ?? null,
-                    'closed_today' => $closedBySellerToday,
-                ]);
-    
+
                 return [
-                    'route_id'         => $route->id,
-                    'country'          => $route->city->country->name ?? null,
-                    'city'             => $route->city->name ?? null,
-                    'seller_name'      => $route->user->name ?? null,
-                    'status'           => $route->status,
-                    'closed_today'     => $closedBySellerToday,
-                    'liquidation_date' => $closedBySellerToday ? $liquidationDate : null,
-                    'liquidation_audit_id' => $liquidationAuditId,
+                    'route_id'              => $route->id,
+                    'country'               => $route->city->country->name ?? null,
+                    'city'                  => $route->city->name ?? null,
+                    'seller_name'           => $route->user->name ?? null,
+                    'status'                => $route->status,
+                    'closed_today'          => $closedBySellerToday,
+                    'liquidation_open'      => $liquidationOpen,
+                    'liquidation_closed'    => $liquidationClosed,
+                    'liquidation_audit_id'  => $liquidationAuditId,
+                    'liquidation_status'    => $liquidationStatus,
                 ];
             });
-    
+
             if ($hasLiquidation !== null) {
-                \Log::info('Filtrado por liquidación', ['hasLiquidation' => $hasLiquidation]);
                 $data = $data->filter(function ($item) use ($hasLiquidation) {
                     return $hasLiquidation ? $item['closed_today'] : !$item['closed_today'];
                 })->values();
             }
-    
-            \Log::info('Respuesta final', ['total' => $data->count()]);
-    
+
+
             return $this->successResponse([
                 'data' => $data
             ]);
         } catch (\Exception $e) {
-            \Log::error($e->getMessage());
             return $this->handlerException('Error al obtener las rutas activas');
         }
     }

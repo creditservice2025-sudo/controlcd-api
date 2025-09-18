@@ -47,6 +47,7 @@ Route::middleware('auth:api')->group(function () {
     // route crud
     Route::get('routes', [SellerController::class, 'index']);
     Route::get('routes/select', [SellerController::class, 'getRoutesSelect']);
+    Route::get('routes/active', [SellerController::class, 'listActiveRoutes']);
     Route::post('route/create', [SellerController::class, 'create']);
     Route::put('route/update/{sellerId}', [SellerController::class, 'update']);
     Route::delete('route/delete/{id}', [SellerController::class, 'delete']);
@@ -172,6 +173,8 @@ Route::middleware('auth:api')->group(function () {
         Route::put('{liquidationId}/approve', [LiquidationController::class, 'approveLiquidation']);
         Route::put('{liquidationId}/annul-base', [LiquidationController::class, 'annulBase']);
         Route::put('update/{liquidationId}', [LiquidationController::class, 'updateLiquidation']);
+
+        Route::post('reopen-route', [LiquidationController::class, 'reopenRoute']);
 
         Route::prefix('seller/{sellerId}')->group(function () {
             Route::get('/', [LiquidationController::class, 'getBySeller']);

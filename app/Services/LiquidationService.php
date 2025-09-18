@@ -322,6 +322,8 @@ class LiquidationService
             : 0;
 
         $newCredits = Credit::where('seller_id', $sellerId)
+            ->whereNull('renewed_from_id')
+            ->whereNull('renewed_to_id')
             ->whereDate('created_at', $date)
             ->sum('credit_value');
 
@@ -435,6 +437,7 @@ class LiquidationService
         $credits = DB::table('credits')
             ->where('seller_id', $sellerId)
             ->whereDate('created_at', $date)
+            ->whereNull('renewed_from_id')
             ->select([
                 DB::raw('COALESCE(SUM(credit_value), 0) as value'),
                 DB::raw('COALESCE(SUM(
@@ -617,6 +620,7 @@ class LiquidationService
                 $previous_cash = Liquidation::whereHas('seller', function ($q) use ($city) {
                     $q->where('city_id', $city->id);
                 })
+                    ->where('status', 'approved')
                     ->where('date', '<', $startDate)
                     ->orderBy('date', 'desc')
                     ->value('initial_cash') ?? 0;
@@ -683,6 +687,7 @@ class LiquidationService
                 DB::raw('SUM(liquidations.cash_delivered) as cash_delivered')
             )
             ->whereBetween('liquidations.date', [$startDate, $endDate])
+            ->where('liquidations.status', 'approved')
             ->groupBy('cities.id', 'cities.name')
             ->get();
     }
@@ -735,6 +740,7 @@ class LiquidationService
                 DB::raw('COUNT(liquidations.id) as liquidation_count')
             )
             ->where('cities.id', $cityId)
+            ->where('liquidations.status', 'approved')
             ->whereBetween('liquidations.date', [$startDate, $endDate])
             ->groupBy('sellers.id', 'users.name', 'cities.name')
             ->get();

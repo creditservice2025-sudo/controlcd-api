@@ -609,7 +609,7 @@ class PaymentService
                 ->whereDate('created_at', $paymentDate)
                 ->exists();
 
-            if ($liquidationExists) {
+            if ($liquidationExists && Auth::user()->role_id !== 1) {
                 throw new \Exception('No se puede eliminar el pago. El vendedor ya tiene una liquidación registrada para el día de hoy.');
             }
 

@@ -300,9 +300,9 @@ class LiquidationController extends Controller
 
         if ($user->role_id === 5) {
             $seller = Seller::find($liquidation->seller_id);
-        
+
             $adminUsers = User::whereIn('role_id', [1, 2])->get();
-        
+
             foreach ($adminUsers as $adminUser) {
                 $adminUser->notify(new GeneralNotification(
                     'Solicitud de liquidación ',
@@ -331,6 +331,55 @@ class LiquidationController extends Controller
             'success' => true,
             'data' => $liquidation,
             'message' => 'Liquidación cerrada correctamente'
+        ]);
+    }
+
+    public function reopenRoute(Request $request)
+    {
+        \Log::info('reopenRoute - Request recibido', $request->all());
+    
+        $request->validate([
+            'seller_id' => 'required|exists:sellers,id',
+            'date' => 'required|date'
+        ]);
+    
+        $date = Carbon::parse($request->date)->format('Y-m-d');
+        \Log::info('reopenRoute - Fecha normalizada', ['date' => $date]);
+    
+        $liquidation = Liquidation::where('seller_id', $request->seller_id)
+            ->whereDate('date', $date)
+            ->first();
+    
+        \Log::info('reopenRoute - Liquidación encontrada', ['liquidation' => $liquidation]);
+    
+        if (!$liquidation) {
+            \Log::warning('reopenRoute - No existe liquidación', [
+                'seller_id' => $request->seller_id,
+                'date' => $date
+            ]);
+            return response()->json(['message' => 'No existe liquidación para ese vendedor y fecha'], 404);
+        }
+    
+        $seller = Seller::find($liquidation->seller_id);
+        $userId = $seller ? $seller->user_id : null;
+        \Log::info('reopenRoute - Seller y user_id', [
+            'seller' => $seller,
+            'user_id' => $userId
+        ]);
+    
+        $deleted = LiquidationAudit::where('liquidation_id', $liquidation->id)
+            ->where('user_id', $userId)
+            ->whereIn('action', ['updated', 'created'])
+            ->whereDate('created_at', $date)
+            ->delete();
+    
+        \Log::info('reopenRoute - Auditorías eliminadas', [
+            'deleted_count' => $deleted
+        ]);
+    
+        return response()->json([
+            'message' => 'Ruta reabierta correctamente',
+            'audits_deleted' => $deleted
         ]);
     }
 
@@ -503,8 +552,8 @@ class LiquidationController extends Controller
         // Si existe liquidación, retornar directamente esos datos
         if ($existingLiquidation) {
             $updatedLiquidation = Liquidation::where('seller_id', $sellerId)
-            ->whereDate('date', $date)
-            ->first();
+                ->whereDate('date', $date)
+                ->first();
 
 
             return $this->formatLiquidationResponse($updatedLiquidation, true);
@@ -619,6 +668,8 @@ class LiquidationController extends Controller
                 $targetDate->startOfDay()->format('Y-m-d H:i:s'),
                 $targetDate->endOfDay()->format('Y-m-d H:i:s')
             ])
+            ->whereNull('renewed_from_id')
+            ->whereNull('renewed_to_id')
             ->select([
                 DB::raw('COALESCE(SUM(credit_value), 0) as value'),
                 DB::raw('COALESCE(SUM(

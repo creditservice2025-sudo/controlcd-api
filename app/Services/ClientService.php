@@ -347,18 +347,20 @@ class ClientService
 
     public function index(
         $search = '',
-        int $perpage = 5,
-        string $orderBy = 'created_at',
-        string $orderDirection = 'desc'
+        $orderBy = 'created_at',
+        $orderDirection = 'desc',
+        $countryId = null,
+        $cityId = null,
+        $sellerId = null
     ) {
         try {
             $search = (string) $search;
-
+    
             $user = Auth::user();
             $seller = $user->seller;
-
-            $clientsQuery = Client::with(['guarantors', 'images', 'credits', 'seller', 'seller.city']);
-
+    
+            $clientsQuery = Client::with(['guarantors', 'images', 'credits', 'seller', 'seller.city', 'seller.city.country']);
+    
             if (!empty(trim($search))) {
                 $clientsQuery->where(function ($query) use ($search) {
                     $query->where('name', 'like', "%{$search}%")
@@ -366,20 +368,34 @@ class ClientService
                         ->orWhere('email', 'like', "%{$search}%");
                 });
             }
-
-            if ($user->role_id == 5 && $seller) {
+    
+            if ($countryId) {
+                $clientsQuery->whereHas('seller.city.country', function ($q) use ($countryId) {
+                    $q->where('id', $countryId);
+                });
+            }
+    
+            if ($cityId) {
+                $clientsQuery->whereHas('seller.city', function ($q) use ($cityId) {
+                    $q->where('id', $cityId);
+                });
+            }
+    
+            if ($sellerId) {
+                $clientsQuery->where('seller_id', $sellerId);
+            } elseif ($user->role_id == 5 && $seller) {
                 $clientsQuery->where('seller_id', $seller->id);
             }
-
+    
             $validOrderDirections = ['asc', 'desc'];
             $orderDirection = in_array(strtolower($orderDirection), $validOrderDirections)
                 ? $orderDirection
                 : 'desc';
-
+    
             $clientsQuery->orderBy($orderBy, $orderDirection);
-
+    
             $clients = $clientsQuery->get();
-
+    
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Clientes encontrados',

@@ -57,7 +57,7 @@ class LoginService
                     // 2. Si existe un registro en la auditoría de actualización hoy de este usuario para esta liquidación, bloquear
                     $auditExists = \App\Models\LiquidationAudit::where('liquidation_id', $liquidation->id)
                         ->where('user_id', $user->id)
-                        ->where('action', 'updated')
+                        ->whereIn('action', ['updated', 'created'])
                         ->whereDate('created_at', Carbon::today())
                         ->exists();
     
