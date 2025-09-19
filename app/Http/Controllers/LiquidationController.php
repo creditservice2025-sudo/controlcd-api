@@ -337,21 +337,21 @@ class LiquidationController extends Controller
     public function reopenRoute(Request $request)
     {
         \Log::info('reopenRoute - Request recibido', $request->all());
-    
+
         $request->validate([
             'seller_id' => 'required|exists:sellers,id',
             'date' => 'required|date'
         ]);
-    
+
         $date = Carbon::parse($request->date)->format('Y-m-d');
         \Log::info('reopenRoute - Fecha normalizada', ['date' => $date]);
-    
+
         $liquidation = Liquidation::where('seller_id', $request->seller_id)
             ->whereDate('date', $date)
             ->first();
-    
+
         \Log::info('reopenRoute - Liquidación encontrada', ['liquidation' => $liquidation]);
-    
+
         if (!$liquidation) {
             \Log::warning('reopenRoute - No existe liquidación', [
                 'seller_id' => $request->seller_id,
@@ -359,24 +359,24 @@ class LiquidationController extends Controller
             ]);
             return response()->json(['message' => 'No existe liquidación para ese vendedor y fecha'], 404);
         }
-    
+
         $seller = Seller::find($liquidation->seller_id);
         $userId = $seller ? $seller->user_id : null;
         \Log::info('reopenRoute - Seller y user_id', [
             'seller' => $seller,
             'user_id' => $userId
         ]);
-    
+
         $deleted = LiquidationAudit::where('liquidation_id', $liquidation->id)
             ->where('user_id', $userId)
             ->whereIn('action', ['updated', 'created'])
             ->whereDate('created_at', $date)
             ->delete();
-    
+
         \Log::info('reopenRoute - Auditorías eliminadas', [
             'deleted_count' => $deleted
         ]);
-    
+
         return response()->json([
             'message' => 'Ruta reabierta correctamente',
             'audits_deleted' => $deleted
@@ -419,11 +419,37 @@ class LiquidationController extends Controller
             ->whereDate('payments.created_at', $date)
             ->sum('payments.amount');
 
+        $renewalCredits = DB::table('credits')
+            ->where('seller_id', $sellerId)
+            ->whereDate('created_at', $date)
+            ->whereNotNull('renewed_from_id')
+            ->get();
+
+        $total_renewal_disbursed = 0;
+        $total_pending_absorbed = 0;
+
+        foreach ($renewalCredits as $renewCredit) {
+            $oldCredit = DB::table('credits')->where('id', $renewCredit->renewed_from_id)->first();
+
+            $pendingAmount = 0;
+            if ($oldCredit) {
+                $oldCreditTotal = ($oldCredit->credit_value * $oldCredit->total_interest / 100) + $oldCredit->credit_value;
+                $oldCreditPaid = DB::table('payments')->where('credit_id', $oldCredit->id)->sum('amount');
+                $pendingAmount = $oldCreditTotal - $oldCreditPaid;
+                $total_pending_absorbed += $pendingAmount;
+            }
+
+            $netDisbursement = $renewCredit->credit_value - $pendingAmount;
+            $total_renewal_disbursed += $netDisbursement;
+        }
+
+
         $realToDeliver = $liquidation->initial_cash
             + $liquidation->base_delivered
             + ($totalIncome + $totalCollected)
             - $totalExpenses
-            - $newCredits;
+            - $newCredits
+            - $total_renewal_disbursed;
 
         $cashDelivered = $liquidation->cash_delivered;
         $shortage = 0;

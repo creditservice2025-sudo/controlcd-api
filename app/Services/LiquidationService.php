@@ -268,7 +268,7 @@ class LiquidationService
             )
             - (
                 $dailyTotals['created_credits_value']
-                + $dailyTotals['total_expenses']
+                + $dailyTotals['total_expenses'] + $dailyTotals['total_renewal_disbursed']
             );
 
 
@@ -332,11 +332,38 @@ class LiquidationService
             ->whereDate('payments.created_at', $date)
             ->sum('payments.amount');
 
+        // === Detalle de renovaciones ===
+        $renewalCredits = DB::table('credits')
+            ->where('seller_id', $sellerId)
+            ->whereDate('created_at', $date)
+            ->whereNotNull('renewed_from_id')
+            ->get();
+
+        $total_renewal_disbursed = 0;
+        $total_pending_absorbed = 0;
+
+        foreach ($renewalCredits as $renewCredit) {
+            $oldCredit = DB::table('credits')->where('id', $renewCredit->renewed_from_id)->first();
+
+            $pendingAmount = 0;
+            if ($oldCredit) {
+                $oldCreditTotal = ($oldCredit->credit_value * $oldCredit->total_interest / 100) + $oldCredit->credit_value;
+                $oldCreditPaid = DB::table('payments')->where('credit_id', $oldCredit->id)->sum('amount');
+                $pendingAmount = $oldCreditTotal - $oldCreditPaid;
+                $total_pending_absorbed += $pendingAmount;
+            }
+
+            $netDisbursement = $renewCredit->credit_value - $pendingAmount;
+            $total_renewal_disbursed += $netDisbursement;
+        }
+
+
         $realToDeliver = $liquidation->initial_cash
             + $liquidation->base_delivered
             + ($totalIncome + $totalCollected)
             - $totalExpenses
-            - $newCredits;
+            - $newCredits
+            - $total_renewal_disbursed;
 
         $cashDelivered = $liquidation->cash_delivered;
         $shortage = 0;
@@ -356,6 +383,7 @@ class LiquidationService
             }
         }
 
+
         // Solo actualiza si hubo cambios en los totales
         if (
             $liquidation->total_expenses == $totalExpenses &&
@@ -364,19 +392,23 @@ class LiquidationService
             $liquidation->total_collected == $totalCollected &&
             $liquidation->real_to_deliver == $realToDeliver &&
             $liquidation->shortage == $shortage &&
-            $liquidation->surplus == $surplus
+            $liquidation->surplus == $surplus &&
+            $liquidation->total_renewal_disbursed == $total_renewal_disbursed &&
+            $liquidation->total_crossed_credits == $total_pending_absorbed
         ) {
             return; // No hay cambios, no actualizar
         }
 
         $liquidation->update([
-            'total_expenses'      => $totalExpenses,
-            'new_credits'         => $newCredits,
-            'total_income'        => $totalIncome,
-            'total_collected'     => $totalCollected,
-            'real_to_deliver'     => $realToDeliver,
-            'shortage'            => $shortage,
-            'surplus'             => $surplus,
+            'total_expenses'           => $totalExpenses,
+            'new_credits'              => $newCredits,
+            'total_income'             => $totalIncome,
+            'total_collected'          => $totalCollected,
+            'real_to_deliver'          => $realToDeliver,
+            'shortage'                 => $shortage,
+            'surplus'                  => $surplus,
+            'total_renewal_disbursed'  => $total_renewal_disbursed,
+            'total_crossed_credits'    => $total_pending_absorbed,
         ]);
     }
 
