@@ -86,6 +86,10 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/', [ClientController::class, 'index']);
         Route::get('/total', [ClientController::class, 'totalClients']);
         Route::get('/select', [ClientController::class, 'getClientsSelect']);
+        Route::post('/reactivate-by-criteria', [ClientController::class, 'reactivateClientsByCriteria']);
+        Route::delete('/delete-inactive-without-credits', [ClientController::class, 'deleteInactiveClientsWithoutCredits']);
+
+        Route::put('/toggle-status/{clientId}', [ClientController::class, 'toggleStatus']);
 
         // Por vendedor
         Route::get('/seller/{sellerId}', [ClientController::class, 'getClientsBySeller']);
@@ -104,6 +108,8 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/{id}/details', [ClientController::class, 'getClientDetails']);
         Route::put('/update/{id}', [ClientController::class, 'update']);
         Route::delete('/delete/{id}', [ClientController::class, 'delete']);
+
+
 
         // Orden de ruta
         Route::post('/update-order', [ClientController::class, 'updateOrder']);

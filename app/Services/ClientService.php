@@ -321,19 +321,25 @@ class ClientService
     {
         try {
             $client = Client::find($clientId);
-
+    
             if ($client == null) {
                 return $this->errorNotFoundResponse('Cliente no encontrado');
             }
-
+    
+            if ($client->credits()->where('status', 'Vigente')->exists()) {
+                return $this->errorResponse([
+                    'No se puede eliminar el cliente con créditos vigentes'
+                ], 401);
+            }
+    
             $client->guarantors()->detach();
-
+    
             $client->images()->each(function ($image) {
                 $image->delete();
             });
-
+    
             $client->delete();
-
+    
             return $this->successResponse([
                 'success' => true,
                 'message' => "Cliente eliminado con éxito",
@@ -344,14 +350,14 @@ class ClientService
         }
     }
 
-
     public function index(
         $search = '',
         $orderBy = 'created_at',
         $orderDirection = 'desc',
         $countryId = null,
         $cityId = null,
-        $sellerId = null
+        $sellerId = null,
+        $status = null 
     ) {
         try {
             $search = (string) $search;
@@ -385,6 +391,13 @@ class ClientService
                 $clientsQuery->where('seller_id', $sellerId);
             } elseif ($user->role_id == 5 && $seller) {
                 $clientsQuery->where('seller_id', $seller->id);
+            }
+    
+            // Filtro por status: si no se pasa, solo trae active o inactive
+            if ($status) {
+                $clientsQuery->where('status', $status);
+            } else {
+                $clientsQuery->whereIn('status', ['active', 'inactive']);
             }
     
             $validOrderDirections = ['asc', 'desc'];
@@ -565,7 +578,73 @@ class ClientService
         }
     }
 
+    public function reactivateClients($countryId = null, $cityId = null, $sellerId = null)
+    {
+        try {
+            DB::beginTransaction();
+    
+            $user = Auth::user();
+            if (!in_array($user->role_id, [1, 2])) { 
+                return $this->errorResponse('No tiene permisos para realizar esta acción', 403);
+            }
+           
+            $query = Client::withTrashed()->whereNotNull('deleted_at');
+            if ($countryId) {
+                $query->whereHas('seller.city.country', function($q) use ($countryId) {
+                    $q->where('id', $countryId);
+                });
+            }
+    
+            if ($cityId) {
+                $query->whereHas('seller.city', function($q) use ($cityId) {
+                    $q->where('id', $cityId);
+                });
+            }
+    
+            if ($sellerId) {
+                $query->where('seller_id', $sellerId);
+            }
+    
+            $reactivatedCount = $query->restore();
+    
+            DB::commit();
+    
+            return $this->successResponse([
+                'success' => true,
+                'message' => "Se reactivaron {$reactivatedCount} clientes exitosamente",
+                'data' => [
+                    'reactivated_count' => $reactivatedCount
+                ]
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            \Log::error("Error al reactivar clientes: " . $e->getMessage());
+            \Log::error($e->getTraceAsString());
+            return $this->errorResponse('Error al reactivar los clientes', 500);
+        }
+    }
 
+    public function deleteInactiveClientsWithoutCredits()
+    {
+        $clientsToDelete = Client::where('status', 'inactive')
+            ->whereDoesntHave('credits', function ($query) {
+                $query->where('status', 'Vigente');
+            })
+            ->get();
+    
+        $ids = $clientsToDelete->pluck('id')->toArray();
+    
+        $deletedCount = 0;
+        foreach ($clientsToDelete as $client) {
+            $client->delete(); // Soft delete
+            $deletedCount++;
+        }
+    
+        return [
+            'deleted_count' => $deletedCount,
+            'deleted_ids' => $ids
+        ];
+    }
 
     public function getClientsSelect(string $search = '')
     {
@@ -809,36 +888,47 @@ class ClientService
             ->get()
             ->groupBy('credit_id');
 
-        $transformedItems = $credits->map(function ($credit) use ($paymentSummary) {
-            $summary = $paymentSummary->get($credit->id, collect());
-            foreach ($summary as $item) {
-                $credit->{$item->status} = $item->total_amount;
-            }
-
-            $credit->installment = $credit->installments;
-            unset($credit->installments);
-
-            $overdueInstallments = $credit->installment->filter(function ($installment) {
-                return $installment->due_date < now()->toDateString() && $installment->status !== 'Pagado';
+            $transformedItems = $credits->map(function ($credit) use ($paymentSummary) {
+                $summary = $paymentSummary->get($credit->id, collect());
+                foreach ($summary as $item) {
+                    $credit->{$item->status} = $item->total_amount;
+                }
+            
+                $credit->installment = $credit->installments;
+                unset($credit->installments);
+            
+                $overdueInstallments = $credit->installment->filter(function ($installment) {
+                    return $installment->due_date < now()->toDateString() && $installment->status !== 'Pagado';
+                });
+            
+                $totalInstallments = $credit->installment->count();
+                $remainingInstallments = $credit->installment->filter(function ($installment) {
+                    return $installment->status !== 'Pagado';
+                })->count();
+            
+                // Inicializa los datos extra
+                $credit->overdue_date = null;
+                $credit->days_overdue = null;
+            
+                if ($overdueInstallments->count() > 0) {
+                    $credit->credit_status = 'Overdue';
+            
+                    // Obtener la cuota vencida más antigua
+                    $firstOverdue = $overdueInstallments->sortBy('due_date')->first();
+                    if ($firstOverdue) {
+                        $credit->overdue_date = $firstOverdue->due_date;
+                        $credit->days_overdue = \Carbon\Carbon::parse($firstOverdue->due_date)->diffInDays(now());
+                    }
+                } elseif ($remainingInstallments <= 4 && $overdueInstallments->count() === 0) {
+                    $credit->credit_status = 'Renewal_pending';
+                } elseif ($overdueInstallments->count() <= 2) {
+                    $credit->credit_status = 'On_time';
+                } else {
+                    $credit->credit_status = 'Normal';
+                }
+            
+                return $credit;
             });
-
-            $totalInstallments = $credit->installment->count();
-            $remainingInstallments = $credit->installment->filter(function ($installment) {
-                return $installment->status !== 'Pagado';
-            })->count();
-
-            if ($overdueInstallments->count() > 0) {
-                $credit->credit_status = 'Overdue';
-            } elseif ($remainingInstallments <= 4 && $overdueInstallments->count() === 0) {
-                $credit->credit_status = 'Renewal_pending';
-            } elseif ($overdueInstallments->count() <= 2) {
-                $credit->credit_status = 'On_time';
-            } else {
-                $credit->credit_status = 'Normal';
-            }
-
-            return $credit;
-        });
 
         /* $credits->setCollection($transformedItems); */
 
@@ -848,6 +938,35 @@ class ClientService
             'data' => $transformedItems,
 
         ]);
+    }
+
+    public function toggleStatus($clientId, $status)
+    {
+        try {
+            $client = Client::find($clientId);
+
+            if ($client == null) {
+                return $this->errorNotFoundResponse('Cliente no encontrado');
+            }
+
+            if (
+                $status === 'inactive' &&
+                $client->credits()->where('status', 'Vigente')->exists()
+            ) {
+                return $this->errorResponse(['No se puede desactivar el cliente con créditos vigentes'], 401);
+            }
+            $client->status = $status;
+            $client->save();
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => "Estado del cliente actualizado con éxito",
+                'data' => $client
+            ]);
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->errorResponse('Error al actualizar el estado del cliente', 500);
+        }
     }
 
     public function getDebtorClientsBySeller($sellerId)
@@ -1293,7 +1412,7 @@ class ClientService
             'paid_amount' => $credit->status === 'Renovado' ? $totalAmount : $paidAmount,
             'payment_frequency' => $credit->payment_frequency,
             'payment_day_info' => $pagoFrecuencia,
-           'balance' => $credit->status === 'Renovado' ? 0 : $balance,
+            'balance' => $credit->status === 'Renovado' ? 0 : $balance,
             'paid_today' => $paidToday,
             'created_at' => $credit->created_at,
             'payment_method_today' => $ultimoPagoMetodo,

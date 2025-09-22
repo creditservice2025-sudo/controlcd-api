@@ -106,8 +106,9 @@ class ClientController extends Controller
             $countryId = $request->input('country_id');
             $cityId = $request->input('city_id');
             $sellerId = $request->input('seller_id');
-    
-            return $this->clientService->index($search, $orderBy, $orderDirection, $countryId, $cityId, $sellerId);
+            $status = $request->input('status', null);
+
+            return $this->clientService->index($search, $orderBy, $orderDirection, $countryId, $cityId, $sellerId, $status);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
@@ -133,6 +134,44 @@ class ClientController extends Controller
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             return $this->errorResponse('Error al obtener los clientes', 500);
+        }
+    }
+
+    public function reactivateClientsByCriteria(Request $request)
+    {
+        $request->validate([
+            'country_id' => 'nullable|integer|exists:countries,id',
+            'city_id' => 'nullable|integer|exists:cities,id',
+            'seller_id' => 'nullable|integer|exists:sellers,id'
+        ]);
+
+        $countryId = $request->input('country_id');
+        $cityId = $request->input('city_id');
+        $sellerId = $request->input('seller_id');
+
+        if (!$countryId && !$cityId && !$sellerId) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Debe proporcionar al menos un criterio (país, ciudad o vendedor)'
+            ], 400);
+        }
+
+        return $this->clientService->reactivateClients($countryId, $cityId, $sellerId);
+    }
+
+    public function deleteInactiveClientsWithoutCredits(Request $request)
+    {
+
+        try {
+            $result = $this->clientService->deleteInactiveClientsWithoutCredits();
+            return $this->successResponse([
+                'success' => true,
+                'message' => "Clientes inactivos sin créditos eliminados exitosamente",
+                'data' => $result
+            ]);
+        } catch (\Exception $e) {
+            \Log::error("Error eliminando clientes inactivos sin créditos: " . $e->getMessage());
+            return $this->errorResponse('Error eliminando clientes inactivos sin créditos', 500);
         }
     }
 
@@ -264,16 +303,16 @@ class ClientController extends Controller
             if (!$seller) {
                 return $this->errorResponse('Vendedor no encontrado', 404);
             }
-    
+
             $today = \Carbon\Carbon::today();
             $inputDate = \Carbon\Carbon::parse($date);
-    
+
             if ($inputDate->gt($today)) {
                 return $this->errorResponse('La fecha seleccionada no puede ser mayor que la fecha actual.', 422);
             }
-    
+
             $result = $this->clientService->getLiquidationWithAllClients($sellerId, $date, $userId);
-    
+
             return response()->json([
                 'success' => true,
                 'message' => 'Clientes obtenidos exitosamente',
@@ -282,6 +321,19 @@ class ClientController extends Controller
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             return $this->errorResponse('Error al obtener los datos de liquidación y clientes', 500);
+        }
+    }
+
+    public function toggleStatus(Request $request, $clientId)
+    {
+        try {
+            $params = $request->validate([
+                'status' => 'required|string|in:active,inactive,uncollectible',
+            ]);
+
+            return $this->clientService->toggleStatus($clientId, $params['status']);
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
         }
     }
 }
