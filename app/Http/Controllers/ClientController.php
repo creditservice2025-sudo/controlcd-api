@@ -336,4 +336,13 @@ class ClientController extends Controller
             return $this->errorResponse($e->getMessage(), 500);
         }
     }
+    public function getInactiveClientsWithoutCredits()
+    {
+        try {
+            return $this->clientService->getInactiveClientsWithoutCredits();
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->errorResponse('Error al obtener los clientes inactivos sin créditos', 500);
+        }
+    }
 }

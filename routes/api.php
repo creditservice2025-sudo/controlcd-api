@@ -88,6 +88,7 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/select', [ClientController::class, 'getClientsSelect']);
         Route::post('/reactivate-by-criteria', [ClientController::class, 'reactivateClientsByCriteria']);
         Route::delete('/delete-inactive-without-credits', [ClientController::class, 'deleteInactiveClientsWithoutCredits']);
+        Route::get('/inactive-without-credits', [ClientController::class, 'getInactiveClientsWithoutCredits']);
 
         Route::put('/toggle-status/{clientId}', [ClientController::class, 'toggleStatus']);
 
