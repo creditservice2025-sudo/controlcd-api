@@ -30,13 +30,13 @@ class CreditController extends Controller
     }
 
     public function renew(Request $request)
-{
-    try {
-        return $this->creditService->renew($request);
-    } catch (\Exception $e) {
-        return $this->errorResponse($e->getMessage(), 500);
+    {
+        try {
+            return $this->creditService->renew($request);
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
     }
-}
 
     public function update(CreditRequest $request, $creditId)
     {
@@ -82,6 +82,44 @@ class CreditController extends Controller
             return $this->errorResponse($e->getMessage(), 500);
         }
     } */
+
+    public function toggleCreditStatus(Request $request, $creditId)
+    {
+        try {
+            $status = $request->input('status');
+
+            if (!in_array($status, ['uncollectible', 'vigente'])) {
+                return $this->errorResponse('Estado no válido', 400);
+            }
+
+            return $this->creditService->toggleCreditStatus($creditId, $status);
+        } catch (Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+    public function toggleCreditsStatusMassively(Request $request)
+    {
+        try {
+            $creditIds = $request->input('credit_ids');
+            $status = $request->input('status');
+
+
+            if (empty($creditIds) || !is_array($creditIds)) {
+                return $this->errorResponse('IDs de créditos son requeridos y deben ser un array', 400);
+            }
+
+            if (!in_array($status, ['uncollectible', 'vigente'])) {
+                return $this->errorResponse('Estado no válido', 400);
+            }
+
+            return $this->creditService->toggleCreditsStatusMassively($creditIds, $status);
+        } catch (Exception $e) {
+            \Log::error("Error al actualizar los estados de los créditos masivamente: " . $e->getMessage());
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
 
     public function getClientCredits(Request $request)
     {

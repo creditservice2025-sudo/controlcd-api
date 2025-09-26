@@ -48,17 +48,20 @@ class ReportExportController extends Controller
             'start_date' => 'required|date',
             'end_date' => 'required|date|after_or_equal:start_date'
         ]);
-
+    
         if ($validator->fails()) {
             throw new \InvalidArgumentException('Validación fallida: ' . $validator->errors()->first());
         }
-
+    
         $startDate = $request->input('start_date');
         $endDate = $request->input('end_date');
+    
+        $safeStartDate = str_replace(['/', '\\'], '-', $startDate);
+        $safeEndDate = str_replace(['/', '\\'], '-', $endDate);
+    
         try {
-            $fileName = 'Reporte_Acumulado_Ciudad_' . $startDate . '_' . $endDate . '.xlsx';
-
-
+            $fileName = 'Reporte_Acumulado_Ciudad_' . $safeStartDate . '_' . $safeEndDate . '.xlsx';
+    
             return Excel::download(
                 new AccumulatedByCityExport($startDate, $endDate, $this->liquidationService),
                 $fileName
@@ -92,9 +95,14 @@ class ReportExportController extends Controller
             $startDate = $request->input('start_date');
             $endDate = $request->input('end_date');
 
+            $safeStartDate = str_replace(['/', '\\'], '-', $startDate);
+            $safeEndDate = str_replace(['/', '\\'], '-', $endDate);
+
+            $fileName = 'resumen_liquidaciones_vendedores_' . $sellerId . '_' . $safeStartDate . '_' . $safeEndDate . '.xlsx';
+
             return Excel::download(
                 new SellersSummaryByCityExport($sellerId, $startDate, $endDate, $this->clientService),
-                'resumen_liquidaciones_vendedores_' . $sellerId . '_' . $startDate . '_' . $endDate . '.xlsx'
+                $fileName
             );
         } catch (\Exception $e) {
             \Log::error('Error al generar el resumen de liquidaciones por vendedores: ' . $e->getMessage());
@@ -126,7 +134,7 @@ class ReportExportController extends Controller
 
             return Excel::download(
                 new SellerLiquidationsDetailExport($sellerId, $startDate, $endDate, $this->liquidationService),
-                $fileName
+                'liquidaciones_detalladas_vendedor_'
             );
         } catch (\Exception $e) {
             \Log::error('Error al exportar el reporte de liquidaciones detalladas: ' . $e->getMessage());

@@ -26,11 +26,18 @@ class AccumulatedByCityExport implements FromArray, WithEvents
         // Encabezados superiores
         $rows = [
             ['', 'CONTROCD'],
-            ['', 'FECHA DESDE: ' . $this->startDate],
-            ['', 'HASTA: ' . $this->endDate],
+            [ '','Fecha desde: ' . $this->startDate],
+            ['', 'Hasta: ' . $this->endDate],
             ['', 'Generación: ' . now()->format('Y-m-d')],
-            [''],
+            ['', ''],
+
+      
         ];
+
+        $logoPath = 'public/images/favicon.svg'; // Path to the logo
+        if (file_exists(public_path($logoPath))) {
+            $rows[5][1] = asset($logoPath);
+        }
 
         // Encabezados dinámicos por ciudad
         $headerRow = [];
@@ -100,39 +107,91 @@ class AccumulatedByCityExport implements FromArray, WithEvents
                 $sheet = $event->sheet;
 
                 foreach (range('A', $sheet->getHighestColumn()) as $col) {
-                    $sheet->getColumnDimension($col)->setWidth(17);
+                    $sheet->getColumnDimension($col)->setWidth(25);
                 }
 
-                $sheet->getStyle('B1:B4')->getFont()->setBold(true)->setSize(13);
+                $highestRow = $sheet->getHighestRow(); 
+
                 $sheet->getStyle('B1')->getFill()
                     ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
-                    ->getStartColor()->setARGB('FFC5E0B4');
+                    ->getStartColor()->setARGB('FF2563EB'); 
                 $sheet->getStyle('B2:B4')->getFill()
                     ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
-                    ->getStartColor()->setARGB('FFE2EFDA');
+                    ->getStartColor()->setARGB('FF2563EB'); 
 
-                $sheet->getStyle('A6:' . $sheet->getHighestColumn() . '6')->getFont()->setBold(true)->setSize(12);
                 $sheet->getStyle('A6:' . $sheet->getHighestColumn() . '6')->getFill()
                     ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
-                    ->getStartColor()->setARGB('FFFFEB9C');
+                    ->getStartColor()->setARGB('FF2563EB'); 
+
+                $totalCiudadRow = $highestRow - 3;
+                $sheet->getStyle("A$totalCiudadRow:" . $sheet->getHighestColumn() . "$totalCiudadRow")->getFill()
+                    ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
+                    ->getStartColor()->setARGB('FF2563EB');
+
+                $totalGlobalRow = $highestRow - 1;
+                $sheet->getStyle("A$totalGlobalRow:" . $sheet->getHighestColumn() . "$totalGlobalRow")->getFill()
+                    ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
+                    ->getStartColor()->setARGB('FF2563EB'); 
+
+                $sheet->getStyle('B1:B4')->getFont()->setBold(true)->setSize(16);
+                $sheet->getStyle('A6:' . $sheet->getHighestColumn() . '6')->getFont()->setBold(true)->setSize(14);
+                $sheet->getStyle("A$totalCiudadRow:" . $sheet->getHighestColumn() . "$totalCiudadRow")->getFont()->setBold(true)->setSize(12);
+                $sheet->getStyle("A$totalGlobalRow:" . $sheet->getHighestColumn() . "$totalGlobalRow")->getFont()->setBold(true)->setSize(14);
+
+                $sheet->getStyle('B1:B4')->getAlignment()->setHorizontal(\PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER);
+                $sheet->getStyle('B1:B4')->getAlignment()->setVertical(\PhpOffice\PhpSpreadsheet\Style\Alignment::VERTICAL_CENTER);
+
+                $sheet->getStyle('A6:' . $sheet->getHighestColumn() . '6')->getAlignment()->setHorizontal(\PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER);
+                $sheet->getStyle('A6:' . $sheet->getHighestColumn() . '6')->getAlignment()->setVertical(\PhpOffice\PhpSpreadsheet\Style\Alignment::VERTICAL_CENTER);
+
+                foreach (range('A', $sheet->getHighestColumn()) as $col) {
+                    $sheet->getColumnDimension($col)->setWidth(30);
+                }
+
+                foreach (range(1, $highestRow) as $row) {
+                    $sheet->getRowDimension($row)->setRowHeight(25);
+                }
+
                 $highestRow = $sheet->getHighestRow();
                 $sheet->getStyle("A1:" . $sheet->getHighestColumn() . "$highestRow")->getBorders()->getAllBorders()
                     ->setBorderStyle(\PhpOffice\PhpSpreadsheet\Style\Border::BORDER_THIN);
 
-                $totalCiudadRow = $highestRow - 3; 
                 $sheet->getStyle("A$totalCiudadRow:" . $sheet->getHighestColumn() . "$totalCiudadRow")->getFont()->setBold(true);
-                $sheet->getStyle("A$totalCiudadRow:" . $sheet->getHighestColumn() . "$totalCiudadRow")->getFill()
-                    ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
-                    ->getStartColor()->setARGB('FFB6D7A8');
 
-                $totalGlobalRow = $highestRow - 1;
                 $sheet->getStyle("A$totalGlobalRow:" . $sheet->getHighestColumn() . "$totalGlobalRow")->getFont()->setBold(true)->setSize(14);
-                $sheet->getStyle("A$totalGlobalRow:" . $sheet->getHighestColumn() . "$totalGlobalRow")->getFill()
-                    ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
-                    ->getStartColor()->setARGB('FF0050EF');
 
                 foreach ([$totalCiudadRow-2, $totalCiudadRow-1, $totalGlobalRow-2, $totalGlobalRow-1, $highestRow] as $row) {
-                    $sheet->getRowDimension($row)->setRowHeight(18);
+                    $sheet->getRowDimension($row)->setRowHeight(20);
+                }
+
+                $logoPath = public_path('images/favicon.svg'); 
+                if (file_exists($logoPath)) {
+                    $drawing = new \PhpOffice\PhpSpreadsheet\Worksheet\Drawing();
+                    $drawing->setName('Logo');
+                    $drawing->setDescription('Logo');
+                    $drawing->setPath($logoPath); 
+                    $drawing->setHeight(80); 
+                    $drawing->setCoordinates('B1'); 
+                    $drawing->setOffsetX(50); 
+                    $drawing->setOffsetY(10); 
+                    $drawing->setWorksheet($sheet->getDelegate());
+                } else {
+                    $sheet->setCellValue('B1', 'LOGO NO DISPONIBLE');
+                    $sheet->getStyle('B1')->getAlignment()->setHorizontal(\PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER);
+                }
+
+                $sheet->getStyle('B1:B4')->getAlignment()->setHorizontal(\PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER);
+                $sheet->getStyle('B1:B4')->getAlignment()->setVertical(\PhpOffice\PhpSpreadsheet\Style\Alignment::VERTICAL_CENTER);
+
+                $sheet->getStyle('A6:' . $sheet->getHighestColumn() . '6')->getAlignment()->setHorizontal(\PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER);
+                $sheet->getStyle('A6:' . $sheet->getHighestColumn() . '6')->getAlignment()->setVertical(\PhpOffice\PhpSpreadsheet\Style\Alignment::VERTICAL_CENTER);
+
+                foreach (range('A', $sheet->getHighestColumn()) as $col) {
+                    $sheet->getColumnDimension($col)->setWidth(30);
+                }
+
+                foreach (range(1, $highestRow) as $row) {
+                    $sheet->getRowDimension($row)->setRowHeight(25);
                 }
             }
         ];

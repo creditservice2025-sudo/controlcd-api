@@ -427,18 +427,18 @@ class PaymentService
             )
             ->orderBy('clients.name')
             ->orderBy('credits.id')
-            ->orderBy('payments.payment_date', 'desc');
+            ->orderBy('payments.created_at', 'desc');
 
         // Filtros de fecha
         if ($request->has('start_date') && $request->has('end_date')) {
             $startDate = Carbon::parse($request->get('start_date'))->startOfDay();
             $endDate = Carbon::parse($request->get('end_date'))->endOfDay();
-            $paymentsQuery->whereBetween('payments.payment_date', [$startDate, $endDate]);
+            $paymentsQuery->whereBetween('payments.created_at', [$startDate, $endDate]);
         } elseif ($request->has('date')) {
             $filterDate = Carbon::parse($request->get('date'))->toDateString();
-            $paymentsQuery->whereDate('payments.payment_date', $filterDate);
+            $paymentsQuery->whereDate('payments.created_at', $filterDate);
         } else {
-            $paymentsQuery->whereDate('payments.payment_date', Carbon::today());
+            $paymentsQuery->whereRaw("DATE(CONVERT_TZ(payments.created_at, '+00:00', '-04:00')) = ?", [Carbon::today()->toDateString()]);
         }
 
         // Filtro de estado
