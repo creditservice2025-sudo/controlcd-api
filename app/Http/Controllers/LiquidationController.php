@@ -57,6 +57,8 @@ class LiquidationController extends Controller
     {
         $user = Auth::user();
 
+        $today = now()->toDateString();
+
         $request->validate([
             'date' => 'required|date',
             'seller_id' => 'required|exists:sellers,id',
@@ -95,8 +97,16 @@ class LiquidationController extends Controller
             ], 422);
         }
 
+        $irrecoverableCredits = DB::table('installments')
+        ->join('credits', 'installments.credit_id', '=', 'credits.id')
+        ->where('credits.seller_id', $request->seller_id)
+        ->where('credits.status', 'Cartera Irrecuperable')
+        ->whereDate('credits.updated_at', $today)
+        ->where('installments.status', 'Pendiente')
+        ->sum('installments.quota_amount');
+
         $realToDeliver = $request->initial_cash + ($request->total_income + $request->total_collected)
-            - $request->total_expenses - $request->new_credits;
+            - ($request->total_expenses + $request->new_credits + $irrecoverableCredits);
 
         $shortage = 0;
         $surplus = 0;
@@ -597,13 +607,21 @@ class LiquidationController extends Controller
 
         $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
 
+        $irrecoverableCredits = DB::table('installments')
+            ->join('credits', 'installments.credit_id', '=', 'credits.id')
+            ->where('credits.seller_id', $sellerId)
+            ->where('credits.status', 'Cartera Irrecuperable')
+            ->whereDate('credits.updated_at', $date)
+            ->where('installments.status', 'Pendiente')
+            ->sum('installments.quota_amount');
+
         Log::info('INcome: ' . $dailyTotals['total_income']);
         Log::info('Initial Cash: ' . $initialCash);
         // 4. Calcular valor real a entregar
         $realToDeliver = $initialCash
             + ($dailyTotals['total_income'] + $dailyTotals['collected_total'])
             - ($dailyTotals['created_credits_value']
-                - $dailyTotals['total_expenses']);
+                + $dailyTotals['total_expenses'] + $irrecoverableCredits);
 
         // 5. Estructurar respuesta completa
         return [
@@ -642,7 +660,7 @@ class LiquidationController extends Controller
                 'payments.payment_method',
                 DB::raw('SUM(payments.amount) as total')
             )
-            ->whereDate('payments.payment_date', $date)
+            ->whereDate('payments.created_at', $date)
             ->where('credits.seller_id', $sellerId)
             ->where('payments.status', 'Aprobado')
             ->groupBy('payments.payment_method');
@@ -650,7 +668,7 @@ class LiquidationController extends Controller
         $firstPaymentQuery = DB::table('payments')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
             ->select(DB::raw('MIN(payments.created_at) as first_payment_date'))
-            ->whereDate('payments.payment_date', $date);
+            ->whereDate('payments.created_at', $date);
 
         if ($sellerId) {
             $firstPaymentQuery->where('credits.seller_id', $sellerId);
@@ -861,9 +879,9 @@ class LiquidationController extends Controller
             $firstPaymentQuery = DB::table('payments')
                 ->join('credits', 'payments.credit_id', '=', 'credits.id')
                 ->select('payments.payment_date', 'payments.created_at') // 👈 aquí
-                ->whereDate('payments.payment_date', $liquidation->date)
+                ->whereDate('payments.created_at', $liquidation->date)
                 ->where('credits.seller_id', $liquidation->seller_id)
-                ->orderBy('payments.payment_date', 'asc')
+                ->orderBy('payments.created_at', 'asc')
                 ->first();
 
 

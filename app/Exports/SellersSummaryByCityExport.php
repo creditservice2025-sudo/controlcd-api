@@ -30,6 +30,22 @@ class SellersSummaryByCityExport implements FromCollection, WithHeadings, WithTi
 
     public function collection()
     {
+        $rows = [
+            ['', 'CONTROCD'],
+            ['', 'Fecha desde: ' . $this->startDate],
+            ['', 'Hasta: ' . $this->endDate],
+            ['', 'Generación: ' . now()->format('Y-m-d')],
+        ];
+
+        $rows[] = [
+            'Préstamo',
+            'Nombre del Cliente',
+            'Capital',
+            'Vr. Pago',
+            'Saldo Crédito',
+            'Saldo Cartera'
+        ];
+
         $portfolio = $this->clientService->getClientPortfolioBySeller(
             $this->sellerId, 
             $this->startDate, 
@@ -42,7 +58,7 @@ class SellersSummaryByCityExport implements FromCollection, WithHeadings, WithTi
             $this->endDate
         );
 
-        $rows = $portfolio->map(function ($item) {
+        $rows = array_merge($rows, $portfolio->map(function ($item) {
             return [
                 $item->loan_id,
                 $item->client_name,
@@ -51,9 +67,9 @@ class SellersSummaryByCityExport implements FromCollection, WithHeadings, WithTi
                 $item->credit_balance,
                 $item->portfolio_balance,
             ];
-        })->toArray();
+        })->toArray());
 
-        // Fila de total como la imagen
+        // Fila de total con fondo azul
         $rows[] = [
             '', '', '', '', '', 'VALOR TOTAL RECAUDO A FECHA -- : $ ' . number_format($totalCollected, 2)
         ];
@@ -64,21 +80,20 @@ class SellersSummaryByCityExport implements FromCollection, WithHeadings, WithTi
     public function headings(): array
     {
         return [
-            ['Reporte generado el:', $this->generatedAt], // Fila extra arriba del encabezado
-            [
-                'Préstamo',
-                'Nombre del Cliente',
-                'Capital',
-                'Vr. Pago',
-                'Saldo Crédito',
-                'Saldo Cartera',
-            ]
+            ['Préstamo',
+            'Nombre del Cliente',
+            'Capital',
+            'Vr. Pago',
+            'Saldo Crédito',
+            'Saldo Cartera']
         ];
     }
 
     public function title(): string
     {
-        return 'Validación Cartera Diaria';
+        $title = 'Validación Cartera Diaria';
+        // Limitar el título a 31 caracteres y reemplazar caracteres no permitidos
+        return substr(preg_replace('#[\\/]#', '-', $title), 0, 31);
     }
 
     public function styles(Worksheet $sheet)
@@ -87,7 +102,7 @@ class SellersSummaryByCityExport implements FromCollection, WithHeadings, WithTi
             // Fila de encabezados
             2 => [
                 'font' => ['bold' => true, 'color' => ['rgb' => 'FFFFFF']],
-                'fill' => ['fillType' => 'solid', 'startColor' => ['rgb' => '2980B9']],
+                'fill' => ['fillType' => 'solid', 'startColor' => ['rgb' => '2563EB']], // Azul claro
                 'alignment' => ['horizontal' => 'center', 'vertical' => 'center'],
             ],
             // Fila fecha de generación
@@ -127,16 +142,40 @@ class SellersSummaryByCityExport implements FromCollection, WithHeadings, WithTi
                 $sheet->getStyle('C3:F' . ($highestRow - 1))
                       ->getNumberFormat()->setFormatCode('#,##0.00');
 
-                // Fila de total resaltada
+                // Fila de total resaltada con azul claro
                 $sheet->getStyle('A' . $highestRow . ':' . $highestColumn . $highestRow)
                     ->applyFromArray([
                         'font' => ['bold' => true],
                         'fill' => [
                             'fillType' => 'solid',
-                            'startColor' => ['rgb' => 'FFEB3B']
+                            'startColor' => ['rgb' => '2563EB']
                         ],
                         'alignment' => ['horizontal' => 'right', 'vertical' => 'center'],
                     ]);
+
+                $sheet->mergeCells('B2:F2');
+                $sheet->mergeCells('B3:F3');
+                $sheet->mergeCells('B4:F4');
+                $sheet->mergeCells('B5:F5');
+
+                $sheet->getStyle('B2:F5')->applyFromArray([
+                    'font' => ['bold' => true, 'color' => ['rgb' => '2563EB']],
+                    'alignment' => ['horizontal' => 'center', 'vertical' => 'center'],
+                ]);
+
+                foreach (range(2, 5) as $row) {
+                    $sheet->getRowDimension($row)->setRowHeight(25);
+                }
+
+                $sheet->getStyle('A6:' . $highestColumn . '6')->applyFromArray([
+                    'font' => ['bold' => true, 'color' => ['rgb' => 'FFFFFF']],
+                    'fill' => ['fillType' => 'solid', 'startColor' => ['rgb' => '2563EB']],
+                    'alignment' => ['horizontal' => 'center', 'vertical' => 'center'],
+                ]);
+
+                foreach (range(1, $highestRow) as $row) {
+                    $sheet->getRowDimension($row)->setRowHeight(22);
+                }
             }
         ];
     }

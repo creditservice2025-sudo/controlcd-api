@@ -206,7 +206,7 @@ class SellerService
             $today = now()->format('Y-m-d');
     
             $routesList = $routes->whereHas('credits.payments', function ($q) use ($today) {
-                $q->whereDate('payment_date', $today);
+                $q->whereDate('created_at', $today);
             })->get([
                 'id',
                 'user_id',
@@ -231,10 +231,10 @@ class SellerService
                 // Buscar el primer pago del día para este vendedor
                 $firstPayment = $route->credits()
                     ->whereHas('payments', function ($q) use ($today) {
-                        $q->whereDate('payment_date', $today);
+                        $q->whereDate('created_at', $today);
                     })
                     ->with(['payments' => function ($q) use ($today) {
-                        $q->whereDate('created_at', $today)->orderBy('payment_date', 'asc');
+                        $q->whereDate('created_at', $today)->orderBy('created_at', 'asc');
                     }])
                     ->get()
                     ->pluck('payments')

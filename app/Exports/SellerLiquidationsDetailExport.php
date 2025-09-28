@@ -99,7 +99,7 @@ class SellerLiquidationsDetailExport implements FromCollection, WithHeadings, Wi
         return [
             2 => [
                 'font' => ['bold' => true, 'color' => ['rgb' => 'FFFFFF']],
-                'fill' => ['fillType' => 'solid', 'startColor' => ['rgb' => '2980B9']],
+                'fill' => ['fillType' => 'solid', 'startColor' => ['rgb' => '2563EB']], // Azul claro
                 'alignment' => ['horizontal' => 'center', 'vertical' => 'center'],
             ],
             1 => [
@@ -117,30 +117,30 @@ class SellerLiquidationsDetailExport implements FromCollection, WithHeadings, Wi
                 $highestColumn = $sheet->getHighestColumn();
                 $highestRow = $sheet->getHighestRow();
 
-                // Auto ancho de columnas
                 foreach (range('A', $highestColumn) as $col) {
                     $sheet->getColumnDimension($col)->setAutoSize(true);
                 }
 
-                // Congelar la primera fila (encabezado real)
                 $sheet->freezePane('A3');
 
-                // Bordes para todas las celdas de datos
                 $sheet->getStyle('A2:' . $highestColumn . $highestRow)
                       ->getBorders()->getAllBorders()->setBorderStyle(\PhpOffice\PhpSpreadsheet\Style\Border::BORDER_THIN);
 
-                // Ajustar altura de las filas
                 for ($row = 2; $row <= $highestRow; $row++) {
                     $sheet->getRowDimension($row)->setRowHeight(22);
                 }
 
-                // Formatear números
                 $sheet->getStyle('C3:M' . $highestRow)
                       ->getNumberFormat()
                       ->setFormatCode('#,##0.00');
 
-                // Centrar encabezado principal
                 $sheet->mergeCells('A1:C1');
+
+                $sheet->getStyle('A2:' . $highestColumn . '2')->applyFromArray([
+                    'font' => ['bold' => true, 'color' => ['rgb' => 'FFFFFF']],
+                    'fill' => ['fillType' => 'solid', 'startColor' => ['rgb' => '2563EB']],
+                    'alignment' => ['horizontal' => 'center', 'vertical' => 'center'],
+                ]);
             }
         ];
     }

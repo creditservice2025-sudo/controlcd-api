@@ -178,7 +178,7 @@ class CreditService
             if (!$firstQuotaDate) {
                 $today = now();
                 $paymentFrequency = $request->input('payment_frequency', $oldCredit->payment_frequency);
-    
+
                 switch ($paymentFrequency) {
                     case 'Diaria':
                         $firstQuotaDate = $today->addDay()->format('Y-m-d');
@@ -441,6 +441,76 @@ class CreditService
         }
     }
 
+    public function toggleCreditStatus($creditId, $status)
+    {
+        try {
+            $credit = Credit::find($creditId);
+
+            if (!$credit) {
+                return $this->errorResponse('Crédito no encontrado', 404);
+            }
+
+            if ($status === 'uncollectible' && $credit->status === 'Vigente') {
+                // Cambiar a Cartera Irrecuperable
+                $credit->status = 'Cartera Irrecuperable';
+            } elseif ($status === 'vigente' && $credit->status === 'Cartera Irrecuperable') {
+                $credit->status = 'Vigente';
+            } else {
+                return $this->errorResponse('Estado no válido o no se puede cambiar el estado del crédito', 400);
+            }
+
+            $credit->save();
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Estado del crédito actualizado con éxito',
+                'data' => $credit
+            ]);
+        } catch (\Exception $e) {
+            \Log::error("Error al actualizar el estado del crédito: " . $e->getMessage());
+            return $this->errorResponse('Error al actualizar el estado del crédito', 500);
+        }
+    }
+
+    public function toggleCreditsStatusMassively(array $creditIds, $status)
+    {
+        try {
+            $validStatuses = ['uncollectible', 'vigente'];
+            if (!in_array($status, $validStatuses)) {
+                return $this->errorResponse('Estado no válido', 400);
+            }
+
+            $credits = Credit::whereIn('id', $creditIds)->get();
+
+            if ($credits->isEmpty()) {
+                return $this->errorResponse('No se encontraron créditos con los IDs proporcionados', 404);
+            }
+
+            $updatedCredits = [];
+            foreach ($credits as $credit) {
+                if ($status === 'uncollectible' && $credit->status === 'Vigente') {
+                    $credit->status = 'Cartera Irrecuperable';
+                } elseif ($status === 'vigente' && $credit->status === 'Cartera Irrecuperable') {
+                    $credit->status = 'Vigente';
+                } else {
+                    continue; 
+                }
+
+                $credit->save();
+                $updatedCredits[] = $credit;
+            }
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Estados de los créditos actualizados masivamente con éxito',
+                'data' => $updatedCredits
+            ]);
+        } catch (\Exception $e) {
+            \Log::error("Error al actualizar los estados de los créditos masivamente: " . $e->getMessage());
+            return $this->errorResponse('Error al actualizar los estados de los créditos masivamente', 500);
+        }
+    }
+
     protected function generateInstallments(Credit $credit, float $quotaAmount, string $firstQuotaDate, string $paymentFrequency, int $numberInstallments)
     {
 
@@ -614,7 +684,7 @@ class CreditService
         // Obtener créditos con pagos en la fecha especificada
         $creditsQuery = Credit::with(['client', 'installments', 'payments'])
             ->whereHas('payments', function ($query) use ($reportDate) {
-                $query->whereDate('payment_date', $reportDate->toDateString());
+                $query->whereDate('created_at', $reportDate->toDateString());
             });
 
         if ($sellerId) {
@@ -661,7 +731,7 @@ class CreditService
             $totalPaid = $credit->payments->sum('amount');
             $remainingAmount = $totalCreditValue - $totalPaid;
 
-            $dayPayments = $credit->payments()->whereDate('payment_date', $reportDate->toDateString())->get();
+            $dayPayments = $credit->payments()->whereDate('created_at', $reportDate->toDateString())->get();
             $paidToday = $dayPayments->sum('amount');
             $paymentTime = $dayPayments->isNotEmpty() ? $dayPayments->last()->created_at->format('H:i:s') : null;
 
