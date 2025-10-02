@@ -264,7 +264,7 @@ class LiquidationService
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
             ->where('credits.seller_id', $sellerId)
             ->where('credits.status', 'Cartera Irrecuperable')
-            ->whereDate('credits.updated_at', $date)
+            ->whereDate('credits.updated_at', Carbon::parse($date)->subDay()->toDateString())
             ->where('installments.status', 'Pendiente')
             ->sum('installments.quota_amount');
 
@@ -332,6 +332,7 @@ class LiquidationService
         $newCredits = Credit::where('seller_id', $sellerId)
             ->whereNull('renewed_from_id')
             ->whereNull('renewed_to_id')
+            ->whereNull('unification_reason')
             ->whereDate('created_at', $date)
             ->sum('credit_value');
 
@@ -372,7 +373,7 @@ class LiquidationService
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
             ->where('credits.seller_id', $sellerId)
             ->where('credits.status', 'Cartera Irrecuperable')
-            ->whereDate('credits.updated_at', $date)
+            ->whereDate('credits.updated_at', Carbon::parse($date)->subDay()->toDateString())
             ->where('installments.status', 'Pendiente')
             ->sum('installments.quota_amount');
 
@@ -489,6 +490,7 @@ class LiquidationService
             ->where('seller_id', $sellerId)
             ->whereDate('created_at', $date)
             ->whereNull('renewed_from_id')
+            ->whereNull('unification_reason')
             ->select([
                 DB::raw('COALESCE(SUM(credit_value), 0) as value'),
                 DB::raw('COALESCE(SUM(

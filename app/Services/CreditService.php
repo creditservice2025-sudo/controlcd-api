@@ -493,7 +493,7 @@ class CreditService
                 } elseif ($status === 'vigente' && $credit->status === 'Cartera Irrecuperable') {
                     $credit->status = 'Vigente';
                 } else {
-                    continue; 
+                    continue;
                 }
 
                 $credit->save();
@@ -511,33 +511,149 @@ class CreditService
         }
     }
 
-    protected function generateInstallments(Credit $credit, float $quotaAmount, string $firstQuotaDate, string $paymentFrequency, int $numberInstallments)
+    public function unifyCredits(Request $request)
     {
-
         try {
-            $dueDate = Carbon::parse($firstQuotaDate);
+            DB::beginTransaction();
 
-            for ($i = 1; $i <= $numberInstallments; $i++) {
-                $credit->installments()->create([
-                    'quota_number' => $i,
-                    'due_date' => $dueDate->toDateString(),
-                    'quota_amount' => $quotaAmount,
-                    'status' => 'Pendiente',
-                ]);
+            // 1. Obtener los créditos a unificar
+            $creditIds = $request->input('credit_ids'); // array de IDs
+            $credits = Credit::whereIn('id', $creditIds)->get();
 
-                switch ($paymentFrequency) {
+            if ($credits->count() < 2) {
+                return $this->errorResponse('Debes seleccionar al menos dos créditos para unificar.', 400);
+            }
+
+            // 2. Crear el nuevo crédito unificado
+            $params = $request->all();
+
+            // Calcular fecha de primera cuota si no se proporciona
+            $firstQuotaDate = $params['first_quota_date'] ?? null;
+            if (!$firstQuotaDate) {
+                $today = now();
+                switch ($params['payment_frequency']) {
                     case 'Diaria':
-                        $dueDate->addDay();
+                        $firstQuotaDate = $today->addDay()->format('Y-m-d');
                         break;
                     case 'Semanal':
-                        $dueDate->addWeek();
+                        $firstQuotaDate = $today->addWeek()->format('Y-m-d');
                         break;
                     case 'Quincenal':
-                        $dueDate->addDays(15);
+                        $firstQuotaDate = $today->addDays(15)->format('Y-m-d');
                         break;
                     case 'Mensual':
-                        $dueDate->addMonth();
+                        $firstQuotaDate = $today->addMonth()->format('Y-m-d');
                         break;
+                    default:
+                        $firstQuotaDate = $today->addDay()->format('Y-m-d');
+                }
+            }
+
+            $newCredit = Credit::create([
+                'client_id' => $params['client_id'],
+                'seller_id' => $params['seller_id'],
+                'guarantor_id' => $params['guarantor_id'] ?? null,
+                'credit_value' => $params['credit_value'],
+                'total_interest' => $params['interest_rate'],
+                'number_installments' => $params['installment_count'],
+                'payment_frequency' => $params['payment_frequency'],
+                'excluded_days' => json_encode($params['excluded_days'] ?? []),
+                'micro_insurance_percentage' => $params['micro_insurance_percentage'] ?? null,
+                'micro_insurance_amount' => $params['micro_insurance_amount'] ?? null,
+                'first_quota_date' => $firstQuotaDate,
+                'status' => 'Vigente',
+                'unification_reason' => $params['description'] ?? null,
+            ]);
+
+            // 3. Generar cuotas para el nuevo crédito
+            $quotaAmount = (($newCredit->credit_value * $newCredit->total_interest / 100) + $newCredit->credit_value) / $newCredit->number_installments;
+            $this->generateInstallments(
+                $newCredit,
+                $quotaAmount,
+                $newCredit->first_quota_date,
+                $newCredit->payment_frequency,
+                $newCredit->number_installments
+            );
+
+            // 4. Actualizar los créditos originales
+            foreach ($credits as $credit) {
+                $credit->status = 'Unificado';
+                $credit->unified_to_id = $newCredit->id;
+                $credit->save();
+            }
+
+            DB::commit();
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Créditos unificados correctamente',
+                'new_credit' => $newCredit,
+                'unified_credits' => $credits,
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            \Log::error("Error al unificar créditos: " . $e->getMessage());
+            return $this->errorResponse('Error al unificar créditos: ' . $e->getMessage(), 500);
+        }
+    }
+
+    protected function generateInstallments(Credit $credit, float $quotaAmount, string $firstQuotaDate, string $paymentFrequency, int $numberInstallments)
+    {
+        try {
+            // Obtener días excluidos del crédito
+            $excludedDayNames = json_decode($credit->excluded_days ?? '[]', true) ?? [];
+            $dayMap = [
+                'Domingo' => Carbon::SUNDAY,
+                'Lunes' => Carbon::MONDAY,
+                'Martes' => Carbon::TUESDAY,
+                'Miércoles' => Carbon::WEDNESDAY,
+                'Jueves' => Carbon::THURSDAY,
+                'Viernes' => Carbon::FRIDAY,
+                'Sábado' => Carbon::SATURDAY
+            ];
+            $excludedDayNumbers = [];
+            foreach ($excludedDayNames as $dayName) {
+                if (isset($dayMap[$dayName])) {
+                    $excludedDayNumbers[] = $dayMap[$dayName];
+                }
+            }
+            $adjustForExcludedDays = function ($date) use ($excludedDayNumbers) {
+                while (in_array($date->dayOfWeek, $excludedDayNumbers)) {
+                    $date->addDay();
+                }
+                return $date;
+            };
+
+            $dueDate = $adjustForExcludedDays(Carbon::parse($firstQuotaDate));
+
+            for ($i = 1; $i <= $numberInstallments; $i++) {
+                Installment::create([
+                    'credit_id' => $credit->id,
+                    'quota_number' => $i,
+                    'due_date' => $dueDate->format('Y-m-d'),
+                    'quota_amount' => round($quotaAmount, 2),
+                    'status' => 'Pendiente'
+                ]);
+
+                if ($i < $numberInstallments) {
+                    switch ($paymentFrequency) {
+                        case 'Diaria':
+                            $dueDate->addDay();
+                            break;
+                        case 'Semanal':
+                            $dueDate->addWeek();
+                            break;
+                        case 'Quincenal':
+                            $dueDate->addDays(15);
+                            break;
+                        case 'Mensual':
+                            $dueDate->addMonth();
+                            break;
+                        default:
+                            $dueDate->addMonth();
+                    }
+                    // Ajustar la nueva fecha si cae en día excluido
+                    $dueDate = $adjustForExcludedDays($dueDate);
                 }
             }
         } catch (\Exception $e) {
@@ -667,6 +783,33 @@ class CreditService
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             return $this->errorResponse('Error al obtener los créditos del vendedor: ' . $e->getMessage(), 500);
+        }
+    }
+
+    public function changeCreditClient($creditId, $newClientId)
+    {
+        try {
+            $credit = Credit::find($creditId);
+            if (!$credit) {
+                return $this->errorResponse('El crédito no existe.', 404);
+            }
+
+            $newClient = Client::find($newClientId);
+            if (!$newClient) {
+                return $this->errorResponse('El nuevo cliente no existe.', 404);
+            }
+
+            $credit->client_id = $newClientId;
+            $credit->save();
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Cliente del crédito actualizado correctamente',
+                'data' => $credit
+            ]);
+        } catch (\Exception $e) {
+            \Log::error("Error al cambiar el cliente del crédito: " . $e->getMessage());
+            return $this->errorResponse('Error al cambiar el cliente del crédito: ' . $e->getMessage(), 500);
         }
     }
 
