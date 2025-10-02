@@ -131,6 +131,7 @@ Route::middleware('auth:api')->group(function () {
     Route::get('credits', [CreditController::class, 'index']);
     Route::post('credit/create', [CreditController::class, 'create']);
     Route::put('credit/update/{id}', [CreditController::class, 'update']);
+    Route::put('credit/{creditId}/change-client', [CreditController::class, 'changeCreditClient']); // <-- aquí
     Route::delete('credit/delete/{id}', [CreditController::class, 'delete']);
     Route::get('credit/{id}', [CreditController::class, 'show']);
     Route::get('credits/clients', [CreditController::class, 'getClientCredits']);
@@ -141,6 +142,7 @@ Route::middleware('auth:api')->group(function () {
     Route::post('credit/renew', [CreditController::class, 'renew']);
     Route::put('credit/{creditId}/toggle-status', [CreditController::class, 'toggleCreditStatus']);
     Route::post('credits/toggle-massively', [CreditController::class, 'toggleCreditsStatusMassively']);
+    Route::post('credits/unify', [CreditController::class, 'unifyCredits']);
 
     //route expense
     Route::get('expenses', [ExpenseController::class, 'index']);

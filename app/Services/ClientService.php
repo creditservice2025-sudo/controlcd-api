@@ -365,11 +365,11 @@ class ClientService
             $user = Auth::user();
             $seller = $user->seller;
 
-            $clientsQuery = Client::with(['guarantors', 'images', 'credits', 'seller', 'seller.city', 'seller.city.country']);
+            $clientsQuery = Client::with(['guarantors', 'images', 'credits', 'credits.installments', 'seller.user', 'seller', 'seller.city', 'seller.city.country']);
 
             if (!empty(trim($search))) {
                 $clientsQuery->where(function ($query) use ($search) {
-                    $query->where('clients.name', 'like', "%{$search}%") 
+                    $query->where('clients.name', 'like', "%{$search}%")
                         ->orWhere('clients.dni', 'like', "%{$search}%")
                         ->orWhere('clients.email', 'like', "%{$search}%");
                 });
@@ -441,7 +441,8 @@ class ClientService
         $countryId = null,
         $cityId = null,
         $sellerId = null,
-        $status = null
+        $status = null,
+        $daysOverdueFilter = null
     ) {
         try {
             $search = (string) $search;
@@ -455,9 +456,13 @@ class ClientService
                     'seller',
                     'seller.city',
                     'seller.city.country',
-                    'credits' => function ($query) {
-                        $query->where('status', 'Vigente') // Filtrar solo créditos en estado "Vigente"
-                            ->with(['payments', 'installments']);
+                    'credits' => function ($query) use ($status) {
+                        if ($status === 'Cartera Irrecuperable') {
+                            $query->where('status', 'Cartera Irrecuperable');
+                        } else {
+                            $query->where('status', 'Vigente');
+                        }
+                        $query->with(['payments', 'installments']);
                     }
                 ])
                 ->select('clients.*');
@@ -522,9 +527,14 @@ class ClientService
                         return $installment->due_date < now()->toDateString() && $installment->status !== 'Pagado';
                     });
                     $daysOverdue = $overdueInstallments->count() > 0
-                        ? abs(now()->diffInDays($overdueInstallments->sortBy('due_date')->first()->due_date))
+                        ? abs(intval(now()->diffInDays($overdueInstallments->sortBy('due_date')->first()->due_date)))
                         : 0;
 
+                    // FILTRO: solo créditos con exactamente los días de mora pedidos
+
+                    if ($daysOverdueFilter !== null && $daysOverdue != $daysOverdueFilter) {
+                        continue;
+                    }
                     // Calcular cuotas pendientes
                     $pendingInstallments = $credit->installments->filter(function ($installment) {
                         return $installment->status !== 'Pagado';
@@ -1003,11 +1013,15 @@ class ClientService
                 'payments.installments'
             ])
             ->where(function ($query) {
-                $query->where('credits.status', '!=', 'liquidado')
+                $query->whereNotIn('credits.status', ['liquidado', 'Unificado'])
                     ->orWhere(function ($q) {
                         $q->where('credits.status', 'liquidado')
                             ->whereDate('credits.updated_at', now()->toDateString());
                     });
+            })
+            ->whereHas('installments', function ($q) {
+                $q->where('status', 'Pendiente')
+                    ->whereDate('due_date', now()->toDateString());
             });
 
         // Aplicar filtros
@@ -1990,6 +2004,7 @@ class ClientService
             ->whereNull('clients.deleted_at')
             ->whereNull('credits.deleted_at')
             ->whereNull('installments.deleted_at')
+             ->where('credits.status', '!=', 'Unificado') 
             ->whereDate('installments.due_date', $date)
             ->whereNotExists(function ($query) use ($date) {
                 $query->select(DB::raw(1))
@@ -2142,27 +2157,27 @@ class ClientService
     {
         try {
             \Log::info('IDs recibidos para reactivación:', $clientIds);
-    
+
             // Incluye clientes eliminados (soft-deleted) en la consulta
             $clients = Client::withTrashed()->whereIn('id', $clientIds)->get();
             \Log::info('Clientes encontrados:', $clients->toArray());
-    
+
             if ($clients->isEmpty()) {
                 throw new \Exception('No se encontraron clientes con los IDs proporcionados.');
             }
-    
+
             foreach ($clients as $client) {
                 // Restaura el cliente si está eliminado
                 if ($client->trashed()) {
                     $client->restore();
                     \Log::info("Cliente restaurado: {$client->id}");
                 }
-    
+
                 // Actualiza el estado del cliente a "active"
                 $client->update(['status' => 'active']);
                 \Log::info("Cliente reactivado: {$client->id}, Estado: {$client->status}");
             }
-    
+
             return $clients;
         } catch (\Exception $e) {
             \Log::error("Error reactivando clientes: " . $e->getMessage());

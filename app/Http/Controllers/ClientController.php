@@ -124,8 +124,9 @@ class ClientController extends Controller
             $cityId = $request->input('cityId');
             $sellerId = $request->input('sellerId');
             $status = $request->input('status', null);
+            $daysOverdue = $request->input('daysOverdue', null);
 
-            return $this->clientService->indexWithCredits($search, $orderBy, $orderDirection, $countryId, $cityId, $sellerId, $status);
+            return $this->clientService->indexWithCredits($search, $orderBy, $orderDirection, $countryId, $cityId, $sellerId, $status, $daysOverdue);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }

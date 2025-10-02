@@ -12,6 +12,7 @@ use App\Models\Payment;
 use App\Models\PaymentInstallment;
 use App\Models\Seller;
 use App\Traits\ApiResponse;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -224,7 +225,7 @@ class DashboardService
                 $irrecoverableCredits = DB::table('installments')
                     ->join('credits', 'installments.credit_id', '=', 'credits.id')
                     ->where('credits.status', 'Cartera Irrecuperable')
-                    ->whereDate('credits.updated_at', $today)
+                    ->whereDate('credits.updated_at', Carbon::parse($today)->subDay()->toDateString())
                     ->where('installments.status', 'Pendiente')
                     ->sum('installments.quota_amount');
 
@@ -300,7 +301,7 @@ class DashboardService
                         ->join('credits', 'installments.credit_id', '=', 'credits.id')
                         ->whereIn('credits.seller_id', $sellerIds)
                         ->where('credits.status', 'Cartera Irrecuperable')
-                        ->whereDate('credits.updated_at', $today)
+                        ->whereDate('credits.updated_at', Carbon::parse($today)->subDay()->toDateString())
                         ->where('installments.status', 'Pendiente')
                         ->sum('installments.quota_amount');
                     $currentCash = $initialCash + ($income + $cashPayments) - ($expenses + $newCredits + $irrecoverableCredits);
@@ -354,7 +355,7 @@ class DashboardService
                         ->join('credits', 'installments.credit_id', '=', 'credits.id')
                         ->where('credits.seller_id', $seller->id)
                         ->where('credits.status', 'Cartera Irrecuperable')
-                        ->whereDate('credits.updated_at', $today)
+                        ->whereDate('credits.updated_at', Carbon::parse($today)->subDay()->toDateString())
                         ->where('installments.status', 'Pendiente')
                         ->sum('installments.quota_amount');
 

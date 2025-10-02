@@ -38,6 +38,16 @@ class CreditController extends Controller
         }
     }
 
+    public function unifyCredits(Request $request)
+{
+    try {
+        return $this->creditService->unifyCredits($request);
+    } catch (Exception $e) {
+        \Log::error("Error al unificar créditos: " . $e->getMessage());
+        return $this->errorResponse($e->getMessage(), 500);
+    }
+}
+
     public function update(CreditRequest $request, $creditId)
     {
         try {
@@ -120,6 +130,19 @@ class CreditController extends Controller
         }
     }
 
+    public function changeCreditClient(Request $request, $creditId)
+    {
+        try {
+            $newClientId = $request->input('new_client_id');
+            if (!$newClientId) {
+                return $this->errorResponse('El nuevo cliente es requerido', 400);
+            }
+            return $this->creditService->changeCreditClient($creditId, $newClientId);
+        } catch (\Exception $e) {
+            \Log::error("Error al cambiar el cliente del crédito: " . $e->getMessage());
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
 
     public function getClientCredits(Request $request)
     {

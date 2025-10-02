@@ -7,6 +7,7 @@ use Illuminate\Http\Request;
 use App\Services\PaymentService;
 use App\Http\Requests\Payment\PaymentRequest;
 use App\Models\Liquidation;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -162,7 +163,8 @@ class PaymentController extends Controller
                 DB::raw('COALESCE(SUM(credit_value), 0) as total_credit_value'),
                 DB::raw('COALESCE(SUM(credit_value * (total_interest / 100)), 0) as total_interest_amount')
             )
-            ->whereDate('created_at', $date);
+            ->whereDate('created_at', $date)
+            ->whereNull('unification_reason');
 
         if ($sellerId) {
             $createdCreditsQuery->where('seller_id', $sellerId);
@@ -223,12 +225,12 @@ class PaymentController extends Controller
         }
 
         $irrecoverableCredits = DB::table('installments')
-        ->join('credits', 'installments.credit_id', '=', 'credits.id')
-        ->where('credits.seller_id', $sellerId)
-        ->where('credits.status', 'Cartera Irrecuperable')
-        ->whereDate('credits.updated_at', $date)
-        ->where('installments.status', 'Pendiente')
-        ->sum('installments.quota_amount');
+            ->join('credits', 'installments.credit_id', '=', 'credits.id')
+            ->where('credits.seller_id', $sellerId)
+            ->where('credits.status', 'Cartera Irrecuperable')
+            ->whereDate('credits.updated_at', Carbon::parse($date)->subDay()->toDateString())
+            ->where('installments.status', 'Pendiente')
+            ->sum('installments.quota_amount');
 
         $realToDeliver = $initialCash
             + ($totals['total_income'] + $totals['collected_total'])

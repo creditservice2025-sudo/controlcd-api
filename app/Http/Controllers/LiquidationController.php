@@ -98,12 +98,12 @@ class LiquidationController extends Controller
         }
 
         $irrecoverableCredits = DB::table('installments')
-        ->join('credits', 'installments.credit_id', '=', 'credits.id')
-        ->where('credits.seller_id', $request->seller_id)
-        ->where('credits.status', 'Cartera Irrecuperable')
-        ->whereDate('credits.updated_at', $today)
-        ->where('installments.status', 'Pendiente')
-        ->sum('installments.quota_amount');
+            ->join('credits', 'installments.credit_id', '=', 'credits.id')
+            ->where('credits.seller_id', $request->seller_id)
+            ->where('credits.status', 'Cartera Irrecuperable')
+            ->whereDate('credits.updated_at', Carbon::yesterday()->toDateString())
+            ->where('installments.status', 'Pendiente')
+            ->sum('installments.quota_amount');
 
         $realToDeliver = $request->initial_cash + ($request->total_income + $request->total_collected)
             - ($request->total_expenses + $request->new_credits + $irrecoverableCredits);
@@ -611,7 +611,7 @@ class LiquidationController extends Controller
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
             ->where('credits.seller_id', $sellerId)
             ->where('credits.status', 'Cartera Irrecuperable')
-            ->whereDate('credits.updated_at', $date)
+            ->whereDate('credits.updated_at', Carbon::parse($date)->subDay()->toDateString())
             ->where('installments.status', 'Pendiente')
             ->sum('installments.quota_amount');
 
@@ -714,6 +714,7 @@ class LiquidationController extends Controller
             ])
             ->whereNull('renewed_from_id')
             ->whereNull('renewed_to_id')
+            ->whereNull('unification_reason')
             ->select([
                 DB::raw('COALESCE(SUM(credit_value), 0) as value'),
                 DB::raw('COALESCE(SUM(
