@@ -88,11 +88,15 @@ class User extends Authenticatable
         return $this->hasOne(Seller::class, 'user_id');
     }
 
-      public function company()
+    public function company()
     {
         return $this->hasOne(Company::class, 'user_id');
     }
 
+    public function sessionLogs()
+    {
+        return $this->hasMany(SessionLog::class, 'user_id');
+    }
 
 
     public function expenseImages(): HasMany
