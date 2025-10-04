@@ -32,8 +32,30 @@ class CreditService
             $params = $request->validated();
 
             // Calcular fecha de primera cuota si no se proporciona
-            $firstQuotaDate = $params['first_installment_date'] ?? null;
+            /* $firstQuotaDate = $params['first_installment_date'] ?? null;
             if (!$firstQuotaDate) {
+                $today = now();
+                switch ($params['payment_frequency']) {
+                    case 'Diaria':
+                        $firstQuotaDate = $today->addDay()->format('Y-m-d');
+                        break;
+                    case 'Semanal':
+                        $firstQuotaDate = $today->addWeek()->format('Y-m-d');
+                        break;
+                    case 'Quincenal':
+                        $firstQuotaDate = $today->addDays(15)->format('Y-m-d');
+                        break;
+                    case 'Mensual':
+                        $firstQuotaDate = $today->addMonth()->format('Y-m-d');
+                        break;
+                    default:
+                        $firstQuotaDate = $today->addDay()->format('Y-m-d');
+                }
+            } */
+
+            if ($params['is_advance_payment']) {
+                $firstQuotaDate = now()->format('Y-m-d');
+            } else {
                 $today = now();
                 switch ($params['payment_frequency']) {
                     case 'Diaria':
@@ -53,6 +75,7 @@ class CreditService
                 }
             }
 
+
             $creditData = [
                 'client_id' => $params['client_id'],
                 'seller_id' => $params['seller_id'],
@@ -65,6 +88,7 @@ class CreditService
                 'micro_insurance_percentage' => $params['micro_insurance_percentage'] ?? null,
                 'micro_insurance_amount' => $params['micro_insurance_amount'] ?? null,
                 'first_quota_date' => $firstQuotaDate,
+                'is_advance_payment' => $params['is_advance_payment'],
                 'status' => 'Vigente'
             ];
 

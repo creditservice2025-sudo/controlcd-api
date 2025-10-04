@@ -36,6 +36,7 @@ class Credit extends Model
         'micro_insurance_amount',
         'created_at',
         'unified_to_id',
+        'is_advance_payment',
         'unification_reason',
 
 
