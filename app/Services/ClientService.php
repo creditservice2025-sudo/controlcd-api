@@ -1049,9 +1049,9 @@ class ClientService
             ->where(function ($query) {
                 $today = now()->toDateString();
                 $query->where(function ($q) use ($today) {
-                    // Mostrar hoy solo si la primera cuota es hoy Y la fecha de creación es hoy
+                    // Mostrar hoy si la primera cuota es hoy y la fecha de creación es HOY o ANTES de HOY
                     $q->whereDate('credits.first_quota_date', $today)
-                        ->whereDate('credits.created_at', $today);
+                        ->whereDate('credits.created_at', '<=', $today);
                 })
                     ->orWhere(function ($q) use ($today) {
                         // Mostrar si la primera cuota es menor a hoy (ya pasó)
