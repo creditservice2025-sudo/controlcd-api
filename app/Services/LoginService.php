@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\SessionLog;
 use App\Traits\ApiResponse;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
@@ -15,6 +16,7 @@ use App\Mail\ResetPassword;
 use App\Models\Liquidation;
 use Hash;
 use Carbon\Carbon;
+
 class LoginService
 {
 
@@ -27,54 +29,62 @@ class LoginService
                 'email' => ['required', 'string'],
                 'password' => ['required'],
             ]);
-    
+
             if ($validator->fails()) {
                 return $this->errorResponse($validator->errors(), 422);
             }
-    
+
             $user = User::where('email', 'LIKE', $credentials['email'] . '%')
                 ->with('city', 'seller')
                 ->first();
-    
+
             // Check user and password first
             if (!$user || !Hash::check($credentials['password'], $user->password)) {
                 return $this->errorResponse(['Los datos introducidos son inválidos, verifica e intenta nuevamente'], 401);
             }
-    
+
             // Now, check if the user is a seller and has a liquidation today
             $seller = $user->seller;
             if ($seller) {
                 $liquidation = Liquidation::where('seller_id', $seller->id)
                     ->where(DB::raw('DATE(created_at)'), Carbon::today()->toDateString())
                     ->first();
-    
+
                 if ($liquidation) {
                     // 1. Si la liquidación NO está en pendiente, bloquear
                     if ($liquidation->status !== 'pending') {
                         return $this->errorResponse(['Ya has realizado una liquidación hoy. Intenta nuevamente mañana.'], 401);
                     }
-    
+
                     // 2. Si existe un registro en la auditoría de actualización hoy de este usuario para esta liquidación, bloquear
                     $auditExists = \App\Models\LiquidationAudit::where('liquidation_id', $liquidation->id)
                         ->where('user_id', $user->id)
                         ->whereIn('action', ['updated', 'created'])
                         ->whereDate('created_at', Carbon::today())
                         ->exists();
-    
+
                     if ($auditExists) {
                         return $this->errorResponse(['Ya has realizado una liquidación hoy. Intenta nuevamente mañana.'], 401);
                     }
                 }
             }
-    
+
             $token = $user->createToken('USER_AUTH_TOKEN')->accessToken;
-    
-            if($user->token_revoked){
+
+            if ($user->token_revoked) {
                 $user->update([
                     "token_revoked" => 0
                 ]);
             }
-    
+
+
+            SessionLog::create([
+                'user_id'    => $user->id,
+                'login_at'   => now(),
+                'ip'         => request()->ip(),
+                'user_agent' => request()->header('User-Agent'),
+            ]);
+
             return $this->successResponse([
                 'success' => true,
                 'access_token' => $token,
@@ -93,6 +103,12 @@ class LoginService
             $user = Auth::user();
             $user->token_revoked = 1;
             $user->save();
+
+            SessionLog::where('user_id', $user->id)
+                ->whereNull('logout_at')
+                ->latest()
+                ->first()
+                ?->update(['logout_at' => now()]);
 
             Auth::logout();
 
@@ -173,12 +189,10 @@ class LoginService
                 'success' => true,
                 'message' => 'El enlace para restablecer la contraseña ha sido enviado a su correo electrónico'
             ]);
-
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             return $this->handlerException('Error al enviar el enlace para restablecer la contraseña');
         }
-
     }
 
     public function resetPassword($params)
@@ -210,13 +224,10 @@ class LoginService
                 'success' => true,
                 'message' => 'Contraseña restablecida correctamente',
             ]);
-
         } catch (\Exception $e) {
             DB::rollBack();
             \Log::error($e->getMessage());
             return $this->handlerException('Error al restablecer la contraseña');
         }
     }
-
-
 }

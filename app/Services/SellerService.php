@@ -155,7 +155,8 @@ class SellerService
         try {
             $user = Auth::user();
             $company = $user->company;
-    
+            $today = now()->format('Y-m-d');
+
             $routes = Seller::with([
                 'user:id,name',
                 'city:id,name,country_id',
@@ -163,7 +164,7 @@ class SellerService
             ])
                 ->whereNull('deleted_at')
                 ->orderBy('created_at', 'desc');
-    
+
             switch ($user->role_id) {
                 case 1:
                     break;
@@ -176,7 +177,7 @@ class SellerService
                 default:
                     return $this->successResponse(['data' => []]);
             }
-    
+
             if ($search) {
                 $searchTerm = Str::lower($search);
                 $routes->where(function ($query) use ($searchTerm) {
@@ -189,7 +190,7 @@ class SellerService
                     });
                 });
             }
-    
+
             // NUEVOS FILTROS
             if ($countryId) {
                 $routes->whereHas('city.country', function ($q) use ($countryId) {
@@ -202,11 +203,12 @@ class SellerService
             if ($sellerId) {
                 $routes->where('user_id', $sellerId);
             }
-    
+
             $today = now()->format('Y-m-d');
-    
-            $routesList = $routes->whereHas('credits.payments', function ($q) use ($today) {
-                $q->whereDate('created_at', $today);
+
+            $routesList = $routes->whereHas('user.sessionLogs', function ($q) use ($today) {
+                $q->whereDate('login_at', $today)
+                    ->whereNull('logout_at');
             })->get([
                 'id',
                 'user_id',
@@ -215,7 +217,6 @@ class SellerService
                 'status',
                 'created_at'
             ]);
-
 
             $data = $routesList->map(function ($route) use ($today) {
                 $liquidationToday = Liquidation::where('seller_id', $route->id)
@@ -258,7 +259,7 @@ class SellerService
                     if ($lastAudit) {
                         $liquidationClosed = $lastAudit->created_at->format('Y-m-d H:i:s');
                         $liquidationAuditId = $lastAudit->id;
-                        $closedBySellerToday = $lastAudit->action === 'updated' || $lastAudit->action === 'created'; 
+                        $closedBySellerToday = $lastAudit->action === 'updated' || $lastAudit->action === 'created';
                     }
                 }
 
@@ -287,6 +288,7 @@ class SellerService
                 'data' => $data
             ]);
         } catch (\Exception $e) {
+            \Log::error($e->getMessage());
             return $this->handlerException('Error al obtener las rutas activas');
         }
     }
@@ -375,16 +377,54 @@ class SellerService
         }
     }
 
-    public function getRoutes($page = 1, $perPage = 10, $search = null)
+    public function getRoutes($page = 1, $perPage = 10, $search = null, $countryId = null, $cityId = null)
     {
         try {
             $user = Auth::user();
             $company = $user->company;
 
-            $routes = Seller::with('userRoutes.user', 'city.country', 'user', 'images', 'company')
+            $routes = Seller::with([
+                'userRoutes.user',
+                'city.country',
+                'user',
+                'images',
+                'company'
+            ])
+                ->withCount('credits')
+                ->withSum('credits as credits_value_sum', 'credit_value')
+                ->withSum('credits as credits_interest_sum', 'total_interest')
+                ->addSelect([
+                    'credits_utility_sum' => DB::table('credits')
+                        ->selectRaw('COALESCE(SUM(credit_value * total_interest / 100), 0)')
+                        ->whereColumn('seller_id', 'sellers.id')
+                        ->whereNull('deleted_at')
+                ])
+                ->addSelect([
+                    // Cartera recuperada: suma de pagos de todos los créditos del vendedor
+                    'recovered_portfolio' => DB::table('payments')
+                        ->selectRaw('COALESCE(SUM(amount), 0)')
+                        ->whereIn('credit_id', function ($query) {
+                            $query->select('id')
+                                ->from('credits')
+                                ->whereColumn('seller_id', 'sellers.id')
+                                ->whereNull('deleted_at');
+                        })
+                        ->whereNull('deleted_at'),
+
+                    // Cartera por recuperar: suma de cuotas pendientes de todos los créditos del vendedor
+                    'pending_portfolio' => DB::table('installments')
+                        ->selectRaw('COALESCE(SUM(quota_amount), 0)')
+                        ->whereIn('credit_id', function ($query) {
+                            $query->select('id')
+                                ->from('credits')
+                                ->whereColumn('seller_id', 'sellers.id')
+                                ->whereNull('deleted_at');
+                        })
+                        ->where('status', 'Pendiente')
+                        ->whereNull('deleted_at'),
+                ])
                 ->whereNull('deleted_at')
-                ->orderBy('created_at', 'desc')
-                ->select('id', 'user_id', 'city_id', 'company_id', 'status', 'created_at');
+                ->orderBy('created_at', 'desc');
 
             switch ($user->role_id) {
                 case 1:
@@ -422,6 +462,17 @@ class SellerService
                         $q->whereRaw('LOWER(name) LIKE ?', ["%{$searchTerm}%"]);
                     });
                 });
+            }
+
+            if ($countryId) {
+                $routes->whereHas('city.country', function ($q) use ($countryId) {
+                    $q->where('id', $countryId);
+                });
+            }
+
+            // Filtro por ciudad
+            if ($cityId) {
+                $routes->where('city_id', $cityId);
             }
 
             $routesQuery = $routes->paginate(

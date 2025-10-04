@@ -757,7 +757,6 @@ class CreditService
     public function getSellerCreditsByDate(int $sellerId, Request $request, int $perpage)
     {
         try {
-
             $creditsQuery = Credit::with(['client', 'installments', 'payments'])
                 ->where('seller_id', $sellerId);
 
@@ -773,7 +772,21 @@ class CreditService
                 $creditsQuery->whereDate('created_at', Carbon::today()->toDateString());
             }
 
-            $credits = $creditsQuery->paginate($perpage);
+            $credits = $creditsQuery->get();
+
+            // Agregar fecha inicio y fecha fin a cada crédito
+            $credits = $credits->map(function ($credit) {
+                $startDate = $credit->start_date;
+                $lastInstallment = $credit->installments->sortByDesc('due_date')->first();
+                $endDate = $lastInstallment ? Carbon::parse($lastInstallment->due_date)->setTime(23, 59, 59)->format('Y-m-d H:i:s') : null;
+
+                $credit->start_date = $startDate;
+                $credit->end_date = $endDate;
+
+                return $credit;
+            });
+
+
 
             return $this->successResponse([
                 'success' => true,

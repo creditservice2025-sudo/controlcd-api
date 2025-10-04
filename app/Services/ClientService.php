@@ -1483,6 +1483,11 @@ class ClientService
                     return $liquidationDate == $referenceDate->format('Y-m-d');
                 }
 
+                  if ($credit->status == 'Unificado') {
+                    $liquidationDate = \Carbon\Carbon::parse($credit->updated_at)->format('Y-m-d');
+                    return $liquidationDate == $referenceDate->format('Y-m-d');
+                }
+
                 return true;
             });
 
