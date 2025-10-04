@@ -78,7 +78,30 @@ class ClientService
                 $paymentFrequency = $params['payment_frequency'] ?? '';
                 $excludedDays = $params['excluded_days'] ?? [];
 
-                if (!$firstQuotaDate) {
+                /*    if (!$firstQuotaDate) {
+                    $today = now();
+                    switch ($paymentFrequency) {
+                        case 'Diaria':
+                            $firstQuotaDate = $today->addDay()->format('Y-m-d');
+                            break;
+                        case 'Semanal':
+                            $firstQuotaDate = $today->addWeek()->format('Y-m-d');
+                            break;
+                        case 'Quincenal':
+                            $firstQuotaDate = $today->addDays(15)->format('Y-m-d');
+                            break;
+                        case 'Mensual':
+                            $firstQuotaDate = $today->addMonth()->format('Y-m-d');
+                            break;
+                        default:
+                            $firstQuotaDate = $today->addDay()->format('Y-m-d');
+                    }
+                } */
+
+
+                if ($params['is_advance_payment']) {
+                    $firstQuotaDate = now()->format('Y-m-d');
+                } else {
                     $today = now();
                     switch ($paymentFrequency) {
                         case 'Diaria':
@@ -98,6 +121,8 @@ class ClientService
                     }
                 }
 
+
+
                 $creditData = [
                     'client_id' => $client->id,
                     'guarantor_id' => $guarantorId,
@@ -110,6 +135,7 @@ class ClientService
                     'excluded_days' => json_encode($excludedDays),
                     'micro_insurance_percentage' => $params['micro_insurance_percentage'] ?? null,
                     'micro_insurance_amount' => $params['micro_insurance_amount'] ?? null,
+                    'is_advance_payment' => $params['is_advance_payment'],
                     'status' => 'Vigente'
                 ];
 
@@ -991,15 +1017,16 @@ class ClientService
             ->groupBy('clients.id');
 
         // Consulta principal de CRÉDITOS
+
         $creditsQuery = Credit::query()
             ->select('credits.*')
             ->join('clients', 'clients.id', '=', 'credits.client_id')
             ->selectSub('
-            CASE 
-                WHEN payment_priority.has_overdue = 1 THEN 1
-                WHEN payment_priority.has_pending = 1 THEN 2
-                ELSE 3
-            END', 'payment_priority')
+        CASE 
+            WHEN payment_priority.has_overdue = 1 THEN 1
+            WHEN payment_priority.has_pending = 1 THEN 2
+            ELSE 3
+        END', 'payment_priority')
             ->leftJoinSub($paymentPrioritySubquery, 'payment_priority', function ($join) {
                 $join->on('clients.id', '=', 'payment_priority.client_id');
             })
@@ -1019,10 +1046,24 @@ class ClientService
                             ->whereDate('credits.updated_at', now()->toDateString());
                     });
             })
-            ->whereHas('installments', function ($q) {
-                $q->where('status', 'Pendiente')
-                    ->whereDate('due_date', now()->toDateString());
+            ->where(function ($query) {
+                $today = now()->toDateString();
+                $query->where(function ($q) use ($today) {
+                    // Mostrar hoy solo si la primera cuota es hoy Y la fecha de creación es hoy
+                    $q->whereDate('credits.first_quota_date', $today)
+                        ->whereDate('credits.created_at', $today);
+                })
+                    ->orWhere(function ($q) use ($today) {
+                        // Mostrar si la primera cuota es menor a hoy (ya pasó)
+                        $q->whereDate('credits.first_quota_date', '<', $today);
+                    })
+                    ->orWhere(function ($q) use ($today) {
+                        // Mostrar si el crédito fue creado antes de hoy y la primera cuota es en el futuro
+                        $q->whereDate('credits.created_at', '<', $today)
+                            ->whereDate('credits.first_quota_date', '>', $today);
+                    });
             });
+
 
         // Aplicar filtros
         if (!empty($frequency)) {
@@ -1483,7 +1524,7 @@ class ClientService
                     return $liquidationDate == $referenceDate->format('Y-m-d');
                 }
 
-                  if ($credit->status == 'Unificado') {
+                if ($credit->status == 'Unificado') {
                     $liquidationDate = \Carbon\Carbon::parse($credit->updated_at)->format('Y-m-d');
                     return $liquidationDate == $referenceDate->format('Y-m-d');
                 }
@@ -2009,7 +2050,7 @@ class ClientService
             ->whereNull('clients.deleted_at')
             ->whereNull('credits.deleted_at')
             ->whereNull('installments.deleted_at')
-             ->where('credits.status', '!=', 'Unificado') 
+            ->where('credits.status', '!=', 'Unificado')
             ->whereDate('installments.due_date', $date)
             ->whereNotExists(function ($query) use ($date) {
                 $query->select(DB::raw(1))
