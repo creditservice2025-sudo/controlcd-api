@@ -391,24 +391,24 @@ class ClientService
             $user = Auth::user();
             $seller = $user->seller;
 
-            $clientsQuery = Client::with(['guarantors', 'images', 'credits', 'credits.installments', 'seller.user', 'seller', 'seller.city', 'seller.city.country']);
+            $clientsQuery = Client::query()
+                ->select('id', 'name', 'dni', 'email', 'status', 'seller_id') // Seleccionar solo columnas necesarias
+                ->with([
+                    'seller:id,user_id,city_id',
+                    'seller.user:id,name',
+                    'seller.city:id,name,country_id',
+                    'seller.city.country:id,name',
+                    'credits:id,client_id,credit_value,number_installments,payment_frequency,status,total_interest',
+                    'credits.installments:id,credit_id,quota_number,due_date,quota_amount,status'
+                ]);
 
             if (!empty(trim($search))) {
                 $clientsQuery->where(function ($query) use ($search) {
-                    $query->where('clients.name', 'like', "%{$search}%")
-                        ->orWhere('clients.dni', 'like', "%{$search}%")
-                        ->orWhere('clients.email', 'like', "%{$search}%");
+                    $query->where('name', 'like', "%{$search}%")
+                        ->orWhere('dni', 'like', "%{$search}%")
+                        ->orWhere('email', 'like', "%{$search}%");
                 });
             }
-
-
-
-            /*      if ($countryId) {
-                $clientsQuery->join('sellers', 'clients.seller_id', '=', 'sellers.id')
-                    ->join('cities', 'sellers.city_id', '=', 'cities.id')
-                    ->join('countries', 'cities.country_id', '=', 'countries.id')
-                    ->where('countries.id', $countryId);
-            } */
 
             if ($countryId) {
                 $clientsQuery->whereHas('seller.city.country', function ($q) use ($countryId) {
@@ -418,26 +418,24 @@ class ClientService
 
             if ($cityId) {
                 $clientsQuery->whereHas('seller.city', function ($q) use ($cityId) {
-                    $q->where('cities.id', $cityId);
+                    $q->where('id', $cityId);
                 });
             }
 
             if ($sellerId) {
-                $clientsQuery->where('clients.seller_id', $sellerId);
+                $clientsQuery->where('seller_id', $sellerId);
             } elseif ($user->role_id == 5 && $seller) {
-                $clientsQuery->where('clients.seller_id', $seller->id);
+                $clientsQuery->where('seller_id', $seller->id);
             }
 
-            // Filtro por status: si no se pasa, solo trae active o inactive
             if ($status === 'Cartera Irrecuperable') {
                 $clientsQuery->whereHas('credits', function ($query) use ($status) {
-                    $query->where('credits.status', $status);
+                    $query->where('status', $status);
                 });
-            } else if ($status === 'Inactivo') {
-                $clientsQuery->whereIn('clients.status', ['inactive']);
+            } elseif ($status === 'Inactivo') {
+                $clientsQuery->where('status', 'inactive');
             } else {
-
-                $clientsQuery->whereIn('clients.status', ['active']);
+                $clientsQuery->where('status', 'active');
             }
 
             $validOrderDirections = ['asc', 'desc'];
@@ -616,6 +614,9 @@ class ClientService
                     $query->where('name', 'like', "%{$search}%")
                         ->orWhere('dni', 'like', "%{$search}%")
                         ->orWhere('email', 'like', "%{$search}%");
+                })
+                ->whereDoesntHave('credits', function ($query) {
+                    $query->where('status', 'Cartera Irrecuperable');
                 })
                 ->orderBy('created_at', 'desc')
                 ->get();
