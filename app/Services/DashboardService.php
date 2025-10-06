@@ -130,29 +130,68 @@ class DashboardService
                     'location' => $location,
                     'capital' => 0,
                     'utility' => 0,
-                    'credits' => count($seller->credits),
+                    'credits' => 0,
                     'name' => $seller->user ? $seller->user->name : 'Sin nombre',
-                    'total' => 0
+                    'total' => 0,
+                    'paidCredits' => 0,
+                    'unpaidCredits' => 0,
+                    'paidCapital' => 0,
+                    'paidUtility' => 0,
+                    'irrecoverableCredits' => 0,
+                    'irrecoverableTotal' => 0
                 ];
 
                 foreach ($seller->credits as $credit) {
+                    if ($credit->status === 'Cartera Irrecuperable') {
+                        $sellerData['irrecoverableCredits']++;
+                        $sellerData['irrecoverableTotal'] += $credit->credit_value + ($credit->credit_value * $credit->total_interest / 100);
+                        continue;
+                    }
+
                     $totalPaid = Payment::where('credit_id', $credit->id)
                         ->sum('amount');
 
-                    $utility = $credit->credit_value  * $credit->total_interest / 100;
-                    $capitalPayable = $credit->credit_value + $utility - $totalPaid;
-                    $totalPortfolio = $capitalPayable + $utility;
+                    $utility = $credit->credit_value * $credit->total_interest / 100;
+                    $capitalPayable = $credit->credit_value;
 
-                    $sellerData['capital'] += $capitalPayable;
-                    $sellerData['utility'] += $utility;
-                    $sellerData['total'] += $totalPortfolio;
+                    $paidCapital = min($totalPaid, $capitalPayable);
+                    $paidUtility = max(0, $totalPaid - $capitalPayable);
+
+                    $remainingCapital = $capitalPayable - $paidCapital;
+                    $remainingUtility = $utility - $paidUtility;
+
+                    $sellerData['capital'] += $remainingCapital;
+                    $sellerData['utility'] += $remainingUtility;
+                    $sellerData['total'] += $remainingCapital + $remainingUtility;
+
+                    $sellerData['paidCapital'] += $paidCapital;
+                    $sellerData['paidUtility'] += $paidUtility;
+
+                    $sellerData['credits']++;
+
+                    if ($totalPaid >= $capitalPayable) {
+                        $sellerData['paidCredits']++;
+                    } else {
+                        $sellerData['unpaidCredits']++;
+                    }
                 }
 
-                $sellerData['capital'] = '$ ' . number_format($sellerData['capital'], 2, ',', '.');
-                $sellerData['utility'] = '$ ' . number_format($sellerData['utility'], 2, ',', '.');
-                $sellerData['total'] = '$ ' . number_format($sellerData['total'], 2, ',', '.');
-
-                $result[] = $sellerData;
+                $result[] = [
+                    'id' => $sellerData['id'],
+                    'route' => $sellerData['route'],
+                    'location' => $sellerData['location'],
+                    'capital' => $sellerData['capital'],
+                    'utility' => $sellerData['utility'],
+                    'credits' => $sellerData['credits'],
+                    'name' => $sellerData['name'],
+                    'total' => $sellerData['total'],
+                    'paidCredits' => $sellerData['paidCredits'],
+                    'unpaidCredits' => $sellerData['unpaidCredits'],
+                    'paidCapital' => $sellerData['paidCapital'],
+                    'paidUtility' => $sellerData['paidUtility'],
+                    'irrecoverableCredits' => $sellerData['irrecoverableCredits'],
+                    'irrecoverableTotal' => $sellerData['irrecoverableTotal']
+                ];
             }
 
             return response()->json([
