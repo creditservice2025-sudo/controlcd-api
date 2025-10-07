@@ -336,15 +336,13 @@ class IncomeService
                 ->where('user_id', $sellerUserId);
 
             if ($request->has('start_date') && $request->has('end_date')) {
-                $startDate = Carbon::parse($request->get('start_date'))->startOfDay();
-                $endDate = Carbon::parse($request->get('end_date'))->endOfDay();
+                $startDate = $request->get('start_date'); // formato: 'YYYY-MM-DD'
+            $endDate = $request->get('end_date'); 
                 $incomeQuery->whereBetween('created_at', [$startDate, $endDate]);
             } elseif ($request->has('date')) {
-                $filterDate = Carbon::parse($request->get('date'))->toDateString();
+                 $filterDate = $request->get('date');
                 $incomeQuery->whereDate('created_at', $filterDate);
-            } else {
-                $incomeQuery->whereDate('created_at', Carbon::today()->toDateString());
-            }
+            } 
 
             $income = $incomeQuery->paginate($perpage);
 
