@@ -35,6 +35,10 @@ class Credit extends Model
         'micro_insurance_percentage',
         'micro_insurance_amount',
         'created_at',
+        'unified_to_id',
+        'is_advance_payment',
+        'unification_reason',
+
 
     ];
 
@@ -55,7 +59,7 @@ class Credit extends Model
 
     public function installments()
     {
-        return $this->hasMany(Installment::class);
+        return $this->hasMany(Installment::class, 'credit_id');
     }
 
     public function payments()

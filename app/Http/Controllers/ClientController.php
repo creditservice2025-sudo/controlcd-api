@@ -114,6 +114,24 @@ class ClientController extends Controller
         }
     }
 
+    public function indexWithCredits(ClientRequest $request)
+    {
+        try {
+            $search = (string) $request->input('search', '');
+            $orderBy = $request->input('orderBy', 'created_at');
+            $orderDirection = $request->input('orderDirection', 'desc');
+            $countryId = $request->input('countryId');
+            $cityId = $request->input('cityId');
+            $sellerId = $request->input('sellerId');
+            $status = $request->input('status', null);
+            $daysOverdue = $request->input('daysOverdue', null);
+
+            return $this->clientService->indexWithCredits($search, $orderBy, $orderDirection, $countryId, $cityId, $sellerId, $status, $daysOverdue);
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
     public function getClientsBySeller($sellerId, Request $request)
     {
         try {
@@ -159,6 +177,33 @@ class ClientController extends Controller
         return $this->clientService->reactivateClients($countryId, $cityId, $sellerId);
     }
 
+    public function reactivateClientsByIds(Request $request)
+    {
+        $request->validate([
+            'client_ids' => 'required|array',
+            'client_ids.*' => 'integer|exists:clients,id',
+        ]);
+    
+        try {
+            $clientIds = $request->input('client_ids');
+    
+            $result = $this->clientService->reactivateClientsByIds($clientIds);
+    
+            return response()->json([
+                'success' => true,
+                'message' => 'Clientes reactivados exitosamente',
+                'data' => $result,
+            ]);
+        } catch (\Exception $e) {
+            \Log::error("Error reactivando clientes: " . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al reactivar clientes',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
     public function deleteInactiveClientsWithoutCredits(Request $request)
     {
 
@@ -172,6 +217,27 @@ class ClientController extends Controller
         } catch (\Exception $e) {
             \Log::error("Error eliminando clientes inactivos sin créditos: " . $e->getMessage());
             return $this->errorResponse('Error eliminando clientes inactivos sin créditos', 500);
+        }
+    }
+
+    public function deleteClientsByIds(Request $request)
+    {
+        try {
+            $params = $request->validate([
+                'client_ids' => 'required|array',
+                'client_ids.*' => 'integer|exists:clients,id',
+            ]);
+
+            $result = $this->clientService->deleteClientsByIds($params['client_ids']);
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => "Clientes eliminados exitosamente",
+                'data' => $result
+            ]);
+        } catch (\Exception $e) {
+            \Log::error("Error eliminando clientes: " . $e->getMessage());
+            return $this->errorResponse('Error eliminando clientes', 500);
         }
     }
 
@@ -344,5 +410,43 @@ class ClientController extends Controller
             \Log::error($e->getMessage());
             return $this->errorResponse('Error al obtener los clientes inactivos sin créditos', 500);
         }
+    }
+
+    public function getInactiveClientsWithoutCreditsWithFilters(Request $request)
+    {
+        $search = $request->query('search', '');
+        $orderBy = $request->query('orderBy', 'created_at');
+        $orderDirection = $request->query('orderDirection', 'desc');
+        $countryId = $request->query('countryId');
+        $cityId = $request->query('cityId');
+        $sellerId = $request->query('sellerId');
+
+        return app(ClientService::class)->getInactiveClientsWithoutCreditsWithFilters(
+            $search,
+            $orderBy,
+            $orderDirection,
+            $countryId,
+            $cityId,
+            $sellerId
+        );
+    }
+
+    public function getDeletedClientsWithFilters(Request $request)
+    {
+        $search = $request->query('search', '');
+        $orderBy = $request->query('orderBy', 'deleted_at');
+        $orderDirection = $request->query('orderDirection', 'desc');
+        $countryId = $request->query('countryId');
+        $cityId = $request->query('cityId');
+        $sellerId = $request->query('sellerId');
+
+        return app(ClientService::class)->getDeletedClientsWithFilters(
+            $search,
+            $orderBy,
+            $orderDirection,
+            $countryId,
+            $cityId,
+            $sellerId
+        );
     }
 }

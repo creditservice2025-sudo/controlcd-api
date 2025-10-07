@@ -260,6 +260,14 @@ class LiquidationService
             ? $existingLiquidation->base_delivered
             : 0.00;
 
+        $irrecoverableCredits = DB::table('installments')
+            ->join('credits', 'installments.credit_id', '=', 'credits.id')
+            ->where('credits.seller_id', $sellerId)
+            ->where('credits.status', 'Cartera Irrecuperable')
+            ->whereDate('credits.updated_at', Carbon::parse($date)->subDay()->toDateString())
+            ->where('installments.status', 'Pendiente')
+            ->sum('installments.quota_amount');
+
         $realToDeliver = $initialCash
             + (
                 $dailyTotals['total_income']
@@ -268,7 +276,7 @@ class LiquidationService
             )
             - (
                 $dailyTotals['created_credits_value']
-                + $dailyTotals['total_expenses'] + $dailyTotals['total_renewal_disbursed']
+                + $dailyTotals['total_expenses'] + $dailyTotals['total_renewal_disbursed'] + $irrecoverableCredits
             );
 
 
@@ -324,6 +332,7 @@ class LiquidationService
         $newCredits = Credit::where('seller_id', $sellerId)
             ->whereNull('renewed_from_id')
             ->whereNull('renewed_to_id')
+            ->whereNull('unification_reason')
             ->whereDate('created_at', $date)
             ->sum('credit_value');
 
@@ -338,6 +347,9 @@ class LiquidationService
             ->whereDate('created_at', $date)
             ->whereNotNull('renewed_from_id')
             ->get();
+
+
+
 
         $total_renewal_disbursed = 0;
         $total_pending_absorbed = 0;
@@ -357,13 +369,21 @@ class LiquidationService
             $total_renewal_disbursed += $netDisbursement;
         }
 
+        $irrecoverableCredits = DB::table('installments')
+            ->join('credits', 'installments.credit_id', '=', 'credits.id')
+            ->where('credits.seller_id', $sellerId)
+            ->where('credits.status', 'Cartera Irrecuperable')
+            ->whereDate('credits.updated_at', Carbon::parse($date)->subDay()->toDateString())
+            ->where('installments.status', 'Pendiente')
+            ->sum('installments.quota_amount');
 
         $realToDeliver = $liquidation->initial_cash
             + $liquidation->base_delivered
             + ($totalIncome + $totalCollected)
-            - $totalExpenses
-            - $newCredits
-            - $total_renewal_disbursed;
+            - ($totalExpenses
+                + $newCredits
+                + $total_renewal_disbursed
+                + $irrecoverableCredits);
 
         $cashDelivered = $liquidation->cash_delivered;
         $shortage = 0;
@@ -422,14 +442,14 @@ class LiquidationService
                 'payments.payment_method',
                 DB::raw('SUM(payments.amount) as total')
             )
-            ->whereDate('payments.payment_date', $date)
+            ->whereDate('payments.created_at', $date)
             ->where('credits.seller_id', $sellerId)
             ->groupBy('payments.payment_method');
 
         $firstPaymentQuery = DB::table('payments')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
             ->select(DB::raw('MIN(payments.created_at) as first_payment_date'))
-            ->whereDate('payments.payment_date', $date);
+            ->whereDate('payments.created_at', $date);
 
         if ($sellerId) {
             $firstPaymentQuery->where('credits.seller_id', $sellerId);
@@ -470,6 +490,7 @@ class LiquidationService
             ->where('seller_id', $sellerId)
             ->whereDate('created_at', $date)
             ->whereNull('renewed_from_id')
+            ->whereNull('unification_reason')
             ->select([
                 DB::raw('COALESCE(SUM(credit_value), 0) as value'),
                 DB::raw('COALESCE(SUM(
@@ -571,9 +592,9 @@ class LiquidationService
             $firstPaymentQuery = DB::table('payments')
                 ->join('credits', 'payments.credit_id', '=', 'credits.id')
                 ->select('payments.payment_date', 'payments.created_at') // 👈 aquí
-                ->whereDate('payments.payment_date', $liquidation->date)
+                ->whereDate('payments.created_at', $liquidation->date)
                 ->where('credits.seller_id', $liquidation->seller_id)
-                ->orderBy('payments.payment_date', 'asc')
+                ->orderBy('payments.created_at', 'asc')
                 ->first();
 
 

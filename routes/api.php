@@ -85,10 +85,13 @@ Route::middleware('auth:api')->group(function () {
         // Listado principal
         Route::get('/', [ClientController::class, 'index']);
         Route::get('/total', [ClientController::class, 'totalClients']);
+        Route::get('/with-credits', [ClientController::class, 'indexWithCredits']);
         Route::get('/select', [ClientController::class, 'getClientsSelect']);
-        Route::post('/reactivate-by-criteria', [ClientController::class, 'reactivateClientsByCriteria']);
+        Route::post('/reactivate-by-criteria', [ClientController::class, 'reactivateClientsByIds']);
         Route::delete('/delete-inactive-without-credits', [ClientController::class, 'deleteInactiveClientsWithoutCredits']);
-        Route::get('/inactive-without-credits', [ClientController::class, 'getInactiveClientsWithoutCredits']);
+        Route::get('/inactive-without-credits', [ClientController::class, 'getInactiveClientsWithoutCreditsWithFilters']);
+        Route::delete('/delete-by-ids', [ClientController::class, 'deleteClientsByIds']);
+        Route::get('/deleted-with-filters', [ClientController::class, 'getDeletedClientsWithFilters']);
 
         Route::put('/toggle-status/{clientId}', [ClientController::class, 'toggleStatus']);
 
@@ -128,6 +131,7 @@ Route::middleware('auth:api')->group(function () {
     Route::get('credits', [CreditController::class, 'index']);
     Route::post('credit/create', [CreditController::class, 'create']);
     Route::put('credit/update/{id}', [CreditController::class, 'update']);
+    Route::put('credit/{creditId}/change-client', [CreditController::class, 'changeCreditClient']); // <-- aquí
     Route::delete('credit/delete/{id}', [CreditController::class, 'delete']);
     Route::get('credit/{id}', [CreditController::class, 'show']);
     Route::get('credits/clients', [CreditController::class, 'getClientCredits']);
@@ -136,7 +140,9 @@ Route::middleware('auth:api')->group(function () {
     Route::get('/credits/seller/{sellerId}/by-date', [CreditController::class, 'getSellerCredits']);
 
     Route::post('credit/renew', [CreditController::class, 'renew']);
-
+    Route::put('credit/{creditId}/toggle-status', [CreditController::class, 'toggleCreditStatus']);
+    Route::post('credits/toggle-massively', [CreditController::class, 'toggleCreditsStatusMassively']);
+    Route::post('credits/unify', [CreditController::class, 'unifyCredits']);
 
     //route expense
     Route::get('expenses', [ExpenseController::class, 'index']);

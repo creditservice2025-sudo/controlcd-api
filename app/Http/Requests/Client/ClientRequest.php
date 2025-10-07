@@ -44,6 +44,7 @@ class ClientRequest extends FormRequest
             'excluded_days' => 'nullable|array',
             'micro_insurance_percentage' => 'nullable|numeric',
             'micro_insurance_amount' => 'nullable|numeric',
+            'is_advance_payment' => 'nullable|boolean',
             'first_installment_date' => 'nullable|date',
 
 

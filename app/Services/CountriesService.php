@@ -15,16 +15,16 @@ class CountriesService
     {
         try {
             $query = Country::query();
-            
+
             if ($search) {
                 $searchTerm = Str::lower($search);
                 $query->whereRaw('LOWER(name) LIKE ?', ["%{$searchTerm}%"]);
             }
-            
+
             $countries = $query->paginate(
-                $perPage, 
-                ['id', 'name', 'currency'], 
-                'page', 
+                $perPage,
+                ['id', 'name', 'currency'],
+                'page',
                 $page
             );
 
@@ -37,7 +37,6 @@ class CountriesService
                     'last_page' => $countries->lastPage(),
                 ]
             ]);
-
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             $this->handlerException('Error al obtener los países');
@@ -48,13 +47,18 @@ class CountriesService
     public function getCountries($withSellerCities = false)
     {
         try {
+            $withSellerCities = filter_var($withSellerCities, FILTER_VALIDATE_BOOLEAN);
+
+            \Log::info('Fetching countries with cities.', ['withSellerCities' => $withSellerCities]);
             if ($withSellerCities) {
-                $countries = Country::whereHas('cities', function($cityQuery) {
+                \Log::info('Fetching countries with cities that have sellers.');
+                $countries = Country::whereHas('cities', function ($cityQuery) {
                     $cityQuery->whereHas('sellers');
                 })
-                ->select('id', 'name')
-                ->get();
+                    ->select('id', 'name')
+                    ->get();
             } else {
+                \Log::info('Fetching all countries without filtering by seller cities.');
                 $countries = Country::select('id', 'name')->get();
             }
             return $this->successResponse($countries);
@@ -77,7 +81,6 @@ class CountriesService
 
             $country = Country::create($data);
             return $this->successResponse($country, 'País creado exitosamente', 201);
-
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             $this->handlerException('Error al crear el país');
@@ -88,7 +91,7 @@ class CountriesService
     {
         try {
             $validator = Validator::make($data, [
-                'name' => 'sometimes|string|max:255|unique:countries,name,'.$id
+                'name' => 'sometimes|string|max:255|unique:countries,name,' . $id
             ]);
 
             if ($validator->fails()) {
@@ -98,7 +101,6 @@ class CountriesService
             $country = Country::findOrFail($id);
             $country->update($data);
             return $this->successResponse($country, 'País actualizado exitosamente');
-
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             $this->handlerException('Error al actualizar el país');

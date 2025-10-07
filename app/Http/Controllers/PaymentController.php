@@ -109,12 +109,12 @@ class PaymentController extends Controller
                 'payments.payment_method',
                 DB::raw('SUM(payments.amount) as total')
             )
-            ->whereDate('payments.payment_date', $date);
+            ->whereDate('payments.created_at', $date);
 
         $firstPaymentQuery = DB::table('payments')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
             ->select(DB::raw('MIN(payments.created_at) as first_payment_date'))
-            ->whereDate('payments.payment_date', $date);
+            ->whereDate('payments.created_at', $date);
 
         if ($sellerId) {
             $paymentQuery->where('credits.seller_id', $sellerId);
@@ -163,7 +163,8 @@ class PaymentController extends Controller
                 DB::raw('COALESCE(SUM(credit_value), 0) as total_credit_value'),
                 DB::raw('COALESCE(SUM(credit_value * (total_interest / 100)), 0) as total_interest_amount')
             )
-            ->whereDate('created_at', $date);
+            ->whereDate('created_at', $date)
+            ->whereNull('unification_reason');
 
         if ($sellerId) {
             $createdCreditsQuery->where('seller_id', $sellerId);
@@ -250,10 +251,18 @@ class PaymentController extends Controller
             $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
         }
 
+        $irrecoverableCredits = DB::table('installments')
+            ->join('credits', 'installments.credit_id', '=', 'credits.id')
+            ->where('credits.seller_id', $sellerId)
+            ->where('credits.status', 'Cartera Irrecuperable')
+            ->whereDate('credits.updated_at', Carbon::parse($date)->subDay()->toDateString())
+            ->where('installments.status', 'Pendiente')
+            ->sum('installments.quota_amount');
+
         $realToDeliver = $initialCash
             + ($totals['total_income'] + $totals['collected_total'])
             - ($totals['created_credits_value']
-                + $totals['total_expenses']);
+                + $totals['total_expenses'] + $irrecoverableCredits);
 
         $totals['initial_cash'] = $initialCash;
         $totals['real_to_deliver'] = $realToDeliver;
