@@ -275,7 +275,8 @@ class DashboardService
                 $creditIds = Credit::where('status', '!=', 'Liquidado')->pluck('id');
 
                 if ($creditIds->isNotEmpty()) {
-                    $totalBalance = Credit::whereIn('id', $creditIds)->sum('credit_value');
+                    $totalBalance = Credit::whereIn('id', $creditIds)
+                        ->sum(DB::raw('credit_value + (credit_value * total_interest / 100)'));
                     $incomeTotal = Income::sum('value');
                     $expenseTotal = Expense::sum('value');
 
@@ -335,7 +336,8 @@ class DashboardService
                         ->pluck('id');
 
                     if ($creditIds->isNotEmpty()) {
-                        $totalBalance = Credit::whereIn('id', $creditIds)->sum('credit_value');
+                        $totalBalance = Credit::whereIn('id', $creditIds)
+                            ->sum(DB::raw('credit_value + (credit_value * total_interest / 100)'));
 
                         $totalCapitalPaid = PaymentInstallment::whereIn('installment_id', function ($query) use ($creditIds) {
                             $query->select('id')
@@ -397,7 +399,8 @@ class DashboardService
                         ->pluck('id');
 
                     if ($creditIds->isNotEmpty()) {
-                        $totalBalance = Credit::whereIn('id', $creditIds)->sum('credit_value');
+                        $totalBalance = Credit::whereIn('id', $creditIds)
+                            ->sum(DB::raw('credit_value + (credit_value * total_interest / 100)'));
 
                         $totalCapitalPaid = PaymentInstallment::whereIn('installment_id', function ($query) use ($creditIds) {
                             $query->select('id')
