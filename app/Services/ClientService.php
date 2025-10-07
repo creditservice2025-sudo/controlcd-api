@@ -22,6 +22,8 @@ use Illuminate\Support\Facades\Auth;
 class ClientService
 {
     use ApiResponse;
+
+    const TIMEZONE = 'America/Caracas';
     protected $liquidationService;
 
     public function __construct(LiquidationService $liquidationService)
@@ -629,7 +631,7 @@ class ClientService
     public function getAllClientsBySeller($sellerId, $search = '', $date = null)
     {
         try {
-            $filterDate = $date ? Carbon::parse($date) : Carbon::today();
+            $filterDate = $date ? Carbon::parse($date)->timezone(self::TIMEZONE) : Carbon::now(self::TIMEZONE);
 
             $clients = Client::with([
                 'guarantors',
@@ -661,9 +663,13 @@ class ClientService
                 foreach ($client->credits as $credit) {
                     $credit->pending_installments = $credit->number_installments - $credit->paid_installments_count;
 
-                    $datePayments = $credit->payments->filter(function ($payment) use ($filterDate) {
+                    $startUTC = $filterDate->copy()->startOfDay()->timezone('UTC');
+                    $endUTC = $filterDate->copy()->endOfDay()->timezone('UTC');
+
+                    $datePayments = $credit->payments->filter(function ($payment) use ($startUTC, $endUTC) {
                         return $payment->payment_date &&
-                            Carbon::parse($payment->payment_date)->isSameDay($filterDate);
+                            $payment->created_at >= $startUTC &&
+                            $payment->created_at <= $endUTC;
                     });
 
                     foreach ($datePayments as $payment) {
@@ -674,6 +680,7 @@ class ClientService
                         $paymentTime = ($payment->payment_date instanceof \DateTimeInterface)
                             ? $payment->payment_date->format('H:i:s')
                             : Carbon::parse($payment->payment_date)->format('H:i:s');
+
 
                         $paymentData = [
                             'client_id' => $client->id,
@@ -1493,7 +1500,7 @@ class ClientService
 
     private function getAllClientsBySellerAndDate($sellerId, $date)
     {
-        $referenceDate = \Carbon\Carbon::parse($date);
+        $referenceDate = Carbon::createFromFormat('Y-m-d', $date, self::TIMEZONE);
 
         $clients = Client::with([
             'credits.installments' => function ($query) {
@@ -1572,8 +1579,13 @@ class ClientService
 
     private function getCreditInfoForDate($credit, $referenceDate)
     {
+
+        $startUTC = $referenceDate->copy()->startOfDay()->timezone('UTC');
+        $endUTC = $referenceDate->copy()->endOfDay()->timezone('UTC');
         // PAGOS DEL DÍA
-        $todayPayments = $credit->payments->where('created_at', $referenceDate->format('Y-m-d'));
+        $todayPayments = $credit->payments->filter(function ($payment) use ($startUTC, $endUTC) {
+            return $payment->created_at >= $startUTC && $payment->created_at <= $endUTC;
+        });
         $paidToday = $todayPayments->sum('amount');
 
         // PAGOS DEL DÍA POR MÉTODO
@@ -1617,7 +1629,9 @@ class ClientService
         $faltantePorRecaudarHoy = $metaRecaudarHoy - ($paidTodayEfectivo + $paidTodayTransferencia);
 
         $paidAmount = $credit->payments
-            ->where('created_at', '<=', $referenceDate->format('Y-m-d'))
+            ->filter(function ($payment) use ($referenceDate) {
+                return $payment->created_at <= $referenceDate->copy()->endOfDay()->timezone('UTC');
+            })
             ->sum('amount');
 
         $totalAmount = ($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value;
@@ -1876,6 +1890,14 @@ class ClientService
         $sellerId = $seller ? $seller->id : null;
         $userId = $user->id;
 
+        $timezone = self::TIMEZONE;
+        $startUTC = $date
+            ? Carbon::createFromFormat('Y-m-d', $date, $timezone)->startOfDay()->timezone('UTC')
+            : Carbon::now($timezone)->startOfDay()->timezone('UTC');
+        $endUTC = $date
+            ? Carbon::createFromFormat('Y-m-d', $date, $timezone)->endOfDay()->timezone('UTC')
+            : Carbon::now($timezone)->endOfDay()->timezone('UTC');
+
         // 1. TOTAL ESPERADO (considerando soft deletes)
         $expectedQuery = DB::table('installments')
             ->selectRaw('COALESCE(SUM(quota_amount), 0) as total_expected')
@@ -1910,7 +1932,7 @@ class ClientService
             ->whereNull('payments.deleted_at')
             ->whereNull('credits.deleted_at')
             ->whereNull('clients.deleted_at')
-            ->whereDate('payments.created_at', $date)
+            ->whereBetween('payments.created_at', [$startUTC, $endUTC])
             ->whereIn('payments.status', ['Pagado', 'Abonado']);
 
         if ($sellerId) {
@@ -1930,7 +1952,7 @@ class ClientService
             ->whereNull('installments.deleted_at')
             ->whereNull('credits.deleted_at')
             ->whereNull('clients.deleted_at')
-            ->whereDate('payments.created_at', $date)
+            ->whereBetween('payments.created_at', [$startUTC, $endUTC])
             ->where('payments.status', 'No Pagado');
 
         if ($sellerId) {
@@ -1946,7 +1968,7 @@ class ClientService
             ->whereNull('payments.deleted_at')
             ->whereNull('credits.deleted_at')
             ->whereNull('clients.deleted_at')
-            ->whereDate('payments.created_at', $date)
+            ->whereBetween('payments.created_at', [$startUTC, $endUTC])
             ->where('payments.status', 'Abonado');
 
         if ($sellerId) {
@@ -2153,11 +2175,15 @@ class ClientService
 
     public function getClientPortfolioBySeller($sellerId, $startDate, $endDate)
     {
+        $timezone = self::TIMEZONE;
+        $startUTC = Carbon::createFromFormat('Y-m-d', $startDate, $timezone)->startOfDay()->timezone('UTC');
+        $endUTC = Carbon::createFromFormat('Y-m-d', $endDate, $timezone)->endOfDay()->timezone('UTC');
+
         return DB::table('credits')
             ->join('clients', 'credits.client_id', '=', 'clients.id')
-            ->leftJoin('payments', function ($join) use ($startDate, $endDate) {
+            ->leftJoin('payments', function ($join) use ($startUTC, $endUTC) {
                 $join->on('credits.id', '=', 'payments.credit_id')
-                    ->whereBetween('payments.created_at', [$startDate, $endDate]);
+                    ->whereBetween('payments.created_at', [$startUTC, $endUTC]);
             })
             ->select(
                 'credits.id as loan_id',
@@ -2176,10 +2202,14 @@ class ClientService
 
     public function getTotalCollectedBySeller($sellerId, $startDate, $endDate)
     {
+        $timezone = self::TIMEZONE;
+        $startUTC = Carbon::createFromFormat('Y-m-d', $startDate, $timezone)->startOfDay()->timezone('UTC');
+        $endUTC = Carbon::createFromFormat('Y-m-d', $endDate, $timezone)->endOfDay()->timezone('UTC');
+
         return DB::table('payments')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
             ->where('credits.seller_id', $sellerId)
-            ->whereBetween('payments.created_at', [$startDate, $endDate])
+            ->whereBetween('payments.created_at', [$startUTC, $endUTC])
             ->whereNull('payments.deleted_at')
             ->sum('payments.amount');
     }

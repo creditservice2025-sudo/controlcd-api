@@ -26,6 +26,8 @@ class CreditService
 {
     use ApiResponse;
 
+    const TIMEZONE = 'America/Caracas';
+
     public function create(CreditRequest $request)
     {
         try {
@@ -784,21 +786,37 @@ class CreditService
             $creditsQuery = Credit::with(['client', 'installments', 'payments'])
                 ->where('seller_id', $sellerId);
 
-            // Lógica de filtro de fechas
             if ($request->has('start_date') && $request->has('end_date')) {
-                $startDate = Carbon::parse($request->get('start_date'))->startOfDay();
-                $endDate = Carbon::parse($request->get('end_date'))->endOfDay();
-                $creditsQuery->whereBetween('created_at', [$startDate, $endDate]);
+                $startDate = $request->get('start_date');
+                $endDate = $request->get('end_date');
+                
+                $start = Carbon::createFromFormat('Y-m-d', $startDate, self::TIMEZONE)
+                    ->startOfDay()
+                    ->timezone('UTC');
+                $end = Carbon::createFromFormat('Y-m-d', $endDate, self::TIMEZONE)
+                    ->endOfDay()
+                    ->timezone('UTC');
+                    
+                $creditsQuery->whereBetween('credits.created_at', [$start, $end]); 
             } elseif ($request->has('date')) {
-                $filterDate = Carbon::parse($request->get('date'))->toDateString();
-                $creditsQuery->whereDate('created_at', $filterDate);
+                $filterDate = $request->get('date');
+                
+                $start = Carbon::createFromFormat('Y-m-d', $filterDate, self::TIMEZONE)
+                    ->startOfDay()
+                    ->timezone('UTC');
+                $end = Carbon::createFromFormat('Y-m-d', $filterDate, self::TIMEZONE)
+                    ->endOfDay()
+                    ->timezone('UTC');
+                    
+                $creditsQuery->whereBetween('credits.created_at', [$start, $end]); // ESPECIFICAR credits.created_at
             } else {
-                $creditsQuery->whereDate('created_at', Carbon::today()->toDateString());
+                $todayStart = Carbon::now(self::TIMEZONE)->startOfDay()->timezone('UTC');
+                $todayEnd = Carbon::now(self::TIMEZONE)->endOfDay()->timezone('UTC');
+                $creditsQuery->whereBetween('credits.created_at', [$todayStart, $todayEnd]); // ESPECIFICAR credits.created_at
             }
 
             $credits = $creditsQuery->get();
 
-            // Agregar fecha inicio y fecha fin a cada crédito
             $credits = $credits->map(function ($credit) {
                 $startDate = $credit->start_date;
                 $lastInstallment = $credit->installments->sortByDesc('due_date')->first();
@@ -853,19 +871,23 @@ class CreditService
     public function generateDailyReport($date, $sellerId = null)
     {
         $user = Auth::user();
-        $maxDate = Carbon::today();
-        $minDate = Carbon::today()->subDays(7);
-        $reportDate = Carbon::parse($date);
+        $maxDate = Carbon::now(self::TIMEZONE);
+        $minDate = Carbon::now(self::TIMEZONE)->subDays(7);
+        $reportDate = Carbon::createFromFormat('Y-m-d', $date, self::TIMEZONE);
 
         if ($reportDate->lt($minDate) || $reportDate->gt($maxDate)) {
             throw new \Exception('Solo se pueden consultar fechas dentro de los últimos 7 días');
         }
 
+        $start = $reportDate->copy()->startOfDay()->timezone('UTC');
+        $end = $reportDate->copy()->endOfDay()->timezone('UTC');
+
         // Obtener créditos con pagos en la fecha especificada
         $creditsQuery = Credit::with(['client', 'installments', 'payments'])
-            ->whereHas('payments', function ($query) use ($reportDate) {
-                $query->whereDate('created_at', $reportDate->toDateString());
+            ->whereHas('payments', function ($query) use ($start, $end) {
+                $query->whereBetween('payments.created_at', [$start, $end]);
             });
+
 
         if ($sellerId) {
             $creditsQuery->whereHas('client', function ($query) use ($sellerId) {
@@ -876,7 +898,7 @@ class CreditService
         $credits = $creditsQuery->get();
 
         // Obtener gastos del día
-        $expensesQuery = Expense::whereDate('created_at', $reportDate->toDateString());
+        $expensesQuery = Expense::whereBetween('expenses.created_at', [$start, $end]);
         if ($user) {
             $expensesQuery->where('user_id', $user->id);
         }
@@ -884,7 +906,7 @@ class CreditService
         $totalExpenses = $expenses->sum('value');
 
         // Obtener ingresos del día
-        $incomesQuery = Income::whereDate('created_at', $reportDate->toDateString());
+        $incomesQuery = Income::whereBetween('incomes.created_at', [$start, $end]);
         if ($user) {
             $incomesQuery->where('user_id', $user->id);
         }
@@ -910,10 +932,9 @@ class CreditService
             $totalCreditValue = $credit->credit_value + $interestAmount + $credit->micro_insurance_amount;
             $totalPaid = $credit->payments->sum('amount');
             $remainingAmount = $totalCreditValue - $totalPaid;
-
-            $dayPayments = $credit->payments()->whereDate('created_at', $reportDate->toDateString())->get();
+            $dayPayments = $credit->payments()->whereBetween('payments.created_at', [$start, $end])->get();
             $paidToday = $dayPayments->sum('amount');
-            $paymentTime = $dayPayments->isNotEmpty() ? $dayPayments->last()->created_at->format('H:i:s') : null;
+            $paymentTime = $dayPayments->isNotEmpty() ? $dayPayments->last()->created_at->timezone(self::TIMEZONE)->format('H:i:s') : null;
 
             if ($paidToday > 0) {
                 $withPayment++;
@@ -958,7 +979,7 @@ class CreditService
         }
 
         // Obtener nuevos créditos del día
-        $newCredits = Credit::whereDate('created_at', $reportDate->toDateString());
+        $newCredits = Credit::whereBetween('credits.created_at', [$start, $end]);
         if ($sellerId) {
             $newCredits->whereHas('client', function ($query) use ($sellerId) {
                 $query->where('seller_id', $sellerId);
@@ -1007,7 +1028,7 @@ class CreditService
     }
     public function getReport($request)
     {
-        $date = $request->date ?? Carbon::today()->format('Y-m-d');
+          $date = $request->date ?? Carbon::now(self::TIMEZONE)->format('Y-m-d');
         $sellerId = $request->seller_id ?? null;
 
         $reportData = $this->generateDailyReport($date, $sellerId);

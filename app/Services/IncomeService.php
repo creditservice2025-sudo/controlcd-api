@@ -324,33 +324,32 @@ class IncomeService
             return $this->errorResponse('Error al generar reporte mensual', 500);
         }
     }
-    public function getSellerIncomeByDate(int $sellerId, Request $request, int $perpage)
-    {
-        try {
-            $sellerUserId = Seller::where('id', $sellerId)->value('user_id');
+   public function getSellerIncomeByDate(int $sellerId, Request $request, int $perpage)
+{
+    try {
+        $sellerUserId = Seller::where('id', $sellerId)->value('user_id');
 
-            if (!$sellerUserId) {
-                return $this->successResponse([
-                    'success' => true,
-                    'message' => 'No se encontró el usuario asociado a este ID de vendedor.',
-                    'data' => []
-                ]);
-            }
+        if (!$sellerUserId) {
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'No se encontró el usuario asociado a este ID de vendedor.',
+                'data' => []
+            ]);
+        }
 
-            $incomeQuery = Income::with(['user', 'images'])
-                ->where('user_id', $sellerUserId);
+        $incomeQuery = Income::with(['user', 'images'])
+            ->where('user_id', $sellerUserId);
 
-                 $timezone = 'America/Caracas';
+        $timezone = 'America/Caracas';
 
-             if ($request->has('start_date') && $request->has('end_date')) {
+        if ($request->has('start_date') && $request->has('end_date')) {
             $startDate = $request->get('start_date');
             $endDate = $request->get('end_date');
             
-            // Convertir fechas al huso horario de Caracas
-            $start = Carbon::createFromFormat('Y-m-d', $startDate, $timezone)
+            $start = Carbon::parse($startDate, $timezone)
                 ->startOfDay()
                 ->timezone('UTC');
-            $end = Carbon::createFromFormat('Y-m-d', $endDate, $timezone)
+            $end = Carbon::parse($endDate, $timezone)
                 ->endOfDay()
                 ->timezone('UTC');
                 
@@ -358,28 +357,30 @@ class IncomeService
         } elseif ($request->has('date')) {
             $filterDate = $request->get('date');
             
-            // Convertir fecha al huso horario de Caracas
-            $start = Carbon::createFromFormat('Y-m-d', $filterDate, $timezone)
+            $start = Carbon::parse($filterDate, $timezone)
                 ->startOfDay()
                 ->timezone('UTC');
-            $end = Carbon::createFromFormat('Y-m-d', $filterDate, $timezone)
+            $end = Carbon::parse($filterDate, $timezone)
                 ->endOfDay()
                 ->timezone('UTC');
                 
             $incomeQuery->whereBetween('created_at', [$start, $end]);
+        } else {
+            $todayStart = Carbon::now($timezone)->startOfDay()->timezone('UTC');
+            $todayEnd = Carbon::now($timezone)->endOfDay()->timezone('UTC');
+            $incomeQuery->whereBetween('created_at', [$todayStart, $todayEnd]);
         }
 
+        $income = $incomeQuery->paginate($perpage);
 
-            $income = $incomeQuery->paginate($perpage);
-
-            return $this->successResponse([
-                'success' => true,
-                'message' => 'Ingresos obtenidos correctamente para el vendedor y fecha(s) especificadas',
-                'data' => $income
-            ]);
-        } catch (\Exception $e) {
-            Log::error($e->getMessage());
-            return $this->errorResponse('Error al obtener los ingresos del vendedor: ' . $e->getMessage(), 500);
-        }
+        return $this->successResponse([
+            'success' => true,
+            'message' => 'Ingresos obtenidos correctamente para el vendedor y fecha(s) especificadas',
+            'data' => $income
+        ]);
+    } catch (\Exception $e) {
+        Log::error($e->getMessage());
+        return $this->errorResponse('Error al obtener los ingresos del vendedor: ' . $e->getMessage(), 500);
     }
+}
 }

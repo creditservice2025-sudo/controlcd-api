@@ -39,14 +39,14 @@ class CreditController extends Controller
     }
 
     public function unifyCredits(Request $request)
-{
-    try {
-        return $this->creditService->unifyCredits($request);
-    } catch (Exception $e) {
-        \Log::error("Error al unificar créditos: " . $e->getMessage());
-        return $this->errorResponse($e->getMessage(), 500);
+    {
+        try {
+            return $this->creditService->unifyCredits($request);
+        } catch (Exception $e) {
+            \Log::error("Error al unificar créditos: " . $e->getMessage());
+            return $this->errorResponse($e->getMessage(), 500);
+        }
     }
-}
 
     public function update(CreditRequest $request, $creditId)
     {
@@ -185,9 +185,8 @@ class CreditController extends Controller
         try {
             return $this->creditService->getReport($request);
         } catch (\Exception $e) {
-            return response()->json([
-                'error' => $e->getMessage()
-            ], 400);
+            \Log::error($e->getMessage());
+            return $this->errorResponse('Error al obtener reporte: ' . $e->getMessage(), 500);
         }
     }
 }

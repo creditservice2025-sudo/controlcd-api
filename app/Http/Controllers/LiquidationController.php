@@ -580,28 +580,30 @@ class LiquidationController extends Controller
     {
         $user = Auth::user();
 
+        // Zona horaria Venezuela
+        $timezone = 'America/Caracas';
+        $start = Carbon::createFromFormat('Y-m-d', $date, $timezone)->startOfDay()->setTimezone('UTC');
+        $end = Carbon::createFromFormat('Y-m-d', $date, $timezone)->endOfDay()->setTimezone('UTC');
+
         // 1. Verificar si ya existe liquidación para esta fecha
         $existingLiquidation = Liquidation::where('seller_id', $sellerId)
-            ->whereDate('date', $date)
+            ->whereBetween('date', [$start, $end])
             ->first();
 
         // Si existe liquidación, retornar directamente esos datos
         if ($existingLiquidation) {
             $updatedLiquidation = Liquidation::where('seller_id', $sellerId)
-                ->whereDate('date', $date)
+                ->whereBetween('date', [$start, $end])
                 ->first();
-
-
             return $this->formatLiquidationResponse($updatedLiquidation, true);
         }
 
         // 2. Obtener datos del endpoint dailyPaymentTotals
         $dailyTotals = $this->getDailyTotals($sellerId, $date, $user);
 
-
         // 3. Obtener última liquidación para saldo inicial
         $lastLiquidation = Liquidation::where('seller_id', $sellerId)
-            ->where('date', '<', $date)
+            ->where('date', '<', $start)
             ->orderBy('date', 'desc')
             ->first();
 
@@ -649,18 +651,23 @@ class LiquidationController extends Controller
         ];
     }
 
-    // Nuevo método para obtener los dailyTotals
     protected function getDailyTotals($sellerId, $date, $user)
     {
-        $formattedDate = Carbon::parse($date)->format('Y-m-d');
-        $targetDate = Carbon::parse($date);
+        $timezone = 'America/Caracas';
+
+        $targetDate = Carbon::parse($date, $timezone);
+        $formattedDate = $targetDate->format('Y-m-d');
+
+        $startUTC = $targetDate->copy()->startOfDay()->timezone('UTC');
+        $endUTC = $targetDate->copy()->endOfDay()->timezone('UTC');
+
         $query = DB::table('payments')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
             ->select(
                 'payments.payment_method',
                 DB::raw('SUM(payments.amount) as total')
             )
-            ->whereDate('payments.created_at', $date)
+            ->whereBetween('payments.created_at', [$startUTC, $endUTC])
             ->where('credits.seller_id', $sellerId)
             ->where('payments.status', 'Aprobado')
             ->groupBy('payments.payment_method');
@@ -668,15 +675,14 @@ class LiquidationController extends Controller
         $firstPaymentQuery = DB::table('payments')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
             ->select(DB::raw('MIN(payments.created_at) as first_payment_date'))
-            ->whereDate('payments.created_at', $date);
+            ->whereBetween('payments.created_at', [$startUTC, $endUTC]);
 
         if ($sellerId) {
             $firstPaymentQuery->where('credits.seller_id', $sellerId);
         }
 
-
         $firstPaymentResult = $firstPaymentQuery->first();
-        $firstPaymentDate = $firstPaymentResult->first_payment_date;
+        $firstPaymentDate = $firstPaymentResult ? $firstPaymentResult->first_payment_date : null;
 
         $paymentResults = $query->get();
 
@@ -698,68 +704,54 @@ class LiquidationController extends Controller
             $totals['collected_total'] += $amount;
         }
 
-        // Obtener total esperado
         $totals['expected_total'] = (float)DB::table('installments')
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
             ->where('credits.seller_id', $sellerId)
-            ->where('installments.due_date', $date)
+            ->where('installments.due_date', $formattedDate)
             ->sum('installments.quota_amount');
 
-        // Obtener créditos creados
         $credits = DB::table('credits')
             ->where('seller_id', $sellerId)
-            ->whereBetween('created_at', [
-                $targetDate->startOfDay()->format('Y-m-d H:i:s'),
-                $targetDate->endOfDay()->format('Y-m-d H:i:s')
-            ])
+            ->whereBetween('created_at', [$startUTC, $endUTC])
             ->whereNull('renewed_from_id')
             ->whereNull('renewed_to_id')
             ->whereNull('unification_reason')
             ->select([
                 DB::raw('COALESCE(SUM(credit_value), 0) as value'),
                 DB::raw('COALESCE(SUM(
-                CASE 
-                    WHEN total_interest IS NOT NULL AND total_interest > 0 
-                    THEN credit_value * (total_interest / 100)
-                    ELSE 0
-                END
-            ), 0) as interest')
+            CASE 
+                WHEN total_interest IS NOT NULL AND total_interest > 0 
+                THEN credit_value * (total_interest / 100)
+                ELSE 0
+            END
+        ), 0) as interest')
             ])
             ->first();
 
         Log::info('Créditos creados en ' . $targetDate->format('Y-m-d') . ':', [
             'query' => DB::table('credits')
                 ->where('seller_id', $sellerId)
-                ->whereBetween('created_at', [
-                    $targetDate->startOfDay()->format('Y-m-d H:i:s'),
-                    $targetDate->endOfDay()->format('Y-m-d H:i:s')
-                ])
+                ->whereBetween('created_at', [$startUTC, $endUTC])
                 ->toSql(),
             'bindings' => DB::table('credits')
                 ->where('seller_id', $sellerId)
-                ->whereBetween('created_at', [
-                    $targetDate->startOfDay()->format('Y-m-d H:i:s'),
-                    $targetDate->endOfDay()->format('Y-m-d H:i:s')
-                ])
+                ->whereBetween('created_at', [$startUTC, $endUTC])
                 ->getBindings(),
             'result' => $credits
         ]);
 
-
         $totals['created_credits_value'] = (float)$credits->value;
         $totals['created_credits_interest'] = (float)$credits->interest;
 
-        // Obtener gastos
         $totals['total_expenses'] = (float)Expense::where('user_id', $user->id)
-            ->whereDate('updated_at', $date)
+            ->whereBetween('updated_at', [$startUTC, $endUTC])
             ->where('status', 'Aprobado')
             ->sum('value');
 
         $totals['total_income'] = (float)Income::where('user_id', $user->id)
-            ->whereDate('updated_at', $date)
+            ->whereBetween('updated_at', [$startUTC, $endUTC])
             ->sum('value');
 
-        // Obtener total clientes
         $totals['total_clients'] = (int)DB::table('clients')
             ->whereExists(function ($query) use ($sellerId) {
                 $query->select(DB::raw(1))
@@ -777,7 +769,7 @@ class LiquidationController extends Controller
 
         $renewalCredits = DB::table('credits')
             ->where('seller_id', $sellerId)
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
             ->whereNotNull('renewed_from_id')
             ->get();
 

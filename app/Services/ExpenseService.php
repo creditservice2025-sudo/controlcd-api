@@ -19,6 +19,8 @@ class ExpenseService
 {
     use ApiResponse;
 
+    const TIMEZONE = 'America/Caracas';
+
     public function create(Request $request)
     {
         try {
@@ -230,8 +232,11 @@ class ExpenseService
 
                 $expensesQuery->whereIn('user_id', $userIds);
             } elseif ($role === 5) {
+                $todayStart = Carbon::now(self::TIMEZONE)->startOfDay()->timezone('UTC');
+                $todayEnd = Carbon::now(self::TIMEZONE)->endOfDay()->timezone('UTC');
+
                 $expensesQuery->where('user_id', $user->id)
-                    ->whereDate('created_at', Carbon::today());
+                    ->whereBetween('created_at', [$todayStart, $todayEnd]);
             }
 
             if ($request->has('seller_id') && $request->seller_id) {
@@ -370,13 +375,24 @@ class ExpenseService
             $expensesQuery = Expense::with(['user', 'category', 'images'])
                 ->where('user_id', $sellerUserId);
 
+            $timezone = 'America/Caracas'; 
+
             if ($request->has('start_date') && $request->has('end_date')) {
-                 $startDate = $request->get('start_date'); // formato: 'YYYY-MM-DD'
-            $endDate = $request->get('end_date');
+                $startDate = Carbon::parse($request->get('start_date'), $timezone)->startOfDay()->timezone('UTC');
+                $endDate = Carbon::parse($request->get('end_date'), $timezone)->endOfDay()->timezone('UTC');
+
                 $expensesQuery->whereBetween('created_at', [$startDate, $endDate]);
             } elseif ($request->has('date')) {
-                $filterDate = $request->get('date');
-                $expensesQuery->whereDate('created_at', $filterDate);
+                $filterDate = Carbon::parse($request->get('date'), $timezone);
+
+                $start = $filterDate->copy()->startOfDay()->timezone('UTC');
+                $end = $filterDate->copy()->endOfDay()->timezone('UTC');
+
+                $expensesQuery->whereBetween('created_at', [$start, $end]);
+            } else {
+                $todayStart = Carbon::now($timezone)->startOfDay()->timezone('UTC');
+                $todayEnd = Carbon::now($timezone)->endOfDay()->timezone('UTC');
+                $expensesQuery->whereBetween('created_at', [$todayStart, $todayEnd]);
             }
 
             $expenses = $expensesQuery->paginate($perpage);
