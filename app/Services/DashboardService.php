@@ -86,7 +86,7 @@ class DashboardService
 
             $sellersQuery = Seller::with([
                 'clients',
-                'credits',
+                'credits.installments.payments',
                 'city' => function ($query) {
                     $query->select('id', 'name', 'country_id');
                 },
@@ -146,7 +146,7 @@ class DashboardService
                     'utilidadBruta' => 0
                 ];
 
-             
+
 
                 foreach ($seller->credits as $credit) {
                     if ($credit->status === 'Cartera Irrecuperable') {
@@ -154,35 +154,50 @@ class DashboardService
                         $sellerData['irrecoverableTotal'] += $credit->credit_value + ($credit->credit_value * $credit->total_interest / 100);
                         continue;
                     }
-
-                    $totalPaid = Payment::where('credit_id', $credit->id)
-                        ->sum('amount');
-
                     $utility = $credit->credit_value * $credit->total_interest / 100;
                     $capitalPayable = $credit->credit_value;
                     $valorCredito = $capitalPayable + $utility;
 
                     $sellerData['valorTotalCreditos'] += $valorCredito;
-                    $sellerData['valorTotalPagado'] += $totalPaid;
                     $sellerData['capitalBruto'] += $capitalPayable;
                     $sellerData['utilidadBruta'] += $utility;
 
-                    $paidCapital = min($totalPaid, $capitalPayable);
-                    $paidUtility = max(0, $totalPaid - $capitalPayable);
+                    // Lógica por cuota (installment)
+                    $pendingCapital = 0;
+                    $pendingUtility = 0;
+                    $paidCapital = 0;
+                    $paidUtility = 0;
 
-                    $remainingCapital = max(0, $capitalPayable - $paidCapital); // Nunca negativo
-                    $remainingUtility = max(0, $utility - $paidUtility); // Nunca negativo
+                    $installments = $credit->installments;
+                    $numInstallments = $credit->number_installments > 0 ? $credit->number_installments : (count($installments) > 0 ? count($installments) : 1);
+                    $capitalCuota = $credit->credit_value / $numInstallments;
+                    $utilidadCuota = $utility / $numInstallments;
 
-                    $sellerData['capital'] += $remainingCapital;
-                    $sellerData['utility'] += $remainingUtility;
-                    $sellerData['total'] += $remainingCapital + $remainingUtility;
+                    foreach ($installments as $installment) {
+                        // Pagos aplicados a la cuota
+                        $pagosCuota = ($installment->payments ?? collect())->sum('applied_amount');
+                        // Descontar primero capital, luego utilidad
+                        $capitalPagadoCuota = min($pagosCuota, $capitalCuota);
+                        $utilityPagadoCuota = max(0, $pagosCuota - $capitalCuota);
+                        $pendingCapital += max(0, $capitalCuota - $capitalPagadoCuota);
+                        $pendingUtility += max(0, $utilidadCuota - $utilityPagadoCuota);
+                        $paidCapital += $capitalPagadoCuota;
+                        $paidUtility += $utilityPagadoCuota;
+                    }
+
+                    $totalPaid = Payment::where('credit_id', $credit->id)->sum('amount');
+                    $sellerData['valorTotalPagado'] += $totalPaid;
+
+                    $sellerData['capital'] += $pendingCapital;
+                    $sellerData['utility'] += $pendingUtility;
+                    $sellerData['total'] += $pendingCapital + $pendingUtility;
 
                     $sellerData['paidCapital'] += $paidCapital;
                     $sellerData['paidUtility'] += $paidUtility;
 
                     $sellerData['credits']++;
 
-                    if ($totalPaid >= $capitalPayable) {
+                    if ($pendingCapital == 0) {
                         $sellerData['paidCredits']++;
                     } else {
                         $sellerData['unpaidCredits']++;
