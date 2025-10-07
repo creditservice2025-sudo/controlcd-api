@@ -146,8 +146,7 @@ class DashboardService
                     'utilidadBruta' => 0
                 ];
 
-             }
-                }
+             
 
                 foreach ($seller->credits as $credit) {
                     if ($credit->status === 'Cartera Irrecuperable') {
