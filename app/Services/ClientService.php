@@ -2055,7 +2055,7 @@ class ClientService
             ->whereNull('payment_installments.deleted_at')
             ->whereNull('installments.deleted_at')
             ->whereNull('credits.deleted_at')
-            ->whereDate('payments.created_at', $date);
+            ->whereBetween('payments.created_at', [$startUTC, $endUTC]);
 
 
         if ($sellerId) {
@@ -2073,7 +2073,7 @@ class ClientService
             ->whereNull('installments.deleted_at')
             ->where('credits.status', '!=', 'Unificado')
             ->whereDate('installments.due_date', $date)
-            ->whereNotExists(function ($query) use ($date) {
+            ->whereNotExists(function ($query) use ($startUTC, $endUTC) {
                 $query->select(DB::raw(1))
                     ->from('payments')
                     ->whereNull('payments.deleted_at')
@@ -2089,7 +2089,7 @@ class ClientService
                                     ->whereColumn('payment_installments.payment_id', 'payments.id');
                             });
                     })
-                    ->whereDate('payments.created_at', $date);
+                    ->whereBetween('payments.created_at', [$startUTC, $endUTC]);
             });
 
         if ($sellerId) {
@@ -2101,7 +2101,7 @@ class ClientService
         $activeCreditsTodayQuery = DB::table('credits')
             ->selectRaw('COUNT(credits.id) as total_active_credits_today')
             ->whereNull('credits.deleted_at')
-            ->whereDate('credits.created_at', $date)
+            ->whereBetween('credits.created_at', [$startUTC, $endUTC])
             ->where('credits.status', 'Vigente');
 
         if ($sellerId) {
@@ -2113,7 +2113,7 @@ class ClientService
         $dailyExpensesQuery = DB::table('expenses')
             ->selectRaw('COALESCE(SUM(expenses.value), 0) as total_expenses_today')
             ->whereNull('expenses.deleted_at')
-            ->whereDate('expenses.created_at', $date);
+            ->whereBetween('expenses.created_at', [$startUTC, $endUTC]);
 
         if ($sellerId) {
             $dailyExpensesQuery->where('expenses.user_id', $userId);
@@ -2131,11 +2131,16 @@ class ClientService
             ->whereNull('installments.deleted_at')
             ->whereNull('payment_installments.deleted_at')
             ->whereNull('payments.deleted_at')
-            ->whereDate('payments.created_at', $date)
+            ->whereBetween('payments.created_at', [$startUTC, $endUTC])
             ->where(function ($query) {
                 $query->where('payments.status', '!=', 'Pagado')
                     ->where('payments.status', '!=', 'Abonado');
-            });
+            })
+            ->select('clients.id', 'clients.name', 'payments.status');
+
+        $result = $defaultedClientsCountQuery->get();
+
+        Log::info('Clientes contados como defaulted:', ['clientes' => $result]);
 
         if ($sellerId) {
             $defaultedClientsCountQuery->where('credits.seller_id', $sellerId);
