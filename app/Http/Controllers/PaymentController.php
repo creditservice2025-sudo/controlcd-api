@@ -89,6 +89,11 @@ class PaymentController extends Controller
     public function dailyPaymentTotals(Request $request)
     {
         $date = $request->get('date');
+        $timezone = 'America/Caracas'; // Zona horaria de Venezuela
+
+        $start = Carbon::createFromFormat('Y-m-d', $date, $timezone)->startOfDay()->timezone('UTC');
+        $end = Carbon::createFromFormat('Y-m-d', $date, $timezone)->endOfDay()->timezone('UTC');
+
         $user = Auth::user();
 
         if (!in_array($user->role_id, [1, 2, 5])) {
@@ -109,12 +114,12 @@ class PaymentController extends Controller
                 'payments.payment_method',
                 DB::raw('SUM(payments.amount) as total')
             )
-            ->whereDate('payments.created_at', $date);
+            ->whereBetween('payments.created_at', [$start, $end]);
 
         $firstPaymentQuery = DB::table('payments')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
             ->select(DB::raw('MIN(payments.created_at) as first_payment_date'))
-            ->whereDate('payments.created_at', $date);
+            ->whereBetween('payments.created_at', [$start, $end]);
 
         if ($sellerId) {
             $paymentQuery->where('credits.seller_id', $sellerId);
@@ -125,7 +130,7 @@ class PaymentController extends Controller
             ->get();
 
         $firstPaymentResult = $firstPaymentQuery->first();
-        $firstPaymentDate = $firstPaymentResult->first_payment_date;
+        $firstPaymentDate = $firstPaymentResult ? $firstPaymentResult->first_payment_date : null;
 
         $totals = [
             'cash' => 0,
@@ -163,7 +168,7 @@ class PaymentController extends Controller
                 DB::raw('COALESCE(SUM(credit_value), 0) as total_credit_value'),
                 DB::raw('COALESCE(SUM(credit_value * (total_interest / 100)), 0) as total_interest_amount')
             )
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$start, $end])
             ->whereNull('unification_reason');
 
         if ($sellerId) {
@@ -197,12 +202,12 @@ class PaymentController extends Controller
         // 5. Gastos
         $expensesQuery = DB::table('expenses')
             ->select(DB::raw('COALESCE(SUM(value), 0) as total_expenses'))
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$start, $end])
             ->where('status', 'Aprobado');
 
         $incomeQuery = DB::table('incomes')
             ->select(DB::raw('COALESCE(SUM(value), 0) as total_income'))
-            ->whereDate('created_at', $date);
+            ->whereBetween('created_at', [$start, $end]);
 
         if ($user->role_id == 5) {
             $expensesQuery->where('user_id', $user->id);
@@ -210,10 +215,12 @@ class PaymentController extends Controller
         }
 
         $expensesResult = $expensesQuery->first();
-        // List all expenses for the date
+
+        // List all expenses for the date - CORREGIDO: usar created_at con rango UTC
         $expensesListQuery = DB::table('expenses')
-            ->whereDate('updated_at', $date)
+            ->whereBetween('created_at', [$start, $end])
             ->where('status', 'Aprobado');
+
         if ($user->role_id == 5) {
             $expensesListQuery = $expensesListQuery->where('user_id', $user->id);
         }
@@ -221,18 +228,21 @@ class PaymentController extends Controller
         $totals['total_expenses'] = (float)($expensesResult->total_expenses ?? 0);
 
         $incomeResult = $incomeQuery->first();
-        // List all incomes for the date
+
+        // List all incomes for the date - CORREGIDO: usar created_at con rango UTC
         $incomesListQuery = DB::table('incomes')
-            ->whereDate('updated_at', $date);
+            ->whereBetween('created_at', [$start, $end]);
+
         if ($user->role_id == 5) {
             $incomesListQuery = $incomesListQuery->where('user_id', $user->id);
         }
         $incomesList = $incomesListQuery->get();
         $totals['total_income'] = (float)($incomeResult->total_income ?? 0);
 
-        // List all payments for the date
+        // List all payments for the date - CORREGIDO: usar created_at con rango UTC
         $paymentsListQuery = DB::table('payments')
-            ->whereDate('payment_date', $date);
+            ->whereBetween('created_at', [$start, $end]);
+
         if ($sellerId) {
             $paymentsListQuery = $paymentsListQuery
                 ->join('credits', 'payments.credit_id', '=', 'credits.id')
@@ -251,11 +261,16 @@ class PaymentController extends Controller
             $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
         }
 
+        // CORREGIDO: Usar Carbon con timezone para el cálculo de la fecha anterior
+        $previousDate = Carbon::createFromFormat('Y-m-d', $date, $timezone)
+            ->subDay()
+            ->format('Y-m-d');
+
         $irrecoverableCredits = DB::table('installments')
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
             ->where('credits.seller_id', $sellerId)
             ->where('credits.status', 'Cartera Irrecuperable')
-            ->whereDate('credits.updated_at', Carbon::parse($date)->subDay()->toDateString())
+            ->whereDate('credits.updated_at', $previousDate)
             ->where('installments.status', 'Pendiente')
             ->sum('installments.quota_amount');
 
