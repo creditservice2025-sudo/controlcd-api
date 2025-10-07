@@ -1625,8 +1625,6 @@ class ClientService
 
     public function getCollectionSummary(string $date = null)
     {
-        // Usar fecha actual si no se proporciona
-        $date = $date ?: now()->format('Y-m-d');
 
         $user = Auth::user();
         $seller = $user->seller;

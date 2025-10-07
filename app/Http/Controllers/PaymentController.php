@@ -7,6 +7,7 @@ use Illuminate\Http\Request;
 use App\Services\PaymentService;
 use App\Http\Requests\Payment\PaymentRequest;
 use App\Models\Liquidation;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -87,7 +88,7 @@ class PaymentController extends Controller
 
     public function dailyPaymentTotals(Request $request)
     {
-        $date = $request->input('date');
+        $date = $request->get('date');
         $user = Auth::user();
 
         if (!in_array($user->role_id, [1, 2, 5])) {
@@ -169,6 +170,7 @@ class PaymentController extends Controller
         }
 
         $createdCreditsResult = $createdCreditsQuery->first();
+
         $totals['created_credits_value'] = (float)$createdCreditsResult->total_credit_value;
         $totals['created_credits_interest'] = (float)$createdCreditsResult->total_interest_amount;
 
@@ -194,13 +196,12 @@ class PaymentController extends Controller
         // 5. Gastos
         $expensesQuery = DB::table('expenses')
             ->select(DB::raw('COALESCE(SUM(value), 0) as total_expenses'))
-            ->whereDate('updated_at', $date)
+            ->whereDate('created_at', $date)
             ->where('status', 'Aprobado');
 
         $incomeQuery = DB::table('incomes')
             ->select(DB::raw('COALESCE(SUM(value), 0) as total_income'))
-            ->whereDate('updated_at', $date);
-
+            ->whereDate('created_at', $date);
 
         if ($user->role_id == 5) {
             $expensesQuery->where('user_id', $user->id);
@@ -208,8 +209,35 @@ class PaymentController extends Controller
         }
 
         $expensesResult = $expensesQuery->first();
+        // List all expenses for the date
+        $expensesListQuery = DB::table('expenses')
+            ->whereDate('updated_at', $date)
+            ->where('status', 'Aprobado');
+        if ($user->role_id == 5) {
+            $expensesListQuery = $expensesListQuery->where('user_id', $user->id);
+        }
+        $expensesList = $expensesListQuery->get();
         $totals['total_expenses'] = (float)($expensesResult->total_expenses ?? 0);
-        $totals['total_income'] = (float)($incomeQuery->first()->total_income ?? 0);
+
+        $incomeResult = $incomeQuery->first();
+        // List all incomes for the date
+        $incomesListQuery = DB::table('incomes')
+            ->whereDate('updated_at', $date);
+        if ($user->role_id == 5) {
+            $incomesListQuery = $incomesListQuery->where('user_id', $user->id);
+        }
+        $incomesList = $incomesListQuery->get();
+        $totals['total_income'] = (float)($incomeResult->total_income ?? 0);
+
+        // List all payments for the date
+        $paymentsListQuery = DB::table('payments')
+            ->whereDate('payment_date', $date);
+        if ($sellerId) {
+            $paymentsListQuery = $paymentsListQuery
+                ->join('credits', 'payments.credit_id', '=', 'credits.id')
+                ->where('credits.seller_id', $sellerId);
+        }
+        $paymentsList = $paymentsListQuery->get();
 
         // 6. Cálculo de saldos (Reestructurado según requerimiento)
         $initialCash = 0;
@@ -226,7 +254,6 @@ class PaymentController extends Controller
             + ($totals['total_income'] + $totals['collected_total'])
             - ($totals['created_credits_value']
                 + $totals['total_expenses']);
-
 
         $totals['initial_cash'] = $initialCash;
         $totals['real_to_deliver'] = $realToDeliver;
