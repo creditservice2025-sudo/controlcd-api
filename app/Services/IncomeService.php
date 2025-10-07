@@ -195,8 +195,13 @@ class IncomeService
 
                 $incomeQuery->whereIn('user_id', $userIds);
             } elseif ($role === 5) {
-                $incomeQuery->where('user_id', $user->id)
-                    ->whereDate('created_at', Carbon::today());
+                $timezone = 'America/Caracas';
+                $today = Carbon::now($timezone)->startOfDay();
+                $todayEnd = Carbon::now($timezone)->endOfDay();
+                $incomeQuery->whereBetween('created_at', [
+                    $today->copy()->timezone('UTC'),
+                    $todayEnd->copy()->timezone('UTC')
+                ]);
             }
 
             if ($request->has('seller_id') && $request->seller_id) {
@@ -335,14 +340,35 @@ class IncomeService
             $incomeQuery = Income::with(['user', 'images'])
                 ->where('user_id', $sellerUserId);
 
-            if ($request->has('start_date') && $request->has('end_date')) {
-                $startDate = $request->get('start_date'); // formato: 'YYYY-MM-DD'
-            $endDate = $request->get('end_date'); 
-                $incomeQuery->whereBetween('created_at', [$startDate, $endDate]);
-            } elseif ($request->has('date')) {
-                 $filterDate = $request->get('date');
-                $incomeQuery->whereDate('created_at', $filterDate);
-            } 
+                 $timezone = 'America/Caracas';
+
+             if ($request->has('start_date') && $request->has('end_date')) {
+            $startDate = $request->get('start_date');
+            $endDate = $request->get('end_date');
+            
+            // Convertir fechas al huso horario de Caracas
+            $start = Carbon::createFromFormat('Y-m-d', $startDate, $timezone)
+                ->startOfDay()
+                ->timezone('UTC');
+            $end = Carbon::createFromFormat('Y-m-d', $endDate, $timezone)
+                ->endOfDay()
+                ->timezone('UTC');
+                
+            $incomeQuery->whereBetween('created_at', [$start, $end]);
+        } elseif ($request->has('date')) {
+            $filterDate = $request->get('date');
+            
+            // Convertir fecha al huso horario de Caracas
+            $start = Carbon::createFromFormat('Y-m-d', $filterDate, $timezone)
+                ->startOfDay()
+                ->timezone('UTC');
+            $end = Carbon::createFromFormat('Y-m-d', $filterDate, $timezone)
+                ->endOfDay()
+                ->timezone('UTC');
+                
+            $incomeQuery->whereBetween('created_at', [$start, $end]);
+        }
+
 
             $income = $incomeQuery->paginate($perpage);
 
