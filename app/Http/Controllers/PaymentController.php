@@ -241,13 +241,14 @@ class PaymentController extends Controller
 
         // List all payments for the date - CORREGIDO: usar created_at con rango UTC
         $paymentsListQuery = DB::table('payments')
-            ->whereBetween('created_at', [$start, $end]);
+            ->whereBetween('payments.created_at', [$start, $end]);  // Especificamos la tabla
 
         if ($sellerId) {
             $paymentsListQuery = $paymentsListQuery
                 ->join('credits', 'payments.credit_id', '=', 'credits.id')
                 ->where('credits.seller_id', $sellerId);
         }
+
         $paymentsList = $paymentsListQuery->get();
 
         // 6. Cálculo de saldos (Reestructurado según requerimiento)
