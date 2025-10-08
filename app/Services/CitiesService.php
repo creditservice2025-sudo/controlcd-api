@@ -7,6 +7,7 @@ use App\Traits\ApiResponse;
 use App\Models\City;
 use App\Models\Seller;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 
 class CitiesService
@@ -114,8 +115,33 @@ class CitiesService
     {
         try {
             $search = $request->query('search', '');
+            $user = Auth::user();
+            $seller = $user->seller;
+            $company = $user->company;
+
             $query = Seller::with('user')
                 ->where('city_id', $city_id);
+
+            // === FILTRO POR ROL ===
+            switch ($user->role_id) {
+                case 1: // Admin: ve todos los vendedores en la ciudad
+                    break;
+                case 2: // Empresa: solo vendedores de la empresa en la ciudad
+                    if ($company) {
+                        $query->where('company_id', $company->id);
+                    }
+                    break;
+                case 3: // Supervisor/Vendedor: solo su propio registro en la ciudad
+                    if ($seller) {
+                        $query->where('id', $seller->id);
+                    } else {
+                        $query->whereRaw('0 = 1');
+                    }
+                    break;
+                default: // Otros roles: no ven nada
+                    $query->whereRaw('0 = 1');
+                    break;
+            }
 
             if (!empty($search)) {
                 $query->where('name', 'LIKE', "%{$search}%");
