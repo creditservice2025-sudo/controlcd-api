@@ -128,6 +128,19 @@ class IncomeService
                 return $this->errorNotFoundResponse('Ingreso no encontrado');
             }
 
+            // Solo permitir eliminar ingresos del día actual
+            $timezone = 'America/Caracas';
+
+            $incomeDate = Carbon::parse($income->created_at)->timezone($timezone)->format('Y-m-d');
+            $currentDate = Carbon::now($timezone)->format('Y-m-d');
+
+            if ($incomeDate !== $currentDate && $user->role_id !== 1) {
+                return $this->errorResponse(
+                    'Solo se pueden eliminar ingresos creados el día de hoy',
+                    422
+                );
+            }
+
             // Obtener el vendedor asociado al usuario del ingreso
             $seller = Seller::where('user_id', $income->user_id)->first();
 
@@ -137,10 +150,10 @@ class IncomeService
 
             // Verificar si existe liquidación aprobada para la fecha del ingreso y este vendedor
             $liquidation = Liquidation::where('seller_id', $seller->id)
-                ->whereDate('date', $income->created_at->format('Y-m-d'))
+                ->whereDate('date', $incomeDate)
                 ->first();
 
-            if ($liquidation && $user->role_id !== 1) {
+            if ($liquidation) {
                 return $this->errorResponse(
                     'No se puede eliminar el ingreso porque ya existe una liquidación aprobada para esta fecha',
                     422
@@ -206,6 +219,13 @@ class IncomeService
 
             if ($request->has('seller_id') && $request->seller_id) {
                 $incomeQuery->where('user_id', $request->seller_id);
+            }
+
+            if ($request->has('start_date') && $request->has('end_date')) {
+                $incomeQuery->whereBetween('created_at', [
+                    $request->start_date . " 00:00:00",
+                    $request->end_date . " 23:59:59"
+                ]);
             }
 
             $validOrderDirections = ['asc', 'desc'];
@@ -324,63 +344,63 @@ class IncomeService
             return $this->errorResponse('Error al generar reporte mensual', 500);
         }
     }
-   public function getSellerIncomeByDate(int $sellerId, Request $request, int $perpage)
-{
-    try {
-        $sellerUserId = Seller::where('id', $sellerId)->value('user_id');
+    public function getSellerIncomeByDate(int $sellerId, Request $request, int $perpage)
+    {
+        try {
+            $sellerUserId = Seller::where('id', $sellerId)->value('user_id');
 
-        if (!$sellerUserId) {
+            if (!$sellerUserId) {
+                return $this->successResponse([
+                    'success' => true,
+                    'message' => 'No se encontró el usuario asociado a este ID de vendedor.',
+                    'data' => []
+                ]);
+            }
+
+            $incomeQuery = Income::with(['user', 'images'])
+                ->where('user_id', $sellerUserId);
+
+            $timezone = 'America/Caracas';
+
+            if ($request->has('start_date') && $request->has('end_date')) {
+                $startDate = $request->get('start_date');
+                $endDate = $request->get('end_date');
+
+                $start = Carbon::parse($startDate, $timezone)
+                    ->startOfDay()
+                    ->timezone('UTC');
+                $end = Carbon::parse($endDate, $timezone)
+                    ->endOfDay()
+                    ->timezone('UTC');
+
+                $incomeQuery->whereBetween('created_at', [$start, $end]);
+            } elseif ($request->has('date')) {
+                $filterDate = $request->get('date');
+
+                $start = Carbon::parse($filterDate, $timezone)
+                    ->startOfDay()
+                    ->timezone('UTC');
+                $end = Carbon::parse($filterDate, $timezone)
+                    ->endOfDay()
+                    ->timezone('UTC');
+
+                $incomeQuery->whereBetween('created_at', [$start, $end]);
+            } else {
+                $todayStart = Carbon::now($timezone)->startOfDay()->timezone('UTC');
+                $todayEnd = Carbon::now($timezone)->endOfDay()->timezone('UTC');
+                $incomeQuery->whereBetween('created_at', [$todayStart, $todayEnd]);
+            }
+
+            $income = $incomeQuery->paginate($perpage);
+
             return $this->successResponse([
                 'success' => true,
-                'message' => 'No se encontró el usuario asociado a este ID de vendedor.',
-                'data' => []
+                'message' => 'Ingresos obtenidos correctamente para el vendedor y fecha(s) especificadas',
+                'data' => $income
             ]);
+        } catch (\Exception $e) {
+            Log::error($e->getMessage());
+            return $this->errorResponse('Error al obtener los ingresos del vendedor: ' . $e->getMessage(), 500);
         }
-
-        $incomeQuery = Income::with(['user', 'images'])
-            ->where('user_id', $sellerUserId);
-
-        $timezone = 'America/Caracas';
-
-        if ($request->has('start_date') && $request->has('end_date')) {
-            $startDate = $request->get('start_date');
-            $endDate = $request->get('end_date');
-            
-            $start = Carbon::parse($startDate, $timezone)
-                ->startOfDay()
-                ->timezone('UTC');
-            $end = Carbon::parse($endDate, $timezone)
-                ->endOfDay()
-                ->timezone('UTC');
-                
-            $incomeQuery->whereBetween('created_at', [$start, $end]);
-        } elseif ($request->has('date')) {
-            $filterDate = $request->get('date');
-            
-            $start = Carbon::parse($filterDate, $timezone)
-                ->startOfDay()
-                ->timezone('UTC');
-            $end = Carbon::parse($filterDate, $timezone)
-                ->endOfDay()
-                ->timezone('UTC');
-                
-            $incomeQuery->whereBetween('created_at', [$start, $end]);
-        } else {
-            $todayStart = Carbon::now($timezone)->startOfDay()->timezone('UTC');
-            $todayEnd = Carbon::now($timezone)->endOfDay()->timezone('UTC');
-            $incomeQuery->whereBetween('created_at', [$todayStart, $todayEnd]);
-        }
-
-        $income = $incomeQuery->paginate($perpage);
-
-        return $this->successResponse([
-            'success' => true,
-            'message' => 'Ingresos obtenidos correctamente para el vendedor y fecha(s) especificadas',
-            'data' => $income
-        ]);
-    } catch (\Exception $e) {
-        Log::error($e->getMessage());
-        return $this->errorResponse('Error al obtener los ingresos del vendedor: ' . $e->getMessage(), 500);
     }
-}
 }

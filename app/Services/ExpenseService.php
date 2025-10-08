@@ -243,6 +243,13 @@ class ExpenseService
                 $expensesQuery->where('user_id', $request->seller_id);
             }
 
+            if ($request->has('start_date') && $request->has('end_date')) {
+                $expensesQuery->whereBetween('created_at', [
+                    $request->start_date . " 00:00:00",
+                    $request->end_date . " 23:59:59"
+                ]);
+            }
+
             $validOrderDirections = ['asc', 'desc'];
             $orderDirection = in_array(strtolower($orderDirection), $validOrderDirections)
                 ? $orderDirection
@@ -375,7 +382,7 @@ class ExpenseService
             $expensesQuery = Expense::with(['user', 'category', 'images'])
                 ->where('user_id', $sellerUserId);
 
-            $timezone = 'America/Caracas'; 
+            $timezone = 'America/Caracas';
 
             if ($request->has('start_date') && $request->has('end_date')) {
                 $startDate = Carbon::parse($request->get('start_date'), $timezone)->startOfDay()->timezone('UTC');

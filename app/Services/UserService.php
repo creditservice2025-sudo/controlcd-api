@@ -6,9 +6,11 @@ use Hash;
 use App\Models\User;
 use App\Models\Client;
 use App\Models\Liquidation;
+use App\Models\Seller;
 use App\Models\UserRoute;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Spatie\Permission\Models\Role;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -125,11 +127,14 @@ class UserService
     public function getUsers(string $search, int $perpage)
     {
         try {
-            $excludedRoleIds = Role::whereIn('name', ['super-admin', 'cobrador'])
-                ->pluck('id')
-                ->toArray();
-
-            $users = User::query()
+            $user = Auth::user();
+            $roleId = $user->role_id;
+            $company = $user->company;
+            $seller = $user->seller;
+    
+            $excludedRoleIds = Role::whereIn('name', ['super-admin', 'cobrador', 'admin'])->pluck('id')->toArray();
+    
+            $usersQuery = User::query()
                 ->leftJoin('roles', 'roles.id', '=', 'users.role_id')
                 ->select(
                     'users.id',
@@ -146,28 +151,57 @@ class UserService
                     'roles.name as role_name'
                 )
                 ->with(['city', 'city.country'])
-                ->where(function ($query) use ($search) {
+                ->whereNull('users.deleted_at')
+                ->whereNotIn('users.role_id', $excludedRoleIds);
+    
+            // === FILTRO POR ROL ===
+            switch ($roleId) {
+                case 1: // Admin: ve todos
+                    break;
+                case 2: // Empresa: usuarios relacionados a la empresa por sellers
+                    if ($company) {
+                        // Trae IDs de vendedores de la empresa
+                        $sellerIds = Seller::where('company_id', $company->id)->pluck('id')->toArray();
+    
+                        // Trae IDs de usuarios asociados a esos vendedores vía users_routes
+                        $userIds = UserRoute::whereIn('seller_id', $sellerIds)->pluck('user_id')->toArray();
+    
+                        // Incluye también al usuario empresa autenticado
+                        $userIds[] = $user->id;
+    
+                        // Filtra por esos usuarios
+                        $usersQuery->whereIn('users.id', $userIds);
+                    }
+                    break;
+                default: // Otros roles: no ven nada
+                    $usersQuery->whereRaw('0 = 1');
+                    break;
+            }
+    
+            // Filtro de búsqueda
+            if (!empty(trim($search))) {
+                $usersQuery->where(function ($query) use ($search) {
                     $query->where('users.name', 'like', '%' . $search . '%')
                         ->orWhere('users.email', 'like', '%' . $search . '%')
                         ->orWhere('users.phone', 'like', '%' . $search . '%')
                         ->orWhere('users.address', 'like', '%' . $search . '%')
                         ->orWhere('users.dni', 'like', '%' . $search . '%');
-                })
-                ->whereNull('users.deleted_at')
-                ->whereNotIn('users.role_id', $excludedRoleIds)
+                });
+            }
+    
+            $users = $usersQuery
                 ->orderByDesc('users.created_at')
                 ->paginate($perpage);
-
+    
             return $this->successResponse([
                 'success' => true,
                 'data' => $users
             ]);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
-            $this->handlerException('Error al obtener los miembros');
+            return $this->handlerException('Error al obtener los miembros');
         }
     }
-
     public function getUser($userId)
     {
         try {
