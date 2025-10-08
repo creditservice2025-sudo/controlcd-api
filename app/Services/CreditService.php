@@ -789,30 +789,19 @@ class CreditService
             if ($request->has('start_date') && $request->has('end_date')) {
                 $startDate = $request->get('start_date');
                 $endDate = $request->get('end_date');
-                
-                $start = Carbon::createFromFormat('Y-m-d', $startDate, self::TIMEZONE)
-                    ->startOfDay()
-                    ->timezone('UTC');
-                $end = Carbon::createFromFormat('Y-m-d', $endDate, self::TIMEZONE)
-                    ->endOfDay()
-                    ->timezone('UTC');
-                    
-                $creditsQuery->whereBetween('credits.created_at', [$start, $end]); 
+
+                $start = Carbon::parse($startDate, self::TIMEZONE)->startOfDay()->timezone('UTC');
+                $end = Carbon::parse($endDate, self::TIMEZONE)->endOfDay()->timezone('UTC');
+                $creditsQuery->whereBetween('credits.created_at', [$start, $end]);
             } elseif ($request->has('date')) {
                 $filterDate = $request->get('date');
-                
-                $start = Carbon::createFromFormat('Y-m-d', $filterDate, self::TIMEZONE)
-                    ->startOfDay()
-                    ->timezone('UTC');
-                $end = Carbon::createFromFormat('Y-m-d', $filterDate, self::TIMEZONE)
-                    ->endOfDay()
-                    ->timezone('UTC');
-                    
-                $creditsQuery->whereBetween('credits.created_at', [$start, $end]); // ESPECIFICAR credits.created_at
+                $start = Carbon::parse($filterDate, self::TIMEZONE)->startOfDay()->timezone('UTC');
+                $end = Carbon::parse($filterDate, self::TIMEZONE)->endOfDay()->timezone('UTC');
+                $creditsQuery->whereBetween('credits.created_at', [$start, $end]);
             } else {
                 $todayStart = Carbon::now(self::TIMEZONE)->startOfDay()->timezone('UTC');
                 $todayEnd = Carbon::now(self::TIMEZONE)->endOfDay()->timezone('UTC');
-                $creditsQuery->whereBetween('credits.created_at', [$todayStart, $todayEnd]); // ESPECIFICAR credits.created_at
+                $creditsQuery->whereBetween('credits.created_at', [$todayStart, $todayEnd]);
             }
 
             $credits = $creditsQuery->get();
@@ -827,8 +816,6 @@ class CreditService
 
                 return $credit;
             });
-
-
 
             return $this->successResponse([
                 'success' => true,
@@ -1028,7 +1015,7 @@ class CreditService
     }
     public function getReport($request)
     {
-          $date = $request->date ?? Carbon::now(self::TIMEZONE)->format('Y-m-d');
+        $date = $request->date ?? Carbon::now(self::TIMEZONE)->format('Y-m-d');
         $sellerId = $request->seller_id ?? null;
 
         $reportData = $this->generateDailyReport($date, $sellerId);

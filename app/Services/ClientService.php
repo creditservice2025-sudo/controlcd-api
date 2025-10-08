@@ -392,6 +392,7 @@ class ClientService
 
             $user = Auth::user();
             $seller = $user->seller;
+            $company = $user->company;
 
             $clientsQuery = Client::query()
                 ->select('id', 'name', 'dni', 'email', 'status', 'seller_id') // Seleccionar solo columnas necesarias
@@ -403,6 +404,31 @@ class ClientService
                     'credits:id,client_id,credit_value,number_installments,payment_frequency,status,total_interest',
                     'credits.installments:id,credit_id,quota_number,due_date,quota_amount,status'
                 ]);
+
+            // === FILTRO POR ROL ===
+            switch ($user->role_id) {
+                case 1: // Admin: ve todos
+                    break;
+                case 2: // Empresa: solo clientes de la empresa
+                    if ($company) {
+                        $clientsQuery->whereHas('seller', function ($q) use ($company) {
+                            $q->where('company_id', $company->id);
+                        });
+                    }
+                    break;
+                case 3: // Supervisor o vendedor: solo los suyos
+                    if ($seller) {
+                        $clientsQuery->where('seller_id', $seller->id);
+                    } else {
+                        // Si no tiene seller asociado, no ve nada
+                        $clientsQuery->whereRaw('0 = 1');
+                    }
+                    break;
+                default: // Otros roles: no ven nada
+                    $clientsQuery->whereRaw('0 = 1');
+                    break;
+            }
+
 
             if (!empty(trim($search))) {
                 $clientsQuery->where(function ($query) use ($search) {

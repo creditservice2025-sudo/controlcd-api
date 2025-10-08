@@ -386,154 +386,158 @@ class PaymentService
         }
     }
 
-    public function getPaymentsBySeller($sellerId, Request $request, $perPage)
-    {
-        $seller = Seller::find($sellerId);
+   public function getPaymentsBySeller($sellerId, Request $request, $perPage)
+{
+    $seller = Seller::find($sellerId);
 
-        if (!$seller) {
-            return $this->successResponse([
-                'success' => false,
-                'message' => 'El vendedor no existe.',
-                'data' => null
-            ], 404);
-        }
-
-        // Consulta base para obtener pagos
-        $paymentsQuery = Payment::query()
-            ->join('credits', 'payments.credit_id', '=', 'credits.id')
-            ->join('clients', 'credits.client_id', '=', 'clients.id')
-            ->leftJoin('payment_images', 'payments.id', '=', 'payment_images.payment_id')
-            ->where('clients.seller_id', $sellerId)
-            ->select(
-                'payments.id',
-                'clients.id as client_id',
-                'clients.name as client_name',
-                'clients.dni as client_dni',
-                'credits.id as credit_id',
-                'credits.credit_value',
-                'credits.status as credit_status',
-                'credits.total_interest',
-                'credits.total_amount',
-                'credits.number_installments',
-                'credits.start_date',
-                'payments.payment_date',
-                'payments.amount as total_payment',
-                'payments.payment_method',
-                'payments.payment_reference',
-                'payments.status',
-                'payments.amount',
-                'payments.created_at',
-                'payment_images.path as image_path'
-            )
-            ->orderBy('clients.name')
-            ->orderBy('credits.id')
-            ->orderBy('payments.created_at', 'desc');
-
-        // Filtros de fecha
-        if ($request->has('start_date') && $request->has('end_date')) {
-            $startDate = Carbon::parse($request->get('start_date'))->startOfDay();
-            $endDate = Carbon::parse($request->get('end_date'))->endOfDay();
-            $paymentsQuery->whereBetween('payments.created_at', [$startDate, $endDate]);
-        } elseif ($request->has('date')) {
-            $filterDate = Carbon::parse($request->get('date'))->toDateString();
-            $paymentsQuery->whereDate('payments.created_at', $filterDate);
-        } else {
-            $paymentsQuery->whereRaw("DATE(CONVERT_TZ(payments.created_at, '+00:00', '-04:00')) = ?", [Carbon::today()->toDateString()]);
-        }
-
-        // Filtro de estado
-        if ($request->has('status') && in_array($request->status, ['Abonado', 'Pagado'])) {
-            $paymentsQuery->where('payments.status', $request->status);
-        }
-
-        $payments = $paymentsQuery->get();
-
-        // Obtener IDs de pagos para cargar cuotas
-        $paymentIds = $payments->where('status', 'Pagado')->pluck('id');
-
-        // Cargar cuotas en una sola consulta
-        $installmentsDetails = collect();
-        if ($paymentIds->isNotEmpty()) {
-            $installmentsDetails = DB::table('payment_installments')
-                ->join('installments', 'payment_installments.installment_id', '=', 'installments.id')
-                ->whereIn('payment_installments.payment_id', $paymentIds)
-                ->select(
-                    'installments.*',
-                    'payment_installments.applied_amount',
-                    'payment_installments.created_at',
-                    'payment_installments.payment_id'
-                )
-                ->get()
-                ->groupBy('payment_id');
-        }
-
-        // Procesar cada pago
-        $payments->transform(function ($payment) use ($installmentsDetails) {
-            if ($payment->status === 'Pagado') {
-                $payment->installments_details = $installmentsDetails->get($payment->id, collect());
-                $payment->total_applied = $payment->installments_details->sum('applied_amount');
-            } else {
-                $payment->installments_details = collect();
-                $payment->total_applied = 0;
-            }
-            return $payment;
-        });
-
-        // Agrupar pagos por cliente y crédito
-        $groupedByClientAndCredit = $payments->groupBy(['client_id', 'credit_id']);
-
-        $groupedPayments = collect();
-        foreach ($groupedByClientAndCredit as $clientId => $credits) {
-            foreach ($credits as $creditId => $creditPayments) {
-                $firstPayment = $creditPayments->first();
-
-                $groupedPayments->push([
-                    'client_id' => $clientId,
-                    'client_name' => $firstPayment->client_name,
-                    'client_dni' => $firstPayment->client_dni,
-                    'credit_id' => $creditId,
-                    'credit_value' => $firstPayment->credit_value,
-                    'status' => $firstPayment->credit_status,
-                    'total_interest' => $firstPayment->total_interest,
-                    'total_amount' => $firstPayment->total_amount,
-                    'number_installments' => $firstPayment->number_installments,
-                    'start_date' => $firstPayment->start_date,
-                    'payments' => $creditPayments->map(function ($payment) {
-                        return [
-                            'id' => $payment->id,
-                            'payment_date' => $payment->payment_date,
-                            'total_payment' => $payment->total_payment,
-                            'payment_method' => $payment->payment_method,
-                            'payment_reference' => $payment->payment_reference,
-                            'status' => $payment->status,
-                            'amount' => $payment->amount,
-                            'created_at' => $payment->created_at,
-                            'installments_details' => $payment->installments_details,
-                            'total_applied' => $payment->total_applied,
-                            'image_path' => $payment->image_path
-                        ];
-                    })->values()
-                ]);
-            }
-        }
-
-        $currentPage = (int)$request->input('page', 1); // Conversión a entero
-        $offset = ($currentPage - 1) * $perPage;
-        $currentPageItems = $groupedPayments->slice($offset, $perPage)->values();
-
+    if (!$seller) {
         return $this->successResponse([
-            'success' => true,
-            'message' => 'Pagos obtenidos correctamente',
-            'data' => [
-                'grouped_payments' => $currentPageItems,
-                'pagination' => [
-                    'total' => $groupedPayments->count(),
-                    'per_page' => $perPage,
-                    'current_page' => $currentPage
-                ]
-            ]
-        ]);
+            'success' => false,
+            'message' => 'El vendedor no existe.',
+            'data' => null
+        ], 404);
     }
+
+    $timezone = 'America/Caracas'; 
+
+    $paymentsQuery = Payment::query()
+        ->join('credits', 'payments.credit_id', '=', 'credits.id')
+        ->join('clients', 'credits.client_id', '=', 'clients.id')
+        ->leftJoin('payment_images', 'payments.id', '=', 'payment_images.payment_id')
+        ->where('clients.seller_id', $sellerId)
+        ->select(
+            'payments.id',
+            'clients.id as client_id',
+            'clients.name as client_name',
+            'clients.dni as client_dni',
+            'credits.id as credit_id',
+            'credits.credit_value',
+            'credits.status as credit_status',
+            'credits.total_interest',
+            'credits.total_amount',
+            'credits.number_installments',
+            'credits.start_date',
+            'payments.payment_date',
+            'payments.amount as total_payment',
+            'payments.payment_method',
+            'payments.payment_reference',
+            'payments.status',
+            'payments.amount',
+            'payments.created_at',
+            'payment_images.path as image_path'
+        )
+        ->orderBy('clients.name')
+        ->orderBy('credits.id')
+        ->orderBy('payments.created_at', 'desc');
+
+    // Filtros de fecha
+    if ($request->has('start_date') && $request->has('end_date')) {
+        $startDate = Carbon::parse($request->get('start_date'), $timezone)->startOfDay()->timezone('UTC');
+        $endDate = Carbon::parse($request->get('end_date'), $timezone)->endOfDay()->timezone('UTC');
+        $paymentsQuery->whereBetween('payments.created_at', [$startDate, $endDate]);
+    } elseif ($request->has('date')) {
+        $filterDate = Carbon::parse($request->get('date'), $timezone)->startOfDay()->timezone('UTC');
+        $endFilterDate = Carbon::parse($request->get('date'), $timezone)->endOfDay()->timezone('UTC');
+        $paymentsQuery->whereBetween('payments.created_at', [$filterDate, $endFilterDate]);
+    } else {
+        $todayStart = Carbon::now($timezone)->startOfDay()->timezone('UTC');
+        $todayEnd = Carbon::now($timezone)->endOfDay()->timezone('UTC');
+        $paymentsQuery->whereBetween('payments.created_at', [$todayStart, $todayEnd]);
+    }
+
+    // Filtro de estado
+    if ($request->has('status') && in_array($request->status, ['Abonado', 'Pagado'])) {
+        $paymentsQuery->where('payments.status', $request->status);
+    }
+
+    $payments = $paymentsQuery->get();
+
+    // Obtener IDs de pagos para cargar cuotas
+    $paymentIds = $payments->where('status', 'Pagado')->pluck('id');
+
+    // Cargar cuotas en una sola consulta
+    $installmentsDetails = collect();
+    if ($paymentIds->isNotEmpty()) {
+        $installmentsDetails = DB::table('payment_installments')
+            ->join('installments', 'payment_installments.installment_id', '=', 'installments.id')
+            ->whereIn('payment_installments.payment_id', $paymentIds)
+            ->select(
+                'installments.*',
+                'payment_installments.applied_amount',
+                'payment_installments.created_at',
+                'payment_installments.payment_id'
+            )
+            ->get()
+            ->groupBy('payment_id');
+    }
+
+    // Procesar cada pago
+    $payments->transform(function ($payment) use ($installmentsDetails) {
+        if ($payment->status === 'Pagado') {
+            $payment->installments_details = $installmentsDetails->get($payment->id, collect());
+            $payment->total_applied = $payment->installments_details->sum('applied_amount');
+        } else {
+            $payment->installments_details = collect();
+            $payment->total_applied = 0;
+        }
+        return $payment;
+    });
+
+    // Agrupar pagos por cliente y crédito
+    $groupedByClientAndCredit = $payments->groupBy(['client_id', 'credit_id']);
+
+    $groupedPayments = collect();
+    foreach ($groupedByClientAndCredit as $clientId => $credits) {
+        foreach ($credits as $creditId => $creditPayments) {
+            $firstPayment = $creditPayments->first();
+
+            $groupedPayments->push([
+                'client_id' => $clientId,
+                'client_name' => $firstPayment->client_name,
+                'client_dni' => $firstPayment->client_dni,
+                'credit_id' => $creditId,
+                'credit_value' => $firstPayment->credit_value,
+                'status' => $firstPayment->credit_status,
+                'total_interest' => $firstPayment->total_interest,
+                'total_amount' => $firstPayment->total_amount,
+                'number_installments' => $firstPayment->number_installments,
+                'start_date' => $firstPayment->start_date,
+                'payments' => $creditPayments->map(function ($payment) {
+                    return [
+                        'id' => $payment->id,
+                        'payment_date' => $payment->payment_date,
+                        'total_payment' => $payment->total_payment,
+                        'payment_method' => $payment->payment_method,
+                        'payment_reference' => $payment->payment_reference,
+                        'status' => $payment->status,
+                        'amount' => $payment->amount,
+                        'created_at' => $payment->created_at,
+                        'installments_details' => $payment->installments_details,
+                        'total_applied' => $payment->total_applied,
+                        'image_path' => $payment->image_path
+                    ];
+                })->values()
+            ]);
+        }
+    }
+
+    $currentPage = (int)$request->input('page', 1); // Conversión a entero
+    $offset = ($currentPage - 1) * $perPage;
+    $currentPageItems = $groupedPayments->slice($offset, $perPage)->values();
+
+    return $this->successResponse([
+        'success' => true,
+        'message' => 'Pagos obtenidos correctamente',
+        'data' => [
+            'grouped_payments' => $currentPageItems,
+            'pagination' => [
+                'total' => $groupedPayments->count(),
+                'per_page' => $perPage,
+                'current_page' => $currentPage
+            ]
+        ]
+    ]);
+}
 
     public function show($creditId, $paymentId)
     {
