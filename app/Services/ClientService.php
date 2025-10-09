@@ -395,27 +395,27 @@ class ClientService
             $company = $user->company;
 
             $clientsQuery = Client::query()
-    ->select('id', 'name', 'dni', 'email', 'status', 'seller_id', 'geolocation', 'routing_order')
-    ->with([
-        'seller' => function ($query) {
-            $query->select('id', 'user_id', 'city_id');
-        },
-        'seller.user' => function ($query) {
-            $query->select('id', 'name');
-        },
-        'seller.city' => function ($query) {
-            $query->select('id', 'name', 'country_id');
-        },
-        'seller.city.country' => function ($query) {
-            $query->select('id', 'name');
-        },
-        'credits' => function ($query) {
-            $query->select('id', 'client_id', 'credit_value', 'number_installments', 'payment_frequency', 'status', 'total_interest');
-        },
-        'credits.installments' => function ($query) {
-            $query->select('id', 'credit_id', 'quota_number', 'due_date', 'quota_amount', 'status');
-        }
-    ]);
+                ->select('id', 'name', 'dni', 'email', 'status', 'seller_id', 'geolocation', 'routing_order')
+                ->with([
+                    'seller' => function ($query) {
+                        $query->select('id', 'user_id', 'city_id');
+                    },
+                    'seller.user' => function ($query) {
+                        $query->select('id', 'name');
+                    },
+                    'seller.city' => function ($query) {
+                        $query->select('id', 'name', 'country_id');
+                    },
+                    'seller.city.country' => function ($query) {
+                        $query->select('id', 'name');
+                    },
+                    'credits' => function ($query) {
+                        $query->select('id', 'client_id', 'credit_value', 'number_installments', 'payment_frequency', 'status', 'total_interest');
+                    },
+                    'credits.installments' => function ($query) {
+                        $query->select('id', 'credit_id', 'quota_number', 'due_date', 'quota_amount', 'status');
+                    }
+                ]);
 
             // === FILTRO POR ROL ===
             switch ($user->role_id) {
@@ -647,8 +647,26 @@ class ClientService
     public function getClientsBySeller($sellerId, $search)
     {
         try {
-            // Se elimina el parámetro de paginación $perpage
-            return Client::with(['guarantors', 'images', 'credits', 'seller', 'seller.city'])
+            return Client::with([
+                'seller' => function ($query) {
+                    $query->select('id', 'user_id', 'city_id');
+                },
+                'seller.user' => function ($query) {
+                    $query->select('id', 'name');
+                },
+                'seller.city' => function ($query) {
+                    $query->select('id', 'name', 'country_id');
+                },
+                'seller.city.country' => function ($query) {
+                    $query->select('id', 'name');
+                },
+                'credits' => function ($query) {
+                    $query->select('id', 'client_id', 'credit_value', 'number_installments', 'payment_frequency', 'status', 'total_interest');
+                },
+                'credits.installments' => function ($query) {
+                    $query->select('id', 'credit_id', 'quota_number', 'due_date', 'quota_amount', 'status');
+                }
+            ])
                 ->where('seller_id', $sellerId)
                 ->where(function ($query) use ($search) {
                     $query->where('name', 'like', "%{$search}%")
