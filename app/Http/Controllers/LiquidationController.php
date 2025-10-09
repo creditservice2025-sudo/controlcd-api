@@ -39,13 +39,16 @@ class LiquidationController extends Controller
         $sellerId = $request->seller_id;
         $date = $request->date;
 
+        $timezone = 'America/Caracas';
+        $dateLocal = Carbon::parse($date, $timezone)->format('Y-m-d');
+
         // Verificar permisos
         if (!$this->checkAuthorization($user, $sellerId)) {
             return response()->json(['error' => 'Unauthorized'], 403);
         }
 
         // Obtener datos para la liquidación
-        $data = $this->getLiquidationData($sellerId, $date);
+        $data = $this->getLiquidationData($sellerId, $dateLocal, $user->id);
 
         return response()->json([
             'success' => true,
@@ -57,7 +60,9 @@ class LiquidationController extends Controller
     {
         $user = Auth::user();
 
-        $today = now()->toDateString();
+
+        $timezone = 'America/Caracas';
+        $todayDate = Carbon::now($timezone)->toDateString();
 
         $request->validate([
             'date' => 'required|date',
@@ -101,7 +106,7 @@ class LiquidationController extends Controller
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
             ->where('credits.seller_id', $request->seller_id)
             ->where('credits.status', 'Cartera Irrecuperable')
-            ->whereDate('credits.updated_at', Carbon::yesterday()->toDateString())
+            ->whereDate('credits.updated_at', $todayDate)
             ->where('installments.status', 'Pendiente')
             ->sum('installments.quota_amount');
 
@@ -353,39 +358,38 @@ class LiquidationController extends Controller
             'date' => 'required|date'
         ]);
 
-        $date = Carbon::parse($request->date)->format('Y-m-d');
-        \Log::info('reopenRoute - Fecha normalizada', ['date' => $date]);
+        $timezone = 'America/Caracas';
+        $dateLocal = Carbon::parse($request->date, $timezone)->format('Y-m-d');
+        $startUTC = Carbon::parse($dateLocal, $timezone)->startOfDay()->setTimezone('UTC');
+        $endUTC   = Carbon::parse($dateLocal, $timezone)->endOfDay()->setTimezone('UTC');
 
         $liquidation = Liquidation::where('seller_id', $request->seller_id)
-            ->whereDate('date', $date)
+            ->whereBetween('date', [$startUTC, $endUTC])
             ->first();
 
         \Log::info('reopenRoute - Liquidación encontrada', ['liquidation' => $liquidation]);
 
         if (!$liquidation) {
-            \Log::warning('reopenRoute - No existe liquidación', [
-                'seller_id' => $request->seller_id,
-                'date' => $date
-            ]);
+
             return response()->json(['message' => 'No existe liquidación para ese vendedor y fecha'], 404);
         }
 
         $seller = Seller::find($liquidation->seller_id);
         $userId = $seller ? $seller->user_id : null;
-        \Log::info('reopenRoute - Seller y user_id', [
+        /*      \Log::info('reopenRoute - Seller y user_id', [
             'seller' => $seller,
             'user_id' => $userId
-        ]);
+        ]); */
 
         $deleted = LiquidationAudit::where('liquidation_id', $liquidation->id)
             ->where('user_id', $userId)
             ->whereIn('action', ['updated', 'created'])
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
             ->delete();
 
-        \Log::info('reopenRoute - Auditorías eliminadas', [
+        /* \Log::info('reopenRoute - Auditorías eliminadas', [
             'deleted_count' => $deleted
-        ]);
+        ]); */
 
         return response()->json([
             'message' => 'Ruta reabierta correctamente',
@@ -396,9 +400,13 @@ class LiquidationController extends Controller
     // Tu función de recalculo debe estar en el mismo controlador:
     public function recalculateLiquidation($sellerId, $date)
     {
+        $timezone = 'America/Caracas';
+        $startUTC = Carbon::parse($date, $timezone)->startOfDay()->setTimezone('UTC');
+        $endUTC   = Carbon::parse($date, $timezone)->endOfDay()->setTimezone('UTC');
+
         // Busca la liquidación del vendedor en esa fecha
         $liquidation = Liquidation::where('seller_id', $sellerId)
-            ->whereDate('date', $date)
+            ->whereBetween('date', [$startUTC, $endUTC])
             ->first();
 
         if (!$liquidation) return;
@@ -408,30 +416,30 @@ class LiquidationController extends Controller
         $userId = $seller ? $seller->user_id : null;
 
         // 2. Recalcula los totales actuales desde la BD
-        // Usa user_id para Expense e Income
         $totalExpenses = $userId
-            ? Expense::where('user_id', $userId)->whereDate('created_at', $date)->sum('value')
+            ? Expense::where('user_id', $userId)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->sum('value')
             : 0;
 
         $totalIncome = $userId
-            ? Income::where('user_id', $userId)->whereDate('created_at', $date)->sum('value')
+            ? Income::where('user_id', $userId)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->sum('value')
             : 0;
 
-        // Los créditos y pagos sí pueden seguir usando seller_id si tienen ese campo
         $newCredits = Credit::where('seller_id', $sellerId)
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
             ->sum('credit_value');
-
-
 
         $totalCollected = Payment::join('credits', 'payments.credit_id', '=', 'credits.id')
             ->where('credits.seller_id', $sellerId)
-            ->whereDate('payments.created_at', $date)
+            ->whereBetween('payments.created_at', [$startUTC, $endUTC])
             ->sum('payments.amount');
 
         $renewalCredits = DB::table('credits')
             ->where('seller_id', $sellerId)
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
             ->whereNotNull('renewed_from_id')
             ->get();
 
@@ -452,7 +460,6 @@ class LiquidationController extends Controller
             $netDisbursement = $renewCredit->credit_value - $pendingAmount;
             $total_renewal_disbursed += $netDisbursement;
         }
-
 
         $realToDeliver = $liquidation->initial_cash
             + $liquidation->base_delivered
@@ -584,6 +591,7 @@ class LiquidationController extends Controller
         $timezone = 'America/Caracas';
         $start = Carbon::createFromFormat('Y-m-d', $date, $timezone)->startOfDay()->setTimezone('UTC');
         $end = Carbon::createFromFormat('Y-m-d', $date, $timezone)->endOfDay()->setTimezone('UTC');
+        $todayDate = Carbon::now($timezone)->toDateString();
 
         // 1. Verificar si ya existe liquidación para esta fecha
         $existingLiquidation = Liquidation::where('seller_id', $sellerId)
@@ -613,7 +621,7 @@ class LiquidationController extends Controller
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
             ->where('credits.seller_id', $sellerId)
             ->where('credits.status', 'Cartera Irrecuperable')
-            ->whereDate('credits.updated_at', Carbon::parse($date)->subDay()->toDateString())
+            ->whereDate('credits.updated_at', $todayDate)
             ->where('installments.status', 'Pendiente')
             ->sum('installments.quota_amount');
 

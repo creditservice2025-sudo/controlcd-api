@@ -134,7 +134,7 @@ class IncomeService
             $incomeDate = Carbon::parse($income->created_at)->timezone($timezone)->format('Y-m-d');
             $currentDate = Carbon::now($timezone)->format('Y-m-d');
 
-            if ($incomeDate !== $currentDate && $user->role_id !== 1) {
+            if ($incomeDate !== $currentDate) {
                 return $this->errorResponse(
                     'Solo se pueden eliminar ingresos creados el día de hoy',
                     422

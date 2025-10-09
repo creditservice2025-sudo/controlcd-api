@@ -87,7 +87,7 @@ class DashboardService
             $timezone = 'America/Caracas';
             $startUTC = Carbon::now($timezone)->startOfDay()->timezone('UTC');
             $endUTC = Carbon::now($timezone)->endOfDay()->timezone('UTC');
-            $previousDate = Carbon::now($timezone)->subDay()->toDateString();
+            $todayDate = Carbon::now($timezone)->toDateString();
 
             $sellersQuery = Seller::with([
                 'clients',
@@ -236,7 +236,7 @@ class DashboardService
                     ->join('credits', 'installments.credit_id', '=', 'credits.id')
                     ->where('credits.seller_id', $seller->id)
                     ->where('credits.status', 'Cartera Irrecuperable')
-                    ->whereDate('credits.updated_at', $previousDate)
+                    ->whereDate('credits.updated_at', $todayDate)
                     ->where('installments.status', 'Pendiente')
                     ->sum('installments.quota_amount');
 
@@ -325,7 +325,7 @@ class DashboardService
                     $profitPending = $totalExpectedProfit - $totalProfitPaid;
                 }
     
-                $previousDate = Carbon::now($timezone)->subDay()->toDateString();
+                $todayDate = Carbon::now($timezone)->toDateString();
     
                 $lastLiquidation = Liquidation::orderBy('date', 'desc')->first();
                 $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
@@ -341,7 +341,7 @@ class DashboardService
                 $irrecoverableCredits = DB::table('installments')
                     ->join('credits', 'installments.credit_id', '=', 'credits.id')
                     ->where('credits.status', 'Cartera Irrecuperable')
-                    ->whereDate('credits.updated_at', $previousDate)
+                    ->whereDate('credits.updated_at', $todayDate)
                     ->where('installments.status', 'Pendiente')
                     ->sum('installments.quota_amount');
     
@@ -420,13 +420,13 @@ class DashboardService
                         ->whereBetween('created_at', [$startUTC, $endUTC])
                         ->sum('credit_value');
     
-                    $previousDate = Carbon::now($timezone)->subDay()->toDateString();
+                        $todayDate = Carbon::now($timezone)->toDateString();
     
                     $irrecoverableCredits = DB::table('installments')
                         ->join('credits', 'installments.credit_id', '=', 'credits.id')
                         ->whereIn('credits.seller_id', $sellerIds)
                         ->where('credits.status', 'Cartera Irrecuperable')
-                        ->whereDate('credits.updated_at', $previousDate)
+                        ->whereDate('credits.updated_at', $todayDate)
                         ->where('installments.status', 'Pendiente')
                         ->sum('installments.quota_amount');
     
@@ -486,13 +486,13 @@ class DashboardService
                         ->whereBetween('created_at', [$startUTC, $endUTC])
                         ->sum('credit_value');
     
-                    $previousDate = Carbon::now($timezone)->subDay()->toDateString();
+                        $todayDate = Carbon::now($timezone)->toDateString();
     
                     $irrecoverableCredits = DB::table('installments')
                         ->join('credits', 'installments.credit_id', '=', 'credits.id')
                         ->where('credits.seller_id', $seller->id)
                         ->where('credits.status', 'Cartera Irrecuperable')
-                        ->whereDate('credits.updated_at', $previousDate)
+                        ->whereDate('credits.updated_at', $todayDate)
                         ->where('installments.status', 'Pendiente')
                         ->sum('installments.quota_amount');
     
