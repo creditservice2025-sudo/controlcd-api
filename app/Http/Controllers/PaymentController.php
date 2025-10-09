@@ -93,7 +93,7 @@ class PaymentController extends Controller
 
         $start = Carbon::createFromFormat('Y-m-d', $date, $timezone)->startOfDay()->timezone('UTC');
         $end = Carbon::createFromFormat('Y-m-d', $date, $timezone)->endOfDay()->timezone('UTC');
-
+        $todayDate = Carbon::now($timezone)->toDateString();
         $user = Auth::user();
 
         if (!in_array($user->role_id, [1, 2, 5])) {
@@ -262,16 +262,11 @@ class PaymentController extends Controller
             $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
         }
 
-        // CORREGIDO: Usar Carbon con timezone para el cálculo de la fecha anterior
-        $previousDate = Carbon::createFromFormat('Y-m-d', $date, $timezone)
-            ->subDay()
-            ->format('Y-m-d');
-
         $irrecoverableCredits = DB::table('installments')
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
             ->where('credits.seller_id', $sellerId)
             ->where('credits.status', 'Cartera Irrecuperable')
-            ->whereDate('credits.updated_at', $previousDate)
+            ->whereDate('credits.updated_at', $todayDate)
             ->where('installments.status', 'Pendiente')
             ->sum('installments.quota_amount');
 

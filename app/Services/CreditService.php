@@ -376,8 +376,8 @@ class CreditService
                 );
             }
 
-            $credit->installments()->forceDelete();
-            $credit->forceDelete();
+            $credit->installments()->delete();
+            $credit->delete();
 
             DB::commit();
 
