@@ -472,8 +472,22 @@ class ClientService
                 $clientsQuery->whereHas('credits', function ($query) use ($status) {
                     $query->where('status', $status);
                 });
+                $clientsQuery->with([
+                    'credits' => function ($query) use ($status) {
+                        $query->where('status', $status);
+                    },
+                  
+                ]);
             } elseif ($status === 'Inactivo') {
                 $clientsQuery->where('status', 'inactive');
+            } elseif ($status === 'Activo' && $user->role_id == 1 || $user->role_id == 2) {
+                $clientsQuery->where('status', 'active');
+                $clientsQuery->with([
+                    'credits' => function ($query) {
+                        $query->whereIn('status', ['Activo', 'Vigente']);
+                    },
+                   
+                ]);
             } else {
                 $clientsQuery->where('status', 'active');
             }
@@ -1104,9 +1118,9 @@ class ClientService
                 'payments.installments'
             ])
             ->where(function ($query) {
-                $query->whereNotIn('credits.status', ['liquidado', 'Unificado'])
+                $query->whereNotIn('credits.status', ['Liquidado', 'Unificado', 'Cartera Irrecuperable', 'Renovado'])
                     ->orWhere(function ($q) {
-                        $q->where('credits.status', 'liquidado')
+                        $q->whereIn('credits.status', ['Liquidado', 'Renovado'])
                             ->whereDate('credits.updated_at', now()->toDateString());
                     });
             })
@@ -1962,6 +1976,7 @@ class ClientService
             ->whereNull('installments.deleted_at')
             ->whereNull('credits.deleted_at')
             ->whereNull('clients.deleted_at')
+            ->where('credits.status', '!=', ['Unificado', 'Renovado', 'Cartera Irrecuperable'])
             ->where(function ($query) use ($date) {
                 $query->whereDate('due_date', $date)
                     ->orWhere(function ($q) use ($date) {

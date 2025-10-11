@@ -609,6 +609,7 @@ class LiquidationController extends Controller
         // 2. Obtener datos del endpoint dailyPaymentTotals
         $dailyTotals = $this->getDailyTotals($sellerId, $date, $user);
 
+
         // 3. Obtener última liquidación para saldo inicial
         $lastLiquidation = Liquidation::where('seller_id', $sellerId)
             ->where('date', '<', $start)
@@ -631,7 +632,9 @@ class LiquidationController extends Controller
         $realToDeliver = $initialCash
             + ($dailyTotals['total_income'] + $dailyTotals['collected_total'])
             - ($dailyTotals['created_credits_value']
-                + $dailyTotals['total_expenses'] + $irrecoverableCredits);
+                + $dailyTotals['total_renewal_disbursed']
+                + $dailyTotals['total_expenses']
+                + $irrecoverableCredits);
 
         // 5. Estructurar respuesta completa
         return [
@@ -722,7 +725,6 @@ class LiquidationController extends Controller
             ->where('seller_id', $sellerId)
             ->whereBetween('created_at', [$startUTC, $endUTC])
             ->whereNull('renewed_from_id')
-            ->whereNull('renewed_to_id')
             ->whereNull('unification_reason')
             ->select([
                 DB::raw('COALESCE(SUM(credit_value), 0) as value'),
@@ -781,6 +783,7 @@ class LiquidationController extends Controller
             ->whereNotNull('renewed_from_id')
             ->get();
 
+ 
         $detalles_renovaciones = [];
         $total_renewal_disbursed = 0;
         $total_pending_absorbed = 0;
@@ -798,6 +801,7 @@ class LiquidationController extends Controller
                 $total_pending_absorbed += $pendingAmount;
             }
 
+  
             $netDisbursement = $renewCredit->credit_value - $pendingAmount;
             $total_renewal_disbursed += $netDisbursement;
         }
