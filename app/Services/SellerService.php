@@ -397,9 +397,17 @@ class SellerService
                     'credits_utility_sum' => DB::table('credits')
                         ->selectRaw('COALESCE(SUM(credit_value * total_interest / 100), 0)')
                         ->whereColumn('seller_id', 'sellers.id')
+                        ->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
                         ->whereNull('deleted_at')
                 ])
                 ->addSelect([
+                    // Total créditos activos otorgados (capital + utilidad)
+                    'credits_total_sum' => DB::table('credits')
+                        ->selectRaw('COALESCE(SUM(credit_value + credit_value * total_interest / 100), 0)')
+                        ->whereColumn('seller_id', 'sellers.id')
+                        ->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
+                        ->whereNull('deleted_at'),
+            
                     // Cartera recuperada: suma de pagos de todos los créditos del vendedor
                     'recovered_portfolio' => DB::table('payments')
                         ->selectRaw('COALESCE(SUM(amount), 0)')
@@ -407,20 +415,9 @@ class SellerService
                             $query->select('id')
                                 ->from('credits')
                                 ->whereColumn('seller_id', 'sellers.id')
+                                ->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
                                 ->whereNull('deleted_at');
                         })
-                        ->whereNull('deleted_at'),
-
-                    // Cartera por recuperar: suma de cuotas pendientes de todos los créditos del vendedor
-                    'pending_portfolio' => DB::table('installments')
-                        ->selectRaw('COALESCE(SUM(quota_amount), 0)')
-                        ->whereIn('credit_id', function ($query) {
-                            $query->select('id')
-                                ->from('credits')
-                                ->whereColumn('seller_id', 'sellers.id')
-                                ->whereNull('deleted_at');
-                        })
-                        ->where('status', 'Pendiente')
                         ->whereNull('deleted_at'),
                 ])
                 ->whereNull('deleted_at')
