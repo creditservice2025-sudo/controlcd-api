@@ -53,7 +53,7 @@ class PaymentService
                 ]);
 
                 $nextInstallment = Installment::where('credit_id', $credit->id)
-                    ->whereIn('status', ['Pendiente', 'Parcial' , 'Atrasado'])
+                    ->whereIn('status', ['Pendiente', 'Parcial', 'Atrasado'])
                     ->orderBy('due_date', 'asc')
                     ->first();
 
@@ -386,158 +386,168 @@ class PaymentService
         }
     }
 
-   public function getPaymentsBySeller($sellerId, Request $request, $perPage)
-{
-    $seller = Seller::find($sellerId);
-
-    if (!$seller) {
-        return $this->successResponse([
-            'success' => false,
-            'message' => 'El vendedor no existe.',
-            'data' => null
-        ], 404);
-    }
-
-    $timezone = 'America/Caracas'; 
-
-    $paymentsQuery = Payment::query()
-        ->join('credits', 'payments.credit_id', '=', 'credits.id')
-        ->join('clients', 'credits.client_id', '=', 'clients.id')
-        ->leftJoin('payment_images', 'payments.id', '=', 'payment_images.payment_id')
-        ->where('clients.seller_id', $sellerId)
-        ->select(
-            'payments.id',
-            'clients.id as client_id',
-            'clients.name as client_name',
-            'clients.dni as client_dni',
-            'credits.id as credit_id',
-            'credits.credit_value',
-            'credits.status as credit_status',
-            'credits.total_interest',
-            'credits.total_amount',
-            'credits.number_installments',
-            'credits.start_date',
-            'payments.payment_date',
-            'payments.amount as total_payment',
-            'payments.payment_method',
-            'payments.payment_reference',
-            'payments.status',
-            'payments.amount',
-            'payments.created_at',
-            'payment_images.path as image_path'
-        )
-        ->orderBy('clients.name')
-        ->orderBy('credits.id')
-        ->orderBy('payments.created_at', 'desc');
-
-    // Filtros de fecha
-    if ($request->has('start_date') && $request->has('end_date')) {
-        $startDate = Carbon::parse($request->get('start_date'), $timezone)->startOfDay()->timezone('UTC');
-        $endDate = Carbon::parse($request->get('end_date'), $timezone)->endOfDay()->timezone('UTC');
-        $paymentsQuery->whereBetween('payments.created_at', [$startDate, $endDate]);
-    } elseif ($request->has('date')) {
-        $filterDate = Carbon::parse($request->get('date'), $timezone)->startOfDay()->timezone('UTC');
-        $endFilterDate = Carbon::parse($request->get('date'), $timezone)->endOfDay()->timezone('UTC');
-        $paymentsQuery->whereBetween('payments.created_at', [$filterDate, $endFilterDate]);
-    } else {
-        $todayStart = Carbon::now($timezone)->startOfDay()->timezone('UTC');
-        $todayEnd = Carbon::now($timezone)->endOfDay()->timezone('UTC');
-        $paymentsQuery->whereBetween('payments.created_at', [$todayStart, $todayEnd]);
-    }
-
-    // Filtro de estado
-    if ($request->has('status') && in_array($request->status, ['Abonado', 'Pagado'])) {
-        $paymentsQuery->where('payments.status', $request->status);
-    }
-
-    $payments = $paymentsQuery->get();
-
-    // Obtener IDs de pagos para cargar cuotas
-    $paymentIds = $payments->where('status', 'Pagado')->pluck('id');
-
-    // Cargar cuotas en una sola consulta
-    $installmentsDetails = collect();
-    if ($paymentIds->isNotEmpty()) {
-        $installmentsDetails = DB::table('payment_installments')
-            ->join('installments', 'payment_installments.installment_id', '=', 'installments.id')
-            ->whereIn('payment_installments.payment_id', $paymentIds)
-            ->select(
-                'installments.*',
-                'payment_installments.applied_amount',
-                'payment_installments.created_at',
-                'payment_installments.payment_id'
-            )
-            ->get()
-            ->groupBy('payment_id');
-    }
-
-    // Procesar cada pago
-    $payments->transform(function ($payment) use ($installmentsDetails) {
-        if ($payment->status === 'Pagado') {
-            $payment->installments_details = $installmentsDetails->get($payment->id, collect());
-            $payment->total_applied = $payment->installments_details->sum('applied_amount');
-        } else {
-            $payment->installments_details = collect();
-            $payment->total_applied = 0;
+    public function getPaymentsBySeller($sellerId, Request $request, $perPage)
+    {
+        $seller = Seller::find($sellerId);
+        if (!$seller) {
+            return $this->successResponse([
+                'success' => false,
+                'message' => 'El vendedor no existe.',
+                'data' => null
+            ], 404);
         }
-        return $payment;
-    });
-
-    // Agrupar pagos por cliente y crédito
-    $groupedByClientAndCredit = $payments->groupBy(['client_id', 'credit_id']);
-
-    $groupedPayments = collect();
-    foreach ($groupedByClientAndCredit as $clientId => $credits) {
-        foreach ($credits as $creditId => $creditPayments) {
-            $firstPayment = $creditPayments->first();
-
+    
+        $timezone = 'America/Caracas';
+    
+        $page = (int)$request->input('page', 1);
+        $perPage = (int)$request->input('perPage', 10);
+    
+        // IDs de todos los créditos del vendedor
+        $allCreditsIds = Credit::query()
+            ->join('clients', 'credits.client_id', '=', 'clients.id')
+            ->where('clients.seller_id', $sellerId)
+            ->pluck('credits.id');
+    
+        // IDs de créditos que tienen pagos en el rango de fecha/estado
+        $paymentsFilterQuery = Payment::whereIn('credit_id', $allCreditsIds);
+    
+        if ($request->has('start_date') && $request->has('end_date')) {
+            $startDate = Carbon::parse($request->get('start_date'), $timezone)->startOfDay()->timezone('UTC');
+            $endDate = Carbon::parse($request->get('end_date'), $timezone)->endOfDay()->timezone('UTC');
+            $paymentsFilterQuery->whereBetween('created_at', [$startDate, $endDate]);
+        } elseif ($request->has('date')) {
+            $filterDate = Carbon::parse($request->get('date'), $timezone)->startOfDay()->timezone('UTC');
+            $endFilterDate = Carbon::parse($request->get('date'), $timezone)->endOfDay()->timezone('UTC');
+            $paymentsFilterQuery->whereBetween('created_at', [$filterDate, $endFilterDate]);
+        } else {
+            $todayStart = Carbon::now($timezone)->startOfDay()->timezone('UTC');
+            $todayEnd = Carbon::now($timezone)->endOfDay()->timezone('UTC');
+            $paymentsFilterQuery->whereBetween('created_at', [$todayStart, $todayEnd]);
+        }
+    
+        if ($request->has('status') && in_array($request->status, ['Abonado', 'Pagado'])) {
+            $paymentsFilterQuery->where('status', $request->status);
+        }
+    
+        // Ahora obtén los créditos que sí tienen pagos en el filtro
+        $filteredCreditIds = $paymentsFilterQuery->distinct()->pluck('credit_id');
+    
+        // Pagina solo los créditos con pagos filtrados
+        $creditsQuery = Credit::query()
+            ->join('clients', 'credits.client_id', '=', 'clients.id')
+            ->where('clients.seller_id', $sellerId)
+            ->whereIn('credits.id', $filteredCreditIds)
+            ->select(
+                'credits.id as credit_id',
+                'clients.id as client_id',
+                'clients.name as client_name',
+                'clients.dni as client_dni',
+                'credits.credit_value',
+                'credits.status as credit_status',
+                'credits.total_interest',
+                'credits.total_amount',
+                'credits.number_installments',
+                'credits.start_date'
+            )
+            ->orderBy('clients.name')
+            ->orderBy('credits.id');
+    
+        $creditsPaginator = $creditsQuery->paginate($perPage, ['*'], 'page', $page);
+        $credits = collect($creditsPaginator->items());
+    
+        // Para el total de pagos filtrados, puedes usar el mismo paymentsFilterQuery
+        $totalPaymentsAmount = $paymentsFilterQuery->sum('amount');
+    
+        $groupedPayments = collect();
+    
+        foreach ($credits as $credit) {
+            $paymentsQuery = Payment::where('credit_id', $credit->credit_id)
+                ->leftJoin('payment_images', 'payments.id', '=', 'payment_images.payment_id')
+                ->select(
+                    'payments.id',
+                    'payments.payment_date',
+                    'payments.amount as total_payment',
+                    'payments.payment_method',
+                    'payments.payment_reference',
+                    'payments.status',
+                    'payments.amount',
+                    'payments.created_at',
+                    'payment_images.path as image_path'
+                )
+                ->orderBy('payments.created_at', 'desc');
+    
+            // Filtros de fecha y estado igual que antes
+            if ($request->has('start_date') && $request->has('end_date')) {
+                $paymentsQuery->whereBetween('payments.created_at', [$startDate, $endDate]);
+            } elseif ($request->has('date')) {
+                $paymentsQuery->whereBetween('payments.created_at', [$filterDate, $endFilterDate]);
+            } else {
+                $paymentsQuery->whereBetween('payments.created_at', [$todayStart, $todayEnd]);
+            }
+            if ($request->has('status') && in_array($request->status, ['Abonado', 'Pagado'])) {
+                $paymentsQuery->where('payments.status', $request->status);
+            }
+    
+            $payments = $paymentsQuery->get();
+    
+            // Obtener cuotas de pagos "Pagado"
+            $paymentIds = $payments->where('status', 'Pagado')->pluck('id');
+            $installmentsDetails = collect();
+            if ($paymentIds->isNotEmpty()) {
+                $installmentsDetails = DB::table('payment_installments')
+                    ->join('installments', 'payment_installments.installment_id', '=', 'installments.id')
+                    ->whereIn('payment_installments.payment_id', $paymentIds)
+                    ->select(
+                        'installments.*',
+                        'payment_installments.applied_amount',
+                        'payment_installments.created_at',
+                        'payment_installments.payment_id'
+                    )
+                    ->get()
+                    ->groupBy('payment_id');
+            }
+    
+            $payments->transform(function ($payment) use ($installmentsDetails) {
+                if ($payment->status === 'Pagado') {
+                    $payment->installments_details = $installmentsDetails->get($payment->id, collect());
+                    $payment->total_applied = $payment->installments_details->sum('applied_amount');
+                } else {
+                    $payment->installments_details = collect();
+                    $payment->total_applied = 0;
+                }
+                return $payment;
+            });
+    
             $groupedPayments->push([
-                'client_id' => $clientId,
-                'client_name' => $firstPayment->client_name,
-                'client_dni' => $firstPayment->client_dni,
-                'credit_id' => $creditId,
-                'credit_value' => $firstPayment->credit_value,
-                'status' => $firstPayment->credit_status,
-                'total_interest' => $firstPayment->total_interest,
-                'total_amount' => $firstPayment->total_amount,
-                'number_installments' => $firstPayment->number_installments,
-                'start_date' => $firstPayment->start_date,
-                'payments' => $creditPayments->map(function ($payment) {
-                    return [
-                        'id' => $payment->id,
-                        'payment_date' => $payment->payment_date,
-                        'total_payment' => $payment->total_payment,
-                        'payment_method' => $payment->payment_method,
-                        'payment_reference' => $payment->payment_reference,
-                        'status' => $payment->status,
-                        'amount' => $payment->amount,
-                        'created_at' => $payment->created_at,
-                        'installments_details' => $payment->installments_details,
-                        'total_applied' => $payment->total_applied,
-                        'image_path' => $payment->image_path
-                    ];
-                })->values()
+                'client_id' => $credit->client_id,
+                'client_name' => $credit->client_name,
+                'client_dni' => $credit->client_dni,
+                'credit_id' => $credit->credit_id,
+                'credit_value' => $credit->credit_value,
+                'status' => $credit->credit_status,
+                'total_interest' => $credit->total_interest,
+                'total_amount' => $credit->total_amount,
+                'number_installments' => $credit->number_installments,
+                'start_date' => $credit->start_date,
+                'payments' => $payments,
             ]);
         }
-    }
-
-    $currentPage = (int)$request->input('page', 1); // Conversión a entero
-    $offset = ($currentPage - 1) * $perPage;
-    $currentPageItems = $groupedPayments->slice($offset, $perPage)->values();
-
-    return $this->successResponse([
-        'success' => true,
-        'message' => 'Pagos obtenidos correctamente',
-        'data' => [
-            'grouped_payments' => $currentPageItems,
-            'pagination' => [
-                'total' => $groupedPayments->count(),
-                'per_page' => $perPage,
-                'current_page' => $currentPage
+    
+        return $this->successResponse([
+            'success' => true,
+            'message' => 'Pagos obtenidos correctamente',
+            'data' => [
+                'grouped_payments' => $groupedPayments,
+                'pagination' => [
+                    'total' => $creditsPaginator->total(),
+                    'per_page' => $creditsPaginator->perPage(),
+                    'current_page' => $creditsPaginator->currentPage(),
+                    'last_page' => $creditsPaginator->lastPage(),
+                ],
+                'total_payments_amount' => $totalPaymentsAmount
             ]
-        ]
-    ]);
-}
+        ]);
+    }
 
     public function show($creditId, $paymentId)
     {

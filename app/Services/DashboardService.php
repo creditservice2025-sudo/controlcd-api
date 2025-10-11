@@ -92,6 +92,9 @@ class DashboardService
 
             $sellersQuery = Seller::with([
                 'clients',
+                'credits' => function ($query) {
+                    $query->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado']);
+                },
                 'credits.installments.payments',
                 'city' => function ($query) {
                     $query->select('id', 'name', 'country_id');
@@ -105,7 +108,7 @@ class DashboardService
             ])->orderBy('created_at', 'desc');
 
             if ($role === 1) {
-                // Admin: no filtro
+                // Admin: no filter
             } elseif ($role === 2) {
                 if (!$user->company) {
                     return response()->json([
@@ -130,90 +133,171 @@ class DashboardService
             foreach ($sellers as $index => $seller) {
                 $location = $this->getSellerLocation($seller);
 
+                // Initialize ENGLISH keys
                 $sellerData = [
                     'id' => $seller->id,
                     'route' => $seller->name,
                     'location' => $location,
+                    'initial_portfolio' => ['T' => 0, 'C' => 0, 'U' => 0],
+                    'to_collect' => ['T' => 0, 'C' => 0, 'U' => 0],
+                    'collected' => ['T' => 0, 'C' => 0, 'U' => 0],
+                    'pending' => ['T' => 0, 'C' => 0, 'U' => 0],
+                    'credits_today' => ['T' => 0, 'C' => 0, 'U' => 0],
+                    'collected_today' => ['T' => 0, 'C' => 0, 'U' => 0],
+                    'current_cash' => 0,
+                    'previous_cash' => 0,
                     'capital' => 0,
                     'utility' => 0,
                     'credits' => 0,
-                    'name' => $seller->user ? $seller->user->name : 'Sin nombre',
+                    'name' => $seller->user ? $seller->user->name : 'No name',
                     'total' => 0,
-                    'paidCredits' => 0,
-                    'unpaidCredits' => 0,
-                    'paidCapital' => 0,
-                    'paidUtility' => 0,
-                    'irrecoverableCredits' => 0,
-                    'irrecoverableTotal' => 0,
-                    'valorTotalCreditos' => 0,
-                    'valorTotalPagado' => 0,
-                    'valorPendiente' => 0,
-                    'capitalBruto' => 0,
-                    'utilidadBruta' => 0,
+                    'paid_credits' => 0,
+                    'unpaid_credits' => 0,
+                    'paid_capital' => 0,
+                    'paid_utility' => 0,
+                    'irrecoverable_credits' => 0,
+                    'irrecoverable_total' => 0,
+                    'total_credits_value' => 0,
+                    'total_paid_value' => 0,
+                    'pending_value' => 0,
+                    'gross_capital' => 0,
+                    'gross_utility' => 0,
                 ];
 
                 foreach ($seller->credits as $credit) {
                     if ($credit->status === 'Cartera Irrecuperable') {
-                        $sellerData['irrecoverableCredits']++;
-                        $sellerData['irrecoverableTotal'] += $credit->credit_value + ($credit->credit_value * $credit->total_interest / 100);
+                        $sellerData['irrecoverable_credits']++;
+                        $sellerData['irrecoverable_total'] += $credit->credit_value + ($credit->credit_value * $credit->total_interest / 100);
                         continue;
                     }
-                    $utility = $credit->credit_value * $credit->total_interest / 100;
-                    $capitalPayable = $credit->credit_value;
-                    $valorCredito = $capitalPayable + $utility;
 
-                    $sellerData['valorTotalCreditos'] += $valorCredito;
-                    $sellerData['capitalBruto'] += $capitalPayable;
-                    $sellerData['utilidadBruta'] += $utility;
+                    // --- Inicial ---
+                    $capitalInitial = $credit->credit_value;
+                    $utilityInitial = $credit->credit_value * $credit->total_interest / 100;
+                    $totalInitial = $capitalInitial + $utilityInitial;
 
-                    // Lógica por cuota (installment)
-                    $pendingCapital = 0;
-                    $pendingUtility = 0;
-                    $paidCapital = 0;
-                    $paidUtility = 0;
+                    // --- Pagos ---
+                    $allPayments = $credit->payments;
+                    $capitalPaid = 0;
+                    $utilityPaid = 0;
 
-                    $installments = $credit->installments;
-                    $numInstallments = $credit->number_installments > 0 ? $credit->number_installments : (count($installments) > 0 ? count($installments) : 1);
-                    $capitalCuota = $credit->credit_value / $numInstallments;
-                    $utilidadCuota = $utility / $numInstallments;
+                    $capitalPending = $capitalInitial;
+                    $utilityPending = $utilityInitial;
 
-                    foreach ($installments as $installment) {
-                        // Pagos aplicados a la cuota
-                        $pagosCuota = ($installment->payments ?? collect())->sum('applied_amount');
-                        // Descontar primero capital, luego utilidad
-                        $capitalPagadoCuota = min($pagosCuota, $capitalCuota);
-                        $utilityPagadoCuota = max(0, $pagosCuota - $capitalCuota);
-                        $pendingCapital += max(0, $capitalCuota - $capitalPagadoCuota);
-                        $pendingUtility += max(0, $utilidadCuota - $utilityPagadoCuota);
-                        $paidCapital += $capitalPagadoCuota;
-                        $paidUtility += $utilityPagadoCuota;
+                    foreach ($allPayments as $payment) {
+                        $amount = $payment->amount ?? 0;
+                        $capitalToPay = min($amount, $capitalPending);
+                        $utilityToPay = max(0, $amount - $capitalPending);
+
+                        $capitalPaid += $capitalToPay;
+                        $utilityPaid += $utilityToPay;
+
+                        $capitalPending -= $capitalToPay;
+                        $utilityPending -= $utilityToPay;
                     }
 
-                    $totalPaid = Payment::where('credit_id', $credit->id)->sum('amount');
-                    $sellerData['valorTotalPagado'] += $totalPaid;
+                    $capitalPending = max(0, $capitalPending);
+                    $utilityPending = max(0, $utilityPending);
 
-                    $sellerData['capital'] += $pendingCapital;
-                    $sellerData['utility'] += $pendingUtility;
-                    $sellerData['total'] += $pendingCapital + $pendingUtility;
+                    // --- Sumar a los totales del seller ---
+                    $sellerData['initial_portfolio']['C'] += $capitalInitial;
+                    $sellerData['initial_portfolio']['U'] += $utilityInitial;
+                    $sellerData['initial_portfolio']['T'] += $totalInitial;
 
-                    $sellerData['paidCapital'] += $paidCapital;
-                    $sellerData['paidUtility'] += $paidUtility;
+                    $sellerData['collected']['C'] += $capitalPaid;
+                    $sellerData['collected']['U'] += $utilityPaid;
+                    $sellerData['collected']['T'] += $capitalPaid + $utilityPaid;
 
+                    $sellerData['to_collect']['C'] += $capitalPending;
+                    $sellerData['to_collect']['U'] += $utilityPending;
+                    $sellerData['to_collect']['T'] += $capitalPending + $utilityPending;
+
+                    $sellerData['pending']['C'] += $capitalPending;
+                    $sellerData['pending']['U'] += $utilityPending;
+                    $sellerData['pending']['T'] += $capitalPending + $utilityPending;
+
+                    // Credits today
+                    if (Carbon::parse($credit->created_at)->toDateString() == $todayDate) {
+                        $sellerData['credits_today']['C'] += $capitalInitial;
+                        $sellerData['credits_today']['U'] += $utilityInitial;
+                        $sellerData['credits_today']['T'] += $totalInitial;
+                    }
+
+                    $paymentsBeforeToday = $credit->payments()
+                        ->where('created_at', '<', $startUTC)
+                        ->get();
+
+
+                    $capitalPendingToday = $capitalInitial;
+                    $utilityPendingToday = $utilityInitial;
+
+                    foreach ($paymentsBeforeToday as $payment) {
+                        $amount = $payment->amount ?? 0;
+                        $capitalToPay = min($amount, $capitalPendingToday);
+                        $utilityToPay = max(0, $amount - $capitalPendingToday);
+
+                        $capitalPendingToday -= $capitalToPay;
+                        $utilityPendingToday -= $utilityToPay;
+                    }
+
+
+                    // Collected today (pagos del día)
+                    $collectedTodayCapital = 0;
+                    $collectedTodayUtility = 0;
+                    $collectedTodayTotal = 0;
+                    $capitalPendingToday = $credit->credit_value;
+                    $utilityPendingToday = $credit->credit_value * $credit->total_interest / 100;
+
+                    $paymentsToday = $credit->payments()
+                        ->whereBetween('created_at', [$startUTC, $endUTC])
+                        ->get();
+
+                    foreach ($paymentsToday as $payment) {
+                        $amount = $payment->amount ?? 0;
+                        $capitalToPay = min($amount, $capitalPendingToday);
+                        $utilityToPay = max(0, $amount - $capitalPendingToday);
+
+                        $collectedTodayCapital += $capitalToPay;
+                        $collectedTodayUtility += $utilityToPay;
+                        $collectedTodayTotal += $amount;
+
+                        $capitalPendingToday -= $capitalToPay;
+                        $utilityPendingToday -= $utilityToPay;
+                    }
+
+                    $sellerData['collected_today']['C'] += $collectedTodayCapital;
+                    $sellerData['collected_today']['U'] += $collectedTodayUtility;
+                    $sellerData['collected_today']['T'] += $collectedTodayTotal;
+
+                    // Otros campos
                     $sellerData['credits']++;
-
-                    if ($pendingCapital == 0) {
-                        $sellerData['paidCredits']++;
+                    if ($capitalPending == 0 && $utilityPending == 0) {
+                        $sellerData['paid_credits']++;
                     } else {
-                        $sellerData['unpaidCredits']++;
+                        $sellerData['unpaid_credits']++;
                     }
-                }
-                $sellerData['valorPendiente'] = max(0, $sellerData['valorTotalCreditos'] - $sellerData['valorTotalPagado']);
 
-                // --- Cálculo de caja actual por vendedor ---
+                    $sellerData['paid_capital'] += $capitalPaid;
+                    $sellerData['paid_utility'] += $utilityPaid;
+
+                    $sellerData['total_credits_value'] += $totalInitial;
+                    $sellerData['total_paid_value'] += ($capitalPaid + $utilityPaid);
+                    $sellerData['gross_capital'] += $capitalInitial;
+                    $sellerData['gross_utility'] += $utilityInitial;
+                }
+                $sellerData['pending_value'] = max(0, $sellerData['initial_portfolio']['T'] - $sellerData['collected']['T']);
+
+                // --- Current Cash Calculation ---
                 $lastLiquidation = Liquidation::where('seller_id', $seller->id)
                     ->orderBy('date', 'desc')
                     ->first();
                 $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
+
+                $lastLiquidationPrevious = Liquidation::where('seller_id', $seller->id)
+                    ->where('date', '<', $todayDate)
+                    ->orderBy('date', 'desc')
+                    ->first();
+                $previousCash = $lastLiquidationPrevious ? $lastLiquidationPrevious->real_to_deliver : 0;
 
                 $creditIds = collect($seller->credits)->pluck('id')->toArray();
                 $cashPayments = Payment::whereIn('credit_id', $creditIds)
@@ -243,13 +327,13 @@ class DashboardService
 
                 $currentCash = $initialCash + ($income + $cashPayments) - ($expenses + $newCredits + $irrecoverableCredits);
 
-                $sellerData['currentCash'] = (float) number_format($currentCash, 2, '.', '');
-                $sellerData['initialCash'] = (float) number_format($initialCash, 2, '.', '');
-                $sellerData['incomeToday'] = (float) number_format($income, 2, '.', '');
-                $sellerData['expensesToday'] = (float) number_format($expenses, 2, '.', '');
-                $sellerData['cashPaymentsToday'] = (float) number_format($cashPayments, 2, '.', '');
-                $sellerData['newCreditsToday'] = (float) number_format($newCredits, 2, '.', '');
-                $sellerData['irrecoverableCreditsYesterday'] = (float) number_format($irrecoverableCredits, 2, '.', '');
+                $sellerData['current_cash'] = (float) number_format($currentCash, 2, '.', '');
+                $sellerData['previous_cash'] = (float) number_format($previousCash, 2, '.', '');
+                $sellerData['income_today'] = (float) number_format($income, 2, '.', '');
+                $sellerData['expenses_today'] = (float) number_format($expenses, 2, '.', '');
+                $sellerData['cash_payments_today'] = (float) number_format($cashPayments, 2, '.', '');
+                $sellerData['new_credits_today'] = (float) number_format($newCredits, 2, '.', '');
+                $sellerData['irrecoverable_credits_today'] = (float) number_format($irrecoverableCredits, 2, '.', '');
 
                 $result[] = $sellerData;
             }
@@ -262,7 +346,7 @@ class DashboardService
             Log::error("Error fetching pending portfolios: " . $e->getMessage());
             return response()->json([
                 'success' => false,
-                'message' => 'Error al obtener las carteras pendientes'
+                'message' => 'Error fetching pending portfolios'
             ], 500);
         }
     }
