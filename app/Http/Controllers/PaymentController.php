@@ -169,16 +169,51 @@ class PaymentController extends Controller
                 DB::raw('COALESCE(SUM(credit_value * (total_interest / 100)), 0) as total_interest_amount')
             )
             ->whereBetween('created_at', [$start, $end])
-            ->whereNull('unification_reason');
+            ->whereNull('unification_reason')
+            ->whereNull('renewed_from_id');
+
+        $renewalCreditsQuery = DB::table('credits')
+            ->whereBetween('created_at', [$start, $end])
+            ->whereNotNull('renewed_from_id');
+
+
 
         if ($sellerId) {
             $createdCreditsQuery->where('seller_id', $sellerId);
+            $renewalCreditsQuery->where('seller_id', $sellerId);
         }
 
         $createdCreditsResult = $createdCreditsQuery->first();
 
+
         $totals['created_credits_value'] = (float)$createdCreditsResult->total_credit_value;
         $totals['created_credits_interest'] = (float)$createdCreditsResult->total_interest_amount;
+
+        $total_renewal_disbursed = 0;
+        $total_pending_absorbed = 0;
+
+        $renewalCredits = $renewalCreditsQuery->get();
+
+
+        foreach ($renewalCredits as $renewCredit) {
+            $oldCredit = DB::table('credits')->where('id', $renewCredit->renewed_from_id)->first();
+
+            $pendingAmount = 0;
+            $oldCreditTotal = 0;
+            $oldCreditPaid = 0;
+            if ($oldCredit) {
+                $oldCreditTotal = ($oldCredit->credit_value * $oldCredit->total_interest / 100) + $oldCredit->credit_value;
+                $oldCreditPaid = DB::table('payments')->where('credit_id', $oldCredit->id)->sum('amount');
+                $pendingAmount = $oldCreditTotal - $oldCreditPaid;
+                $total_pending_absorbed += $pendingAmount;
+            }
+
+            $netDisbursement = $renewCredit->credit_value - $pendingAmount;
+            $total_renewal_disbursed += $netDisbursement;
+        }
+
+        $totals['total_renewal_disbursed'] = $total_renewal_disbursed;
+        $totals['total_crossed_credits'] = $total_pending_absorbed;
 
         // Ajuste clave: Base Entregado siempre en 0
         $totals['base_value'] = 0;
@@ -270,10 +305,12 @@ class PaymentController extends Controller
             ->where('installments.status', 'Pendiente')
             ->sum('installments.quota_amount');
 
-        $realToDeliver = $initialCash
+            $realToDeliver = $initialCash
             + ($totals['total_income'] + $totals['collected_total'])
             - ($totals['created_credits_value']
-                + $totals['total_expenses'] + $irrecoverableCredits);
+                + $totals['total_expenses']
+                + $totals['total_renewal_disbursed']  
+                + $irrecoverableCredits);
 
         $totals['initial_cash'] = $initialCash;
         $totals['real_to_deliver'] = $realToDeliver;

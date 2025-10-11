@@ -784,6 +784,7 @@ class CreditService
     {
         try {
             $creditsQuery = Credit::with(['client', 'installments', 'payments'])
+                ->whereNull('renewed_from_id')
                 ->where('seller_id', $sellerId);
 
             if ($request->has('start_date') && $request->has('end_date')) {
