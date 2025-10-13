@@ -24,6 +24,7 @@ class Liquidation extends Model
         'cash_delivered',
         'path',
         'status',
+        'end_date',
         'created_at'
     ];
 
@@ -40,6 +41,7 @@ class Liquidation extends Model
         'shortage' => 'decimal:2',
         'surplus' => 'decimal:2',
         'cash_delivered' => 'decimal:2',
+        'end_date' => 'datetime',
         'created_at' => 'datetime',
         'path' => 'string',
     ];
