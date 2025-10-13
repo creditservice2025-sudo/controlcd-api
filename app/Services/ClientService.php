@@ -476,7 +476,7 @@ class ClientService
                     'credits' => function ($query) use ($status) {
                         $query->where('status', $status);
                     },
-                  
+
                 ]);
             } elseif ($status === 'Inactivo') {
                 $clientsQuery->where('status', 'inactive');
@@ -486,7 +486,7 @@ class ClientService
                     'credits' => function ($query) {
                         $query->whereIn('status', ['Activo', 'Vigente']);
                     },
-                   
+
                 ]);
             } else {
                 $clientsQuery->where('status', 'active');
@@ -690,7 +690,7 @@ class ClientService
                 ->whereDoesntHave('credits', function ($query) {
                     $query->where('status', 'Cartera Irrecuperable');
                 })
-                ->orderBy('created_at', 'desc')
+                ->orderBy('routing_order', 'asc')
                 ->get();
         } catch (\Exception $e) {
             Log::error($e->getMessage());
@@ -1573,52 +1573,47 @@ class ClientService
         $referenceDate = Carbon::createFromFormat('Y-m-d', $date, self::TIMEZONE);
 
         $clients = Client::with([
-            'credits.installments' => function ($query) {
+            'credits' => function ($q) use ($referenceDate) {
+                $q->whereHas('installments', function ($iq) use ($referenceDate) {
+                    $iq->where('due_date', $referenceDate->format('Y-m-d'));
+                });
+            },
+            'credits.installments' => function ($query) use ($referenceDate) {
+                $query->where('due_date', $referenceDate->format('Y-m-d'));
                 $query->orderBy('due_date', 'asc');
             },
-            'credits.payments',
             'seller.user:id,name',
-            'guarantors'
+            'guarantors:id,name'
         ])->where('seller_id', $sellerId)
-            ->get();
+          ->get(['id', 'name', 'seller_id']);
 
         $result = [];
         $totalRecaudarHoy = 0;
 
         foreach ($clients as $client) {
-            $creditsWithDueInstallment = $client->credits->filter(function ($credit) use ($referenceDate) {
-                $pendingInstallments = $credit->installments->filter(function ($installment) use ($referenceDate) {
-                    return $installment->due_date == $referenceDate->format('Y-m-d');
-                });
-
-                if ($pendingInstallments->count() == 0) return false;
-
-                if ($credit->status == 'Liquidado') {
-                    $liquidationDate = \Carbon\Carbon::parse($credit->updated_at)->format('Y-m-d');
-                    return $liquidationDate == $referenceDate->format('Y-m-d');
-                }
-                if ($credit->status == 'Renovado') {
-                    $liquidationDate = \Carbon\Carbon::parse($credit->updated_at)->format('Y-m-d');
-                    return $liquidationDate == $referenceDate->format('Y-m-d');
-                }
-
-                if ($credit->status == 'Unificado') {
-                    $liquidationDate = \Carbon\Carbon::parse($credit->updated_at)->format('Y-m-d');
-                    return $liquidationDate == $referenceDate->format('Y-m-d');
-                }
-
-                return true;
-            });
-
-            foreach ($creditsWithDueInstallment as $credit) {
+            foreach ($client->credits as $credit) {
+                // Calculo de cuotas vencidas hoy para el total
                 $cuotasHoy = $credit->installments->filter(function ($installment) use ($referenceDate) {
                     return $installment->due_date == $referenceDate->format('Y-m-d');
                 });
                 $totalRecaudarHoy += $cuotasHoy->sum('quota_amount');
 
-                $delinquencyInfo = $this->calculateDelinquencyDetailsForDate($client, $referenceDate);
+                // Estado especial para liquidados, renovados, unificados
+                $estadoEspecial = null;
+                if (in_array($credit->status, ['Liquidado', 'Renovado', 'Unificado'])) {
+                    $liquidationDate = \Carbon\Carbon::parse($credit->updated_at, self::TIMEZONE)->format('Y-m-d');
+                    if ($liquidationDate == $referenceDate->format('Y-m-d')) {
+                        $estadoEspecial = $credit->status . ' hoy';
+                    } else {
+                        $estadoEspecial = $credit->status;
+                    }
+                } else {
+                    $estadoEspecial = $credit->status;
+                }
 
+                $delinquencyInfo = $this->calculateDelinquencyDetailsForDate($client, $referenceDate);
                 $creditInfo = $this->getCreditInfoForDate($credit, $referenceDate);
+
                 $result[] = [
                     'client' => $client,
                     'client_id' => $client->id,
@@ -1629,7 +1624,9 @@ class ClientService
                     'installment' => $credit->installments,
                     'seller_name' => $client->seller->user->name ?? 'Sin vendedor',
                     'credit' => $creditInfo,
-                    'delinquency_summary' => $delinquencyInfo
+                    'delinquency_summary' => $delinquencyInfo,
+                    'credit_status' => $estadoEspecial,
+                    'cuotas_hoy' => $cuotasHoy, 
                 ];
             }
         }

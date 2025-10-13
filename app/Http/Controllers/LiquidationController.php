@@ -7,6 +7,7 @@ use App\Models\Income;
 use App\Models\LiquidationAudit;
 use App\Services\LiquidationService;
 use Illuminate\Http\Request;
+use App\Traits\ApiResponse;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
@@ -23,6 +24,7 @@ use Illuminate\Validation\ValidationException;
 
 class LiquidationController extends Controller
 {
+    use ApiResponse;
     protected $liquidationService;
     public function __construct(LiquidationService $liquidationService)
     {
@@ -334,13 +336,13 @@ class LiquidationController extends Controller
         }
 
         // Recalcula todos los campos relevantes con los datos de la BD actual
-        $this->recalculateLiquidation(
+        /*  $this->recalculateLiquidation(
             $request->seller_id ?? $liquidation->seller_id,
             $request->date ?? $liquidation->date
         );
 
         // Actualiza la instancia y retorna los datos
-        $liquidation->refresh();
+        $liquidation->refresh(); */
 
         return response()->json([
             'success' => true,
@@ -499,37 +501,12 @@ class LiquidationController extends Controller
     }
     public function approveLiquidation($id)
     {
-        $user = Auth::user();
-
-        $liquidation = Liquidation::findOrFail($id);
-
-        if ($user->role_id != 1 && $user->role_id != 2) {
-            return response()->json([
-                'success' => false,
-                'message' => 'No tienes permisos para aprobar liquidaciones'
-            ], 403);
+        try {
+            return $this->liquidationService->approve($id);
+        } catch (\Exception $e) {
+            \Log::error("Error al aprobar liquidación: " . $e->getMessage());
+            return $this->errorResponse('Error al aprobar la liquidación', 500);
         }
-
-        if ($liquidation->status === 'approved') {
-            return response()->json([
-                'success' => false,
-                'message' => 'La liquidación ya ha sido aprobada'
-            ], 422);
-        }
-
-        $liquidation->update([
-            'status' => 'approved',
-        ]);
-
-        $this->recalculateLiquidation($liquidation->seller_id, $liquidation->date);
-
-        $liquidation->refresh();
-
-        return response()->json([
-            'success' => true,
-            'data' => $liquidation,
-            'message' => 'Liquidación cerrada y recalculada correctamente'
-        ]);
     }
 
     public function annulBase(Request $request, $id)
@@ -545,12 +522,12 @@ class LiquidationController extends Controller
             ]);
 
             // Recalcula la liquidación con los datos actuales
-            $this->recalculateLiquidation($liquidation->seller_id, $liquidation->date);
+            /*  $this->recalculateLiquidation($liquidation->seller_id, $liquidation->date); */
 
             DB::commit();
 
             // Refresca los datos
-            $liquidation->refresh();
+            /*   $liquidation->refresh(); */
 
             return response()->json([
                 'success' => true,
@@ -783,7 +760,7 @@ class LiquidationController extends Controller
             ->whereNotNull('renewed_from_id')
             ->get();
 
- 
+
         $detalles_renovaciones = [];
         $total_renewal_disbursed = 0;
         $total_pending_absorbed = 0;
@@ -801,7 +778,7 @@ class LiquidationController extends Controller
                 $total_pending_absorbed += $pendingAmount;
             }
 
-  
+
             $netDisbursement = $renewCredit->credit_value - $pendingAmount;
             $total_renewal_disbursed += $netDisbursement;
         }

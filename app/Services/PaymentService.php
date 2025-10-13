@@ -402,93 +402,53 @@ class PaymentService
         $page = (int)$request->input('page', 1);
         $perPage = (int)$request->input('perPage', 10);
     
-        // IDs de todos los créditos del vendedor
-        $allCreditsIds = Credit::query()
-            ->join('clients', 'credits.client_id', '=', 'clients.id')
-            ->where('clients.seller_id', $sellerId)
-            ->pluck('credits.id');
-    
-        // IDs de créditos que tienen pagos en el rango de fecha/estado
-        $paymentsFilterQuery = Payment::whereIn('credit_id', $allCreditsIds);
+        // 1. Filtra los pagos por fecha, estado y seller
+        $paymentsFilterQuery = Payment::query();
     
         if ($request->has('start_date') && $request->has('end_date')) {
-            $startDate = Carbon::parse($request->get('start_date'), $timezone)->startOfDay()->timezone('UTC');
-            $endDate = Carbon::parse($request->get('end_date'), $timezone)->endOfDay()->timezone('UTC');
+            $startDate = Carbon::parse($request->get('start_date'), $timezone)->startOfDay();
+            $endDate = Carbon::parse($request->get('end_date'), $timezone)->endOfDay();
             $paymentsFilterQuery->whereBetween('created_at', [$startDate, $endDate]);
         } elseif ($request->has('date')) {
-            $filterDate = Carbon::parse($request->get('date'), $timezone)->startOfDay()->timezone('UTC');
-            $endFilterDate = Carbon::parse($request->get('date'), $timezone)->endOfDay()->timezone('UTC');
-            $paymentsFilterQuery->whereBetween('created_at', [$filterDate, $endFilterDate]);
+            $filterDate = Carbon::parse($request->get('date'), $timezone)->toDateString();
+            $paymentsFilterQuery->whereDate('created_at', $filterDate);
         } else {
-            $todayStart = Carbon::now($timezone)->startOfDay()->timezone('UTC');
-            $todayEnd = Carbon::now($timezone)->endOfDay()->timezone('UTC');
-            $paymentsFilterQuery->whereBetween('created_at', [$todayStart, $todayEnd]);
+            $filterDate = Carbon::now($timezone)->toDateString();
+            $paymentsFilterQuery->whereDate('created_at', $filterDate);
         }
     
         if ($request->has('status') && in_array($request->status, ['Abonado', 'Pagado'])) {
             $paymentsFilterQuery->where('status', $request->status);
         }
     
-        // Ahora obtén los créditos que sí tienen pagos en el filtro
-        $filteredCreditIds = $paymentsFilterQuery->distinct()->pluck('credit_id');
+        // Solo pagos de créditos del seller
+        $paymentsFilterQuery->whereHas('credit', function ($q) use ($sellerId) {
+            $q->where('seller_id', $sellerId);
+        });
     
-        // Pagina solo los créditos con pagos filtrados
-        $creditsQuery = Credit::query()
-            ->join('clients', 'credits.client_id', '=', 'clients.id')
-            ->where('clients.seller_id', $sellerId)
-            ->whereIn('credits.id', $filteredCreditIds)
-            ->select(
-                'credits.id as credit_id',
-                'clients.id as client_id',
-                'clients.name as client_name',
-                'clients.dni as client_dni',
-                'credits.credit_value',
-                'credits.status as credit_status',
-                'credits.total_interest',
-                'credits.total_amount',
-                'credits.number_installments',
-                'credits.start_date'
-            )
-            ->orderBy('clients.name')
-            ->orderBy('credits.id');
+        // 2. Obtén los pagos filtrados
+        $filteredPayments = $paymentsFilterQuery->get();
+    
+        // 3. Obtén los credit_id de esos pagos
+        $filteredCreditIds = $filteredPayments->pluck('credit_id')->unique();
+    
+        // 4. Trae los créditos que tienen esos pagos y el cliente
+        $creditsQuery = Credit::whereIn('id', $filteredCreditIds)
+            ->with('client')
+            ->orderBy('id');
     
         $creditsPaginator = $creditsQuery->paginate($perPage, ['*'], 'page', $page);
         $credits = collect($creditsPaginator->items());
     
-        // Para el total de pagos filtrados, puedes usar el mismo paymentsFilterQuery
-        $totalPaymentsAmount = $paymentsFilterQuery->sum('amount');
-    
+        // 5. Agrupa pagos por crédito
         $groupedPayments = collect();
     
         foreach ($credits as $credit) {
-            $paymentsQuery = Payment::where('credit_id', $credit->credit_id)
-                ->leftJoin('payment_images', 'payments.id', '=', 'payment_images.payment_id')
-                ->select(
-                    'payments.id',
-                    'payments.payment_date',
-                    'payments.amount as total_payment',
-                    'payments.payment_method',
-                    'payments.payment_reference',
-                    'payments.status',
-                    'payments.amount',
-                    'payments.created_at',
-                    'payment_images.path as image_path'
-                )
-                ->orderBy('payments.created_at', 'desc');
+            // Solo los pagos filtrados para este crédito
+            $payments = $filteredPayments->where('credit_id', $credit->id)->values();
     
-            // Filtros de fecha y estado igual que antes
-            if ($request->has('start_date') && $request->has('end_date')) {
-                $paymentsQuery->whereBetween('payments.created_at', [$startDate, $endDate]);
-            } elseif ($request->has('date')) {
-                $paymentsQuery->whereBetween('payments.created_at', [$filterDate, $endFilterDate]);
-            } else {
-                $paymentsQuery->whereBetween('payments.created_at', [$todayStart, $todayEnd]);
-            }
-            if ($request->has('status') && in_array($request->status, ['Abonado', 'Pagado'])) {
-                $paymentsQuery->where('payments.status', $request->status);
-            }
-    
-            $payments = $paymentsQuery->get();
+            // Calcular el total pagado para este crédito en el rango filtrado
+            $total_paid = $payments->sum('amount');
     
             // Obtener cuotas de pagos "Pagado"
             $paymentIds = $payments->where('status', 'Pagado')->pluck('id');
@@ -519,19 +479,23 @@ class PaymentService
             });
     
             $groupedPayments->push([
-                'client_id' => $credit->client_id,
-                'client_name' => $credit->client_name,
-                'client_dni' => $credit->client_dni,
-                'credit_id' => $credit->credit_id,
+                'client_id' => $credit->client->id,
+                'client_name' => $credit->client->name,
+                'client_dni' => $credit->client->dni,
+                'credit_id' => $credit->id,
                 'credit_value' => $credit->credit_value,
-                'status' => $credit->credit_status,
+                'status' => $credit->status,
                 'total_interest' => $credit->total_interest,
                 'total_amount' => $credit->total_amount,
                 'number_installments' => $credit->number_installments,
                 'start_date' => $credit->start_date,
                 'payments' => $payments,
+                'total_paid' => $total_paid, // <-- aquí se agrega el campo
             ]);
         }
+    
+        // 6. Suma total solo de pagos filtrados
+        $totalPaymentsAmount = $filteredPayments->sum('amount');
     
         return $this->successResponse([
             'success' => true,

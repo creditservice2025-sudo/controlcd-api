@@ -390,25 +390,33 @@ class SellerService
                 'images',
                 'company'
             ])
-                ->withCount('credits')
-                ->withSum('credits as credits_value_sum', 'credit_value')
-                ->withSum('credits as credits_interest_sum', 'total_interest')
+                ->withCount([
+                    'credits as credits_count' => function ($query) {
+                        $query->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
+                              ->whereNull('deleted_at');
+                    }
+                ])
+                // Suma solo del capital
+                ->withSum([
+                    'credits as credits_value_sum' => function ($query) {
+                        $query->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
+                              ->whereNull('deleted_at');
+                    }
+                ], 'credit_value')
+                // Suma solo de la utilidad monetaria
                 ->addSelect([
                     'credits_utility_sum' => DB::table('credits')
                         ->selectRaw('COALESCE(SUM(credit_value * total_interest / 100), 0)')
                         ->whereColumn('seller_id', 'sellers.id')
                         ->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
-                        ->whereNull('deleted_at')
-                ])
-                ->addSelect([
-                    // Total créditos activos otorgados (capital + utilidad)
+                        ->whereNull('deleted_at'),
+                    // Suma del capital + utilidad monetaria
                     'credits_total_sum' => DB::table('credits')
                         ->selectRaw('COALESCE(SUM(credit_value + credit_value * total_interest / 100), 0)')
                         ->whereColumn('seller_id', 'sellers.id')
                         ->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
                         ->whereNull('deleted_at'),
-            
-                    // Cartera recuperada: suma de pagos de todos los créditos del vendedor
+                    // Cartera recuperada
                     'recovered_portfolio' => DB::table('payments')
                         ->selectRaw('COALESCE(SUM(amount), 0)')
                         ->whereIn('credit_id', function ($query) {

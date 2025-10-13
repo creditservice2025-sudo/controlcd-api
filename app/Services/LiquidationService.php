@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\DB;
 use App\Traits\ApiResponse;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
 
@@ -79,6 +80,46 @@ class LiquidationService
         $data['cash_delivered'] = $data['base_delivered'] + $data['surplus'] - $data['shortage'];
     }
 
+    public function approve($id)
+    {
+        try {
+            $user = Auth::user();
+            $liquidation = Liquidation::findOrFail($id);
+
+            if ($user->role_id != 1 && $user->role_id != 2) {
+                return $this->errorResponse('No tienes permisos para aprobar liquidaciones', 403);
+            }
+
+            if ($liquidation->status === 'approved') {
+                return $this->errorResponse('La liquidación ya ha sido aprobada previamente.', 422);
+            }
+
+            $previousUnapproved = Liquidation::where('seller_id', $liquidation->seller_id)
+                ->where('date', '<', $liquidation->date)
+                ->where('status', '!=', 'approved')
+                ->orderBy('date', 'asc')
+                ->first();
+
+            if ($previousUnapproved) {
+                return $this->errorResponse(
+                    "Para aprobar esta liquidación debes aprobar primero la liquidación pendiente del día {$previousUnapproved->date}.",
+                    422
+                );
+            }
+
+            $liquidation->update(['status' => 'approved']);
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Liquidación cerrada y aprobada correctamente.',
+                'data' => $liquidation
+            ]);
+        } catch (\Exception $e) {
+            \Log::error("Error en approve: " . $e->getMessage());
+            return $this->errorResponse('Error al aprobar la liquidación', 500);
+        }
+    }
+
     /**
      * Valida los datos de liquidación.
      *
@@ -126,24 +167,37 @@ class LiquidationService
     public function getLiquidationsBySeller(int $sellerId, Request $request, int $perPage = 20)
     {
         try {
-            $query = Liquidation::with(['seller'])
+            $query = Liquidation::with(['seller', 'seller.city.country'])
                 ->where('seller_id', $sellerId);
 
             if ($request->has('start_date') && $request->has('end_date')) {
                 $startDate = Carbon::parse($request->get('start_date'))->startOfDay();
                 $endDate = Carbon::parse($request->get('end_date'))->endOfDay();
-                $query->whereBetween('created_at', [$startDate, $endDate]);
+                $query->whereBetween('date', [$startDate, $endDate]);
             }
 
 
-            $query->orderBy('created_at', 'desc');
+            $query->orderBy('date', 'desc');
 
             $liquidations = $query->paginate($perPage);
+
+            $lastApprovedLiquidation = Liquidation::where('seller_id', $sellerId)
+                ->where('status', 'approved')
+                ->orderBy('date', 'desc')
+                ->first();
+
+            if ($lastApprovedLiquidation) {
+                $lastApprovedDate = $lastApprovedLiquidation->date;
+            } else {
+                $seller = Seller::find($sellerId);
+                $lastApprovedDate = $seller ? $seller->created_at->toDateString() : null;
+            }
 
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Liquidaciones obtenidas exitosamente',
-                'data' => $liquidations
+                'data' => $liquidations,
+                'last_approved_liquidation_date' => $lastApprovedDate
             ]);
         } catch (\Exception $e) {
             Log::error($e->getMessage());
@@ -230,39 +284,39 @@ class LiquidationService
         $timezone = 'America/Caracas';
         $startUTC = Carbon::parse($date, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC   = Carbon::parse($date, $timezone)->endOfDay()->setTimezone('UTC');
-    
+
         // 1. Verificar si ya existe liquidación para esta fecha
         $existingLiquidation = Liquidation::with('audits')->where('seller_id', $sellerId)
-            ->whereBetween('date', [$startUTC, $endUTC])
+            ->whereDate('date', $date)
             ->first();
-    
+
         // Si existe liquidación, retornar directamente esos datos
         if ($existingLiquidation) {
             // Recalcula los datos de la liquidación antes de devolverlos
-            $this->recalculateLiquidation($sellerId, $date);
-    
+            /*  $this->recalculateLiquidation($sellerId, $date);
+
             // Vuelve a obtener la liquidación actualizada
             $updatedLiquidation = Liquidation::with('audits')->where('seller_id', $sellerId)
-                ->whereBetween('date', [$startUTC, $endUTC])
-                ->first();
-    
-            return $this->formatLiquidationResponse($updatedLiquidation, true);
+                ->whereDate('date', $date)
+                ->first(); */
+
+            return $this->formatLiquidationResponse($existingLiquidation, true);
         }
         // 2. Obtener datos del endpoint dailyPaymentTotals
         $dailyTotals = $this->getDailyTotals($sellerId, $date, $userId);
-    
+
         // 3. Obtener última liquidación para saldo inicial
         $lastLiquidation = Liquidation::where('seller_id', $sellerId)
             ->where('date', '<', $startUTC)
             ->orderBy('date', 'desc')
             ->first();
-    
+
         $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
-    
+
         $baseDelivered = (isset($existingLiquidation) && isset($existingLiquidation->base_delivered))
             ? $existingLiquidation->base_delivered
             : 0.00;
-    
+
         // Créditos irrecuperables actualizados hoy en horario Venezuela
         $irrecoverableCredits = DB::table('installments')
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
@@ -271,7 +325,7 @@ class LiquidationService
             ->whereBetween('credits.updated_at', [$startUTC, $endUTC])
             ->where('installments.status', 'Pendiente')
             ->sum('installments.quota_amount');
-    
+
         $realToDeliver = $initialCash
             + (
                 $dailyTotals['total_income']
@@ -282,7 +336,7 @@ class LiquidationService
                 $dailyTotals['created_credits_value']
                 + $dailyTotals['total_expenses'] + $dailyTotals['total_renewal_disbursed'] + $irrecoverableCredits
             );
-    
+
         // 5. Estructurar respuesta completa
         return [
             'collection_target' => $dailyTotals['daily_goal'],
@@ -588,7 +642,7 @@ class LiquidationService
         $totals['detalle_renovaciones'] = $detalles_renovaciones;
 
         // Log detallado
-     /*    \Log::info('Desglose de renovaciones:', [
+        /*    \Log::info('Desglose de renovaciones:', [
             'detalle_renovaciones' => $detalles_renovaciones,
             'total_renewal_disbursed' => $total_renewal_disbursed
         ]); */
@@ -662,12 +716,12 @@ class LiquidationService
     {
         $timezone = 'America/Caracas';
         $startUTC = Carbon::parse($date, $timezone)->startOfDay()->setTimezone('UTC');
-    
+
         $lastLiquidation = Liquidation::where('seller_id', $sellerId)
             ->where('date', '<', $startUTC)
             ->orderBy('date', 'desc')
             ->first();
-    
+
         return $lastLiquidation ? $this->formatLiquidationDetails($lastLiquidation) : null;
     }
 
@@ -676,32 +730,32 @@ class LiquidationService
         $timezone = 'America/Caracas';
         $startUTC = Carbon::parse($startDate, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC   = Carbon::parse($endDate, $timezone)->endOfDay()->setTimezone('UTC');
-    
+
         $cities = DB::table('cities')->get();
         $report = [];
-    
+
         foreach ($cities as $city) {
             $liquidations = Liquidation::whereHas('seller', function ($q) use ($city) {
-                    $q->where('city_id', $city->id);
-                })
+                $q->where('city_id', $city->id);
+            })
                 ->whereBetween('date', [$startUTC, $endUTC])
                 ->get();
-    
+
             if ($liquidations->count() > 0) {
                 $previous_cash = Liquidation::whereHas('seller', function ($q) use ($city) {
-                        $q->where('city_id', $city->id);
-                    })
+                    $q->where('city_id', $city->id);
+                })
                     ->where('status', 'approved')
                     ->where('date', '<', $startUTC)
                     ->orderBy('date', 'desc')
                     ->value('initial_cash') ?? 0;
-    
+
                 $collected = $liquidations->sum('total_collected');
                 $loans = $liquidations->sum('new_credits');
                 $expenses = $liquidations->sum('total_expenses');
                 $income = $liquidations->sum('total_income');
                 $current_cash = $liquidations->last()?->cash_delivered ?? 0;
-    
+
                 $expenseCategories = [
                     'ALMUERZO',
                     'EXTORSION',
@@ -718,12 +772,12 @@ class LiquidationService
                         ->whereBetween('created_at', [$startUTC, $endUTC])
                         ->sum('value');
                 }
-    
+
                 $income = Income::whereBetween('created_at', [$startUTC, $endUTC])
                     ->whereHas('user', function ($q) use ($city) {
                         $q->where('city_id', $city->id);
                     })->sum('value');
-    
+
                 $report[] = [
                     'city' => $city->name,
                     'previous_cash' => $previous_cash,
@@ -743,7 +797,7 @@ class LiquidationService
         $timezone = 'America/Caracas';
         $startUTC = Carbon::parse($startDate, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC   = Carbon::parse($endDate, $timezone)->endOfDay()->setTimezone('UTC');
-    
+
         return DB::table('liquidations')
             ->join('sellers', 'liquidations.seller_id', '=', 'sellers.id')
             ->join('cities', 'sellers.city_id', '=', 'cities.id')
@@ -765,13 +819,13 @@ class LiquidationService
             ->groupBy('cities.id', 'cities.name')
             ->get();
     }
-    
+
     public function getAccumulatedBySellerInCity($cityId, $startDate, $endDate)
     {
         $timezone = 'America/Caracas';
         $startUTC = Carbon::parse($startDate, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC   = Carbon::parse($endDate, $timezone)->endOfDay()->setTimezone('UTC');
-    
+
         return DB::table('liquidations')
             ->join('sellers', 'liquidations.seller_id', '=', 'sellers.id')
             ->join('cities', 'sellers.city_id', '=', 'cities.id')
@@ -795,13 +849,13 @@ class LiquidationService
             ->groupBy('sellers.id', 'sellers.seller_id', 'users.name')
             ->get();
     }
-    
+
     public function getAccumulatedBySellersInCity($cityId, $startDate, $endDate)
     {
         $timezone = 'America/Caracas';
         $startUTC = Carbon::parse($startDate, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC   = Carbon::parse($endDate, $timezone)->endOfDay()->setTimezone('UTC');
-    
+
         return DB::table('liquidations')
             ->join('sellers', 'liquidations.seller_id', '=', 'sellers.id')
             ->join('cities', 'sellers.city_id', '=', 'cities.id')
@@ -827,13 +881,13 @@ class LiquidationService
             ->groupBy('sellers.id', 'users.name', 'cities.name')
             ->get();
     }
-    
+
     public function getSellerLiquidationsDetail($sellerId, $startDate, $endDate)
     {
         $timezone = 'America/Caracas';
         $startUTC = Carbon::parse($startDate, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC   = Carbon::parse($endDate, $timezone)->endOfDay()->setTimezone('UTC');
-    
+
         return Liquidation::with(['seller', 'seller.user'])
             ->where('seller_id', $sellerId)
             ->whereBetween('date', [$startUTC, $endUTC])
