@@ -16,6 +16,7 @@ class Kernel extends ConsoleKernel
     protected function schedule(Schedule $schedule)
     {
         $schedule->command('liquidation:auto-daily')->dailyAt('23:55');
+        $schedule->command('liquidation:historical')->dailyAt('23:55');
     }
 
     /**
