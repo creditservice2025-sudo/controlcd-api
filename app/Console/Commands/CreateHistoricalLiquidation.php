@@ -92,9 +92,8 @@ class CreateHistoricalLiquidation extends Command
                     ])
                     ->get();
 
-                $new_credits = $creditTest->sum('credit_value');
+                $new_credits = $creditTest->whereNull('renewed_from_id')->sum('credit_value');
 
-                // Log para depuración
                 $this->info("Fecha: $currentDate - Créditos nuevos para seller_id {$seller->id}: " . $creditTest->pluck('id')->implode(', ') . " - Total créditos: $new_credits");
 
                 $irrecoverableCredits = DB::table('installments')
@@ -120,6 +119,8 @@ class CreateHistoricalLiquidation extends Command
                 $total_renewal_disbursed = 0;
                 $total_pending_absorbed = 0;
 
+                $this->info("Fecha: $currentDate - Créditos de renovación encontrados: " . $renewalCredits->pluck('id')->implode(', '));
+
                 foreach ($renewalCredits as $renewCredit) {
                     $oldCredit = Credit::find($renewCredit->renewed_from_id);
 
@@ -131,13 +132,15 @@ class CreateHistoricalLiquidation extends Command
                         $oldCreditPaid = Payment::where('credit_id', $oldCredit->id)->sum('amount');
                         $pendingAmount = $oldCreditTotal - $oldCreditPaid;
                         $total_pending_absorbed += $pendingAmount;
+                        $this->info("Renovación: NuevoCreditoID: {$renewCredit->id}, CreditoAnteriorID: {$oldCredit->id}, TotalAnterior: {$oldCreditTotal}, PagadoAnterior: {$oldCreditPaid}, PendienteAbsorbido: {$pendingAmount}");
+                    } else {
+                        $this->info("Renovación: NuevoCreditoID: {$renewCredit->id}, CreditoAnteriorID: {$renewCredit->renewed_from_id} NO ENCONTRADO");
                     }
 
                     $netDisbursement = $renewCredit->credit_value - $pendingAmount;
                     $total_renewal_disbursed += $netDisbursement;
                 }
 
-                // Si quieres que el saldo inicial sea el saldo final del día anterior:
                 // Busca la liquidación anterior a este día
                 $previousLiquidation = Liquidation::where('seller_id', $seller->id)
                     ->whereDate('date', '<', $currentDate)
@@ -148,6 +151,8 @@ class CreateHistoricalLiquidation extends Command
 
                 $real_to_deliver = $initialCash + ($total_income + $total_collected)
                     - ($total_expenses + $new_credits + $irrecoverableCredits + $total_renewal_disbursed);
+
+                $this->info("Fecha: $currentDate - total_pending_absorbed a guardar: {$total_pending_absorbed}, total_renewal_disbursed: {$total_renewal_disbursed}");
 
                 Liquidation::create([
                     'date' => $currentDate,
@@ -166,9 +171,10 @@ class CreateHistoricalLiquidation extends Command
                     'status' => 'historical',
                     'irrecoverable_credits_amount' => $irrecoverableCredits,
                     'renewal_disbursed_total' => $total_renewal_disbursed,
+                    'total_pending_absorbed' => $total_pending_absorbed, 
                 ]);
 
-                $this->info("Liquidación histórica creada para vendedor {$seller->id} en {$currentDate}");
+                $this->info("Liquidación histórica creada para vendedor {$seller->id} en {$currentDate} | total_pending_absorbed: {$total_pending_absorbed}");
 
                 $datePointer->addDay();
             }

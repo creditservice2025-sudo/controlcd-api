@@ -418,7 +418,7 @@ class LiquidationController extends Controller
 
     public function reopenRoute(Request $request)
     {
-        \Log::info('reopenRoute - Request recibido', $request->all());
+        /* \Log::info('reopenRoute - Request recibido', $request->all()); */
 
         $request->validate([
             'seller_id' => 'required|exists:sellers,id',
@@ -434,8 +434,8 @@ class LiquidationController extends Controller
             ->whereBetween('created_at', [$startUTC, $endUTC])
             ->first();
 
-        \Log::info('reopenRoute - Liquidación encontrada', ['liquidation' => $liquidation]);
-
+       /*  \Log::info('reopenRoute - Liquidación encontrada', ['liquidation' => $liquidation]);
+ */
         if (!$liquidation) {
 
             return response()->json(['message' => 'No existe liquidación para ese vendedor y fecha'], 404);
@@ -740,8 +740,8 @@ class LiquidationController extends Controller
             ->where('installments.status', 'Pendiente')
             ->sum('installments.quota_amount');
 
-        Log::info('INcome: ' . $dailyTotals['total_income']);
-        Log::info('Initial Cash: ' . $initialCash);
+       /*  Log::info('INcome: ' . $dailyTotals['total_income']);
+        Log::info('Initial Cash: ' . $initialCash); */
         // 4. Calcular valor real a entregar
         $realToDeliver = $initialCash
             + ($dailyTotals['total_income'] + $dailyTotals['collected_total'])
@@ -852,7 +852,7 @@ class LiquidationController extends Controller
             ])
             ->first();
 
-        Log::info('Créditos creados en ' . $targetDate->format('Y-m-d') . ':', [
+        /* Log::info('Créditos creados en ' . $targetDate->format('Y-m-d') . ':', [
             'query' => DB::table('credits')
                 ->where('seller_id', $sellerId)
                 ->whereBetween('created_at', [$startUTC, $endUTC])
@@ -862,7 +862,7 @@ class LiquidationController extends Controller
                 ->whereBetween('created_at', [$startUTC, $endUTC])
                 ->getBindings(),
             'result' => $credits
-        ]);
+        ]); */
 
         $totals['created_credits_value'] = (float)$credits->value;
         $totals['created_credits_interest'] = (float)$credits->interest;
@@ -889,7 +889,7 @@ class LiquidationController extends Controller
         $totals['daily_goal'] = $totals['expected_total'];
         $totals['current_balance'] = $totals['collected_total'] - $totals['total_expenses'];
 
-        Log::info($totals['expected_total']);
+       /*  Log::info($totals['expected_total']); */
 
         $renewalCredits = DB::table('credits')
             ->where('seller_id', $sellerId)
@@ -935,7 +935,6 @@ class LiquidationController extends Controller
             $response = $this->liquidationService->getLiquidationsBySeller(
                 $sellerId,
                 $request,
-                $perPage
             );
 
             return $response;

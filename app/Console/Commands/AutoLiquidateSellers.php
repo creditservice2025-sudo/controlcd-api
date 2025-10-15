@@ -28,7 +28,6 @@ class AutoLiquidateSellers extends Command
             if (!$exists) {
                 // Obtén los movimientos del día
                 $initialCash = optional(Liquidation::where('seller_id', $seller->id)->orderBy('date', 'desc')->first())->real_to_deliver ?? 0;
-
                 $total_collected = DB::table('payments')
                     ->join('credits', 'payments.credit_id', '=', 'credits.id')
                     ->where('credits.seller_id', $seller->id)
@@ -47,6 +46,7 @@ class AutoLiquidateSellers extends Command
 
                 $new_credits = DB::table('credits')
                     ->where('seller_id', $seller->id)
+                    ->whereNull('renewed_from_id')
                     ->whereDate('created_at', $todayDate)
                     ->sum('credit_value');
 
@@ -58,8 +58,31 @@ class AutoLiquidateSellers extends Command
                     ->where('installments.status', 'Pendiente')
                     ->sum('installments.quota_amount');
 
+
+                $renewalCredits = DB::table('credits')
+                    ->where('seller_id', $seller->id)
+                    ->whereNotNull('renewed_from_id')
+                    ->whereDate('created_at', $todayDate)
+                    ->get();
+
+                $total_renewal_disbursed = 0;
+                $total_pending_absorbed = 0;
+
+                foreach ($renewalCredits as $renewCredit) {
+                    $oldCredit = DB::table('credits')->where('id', $renewCredit->renewed_from_id)->first();
+                    $pendingAmount = 0;
+                    if ($oldCredit) {
+                        $oldCreditTotal = ($oldCredit->credit_value * $oldCredit->total_interest / 100) + $oldCredit->credit_value;
+                        $oldCreditPaid = DB::table('payments')->where('credit_id', $oldCredit->id)->sum('amount');
+                        $pendingAmount = $oldCreditTotal - $oldCreditPaid;
+                        $total_pending_absorbed += $pendingAmount;
+                    }
+                    $netDisbursement = $renewCredit->credit_value - $pendingAmount;
+                    $total_renewal_disbursed += $netDisbursement;
+                }
+
                 $real_to_deliver = $initialCash + ($total_income + $total_collected)
-                    - ($total_expenses + $new_credits + $irrecoverableCredits);
+                    - ($total_expenses + $new_credits + $irrecoverableCredits + $total_renewal_disbursed);
 
                 $liquidationData = [
                     'date' => $todayDate,
@@ -76,6 +99,9 @@ class AutoLiquidateSellers extends Command
                     'surplus' => 0,
                     'cash_delivered' => 0,
                     'status' => 'auto',
+                    'irrecoverable_credits_amount' => $irrecoverableCredits,
+                    'renewal_disbursed_total' => $total_renewal_disbursed,
+                    'total_pending_absorbed' => $total_pending_absorbed, 
                 ];
 
                 Liquidation::create($liquidationData);

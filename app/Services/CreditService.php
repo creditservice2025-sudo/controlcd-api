@@ -186,7 +186,7 @@ class CreditService
             ]);
         } catch (\Exception $e) {
             \Log::error("Error al crear crédito: " . $e->getMessage());
-            \Log::error($e->getTraceAsString());
+            /* \Log::error($e->getTraceAsString()); */
             return $this->errorResponse('Error al crear el crédito: ' . $e->getMessage(), 500);
         }
     }

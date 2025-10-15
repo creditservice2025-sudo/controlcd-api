@@ -26,6 +26,7 @@ class Liquidation extends Model
         'status',
         'end_date',
         'renewal_disbursed_total',
+        'total_pending_absorbed',
         'irrecoverable_credits_amount',
         'created_at'
     ];

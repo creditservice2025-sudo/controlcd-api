@@ -228,44 +228,40 @@ class LiquidationService
         return $liquidation;
     }
 
-    public function getLiquidationsBySeller(int $sellerId, Request $request, int $perPage = 20)
+    public function getLiquidationsBySeller(int $sellerId, Request $request)
     {
         try {
             $query = Liquidation::with(['seller', 'seller.city.country'])
                 ->where('seller_id', $sellerId);
-
+    
             if ($request->has('start_date') && $request->has('end_date')) {
                 $startDate = Carbon::parse($request->get('start_date'))->startOfDay();
                 $endDate = Carbon::parse($request->get('end_date'))->endOfDay();
                 $query->whereBetween('date', [$startDate, $endDate]);
             }
-
-
+    
             $query->orderBy('date', 'desc');
-
-            $liquidations = $query->paginate($perPage);
-
+    
+            $liquidations = $query->get();
+    
             foreach ($liquidations as $liq) {
                 if ($liq->status !== 'approved') {
                     $this->recalculateLiquidation($sellerId, $liq->date);
                 }
-
-                // O recalcular absolutamente todas
-                $this->recalculateLiquidation($sellerId, $liq->date);
             }
-
+    
             $lastApprovedLiquidation = Liquidation::where('seller_id', $sellerId)
                 ->where('status', 'approved')
                 ->orderBy('date', 'desc')
                 ->first();
-
+    
             if ($lastApprovedLiquidation) {
                 $lastApprovedDate = $lastApprovedLiquidation->date;
             } else {
                 $seller = Seller::find($sellerId);
                 $lastApprovedDate = $seller ? $seller->created_at->toDateString() : null;
             }
-
+    
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Liquidaciones obtenidas exitosamente',
@@ -433,8 +429,14 @@ class LiquidationService
                 \Log::debug("Liquidación actualizada: ", $updatedLiquidation->toArray());
                 return $this->formatLiquidationResponse($updatedLiquidation, true);
             } else {
+                $this->recalculateLiquidation($sellerId, $date);
+
+                // Vuelve a obtener la liquidación actualizada
+                $updatedLiquidation = Liquidation::with('audits')->where('seller_id', $sellerId)
+                    ->whereDate('date', $date)  // Cambiado de 'created_at' a 'date'
+                    ->first(); 
                 \Log::debug("Liquidación existente para fecha pasada, no se recalcula. Fecha: $existingLiquidation->date");
-                return $this->formatLiquidationResponse($existingLiquidation, true);
+                return $this->formatLiquidationResponse($updatedLiquidation, true);
             }
         }
         // 2. Obtener datos del endpoint dailyPaymentTotals
@@ -508,9 +510,9 @@ class LiquidationService
         $startUTC = Carbon::parse($date, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC   = Carbon::parse($date, $timezone)->endOfDay()->setTimezone('UTC');
 
-        \Log::debug("=== INICIO recalculateLiquidation ===");
+    /*     \Log::debug("=== INICIO recalculateLiquidation ===");
         \Log::debug("Seller ID: $sellerId, Fecha: $date");
-        \Log::debug("Rango UTC: $startUTC a $endUTC");
+        \Log::debug("Rango UTC: $startUTC a $endUTC"); */
 
         // Busca la liquidación del vendedor en esa fecha usando whereDate para coincidir con getLiquidationData
         $liquidation = Liquidation::where('seller_id', $sellerId)
@@ -518,18 +520,18 @@ class LiquidationService
             ->first();
 
         if (!$liquidation) {
-            \Log::debug("❌ NO se encontró liquidación para recálculo");
-            \Log::debug("Consulta ejecutada: seller_id = $sellerId, date = $date");
+          /*   \Log::debug("❌ NO se encontró liquidación para recálculo");
+            \Log::debug("Consulta ejecutada: seller_id = $sellerId, date = $date"); */
             return;
         }
 
-        \Log::debug("✅ Liquidación encontrada - ID: {$liquidation->id}");
-        \Log::debug("Fecha liquidación: {$liquidation->date}");
+        /* \Log::debug("✅ Liquidación encontrada - ID: {$liquidation->id}");
+        \Log::debug("Fecha liquidación: {$liquidation->date}"); */
 
         // 1. Obtener el user_id del vendedor
         $seller = Seller::find($sellerId);
         $userId = $seller ? $seller->user_id : null;
-        \Log::debug("User ID del vendedor: $userId");
+       /*  \Log::debug("User ID del vendedor: $userId"); */
 
         // 2. Recalcula los totales actuales desde la BD
         $totalExpenses = $userId
@@ -556,11 +558,11 @@ class LiquidationService
             ->whereBetween('payments.created_at', [$startUTC, $endUTC])
             ->sum('payments.amount');
 
-        \Log::debug("Nuevos valores calculados desde BD:");
+       /*  \Log::debug("Nuevos valores calculados desde BD:");
         \Log::debug("- totalExpenses: $totalExpenses");
         \Log::debug("- totalIncome: $totalIncome");
         \Log::debug("- newCredits: $newCredits");
-        \Log::debug("- totalCollected: $totalCollected");
+        \Log::debug("- totalCollected: $totalCollected"); */
 
         // === Detalle de renovaciones ===
         $renewalCredits = DB::table('credits')
@@ -569,7 +571,7 @@ class LiquidationService
             ->whereNotNull('renewed_from_id')
             ->get();
 
-        \Log::debug("Créditos de renovación encontrados: " . $renewalCredits->count());
+        /* \Log::debug("Créditos de renovación encontrados: " . $renewalCredits->count()); */
 
         $total_renewal_disbursed = 0;
         $total_pending_absorbed = 0;
@@ -591,8 +593,8 @@ class LiquidationService
             \Log::debug("Renovación - ID: {$renewCredit->id}, Valor: {$renewCredit->credit_value}, Pendiente absorbido: $pendingAmount, Neto desembolsado: $netDisbursement");
         }
 
-        \Log::debug("Total pending absorbed: $total_pending_absorbed");
-        \Log::debug("Total renewal disbursed: $total_renewal_disbursed");
+      /*   \Log::debug("Total pending absorbed: $total_pending_absorbed");
+        \Log::debug("Total renewal disbursed: $total_renewal_disbursed"); */
 
         $irrecoverableCredits = DB::table('installments')
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
@@ -612,10 +614,10 @@ class LiquidationService
                 + $newCredits
                 + $total_renewal_disbursed
                 + $irrecoverableCredits);
-
+/* 
         \Log::debug("Cálculo realToDeliver:");
         \Log::debug("initial_cash ({$liquidation->initial_cash}) + base_delivered ({$liquidation->base_delivered}) + (totalIncome ($totalIncome) + totalCollected ($totalCollected)) - (totalExpenses ($totalExpenses) + newCredits ($newCredits) + total_renewal_disbursed ($total_renewal_disbursed) + irrecoverableCredits ($irrecoverableCredits)) = $realToDeliver");
-
+ */
         $cashDelivered = $liquidation->cash_delivered;
         $shortage = 0;
         $surplus = 0;
@@ -635,8 +637,8 @@ class LiquidationService
             }
         }
 
-        \Log::debug("cashDelivered: $cashDelivered, shortage: $shortage, surplus: $surplus");
-
+       /*  \Log::debug("cashDelivered: $cashDelivered, shortage: $shortage, surplus: $surplus");
+ */
         // Verificar si hay cambios
         $hasChanges = !(
             $liquidation->total_expenses == $totalExpenses &&
@@ -646,13 +648,13 @@ class LiquidationService
             $liquidation->real_to_deliver == $realToDeliver &&
             $liquidation->shortage == $shortage &&
             $liquidation->surplus == $surplus &&
-            $liquidation->total_renewal_disbursed == $total_renewal_disbursed &&
-            $liquidation->total_crossed_credits == $total_pending_absorbed
+            $liquidation->renewal_disbursed_total == $total_renewal_disbursed &&
+            $liquidation->total_pending_absorbed == $total_pending_absorbed
         );
 
         if (!$hasChanges) {
-            \Log::debug("✅ NO hay cambios en los datos - No se actualiza la liquidación");
-            \Log::debug("=== FIN recalculateLiquidation (sin cambios) ===");
+           /*  \Log::debug("✅ NO hay cambios en los datos - No se actualiza la liquidación");
+            \Log::debug("=== FIN recalculateLiquidation (sin cambios) ==="); */
             return; // No hay cambios, no actualizar
         }
 /* 
@@ -678,10 +680,11 @@ class LiquidationService
             'surplus'                  => $surplus,
             'renewal_disbursed_total'  => $total_renewal_disbursed,
             'irrecoverable_credits_amount' => $irrecoverableCredits,
+            'total_pending_absorbed'    => $total_pending_absorbed,
         ]);
 
-        \Log::debug("✅ Liquidación actualizada exitosamente");
-        \Log::debug("=== FIN recalculateLiquidation (con actualización) ===");
+      /*   \Log::debug("✅ Liquidación actualizada exitosamente");
+        \Log::debug("=== FIN recalculateLiquidation (con actualización) ==="); */
     }
 
     protected function getDailyTotals($sellerId, $date, $userId)
@@ -878,6 +881,7 @@ class LiquidationService
             'last_liquidation' => $this->getPreviousLiquidation($liquidation->seller_id, $liquidation->date),
             'is_new' => false,
             'liquidation_start_date' => $firstPaymentDate,
+            'total_pending_absorbed' => $liquidation->total_pending_absorbed,
             'total_crossed_credits' => $dailyTotals['total_crossed_credits'],
             'total_renewal_disbursed' => $dailyTotals['total_renewal_disbursed'],
             'audits' => $liquidation->audits,
