@@ -17,6 +17,7 @@ class Kernel extends ConsoleKernel
     {
         $schedule->command('liquidation:auto-daily')->dailyAt('23:55');
         $schedule->command('liquidation:historical')->dailyAt('23:55');
+        $schedule->command('liquidation:notify-pending')->dailyAt('21:52');
     }
 
     /**
@@ -26,7 +27,7 @@ class Kernel extends ConsoleKernel
      */
     protected function commands()
     {
-        $this->load(__DIR__.'/Commands');
+        $this->load(__DIR__ . '/Commands');
         require base_path('routes/console.php');
     }
 }

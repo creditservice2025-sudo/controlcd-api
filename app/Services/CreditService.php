@@ -967,7 +967,8 @@ class CreditService
         }
 
         // Obtener nuevos créditos del día
-        $newCredits = Credit::whereBetween('credits.created_at', [$start, $end]);
+        $newCredits = Credit::whereBetween('credits.created_at', [$start, $end])
+            ->whereNull('renewed_from_id');
         if ($sellerId) {
             $newCredits->whereHas('client', function ($query) use ($sellerId) {
                 $query->where('seller_id', $sellerId);

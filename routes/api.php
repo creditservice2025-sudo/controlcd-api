@@ -185,6 +185,7 @@ Route::middleware('auth:api')->group(function () {
         Route::get('sellers-summary-by-city', [LiquidationController::class, 'getSellersSummaryByCity']);
         Route::get('seller/{sellerId}/liquidations-detail', [LiquidationController::class, 'getSellerLiquidationsDetail']);
         Route::put('{liquidationId}/approve', [LiquidationController::class, 'approveLiquidation']);
+        Route::post('approve-multiple', [LiquidationController::class, 'approveMultipleLiquidations']);
         Route::put('{liquidationId}/annul-base', [LiquidationController::class, 'annulBase']);
         Route::put('update/{liquidationId}', [LiquidationController::class, 'updateLiquidation']);
 

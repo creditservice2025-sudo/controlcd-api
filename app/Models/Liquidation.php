@@ -25,6 +25,8 @@ class Liquidation extends Model
         'path',
         'status',
         'end_date',
+        'renewal_disbursed_total',
+        'irrecoverable_credits_amount',
         'created_at'
     ];
 
