@@ -62,7 +62,6 @@ class LiquidationController extends Controller
     {
         $user = Auth::user();
 
-
         $timezone = 'America/Caracas';
         $todayDate = Carbon::now($timezone)->toDateString();
 
@@ -104,16 +103,43 @@ class LiquidationController extends Controller
             ], 422);
         }
 
+        // === Calcular créditos irrecuperables ===
         $irrecoverableCredits = DB::table('installments')
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
             ->where('credits.seller_id', $request->seller_id)
             ->where('credits.status', 'Cartera Irrecuperable')
-            ->whereDate('credits.updated_at', $todayDate)
+            ->whereDate('credits.updated_at', $request->date)
             ->where('installments.status', 'Pendiente')
             ->sum('installments.quota_amount');
 
-        $realToDeliver = $request->initial_cash + ($request->total_income + $request->total_collected)
-            - ($request->total_expenses + $request->new_credits + $irrecoverableCredits);
+        // === Calcular renovaciones desembolsadas ===
+        $startUTC = Carbon::parse($request->date, $timezone)->startOfDay()->setTimezone('UTC');
+        $endUTC   = Carbon::parse($request->date, $timezone)->endOfDay()->setTimezone('UTC');
+
+        $renewalCredits = Credit::where('seller_id', $request->seller_id)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereNotNull('renewed_from_id')
+            ->get();
+
+        $total_renewal_disbursed = 0;
+        foreach ($renewalCredits as $renewCredit) {
+            $oldCredit = Credit::find($renewCredit->renewed_from_id);
+            $pendingAmount = 0;
+            $oldCreditTotal = 0;
+            $oldCreditPaid = 0;
+            if ($oldCredit) {
+                $oldCreditTotal = ($oldCredit->credit_value * $oldCredit->total_interest / 100) + $oldCredit->credit_value;
+                $oldCreditPaid = Payment::where('credit_id', $oldCredit->id)->sum('amount');
+                $pendingAmount = $oldCreditTotal - $oldCreditPaid;
+            }
+            $netDisbursement = $renewCredit->credit_value - $pendingAmount;
+            $total_renewal_disbursed += $netDisbursement;
+        }
+
+        // === Calcular real_to_deliver incluyendo los nuevos campos ===
+        $realToDeliver = $request->initial_cash +
+            ($request->total_income + $request->total_collected) -
+            ($request->total_expenses + $request->new_credits + $irrecoverableCredits + $total_renewal_disbursed);
 
         $shortage = 0;
         $surplus = 0;
@@ -137,8 +163,6 @@ class LiquidationController extends Controller
             }
         }
 
-
-
         $liquidationData = [
             'date' => $request->date,
             'seller_id' => $request->seller_id,
@@ -154,7 +178,9 @@ class LiquidationController extends Controller
             'surplus' => $surplus,
             'path' => $request->path,
             'cash_delivered' => $request->cash_delivered,
-            'status' => 'pending'
+            'status' => 'pending',
+            'irrecoverable_credits_amount' => $irrecoverableCredits,
+            'renewal_disbursed_total' => $total_renewal_disbursed
         ];
 
         if ($request->has('created_at')) {
@@ -166,7 +192,6 @@ class LiquidationController extends Controller
             $imagePath = Helper::uploadFile($imageFile, 'liquidations');
             $liquidationData['path'] = $imagePath;
         }
-
 
         $liquidation = Liquidation::create($liquidationData);
 
@@ -208,6 +233,8 @@ class LiquidationController extends Controller
     {
         $user = Auth::user();
 
+        $timezone = 'America/Caracas';
+
         $request->validate([
             'date' => 'nullable|date',
             'seller_id' => 'nullable|exists:sellers,id',
@@ -224,8 +251,11 @@ class LiquidationController extends Controller
 
         $liquidation = Liquidation::findOrFail($id);
 
-        $existingLiquidation = Liquidation::where('seller_id', $request->seller_id ?? $liquidation->seller_id)
-            ->where('date', $request->date ?? $liquidation->date)
+        $date = $request->date ?? $liquidation->date;
+        $sellerId = $request->seller_id ?? $liquidation->seller_id;
+
+        $existingLiquidation = Liquidation::where('seller_id', $sellerId)
+            ->where('date', $date)
             ->where('id', '!=', $id)
             ->first();
 
@@ -237,7 +267,7 @@ class LiquidationController extends Controller
         }
 
         $pendingExpenses = Expense::where('user_id', $user->id)
-            ->whereDate('created_at', $request->date ?? $liquidation->date)
+            ->whereDate('created_at', $date)
             ->where('status', 'Pendiente')
             ->exists();
 
@@ -259,14 +289,52 @@ class LiquidationController extends Controller
         $cash_delivered = $request->has('cash_delivered') ? $request->cash_delivered : $liquidation->cash_delivered;
         $collection_target = $request->has('collection_target') ? $request->collection_target : $liquidation->collection_target;
 
-        $realToDeliver = $initial_cash
-            + $base_delivered
-            + ($total_income + $total_collected)
-            - $total_expenses
-            - $new_credits;
+        // === Calcular créditos irrecuperables ===
+        $irrecoverableCredits = DB::table('installments')
+            ->join('credits', 'installments.credit_id', '=', 'credits.id')
+            ->where('credits.seller_id', $sellerId)
+            ->where('credits.status', 'Cartera Irrecuperable')
+            ->whereDate('credits.updated_at', $date)
+            ->where('installments.status', 'Pendiente')
+            ->sum('installments.quota_amount');
+
+        // === Calcular renovaciones desembolsadas ===
+        $startUTC = Carbon::parse($date, $timezone)->startOfDay()->setTimezone('UTC');
+        $endUTC   = Carbon::parse($date, $timezone)->endOfDay()->setTimezone('UTC');
+
+        $renewalCredits = \App\Models\Credit::where('seller_id', $sellerId)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereNotNull('renewed_from_id')
+            ->get();
+
+        $total_renewal_disbursed = 0;
+        foreach ($renewalCredits as $renewCredit) {
+            $oldCredit = \App\Models\Credit::find($renewCredit->renewed_from_id);
+            $pendingAmount = 0;
+            $oldCreditTotal = 0;
+            $oldCreditPaid = 0;
+            if ($oldCredit) {
+                $oldCreditTotal = ($oldCredit->credit_value * $oldCredit->total_interest / 100) + $oldCredit->credit_value;
+                $oldCreditPaid = \App\Models\Payment::where('credit_id', $oldCredit->id)->sum('amount');
+                $pendingAmount = $oldCreditTotal - $oldCreditPaid;
+            }
+            $netDisbursement = $renewCredit->credit_value - $pendingAmount;
+            $total_renewal_disbursed += $netDisbursement;
+        }
+
+        // === Calcular real_to_deliver incluyendo los nuevos campos ===
+        $realToDeliver = $initial_cash +
+            $base_delivered +
+            ($total_income + $total_collected) -
+            $total_expenses -
+            $new_credits -
+            $irrecoverableCredits -
+            $total_renewal_disbursed;
 
         $shortage = 0;
         $surplus = 0;
+        $pendingDebt = 0;
+
         if ($realToDeliver > 0) {
             if ($cash_delivered < $realToDeliver) {
                 $shortage = $realToDeliver - $cash_delivered;
@@ -277,15 +345,16 @@ class LiquidationController extends Controller
             $debtAmount = abs($realToDeliver);
             if ($cash_delivered > $debtAmount) {
                 $surplus = $cash_delivered - $debtAmount;
+                $pendingDebt = 0;
             } else {
-                $shortage = $debtAmount - $cash_delivered;
+                $pendingDebt = $debtAmount - $cash_delivered;
+                $shortage = $pendingDebt;
             }
         }
 
-        // Actualiza la liquidación
         $liquidation->update([
-            'date' => $request->date ?? $liquidation->date,
-            'seller_id' => $request->seller_id ?? $liquidation->seller_id,
+            'date' => $date,
+            'seller_id' => $sellerId,
             'collection_target' => $collection_target,
             'initial_cash' => $initial_cash,
             'base_delivered' => $base_delivered,
@@ -297,7 +366,9 @@ class LiquidationController extends Controller
             'shortage' => $shortage,
             'surplus' => $surplus,
             'cash_delivered' => $cash_delivered,
-            'status' => 'pending'
+            'status' => 'pending',
+            'irrecoverable_credits_amount' => $irrecoverableCredits,
+            'renewal_disbursed_total' => $total_renewal_disbursed
         ]);
 
         $liquidation->refresh();
@@ -335,14 +406,8 @@ class LiquidationController extends Controller
             }
         }
 
-        // Recalcula todos los campos relevantes con los datos de la BD actual
-        /*  $this->recalculateLiquidation(
-            $request->seller_id ?? $liquidation->seller_id,
-            $request->date ?? $liquidation->date
-        );
-
-        // Actualiza la instancia y retorna los datos
-        $liquidation->refresh(); */
+        // Recalcula todas las liquidaciones posteriores
+        $this->recalculateNextLiquidations($sellerId, $date);
 
         return response()->json([
             'success' => true,
@@ -353,7 +418,7 @@ class LiquidationController extends Controller
 
     public function reopenRoute(Request $request)
     {
-        \Log::info('reopenRoute - Request recibido', $request->all());
+        /* \Log::info('reopenRoute - Request recibido', $request->all()); */
 
         $request->validate([
             'seller_id' => 'required|exists:sellers,id',
@@ -366,11 +431,11 @@ class LiquidationController extends Controller
         $endUTC   = Carbon::parse($dateLocal, $timezone)->endOfDay()->setTimezone('UTC');
 
         $liquidation = Liquidation::where('seller_id', $request->seller_id)
-            ->whereBetween('date', [$startUTC, $endUTC])
+            ->whereBetween('created_at', [$startUTC, $endUTC])
             ->first();
 
-        \Log::info('reopenRoute - Liquidación encontrada', ['liquidation' => $liquidation]);
-
+       /*  \Log::info('reopenRoute - Liquidación encontrada', ['liquidation' => $liquidation]);
+ */
         if (!$liquidation) {
 
             return response()->json(['message' => 'No existe liquidación para ese vendedor y fecha'], 404);
@@ -432,6 +497,7 @@ class LiquidationController extends Controller
 
         $newCredits = Credit::where('seller_id', $sellerId)
             ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereNull('renewed_from_id')
             ->sum('credit_value');
 
         $totalCollected = Payment::join('credits', 'payments.credit_id', '=', 'credits.id')
@@ -509,26 +575,37 @@ class LiquidationController extends Controller
         }
     }
 
+    public function approveMultipleLiquidations(Request $request)
+    {
+        try {
+            $ids = $request->input('ids');
+            return $this->liquidationService->approveMultiple($ids);
+        } catch (\Exception $e) {
+            \Log::error("Error al aprobar liquidaciones múltiples: " . $e->getMessage());
+            return $this->errorResponse('Error al aprobar las liquidaciones', 500);
+        }
+    }
+
     public function annulBase(Request $request, $id)
     {
         $liquidation = Liquidation::findOrFail($id);
-
+    
         try {
             DB::beginTransaction();
-
+    
             // Anula la base
             $liquidation->update([
                 'base_delivered' => 0,
             ]);
-
-            // Recalcula la liquidación con los datos actuales
-            /*  $this->recalculateLiquidation($liquidation->seller_id, $liquidation->date); */
-
+    
+            // Recalcula todas las liquidaciones posteriores al día de esta liquidación
+            $this->recalculateNextLiquidations($liquidation->seller_id, $liquidation->date);
+    
             DB::commit();
-
+    
             // Refresca los datos
-            /*   $liquidation->refresh(); */
-
+            $liquidation->refresh();
+    
             return response()->json([
                 'success' => true,
                 'data' => $liquidation,
@@ -536,11 +613,71 @@ class LiquidationController extends Controller
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
-
+    
             return response()->json([
                 'success' => false,
                 'message' => 'Error al anular la base: ' . $e->getMessage()
             ], 500);
+        }
+    }
+
+    protected function recalculateNextLiquidations($sellerId, $fromDate)
+    {
+        $timezone = 'America/Caracas';
+
+        // Busca todas las liquidaciones posteriores
+        $liquidations = Liquidation::where('seller_id', $sellerId)
+            ->where('date', '>', $fromDate)
+            ->orderBy('date', 'asc')
+            ->get();
+
+        // Busca la liquidación base (la que fue modificada)
+        $baseLiquidation = Liquidation::where('seller_id', $sellerId)
+            ->where('date', $fromDate)
+            ->first();
+
+        $previousRealToDeliver = $baseLiquidation ? $baseLiquidation->real_to_deliver : 0;
+
+        foreach ($liquidations as $liquidation) {
+            $initial_cash = $previousRealToDeliver;
+
+            // Recalcula los montos de ese día con la lógica de tu store/update
+            // Si tienes otros campos que se deben recalcular, ajústalo aquí
+            $realToDeliver = $initial_cash +
+                ($liquidation->total_income + $liquidation->total_collected)
+                - ($liquidation->total_expenses + $liquidation->new_credits + $liquidation->irrecoverable_credits_amount + $liquidation->renewal_disbursed_total);
+
+            $shortage = 0;
+            $surplus = 0;
+            $pendingDebt = 0;
+
+            if ($realToDeliver > 0) {
+                if ($liquidation->cash_delivered < $realToDeliver) {
+                    $shortage = $realToDeliver - $liquidation->cash_delivered;
+                } else {
+                    $surplus = $liquidation->cash_delivered - $realToDeliver;
+                }
+            } else {
+                $debtAmount = abs($realToDeliver);
+                if ($liquidation->cash_delivered > $debtAmount) {
+                    $surplus = $liquidation->cash_delivered - $debtAmount;
+                    $pendingDebt = 0;
+                } else {
+                    $pendingDebt = $debtAmount - $liquidation->cash_delivered;
+                    $shortage = $pendingDebt;
+                }
+            }
+
+            // Actualiza la liquidación
+            $liquidation->update([
+                'initial_cash' => $initial_cash,
+                'real_to_deliver' => $realToDeliver,
+                'shortage' => $shortage,
+                'surplus' => $surplus,
+            ]);
+
+            // El saldo final de esta liquidación será el saldo inicial de la siguiente
+            $previousRealToDeliver = $realToDeliver;
         }
     }
 
@@ -603,8 +740,8 @@ class LiquidationController extends Controller
             ->where('installments.status', 'Pendiente')
             ->sum('installments.quota_amount');
 
-        Log::info('INcome: ' . $dailyTotals['total_income']);
-        Log::info('Initial Cash: ' . $initialCash);
+       /*  Log::info('INcome: ' . $dailyTotals['total_income']);
+        Log::info('Initial Cash: ' . $initialCash); */
         // 4. Calcular valor real a entregar
         $realToDeliver = $initialCash
             + ($dailyTotals['total_income'] + $dailyTotals['collected_total'])
@@ -715,7 +852,7 @@ class LiquidationController extends Controller
             ])
             ->first();
 
-        Log::info('Créditos creados en ' . $targetDate->format('Y-m-d') . ':', [
+        /* Log::info('Créditos creados en ' . $targetDate->format('Y-m-d') . ':', [
             'query' => DB::table('credits')
                 ->where('seller_id', $sellerId)
                 ->whereBetween('created_at', [$startUTC, $endUTC])
@@ -725,7 +862,7 @@ class LiquidationController extends Controller
                 ->whereBetween('created_at', [$startUTC, $endUTC])
                 ->getBindings(),
             'result' => $credits
-        ]);
+        ]); */
 
         $totals['created_credits_value'] = (float)$credits->value;
         $totals['created_credits_interest'] = (float)$credits->interest;
@@ -752,7 +889,7 @@ class LiquidationController extends Controller
         $totals['daily_goal'] = $totals['expected_total'];
         $totals['current_balance'] = $totals['collected_total'] - $totals['total_expenses'];
 
-        Log::info($totals['expected_total']);
+       /*  Log::info($totals['expected_total']); */
 
         $renewalCredits = DB::table('credits')
             ->where('seller_id', $sellerId)
@@ -798,7 +935,6 @@ class LiquidationController extends Controller
             $response = $this->liquidationService->getLiquidationsBySeller(
                 $sellerId,
                 $request,
-                $perPage
             );
 
             return $response;

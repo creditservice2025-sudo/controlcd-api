@@ -36,7 +36,7 @@ class ClientService
     {
         try {
             $params = $request->validated();
-            \Log::info('Datos recibidos:', $params);
+            /* \Log::info('Datos recibidos:', $params); */
 
             if ($request->has('images')) {
                 $validationResponse = $this->validateImages($request);
@@ -173,11 +173,11 @@ class ClientService
 
                 $dueDate = $adjustForExcludedDays(Carbon::parse($credit->first_quota_date));
 
-                \Log::info("Fecha primera cuota ajustada: " . $dueDate->format('Y-m-d'));
-
+              /*   \Log::info("Fecha primera cuota ajustada: " . $dueDate->format('Y-m-d'));
+ */
                 for ($i = 1; $i <= $credit->number_installments; $i++) {
-                    \Log::info("Creando cuota $i para fecha: " . $dueDate->format('Y-m-d'));
-
+                    /* \Log::info("Creando cuota $i para fecha: " . $dueDate->format('Y-m-d'));
+ */
                     Installment::create([
                         'credit_id' => $credit->id,
                         'quota_number' => $i,
@@ -232,7 +232,7 @@ class ClientService
             ]);
         } catch (\Exception $e) {
             \Log::error("Error al crear cliente: " . $e->getMessage());
-            \Log::error($e->getTraceAsString());
+            /* \Log::error($e->getTraceAsString()); */
             return $this->errorResponse('Error al crear el cliente: ' . $e->getMessage(), 500);
         }
     }
@@ -480,13 +480,20 @@ class ClientService
                 ]);
             } elseif ($status === 'Inactivo') {
                 $clientsQuery->where('status', 'inactive');
-            } elseif ($status === 'Activo' && $user->role_id == 1 || $user->role_id == 2) {
+            }elseif ($status === 'Activo' && ($user->role_id == 1 || $user->role_id == 2)) {
                 $clientsQuery->where('status', 'active');
+                $clientsQuery->where(function ($query) {
+                    $query->whereDoesntHave('credits', function ($q) {
+                        $q->where('status', 'Cartera Irrecuperable');
+                    })
+                    ->orWhereHas('credits', function ($q) {
+                        $q->whereIn('status', ['Activo', 'Vigente']);
+                    });
+                });
                 $clientsQuery->with([
                     'credits' => function ($query) {
                         $query->whereIn('status', ['Activo', 'Vigente']);
                     },
-
                 ]);
             } else {
                 $clientsQuery->where('status', 'active');
@@ -883,7 +890,7 @@ class ClientService
         } catch (\Exception $e) {
             DB::rollBack();
             \Log::error("Error al reactivar clientes: " . $e->getMessage());
-            \Log::error($e->getTraceAsString());
+            /* \Log::error($e->getTraceAsString()); */
             return $this->errorResponse('Error al reactivar los clientes', 500);
         }
     }
@@ -1383,7 +1390,7 @@ class ClientService
             ]);
         } catch (\Exception $e) {
             \Log::error("Error en getDebtorClientsBySeller: " . $e->getMessage());
-            \Log::error($e->getTraceAsString());
+            /* \Log::error($e->getTraceAsString() */);
             return $this->errorResponse('Error al obtener los clientes morosos', 500);
         }
     }
@@ -1412,20 +1419,20 @@ class ClientService
         $totalAmountDue = 0;
         $delinquencyLevel = 'Al día';
 
-        \Log::info("Calculando morosidad para cliente: {$client->id}");
-        \Log::info("  Créditos: " . ($client->credits));
+       /*  \Log::info("Calculando morosidad para cliente: {$client->id}");
+        \Log::info("  Créditos: " . ($client->credits)); */
         foreach ($client->credits as $credit) {
             $hasDelinquentInstallments = false;
-            \Log::info("  Analizando crédito: {$credit->id}");
+            /* \Log::info("  Analizando crédito: {$credit->id}"); */
 
             if ($credit->installments) {
                 foreach ($credit->installments as $installment) {
-                    \Log::info("    Analizando cuota: {$installment->number}");
+                    /* \Log::info("    Analizando cuota: {$installment->number}"); */
                     if ($installment->status !== 'Pagado' && $installment->due_date) {
                         $dueDate = \Carbon\Carbon::parse($installment->due_date);
                         $daysDelayed = now()->diffInDays($dueDate, false) * -1;
 
-                        \Log::info("    Cuota {$installment->number}: Estado={$installment->status}, Vence={$installment->due_date}, Días mora={$daysDelayed}");
+                        /* \Log::info("    Cuota {$installment->number}: Estado={$installment->status}, Vence={$installment->due_date}, Días mora={$daysDelayed}"); */
 
                         if ($daysDelayed > 1) {
                             $hasDelinquentInstallments = true;
@@ -1441,12 +1448,12 @@ class ClientService
 
                 if ($hasDelinquentInstallments) {
                     $debtorCredits++;
-                    \Log::info("  ✓ CRÉDITO MOROSO: Tiene cuotas con mora");
+                    /* \Log::info("  ✓ CRÉDITO MOROSO: Tiene cuotas con mora"); */
                 } else {
-                    \Log::info("  ✗ Crédito sin cuotas morosas");
+                   /*  \Log::info("  ✗ Crédito sin cuotas morosas"); */
                 }
             } else {
-                \Log::info("  ✗ Crédito sin cuotas");
+               /*  \Log::info("  ✗ Crédito sin cuotas"); */
             }
         }
 
@@ -1462,8 +1469,8 @@ class ClientService
             }
         }
 
-        \Log::info("Resultado cliente {$client->id}: Max días={$maxDaysDelayed}, Nivel={$delinquencyLevel}, Créditos morosos={$debtorCredits}");
-
+       /*  \Log::info("Resultado cliente {$client->id}: Max días={$maxDaysDelayed}, Nivel={$delinquencyLevel}, Créditos morosos={$debtorCredits}");
+ */
         return [
             'total_days_delayed' => $totalDaysDelayed,
             'max_days_delayed' => $maxDaysDelayed,
@@ -1563,7 +1570,7 @@ class ClientService
             ];
         } catch (\Exception $e) {
             \Log::error("Error en getLiquidationWithAllClients: " . $e->getMessage());
-            \Log::error($e->getTraceAsString());
+         /*    \Log::error($e->getTraceAsString()); */
             return $this->errorResponse('Error al obtener los datos de liquidación y clientes', 500);
         }
     }
@@ -2208,7 +2215,7 @@ class ClientService
 
         $result = $defaultedClientsCountQuery->get();
 
-        Log::info('Clientes contados como defaulted:', ['clientes' => $result]);
+        /* Log::info('Clientes contados como defaulted:', ['clientes' => $result]); */
 
         if ($sellerId) {
             $defaultedClientsCountQuery->where('credits.seller_id', $sellerId);
@@ -2304,11 +2311,11 @@ class ClientService
     public function reactivateClientsByIds(array $clientIds)
     {
         try {
-            \Log::info('IDs recibidos para reactivación:', $clientIds);
+            /* \Log::info('IDs recibidos para reactivación:', $clientIds); */
 
             // Incluye clientes eliminados (soft-deleted) en la consulta
             $clients = Client::withTrashed()->whereIn('id', $clientIds)->get();
-            \Log::info('Clientes encontrados:', $clients->toArray());
+            /* \Log::info('Clientes encontrados:', $clients->toArray()); */
 
             if ($clients->isEmpty()) {
                 throw new \Exception('No se encontraron clientes con los IDs proporcionados.');
@@ -2318,12 +2325,12 @@ class ClientService
                 // Restaura el cliente si está eliminado
                 if ($client->trashed()) {
                     $client->restore();
-                    \Log::info("Cliente restaurado: {$client->id}");
+                    /* \Log::info("Cliente restaurado: {$client->id}"); */
                 }
 
                 // Actualiza el estado del cliente a "active"
                 $client->update(['status' => 'active']);
-                \Log::info("Cliente reactivado: {$client->id}, Estado: {$client->status}");
+              /*   \Log::info("Cliente reactivado: {$client->id}, Estado: {$client->status}"); */
             }
 
             return $clients;

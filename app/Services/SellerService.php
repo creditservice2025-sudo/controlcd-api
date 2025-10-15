@@ -243,12 +243,11 @@ class SellerService
                     ->sortBy('created_at')
                     ->first();
 
-                if ($firstPayment) {
-                    $liquidationOpen = $firstPayment->created_at;
-                }
+               
 
                 if ($liquidationToday) {
                     $liquidationStatus = $liquidationToday->status;
+                    $liquidationOpen = $liquidationToday->date;
 
                     $lastAudit = $liquidationToday->audits()
                         ->where('user_id', $route->user_id)

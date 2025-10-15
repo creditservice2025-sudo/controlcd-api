@@ -85,242 +85,239 @@ class DashboardService
             $user = Auth::user();
             $role = $user->role_id;
 
-            $timezone = 'America/Caracas';
-            $startUTC = Carbon::now($timezone)->startOfDay()->timezone('UTC');
-            $endUTC = Carbon::now($timezone)->endOfDay()->timezone('UTC');
+            $timezone  = 'America/Caracas';
+            $startUTC  = Carbon::now($timezone)->startOfDay()->timezone('UTC');
+            $endUTC    = Carbon::now($timezone)->endOfDay()->timezone('UTC');
             $todayDate = Carbon::now($timezone)->toDateString();
 
             $sellersQuery = Seller::with([
-                'clients',
                 'credits' => function ($query) use ($todayDate) {
-                    $query->where(function ($q) use ($todayDate) {
-                        // Incluir: créditos no excluidos
-                        $q->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
-                            // O los excluidos pero con pagos HOY
-                            ->orWhere(function ($q2) use ($todayDate) {
-                                $q2->whereIn('status', ['Cartera Irrecuperable', 'Liquidado'])
-                                    ->whereHas('payments', function ($subQuery) use ($todayDate) {
-                                        $subQuery->whereDate('payment_date', $todayDate);
-                                    });
-                            });
-                    });
+                    $query->whereNull('deleted_at');
+                        
                 },
                 'credits.installments.payments',
-                'city' => function ($query) {
-                    $query->select('id', 'name', 'country_id');
-                },
-                'city.country' => function ($query) {
-                    $query->select('id', 'name');
-                },
-                'user' => function ($query) {
-                    $query->select('id', 'name');
-                }
+                'city:id,name,country_id',
+                'city.country:id,name',
+                'user:id,name',
             ])
                 ->whereHas('credits', function ($query) use ($todayDate) {
-                    $query->where(function ($q) use ($todayDate) {
-                        $q->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
-                            ->orWhere(function ($q2) use ($todayDate) {
-                                $q2->whereIn('status', ['Cartera Irrecuperable', 'Liquidado'])
-                                    ->whereHas('payments', function ($subQuery) use ($todayDate) {
-                                        $subQuery->whereDate('payment_date', $todayDate);
-                                    });
-                            });
-                    });
+                    $query->whereNull('deleted_at');
                 })
                 ->orderBy('created_at', 'desc');
 
-            if ($role === 1) {
-                // Admin: no filter
-            } elseif ($role === 2) {
-                if (!$user->company) {
-                    return response()->json([
-                        'success' => true,
-                        'data' => []
-                    ]);
-                }
-                $sellersQuery->where('company_id', $user->company->id);
-            } elseif ($role === 5) {
-                $sellersQuery->where('user_id', $user->id);
-            } else {
-                return response()->json([
-                    'success' => true,
-                    'data' => []
-                ]);
+            if ($role === 2 && !$user->company) {
+                return response()->json(['success' => true, 'data' => []]);
+            }
+            if ($role === 2) $sellersQuery->where('company_id', $user->company->id);
+            if ($role === 5) $sellersQuery->where('user_id', $user->id);
+            if (!in_array($role, [1, 2, 5])) {
+                return response()->json(['success' => true, 'data' => []]);
             }
 
             $sellers = $sellersQuery->take(10)->get();
-
             $result = [];
 
-            foreach ($sellers as $index => $seller) {
+            foreach ($sellers as $seller) {
                 $location = $this->getSellerLocation($seller);
-
-                // Initialize ENGLISH keys
                 $sellerData = [
                     'id' => $seller->id,
-                    'route' => $seller->name,
+                    'route' => $seller->name, 
+                    'name' => $seller->user ? $seller->user->name : 'No name', 
                     'location' => $location,
                     'initial_portfolio' => ['T' => 0, 'C' => 0, 'U' => 0],
-                    'to_collect' => ['T' => 0, 'C' => 0, 'U' => 0],
-                    'collected' => ['T' => 0, 'C' => 0, 'U' => 0],
-                    'pending' => ['T' => 0, 'C' => 0, 'U' => 0],
-                    'credits_today' => ['T' => 0, 'C' => 0, 'U' => 0],
-                    'collected_today' => ['T' => 0, 'C' => 0, 'U' => 0],
-                    'current_cash' => 0,
-                    'previous_cash' => 0,
-                    'capital' => 0,
-                    'utility' => 0,
-                    'credits' => 0,
-                    'name' => $seller->user ? $seller->user->name : 'No name',
-                    'total' => 0,
-                    'paid_credits' => 0,
-                    'unpaid_credits' => 0,
-                    'paid_capital' => 0,
-                    'paid_utility' => 0,
-                    'irrecoverable_credits' => 0,
-                    'irrecoverable_total' => 0,
-                    'total_credits_value' => 0,
-                    'total_paid_value' => 0,
-                    'pending_value' => 0,
-                    'gross_capital' => 0,
-                    'gross_utility' => 0,
+                    'collected'         => ['T' => 0, 'C' => 0, 'U' => 0],
+                    'to_collect'        => ['T' => 0, 'C' => 0, 'U' => 0],
+                    'credits_today'     => ['T' => 0, 'C' => 0, 'U' => 0],
+                    'collected_today'   => ['T' => 0, 'C' => 0, 'U' => 0],
+                    'previous_cash'     => 0,
+                    'current_cash'      => 0,
                 ];
 
-                foreach ($seller->credits as $credit) {
-                    if ($credit->status === 'Cartera Irrecuperable') {
-                        $sellerData['irrecoverable_credits']++;
-                        $sellerData['irrecoverable_total'] += $credit->credit_value + ($credit->credit_value * $credit->total_interest / 100);
-                        continue;
+                $creditsActivos = $seller->credits->filter(function($credit) {
+    return $credit->status !== 'Cartera Irrecuperable';
+});
+                
+
+                foreach ($creditsActivos as $credit) {
+                    $capitalInitial   = $credit->credit_value;
+                    $utilityInitial   = $credit->credit_value * $credit->total_interest / 100;
+                    $totalInitial     = $capitalInitial + $utilityInitial;
+                
+                    $percentageCapital = $totalInitial > 0 ? $capitalInitial / $totalInitial : 0;
+                    $percentageUtility = $totalInitial > 0 ? $utilityInitial / $totalInitial : 0;
+                
+                    $capitalPagado = 0;
+                    $utilityPagado = 0;
+                    foreach ($credit->installments ?? [] as $installment) {
+                        if ($installment->status == 'Pagado') {
+                            $quotaAmount = $installment->quota_amount ?? 0;
+                            $capitalPagado += $quotaAmount * $percentageCapital;
+                            $utilityPagado += $quotaAmount * $percentageUtility;
+                        }
                     }
-
-                    // --- Inicial ---
-                    $capitalInitial = $credit->credit_value;
-                    $utilityInitial = $credit->credit_value * $credit->total_interest / 100;
-                    $totalInitial = $capitalInitial + $utilityInitial;
-
-                    // Proporción por pago
-                    $percentageCapital = $capitalInitial / $totalInitial;
-                    $percentageUtility = $utilityInitial / $totalInitial;
-
-                    // --- Pagos ---
-                    $allPayments = $credit->payments;
-                    $capitalPaid = 0;
-                    $utilityPaid = 0;
-
-                    foreach ($allPayments as $payment) {
-                        $amount = $payment->amount ?? 0;
-                        $capitalPaid += $amount * $percentageCapital;
-                        $utilityPaid += $amount * $percentageUtility;
-                    }
-
-                    $capitalPending = max(0, $capitalInitial - $capitalPaid);
-                    $utilityPending = max(0, $utilityInitial - $utilityPaid);
-
-                    // --- Sumar a los totales del seller ---
+                    $capitalPendiente = $capitalInitial - $capitalPagado;
+                    $utilityPendiente = $utilityInitial - $utilityPagado;
+                    $totalPendiente = $capitalPendiente + $utilityPendiente;
+                
+                    $sellerData['to_collect']['C'] += $capitalPendiente;
+                    $sellerData['to_collect']['U'] += $utilityPendiente;
+                    $sellerData['to_collect']['T'] += $totalPendiente;
+                
                     $sellerData['initial_portfolio']['C'] += $capitalInitial;
                     $sellerData['initial_portfolio']['U'] += $utilityInitial;
                     $sellerData['initial_portfolio']['T'] += $totalInitial;
+                }
 
+                foreach ($seller->credits as $credit) {
+                    $isIrrecuperable = $credit->status === 'Cartera Irrecuperable';
+                
+                    $capitalInitial   = $credit->credit_value;
+                    $utilityInitial   = $credit->credit_value * $credit->total_interest / 100;
+                    $totalInitial     = $capitalInitial + $utilityInitial;
+                
+                    $percentageCapital = $totalInitial > 0 ? $capitalInitial / $totalInitial : 0;
+                    $percentageUtility = $totalInitial > 0 ? $utilityInitial / $totalInitial : 0;
+                
+                    $capitalPaid = 0;
+                    $utilityPaid = 0;
+                    $totalPaid = 0;
+                    foreach ($credit->installments ?? [] as $installment) {
+                        if ($installment->status == 'Pagado') {
+                            $quotaAmount = $installment->quota_amount ?? 0;
+                            $totalPaid += $installment->quota_amount ?? 0;
+                            $capitalPaid += $quotaAmount * $percentageCapital;
+                            $utilityPaid += $quotaAmount * $percentageUtility;
+                        }
+                    }
                     $sellerData['collected']['C'] += $capitalPaid;
                     $sellerData['collected']['U'] += $utilityPaid;
-                    $sellerData['collected']['T'] += $capitalPaid + $utilityPaid;
-
-                    $sellerData['to_collect']['C'] += $capitalPending;
-                    $sellerData['to_collect']['U'] += $utilityPending;
-                    $sellerData['to_collect']['T'] += $capitalPending + $utilityPending;
-
-                    $sellerData['pending']['C'] += $capitalPending;
-                    $sellerData['pending']['U'] += $utilityPending;
-                    $sellerData['pending']['T'] += $capitalPending + $utilityPending;
-
-                    // Credits today
-                    if (Carbon::parse($credit->created_at)->toDateString() == $todayDate) {
+                    $sellerData['collected']['T'] += $totalPaid;
+                
+                    if (
+                        Carbon::parse($credit->created_at)->toDateString() == $todayDate
+                        && $credit->renewed_from_id === null
+                       
+                    ) {
                         $sellerData['credits_today']['C'] += $capitalInitial;
                         $sellerData['credits_today']['U'] += $utilityInitial;
                         $sellerData['credits_today']['T'] += $totalInitial;
                     }
 
-                    // Pagos antes de hoy
-                    $paymentsBeforeToday = $credit->payments()
-                        ->where('created_at', '<', $startUTC)
-                        ->get();
-
-                    $capitalPaidBeforeToday = 0;
-                    $utilityPaidBeforeToday = 0;
-
-                    foreach ($paymentsBeforeToday as $payment) {
-                        $amount = $payment->amount ?? 0;
-                        $capitalPaidBeforeToday += $amount * $percentageCapital;
-                        $utilityPaidBeforeToday += $amount * $percentageUtility;
-                    }
-
-                    // Pagos de hoy
-                    $paymentsToday = $credit->payments()
-                        ->whereBetween('created_at', [$startUTC, $endUTC])
-                        ->get();
-
+                    
+                
+                    // 3. Inicial y pendiente (solo si NO es cartera irrecuperable)
+                   /*  if (!$isIrrecuperable) {
+                        // Pendiente
+                        $capitalPagado = 0;
+                        $utilityPagado = 0;
+                        foreach ($credit->installments ?? [] as $installment) {
+                            if ($installment->status == 'Pagado') {
+                                $quotaAmount = $installment->quota_amount ?? 0;
+                                $capitalPagado += $quotaAmount * $percentageCapital;
+                                $utilityPagado += $quotaAmount * $percentageUtility;
+                            }
+                        }
+                        $capitalPendiente = $capitalInitial - $capitalPagado;
+                        $utilityPendiente = $utilityInitial - $utilityPagado;
+                        $totalPendiente = $capitalPendiente + $utilityPendiente;
+                
+                        $sellerData['to_collect']['C'] += $capitalPendiente;
+                        $sellerData['to_collect']['U'] += $utilityPendiente;
+                        $sellerData['to_collect']['T'] += $totalPendiente;
+                
+                        // Inicial
+                        $sellerData['initial_portfolio']['C'] += $capitalInitial;
+                        $sellerData['initial_portfolio']['U'] += $utilityInitial;
+                        $sellerData['initial_portfolio']['T'] += $totalInitial;
+                    } */
+                
+                    // 4. Pagos de hoy (de todos los créditos)
+                    $paymentsToday = $credit->payments()->whereBetween('created_at', [$startUTC, $endUTC])->get();
                     $collectedTodayCapital = 0;
                     $collectedTodayUtility = 0;
-                    $collectedTodayTotal = 0;
-
+                    $collectedTodayTotal   = 0;
+                
                     foreach ($paymentsToday as $payment) {
                         $amount = $payment->amount ?? 0;
                         $collectedTodayCapital += $amount * $percentageCapital;
                         $collectedTodayUtility += $amount * $percentageUtility;
-                        $collectedTodayTotal += $amount;
+                        $collectedTodayTotal   += $amount;
                     }
-
                     $sellerData['collected_today']['C'] += $collectedTodayCapital;
                     $sellerData['collected_today']['U'] += $collectedTodayUtility;
                     $sellerData['collected_today']['T'] += $collectedTodayTotal;
-
-                    // Otros campos
-                    $sellerData['credits']++;
-                    if ($capitalPending == 0 && $utilityPending == 0) {
-                        $sellerData['paid_credits']++;
-                    } else {
-                        $sellerData['unpaid_credits']++;
-                    }
-
-                    $sellerData['paid_capital'] += $capitalPaid;
-                    $sellerData['paid_utility'] += $utilityPaid;
-
-                    $sellerData['total_credits_value'] += $totalInitial;
-                    $sellerData['total_paid_value'] += ($capitalPaid + $utilityPaid);
-                    $sellerData['gross_capital'] += $capitalInitial;
-                    $sellerData['gross_utility'] += $utilityInitial;
                 }
-                $sellerData['pending_value'] = max(0, $sellerData['initial_portfolio']['T'] - $sellerData['collected']['T']);
-                // --- Current Cash Calculation ---
-                $lastLiquidation = Liquidation::where('seller_id', $seller->id)
-                    ->orderBy('date', 'desc')
-                    ->first();
-                $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
 
-                $lastLiquidationPrevious = Liquidation::where('seller_id', $seller->id)
+                
+
+                $renewalCredits = DB::table('credits')
+                    ->where('seller_id', $seller->id)
+                    ->whereDate('created_at', $todayDate)
+                    ->whereNotNull('renewed_from_id')
+                    ->get();
+
+                $total_renewal_disbursed = 0;
+                $total_pending_absorbed = 0;
+
+                foreach ($renewalCredits as $renewCredit) {
+                    $oldCredit = DB::table('credits')->where('id', $renewCredit->renewed_from_id)->first();
+                    $pendingAmount = 0;
+                    if ($oldCredit) {
+                        $oldCreditTotal = ($oldCredit->credit_value * $oldCredit->total_interest / 100) + $oldCredit->credit_value;
+                        $oldCreditPaid  = DB::table('payments')->where('credit_id', $oldCredit->id)->sum('amount');
+                        $pendingAmount  = $oldCreditTotal - $oldCreditPaid;
+                        $total_pending_absorbed += $pendingAmount;
+                    }
+                    $netDisbursement = $renewCredit->credit_value - $pendingAmount;
+                    $total_renewal_disbursed += $netDisbursement;
+                }
+
+                $sellerData['total_renewal_disbursed'] = (float) number_format($total_renewal_disbursed, 2, '.', '');
+                $sellerData['total_pending_absorbed'] = (float) number_format($total_pending_absorbed, 2, '.', '');
+
+                // Caja inicial: última liquidación antes de hoy
+                $lastApprovedLiquidation = Liquidation::where('seller_id', $seller->id)
                     ->where('date', '<', $todayDate)
                     ->orderBy('date', 'desc')
                     ->first();
-                $previousCash = $lastLiquidationPrevious ? $lastLiquidationPrevious->real_to_deliver : 0;
 
+                $sellerData['previous_cash'] = $lastApprovedLiquidation
+                    ? (float) number_format($lastApprovedLiquidation->real_to_deliver, 2, '.', '')
+                    : 0;
+
+                // Caja actual
+                $initialCash = $lastApprovedLiquidation ? $lastApprovedLiquidation->real_to_deliver : 0;
                 $creditIds = collect($seller->credits)->pluck('id')->toArray();
                 $cashPayments = Payment::whereIn('credit_id', $creditIds)
                     ->whereBetween('created_at', [$startUTC, $endUTC])
                     ->sum('amount');
-
                 $expenses = Expense::where('user_id', $seller->user_id)
                     ->whereBetween('created_at', [$startUTC, $endUTC])
                     ->where('status', 'Aprobado')
                     ->sum('value');
-
                 $income = Income::where('user_id', $seller->user_id)
                     ->whereBetween('created_at', [$startUTC, $endUTC])
                     ->sum('value');
-
                 $newCredits = Credit::where('seller_id', $seller->id)
                     ->whereBetween('created_at', [$startUTC, $endUTC])
+                    ->whereNull('renewed_from_id')
                     ->sum('credit_value');
-
+                $renewalCredits = Credit::where('seller_id', $seller->id)
+                    ->whereBetween('created_at', [$startUTC, $endUTC])
+                    ->whereNotNull('renewed_from_id')
+                    ->get();
+                $total_renewal_disbursed = 0;
+                foreach ($renewalCredits as $renewCredit) {
+                    $oldCredit = Credit::find($renewCredit->renewed_from_id);
+                    $pendingAmount = 0;
+                    if ($oldCredit) {
+                        $oldCreditTotal = ($oldCredit->credit_value * $oldCredit->total_interest / 100) + $oldCredit->credit_value;
+                        $oldCreditPaid  = Payment::where('credit_id', $oldCredit->id)->sum('amount');
+                        $pendingAmount  = $oldCreditTotal - $oldCreditPaid;
+                    }
+                    $netDisbursement = $renewCredit->credit_value - $pendingAmount;
+                    $total_renewal_disbursed += $netDisbursement;
+                }
                 $irrecoverableCredits = DB::table('installments')
                     ->join('credits', 'installments.credit_id', '=', 'credits.id')
                     ->where('credits.seller_id', $seller->id)
@@ -328,16 +325,8 @@ class DashboardService
                     ->whereDate('credits.updated_at', $todayDate)
                     ->where('installments.status', 'Pendiente')
                     ->sum('installments.quota_amount');
-
-                $currentCash = $initialCash + ($income + $cashPayments) - ($expenses + $newCredits + $irrecoverableCredits);
-
+                $currentCash =  $initialCash + ($income + $cashPayments) - ($expenses + $newCredits + $total_renewal_disbursed + $irrecoverableCredits);
                 $sellerData['current_cash'] = (float) number_format($currentCash, 2, '.', '');
-                $sellerData['previous_cash'] = (float) number_format($previousCash, 2, '.', '');
-                $sellerData['income_today'] = (float) number_format($income, 2, '.', '');
-                $sellerData['expenses_today'] = (float) number_format($expenses, 2, '.', '');
-                $sellerData['cash_payments_today'] = (float) number_format($cashPayments, 2, '.', '');
-                $sellerData['new_credits_today'] = (float) number_format($newCredits, 2, '.', '');
-                $sellerData['irrecoverable_credits_today'] = (float) number_format($irrecoverableCredits, 2, '.', '');
 
                 $result[] = $sellerData;
             }
@@ -347,7 +336,7 @@ class DashboardService
                 'data' => $result
             ]);
         } catch (\Exception $e) {
-            Log::error("Error fetching pending portfolios: " . $e->getMessage());
+            \Log::error("Error fetching pending portfolios: " . $e->getMessage());
             return response()->json([
                 'success' => false,
                 'message' => 'Error fetching pending portfolios'
@@ -386,6 +375,7 @@ class DashboardService
             $incomeTotal = 0;
             $expenseTotal = 0;
             $newCredits = 0;
+            $total_renewal_disbursed = 0;
 
             if ($role === 1) {
                 $creditIds = Credit::pluck('id');
@@ -404,29 +394,42 @@ class DashboardService
                     })->sum('applied_amount');
 
                     $totalPayments = Payment::whereIn('credit_id', $creditIds)->sum('amount');
-
                     $totalProfitPaid = $totalPayments - $totalCapitalPaid;
-
                     $capitalPending = $totalBalance - $totalCapitalPaid;
 
                     $totalExpectedProfit = Credit::whereIn('id', $creditIds)
                         ->sum(DB::raw('credit_value * total_interest / 100'));
-
                     $profitPending = $totalExpectedProfit - $totalProfitPaid;
                 }
 
                 $todayDate = Carbon::now($timezone)->toDateString();
 
-                $lastLiquidation = Liquidation::orderBy('date', 'desc')->first();
+                $lastLiquidation = Liquidation::orderBy('date', 'desc')
+                    ->where('date', '<', $todayDate)
+                    ->first();
+
                 $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
 
                 $cashPayments = Payment::whereBetween('created_at', [$startUTC, $endUTC])->sum('amount');
-
                 $expenses = Expense::whereBetween('created_at', [$startUTC, $endUTC])->sum('value');
-
                 $income = Income::whereBetween('created_at', [$startUTC, $endUTC])->sum('value');
+                $newCredits = Credit::whereBetween('created_at', [$startUTC, $endUTC])->whereNull('renewed_from_id')->sum('credit_value');
 
-                $newCredits = Credit::whereBetween('created_at', [$startUTC, $endUTC])->sum('credit_value');
+                // Créditos renovados del día (administrador)
+                $renewalCredits = Credit::whereBetween('created_at', [$startUTC, $endUTC])
+                    ->whereNotNull('renewed_from_id')
+                    ->get();
+
+                $total_renewal_disbursed = $renewalCredits->sum(function ($renewCredit) {
+                    $oldCredit = Credit::find($renewCredit->renewed_from_id);
+                    $pendingAmount = 0;
+                    if ($oldCredit) {
+                        $oldCreditTotal = ($oldCredit->credit_value * $oldCredit->total_interest / 100) + $oldCredit->credit_value;
+                        $oldCreditPaid = Payment::where('credit_id', $oldCredit->id)->sum('amount');
+                        $pendingAmount = $oldCreditTotal - $oldCreditPaid;
+                    }
+                    return $renewCredit->credit_value - $pendingAmount;
+                });
 
                 $dailyPolicy = Credit::whereBetween('created_at', [$startUTC, $endUTC])
                     ->get()
@@ -440,18 +443,21 @@ class DashboardService
                     ->whereDate('credits.updated_at', $todayDate)
                     ->where('installments.status', 'Pendiente')
                     ->sum('installments.quota_amount');
+/* 
+                \Log::debug("=== INICIO cálculo de caja actual (currentCash) ===");
+                \Log::debug("initialCash: {$initialCash}");
+                \Log::debug("income: {$income}");
+                \Log::debug("cashPayments: {$cashPayments}");
+                \Log::debug("expenses: {$expenses}");
+                \Log::debug("newCredits: {$newCredits}");
+                \Log::debug("total_renewal_disbursed: {$total_renewal_disbursed}");
+                \Log::debug("irrecoverableCredits: {$irrecoverableCredits}");
+                \Log::debug("Fórmula: initialCash({$initialCash}) + (income({$income}) + cashPayments({$cashPayments})) - (expenses({$expenses}) + newCredits({$newCredits}) + total_renewal_disbursed({$total_renewal_disbursed}) + irrecoverableCredits({$irrecoverableCredits}))"); */
 
-                \Log::info('Financial Summary Calculation', [
-                    'initialCash' => $initialCash,
-                    'income' => $income,
-                    'cashPayments' => $cashPayments,
-                    'expenses' => $expenses,
-                    'newCredits' => $newCredits,
-                    'irrecoverableCredits' => $irrecoverableCredits,
-                    'calculation' => "{$initialCash} + ({$income} + {$cashPayments}) - ({$expenses} + {$newCredits} + {$irrecoverableCredits})"
-                ]);
-
-                $currentCash = $initialCash + ($income + $cashPayments) - ($expenses + $newCredits + $irrecoverableCredits);
+                $currentCash = $initialCash + ($income + $cashPayments) - ($expenses + $newCredits + $total_renewal_disbursed + $irrecoverableCredits);
+                $cashDayBalance = ($income + $cashPayments) - ($expenses + $newCredits + $total_renewal_disbursed + $irrecoverableCredits);
+              /*   \Log::debug("currentCash: {$currentCash}");
+                \Log::debug("=== FIN cálculo de caja actual (currentCash) ==="); */
             } elseif ($role === 2) {
                 if (!$user->company) {
                     return $this->successResponse([
@@ -461,6 +467,7 @@ class DashboardService
                             'capital' => 0,
                             'profit' => 0,
                             'currentCash' => 0,
+                            'cashDayBalance' => 0,
                             'income' => 0,
                             'expenses' => 0
                         ],
@@ -472,28 +479,21 @@ class DashboardService
                 $sellerIds = Seller::where('company_id', $companyId)->pluck('id');
 
                 if ($sellerIds->isNotEmpty()) {
-                    $creditIds = Credit::whereIn('seller_id', $sellerIds)
-                        ->pluck('id');
+                    $creditIds = Credit::whereIn('seller_id', $sellerIds)->pluck('id');
 
                     if ($creditIds->isNotEmpty()) {
                         $totalBalance = Credit::whereIn('id', $creditIds)
                             ->sum(DB::raw('credit_value + (credit_value * total_interest / 100)'));
-
                         $totalCapitalPaid = PaymentInstallment::whereIn('installment_id', function ($query) use ($creditIds) {
                             $query->select('id')
                                 ->from('installments')
                                 ->whereIn('credit_id', $creditIds);
                         })->sum('applied_amount');
-
                         $totalPayments = Payment::whereIn('credit_id', $creditIds)->sum('amount');
-
                         $totalProfitPaid = $totalPayments - $totalCapitalPaid;
-
                         $capitalPending = $totalBalance - $totalCapitalPaid;
-
                         $totalExpectedProfit = Credit::whereIn('id', $creditIds)
                             ->sum(DB::raw('credit_value * total_interest / 100'));
-
                         $profitPending = $totalExpectedProfit - $totalProfitPaid;
                     }
 
@@ -503,28 +503,46 @@ class DashboardService
 
                     $incomeTotal = Income::whereIn('user_id', $userIds)->sum('value');
                     $expenseTotal = Expense::whereIn('user_id', $userIds)->sum('value');
-
+                    $todayDate = Carbon::now($timezone)->toDateString();
                     $lastLiquidation = Liquidation::whereIn('seller_id', $sellerIds)
                         ->orderBy('date', 'desc')
+                        ->where('date', '<', $todayDate)
                         ->first();
+
+
                     $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
 
                     $cashPayments = Payment::whereIn('credit_id', $creditIds ?? [])
                         ->whereBetween('created_at', [$startUTC, $endUTC])
                         ->sum('amount');
-
                     $expenses = Expense::whereIn('user_id', $userIds)
                         ->whereBetween('created_at', [$startUTC, $endUTC])
                         ->where('status', 'Aprobado')
                         ->sum('value');
-
                     $income = Income::whereIn('user_id', $userIds)
                         ->whereBetween('created_at', [$startUTC, $endUTC])
                         ->sum('value');
-
                     $newCredits = Credit::whereIn('seller_id', $sellerIds)
                         ->whereBetween('created_at', [$startUTC, $endUTC])
+                        ->whereNull('renewed_from_id')
                         ->sum('credit_value');
+
+                    // Créditos renovados del día (empresa)
+                    $renewalCredits = Credit::whereIn('seller_id', $sellerIds)
+                        ->whereBetween('created_at', [$startUTC, $endUTC])
+                        ->whereNotNull('renewed_from_id')
+                        ->get();
+
+                    $total_renewal_disbursed = $renewalCredits->sum(function ($renewCredit) {
+                        $oldCredit = Credit::find($renewCredit->renewed_from_id);
+                        $pendingAmount = 0;
+                        if ($oldCredit) {
+                            $oldCreditTotal = ($oldCredit->credit_value * $oldCredit->total_interest / 100) + $oldCredit->credit_value;
+                            $oldCreditPaid = Payment::where('credit_id', $oldCredit->id)->sum('amount');
+                            $pendingAmount = $oldCreditTotal - $oldCreditPaid;
+                        }
+                        return $renewCredit->credit_value - $pendingAmount;
+                    });
 
                     $dailyPolicy = Credit::whereIn('seller_id', $sellerIds)
                         ->whereBetween('created_at', [$startUTC, $endUTC])
@@ -543,61 +561,85 @@ class DashboardService
                         ->where('installments.status', 'Pendiente')
                         ->sum('installments.quota_amount');
 
-                    $currentCash = $initialCash + ($income + $cashPayments) - ($expenses + $newCredits + $irrecoverableCredits);
+                    /* \Log::debug("=== INICIO cálculo de caja actual (currentCash) ===");
+                    \Log::debug("initialCash: {$initialCash}");
+                    \Log::debug("income: {$income}");
+                    \Log::debug("cashPayments: {$cashPayments}");
+                    \Log::debug("expenses: {$expenses}");
+                    \Log::debug("newCredits: {$newCredits}");
+                    \Log::debug("total_renewal_disbursed: {$total_renewal_disbursed}");
+                    \Log::debug("irrecoverableCredits: {$irrecoverableCredits}");
+                    \Log::debug("Fórmula: initialCash({$initialCash}) + (income({$income}) + cashPayments({$cashPayments})) - (expenses({$expenses}) + newCredits({$newCredits}) + total_renewal_disbursed({$total_renewal_disbursed}) + irrecoverableCredits({$irrecoverableCredits}))"); */
+
+                    $currentCash = $initialCash + ($income + $cashPayments) - ($expenses + $newCredits + $total_renewal_disbursed + $irrecoverableCredits);
+                    $cashDayBalance = ($income + $cashPayments) - ($expenses + $newCredits + $total_renewal_disbursed + $irrecoverableCredits);
+                   /*  \Log::debug("currentCash: {$currentCash}");
+                    \Log::debug("=== FIN cálculo de caja actual (currentCash) ==="); */
                 }
             } elseif ($role === 5) {
                 $seller = $user->seller;
                 if ($seller) {
 
-                    $creditIds = $seller->credits()
-                        ->pluck('id');
+                    $creditIds = $seller->credits()->pluck('id');
 
                     if ($creditIds->isNotEmpty()) {
                         $totalBalance = Credit::whereIn('id', $creditIds)
                             ->sum(DB::raw('credit_value + (credit_value * total_interest / 100)'));
-
                         $totalCapitalPaid = PaymentInstallment::whereIn('installment_id', function ($query) use ($creditIds) {
                             $query->select('id')
                                 ->from('installments')
                                 ->whereIn('credit_id', $creditIds);
                         })->sum('applied_amount');
-
                         $totalPayments = Payment::whereIn('credit_id', $creditIds)->sum('amount');
-
                         $totalProfitPaid = $totalPayments - $totalCapitalPaid;
-
                         $capitalPending = $totalBalance - $totalCapitalPaid;
-
                         $totalExpectedProfit = Credit::whereIn('id', $creditIds)
                             ->sum(DB::raw('credit_value * total_interest / 100'));
-
                         $profitPending = $totalExpectedProfit - $totalProfitPaid;
                     }
 
                     $incomeTotal = Income::where('user_id', $user->id)->sum('value');
                     $expenseTotal = Expense::where('user_id', $user->id)->sum('value');
 
+                    $todayDate = Carbon::now($timezone)->toDateString();
+
                     $lastLiquidation = Liquidation::where('seller_id', $seller->id)
                         ->orderBy('date', 'desc')
+                        ->where('date', '<', $todayDate)
                         ->first();
                     $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
 
                     $cashPayments = Payment::whereIn('credit_id', $creditIds ?? [])
                         ->whereBetween('created_at', [$startUTC, $endUTC])
                         ->sum('amount');
-
                     $expenses = Expense::where('user_id', $user->id)
                         ->whereBetween('created_at', [$startUTC, $endUTC])
                         ->where('status', 'Aprobado')
                         ->sum('value');
-
                     $income = Income::where('user_id', $user->id)
                         ->whereBetween('created_at', [$startUTC, $endUTC])
                         ->sum('value');
-
                     $newCredits = $seller->credits()
                         ->whereBetween('created_at', [$startUTC, $endUTC])
+                        ->whereNull('renewed_from_id')
                         ->sum('credit_value');
+
+                    // Créditos renovados del día (vendedor)
+                    $renewalCredits = $seller->credits()
+                        ->whereBetween('created_at', [$startUTC, $endUTC])
+                        ->whereNotNull('renewed_from_id')
+                        ->get();
+
+                    $total_renewal_disbursed = $renewalCredits->sum(function ($renewCredit) {
+                        $oldCredit = Credit::find($renewCredit->renewed_from_id);
+                        $pendingAmount = 0;
+                        if ($oldCredit) {
+                            $oldCreditTotal = ($oldCredit->credit_value * $oldCredit->total_interest / 100) + $oldCredit->credit_value;
+                            $oldCreditPaid = Payment::where('credit_id', $oldCredit->id)->sum('amount');
+                            $pendingAmount = $oldCreditTotal - $oldCreditPaid;
+                        }
+                        return $renewCredit->credit_value - $pendingAmount;
+                    });
 
                     $dailyPolicy = $seller->credits()
                         ->whereBetween('created_at', [$startUTC, $endUTC])
@@ -616,7 +658,20 @@ class DashboardService
                         ->where('installments.status', 'Pendiente')
                         ->sum('installments.quota_amount');
 
-                    $currentCash = $initialCash + ($income + $cashPayments) - ($expenses + $newCredits + $irrecoverableCredits);
+                   /*  \Log::debug("=== INICIO cálculo de caja actual (currentCash) ===");
+                    \Log::debug("initialCash: {$initialCash}");
+                    \Log::debug("income: {$income}");
+                    \Log::debug("cashPayments: {$cashPayments}");
+                    \Log::debug("expenses: {$expenses}");
+                    \Log::debug("newCredits: {$newCredits}");
+                    \Log::debug("total_renewal_disbursed: {$total_renewal_disbursed}");
+                    \Log::debug("irrecoverableCredits: {$irrecoverableCredits}");
+                    \Log::debug("Fórmula: initialCash({$initialCash}) + (income({$income}) + cashPayments({$cashPayments})) - (expenses({$expenses}) + newCredits({$newCredits}) + total_renewal_disbursed({$total_renewal_disbursed}) + irrecoverableCredits({$irrecoverableCredits}))"); */
+
+                    $currentCash = $initialCash + ($income + $cashPayments) - ($expenses + $newCredits + $total_renewal_disbursed + $irrecoverableCredits);
+                    $cashDayBalance = ($income + $cashPayments) - ($expenses + $newCredits + $total_renewal_disbursed + $irrecoverableCredits);
+                   /*  \Log::debug("currentCash: {$currentCash}");
+                    \Log::debug("=== FIN cálculo de caja actual (currentCash) ==="); */
                 }
             }
 
@@ -627,9 +682,11 @@ class DashboardService
                     'capital' => (float) number_format($capitalPending, 2, '.', ''),
                     'profit' => (float) number_format($profitPending, 2, '.', ''),
                     'currentCash' => (float) number_format($currentCash, 2, '.', ''),
+                    'cashDayBalance' => (float) number_format($cashDayBalance, 2, '.', ''),
                     'income' => (float) number_format($incomeTotal, 2, '.', ''),
                     'expenses' => (float) number_format($expenseTotal, 2, '.', ''),
                     'newCredits' => (float) number_format($newCredits, 2, '.', ''),
+                    'renewalCreditsDisbursed' => (float) number_format($total_renewal_disbursed, 2, '.', ''),
                     'dailyPolicy' => (float) number_format($dailyPolicy, 2, '.', ''),
                 ]
             ]);
@@ -664,7 +721,7 @@ class DashboardService
 
                 $income = Income::whereBetween('created_at', [$startOfWeek, $endOfWeek])->sum('value');
                 $cashPayments = Payment::whereBetween('created_at', [$startOfWeek, $endOfWeek])->sum('amount');
-                $newCredits = Credit::whereBetween('created_at', [$startOfWeek, $endOfWeek])->sum('credit_value');
+                $newCredits = Credit::whereBetween('created_at', [$startOfWeek, $endOfWeek])->whereNull('renewed_from_id')->sum('credit_value');
                 $expenses = Expense::whereBetween('created_at', [$startOfWeek, $endOfWeek])->sum('value');
 
                 $irrecoverableCredits = DB::table('installments')
@@ -702,6 +759,7 @@ class DashboardService
                     ->whereBetween('created_at', [$startOfWeek, $endOfWeek])
                     ->sum('amount');
                 $newCredits = Credit::whereIn('seller_id', $sellerIds)
+                    ->whereNull('renewed_from_id')
                     ->whereBetween('created_at', [$startOfWeek, $endOfWeek])
                     ->sum('credit_value');
                 $expenses = Expense::whereIn('user_id', $userIds)
@@ -739,6 +797,7 @@ class DashboardService
                     ->whereBetween('created_at', [$startOfWeek, $endOfWeek])
                     ->sum('amount');
                 $newCredits = Credit::where('seller_id', $seller->id)
+                    ->whereNull('renewed_from_id')
                     ->whereBetween('created_at', [$startOfWeek, $endOfWeek])
                     ->sum('credit_value');
                 $expenses = Expense::where('user_id', $user->id)
@@ -755,11 +814,13 @@ class DashboardService
             }
 
             $balanceGeneral = $initialCash + ($income + $cashPayments) - ($newCredits + $expenses + $irrecoverableCredits);
+            $currentDayBalance = ($income + $cashPayments) - ($newCredits + $expenses + $irrecoverableCredits);
 
             return $this->successResponse([
                 'success' => true,
                 'data' => [
                     'balanceGeneral' => (float) number_format($balanceGeneral, 2, '.', ''),
+                    'currentDayBalance'    => (float) number_format($currentDayBalance, 2, '.', ''),
                     'initialCash' => (float) $initialCash,
                     'incomeWeek' => (float) $income,
                     'cashPaymentsWeek' => (float) $cashPayments,
@@ -803,7 +864,7 @@ class DashboardService
                 $income = Income::whereBetween('created_at', [$start, $end])->sum('value');
                 $expenses = Expense::whereBetween('created_at', [$start, $end])->sum('value');
                 $collected = Payment::whereBetween('created_at', [$start, $end])->sum('amount');
-                $newCredits = Credit::whereBetween('created_at', [$start, $end])->sum('credit_value');
+                $newCredits = Credit::whereBetween('created_at', [$start, $end])->whereNull('renewed_from_id')->sum('credit_value');
                 // $policy = Policy::whereBetween('created_at', [$start, $end])->sum('value');
                 $totalCapitalPaid = PaymentInstallment::whereBetween('created_at', [$start, $end])->sum('applied_amount');
                 $totalPayments = Payment::whereBetween('created_at', [$start, $end])->sum('amount');
@@ -834,6 +895,7 @@ class DashboardService
                     ->whereBetween('created_at', [$start, $end])
                     ->sum('amount');
                 $newCredits = Credit::whereIn('seller_id', $sellerIds)
+                    ->whereNull('renewed_from_id')
                     ->whereBetween('created_at', [$start, $end])
                     ->sum('credit_value');
                 // $policy = Policy::whereIn('seller_id', $sellerIds)->whereBetween('created_at', [$start, $end])->sum('value');
@@ -872,6 +934,7 @@ class DashboardService
                     ->sum('amount');
 
                 $newCredits = Credit::where('seller_id', $seller->id)
+                    ->whereNull('renewed_from_id')
                     ->whereBetween('created_at', [$start, $end])
                     ->sum('credit_value');
 

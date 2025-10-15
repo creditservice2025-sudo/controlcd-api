@@ -186,7 +186,7 @@ class CreditService
             ]);
         } catch (\Exception $e) {
             \Log::error("Error al crear crédito: " . $e->getMessage());
-            \Log::error($e->getTraceAsString());
+            /* \Log::error($e->getTraceAsString()); */
             return $this->errorResponse('Error al crear el crédito: ' . $e->getMessage(), 500);
         }
     }
@@ -967,7 +967,8 @@ class CreditService
         }
 
         // Obtener nuevos créditos del día
-        $newCredits = Credit::whereBetween('credits.created_at', [$start, $end]);
+        $newCredits = Credit::whereBetween('credits.created_at', [$start, $end])
+            ->whereNull('renewed_from_id');
         if ($sellerId) {
             $newCredits->whereHas('client', function ($query) use ($sellerId) {
                 $query->where('seller_id', $sellerId);

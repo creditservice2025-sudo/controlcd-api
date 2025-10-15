@@ -49,16 +49,16 @@ class CountriesService
         try {
             $withSellerCities = filter_var($withSellerCities, FILTER_VALIDATE_BOOLEAN);
 
-            \Log::info('Fetching countries with cities.', ['withSellerCities' => $withSellerCities]);
+           /*  \Log::info('Fetching countries with cities.', ['withSellerCities' => $withSellerCities]); */
             if ($withSellerCities) {
-                \Log::info('Fetching countries with cities that have sellers.');
+               /*  \Log::info('Fetching countries with cities that have sellers.'); */
                 $countries = Country::whereHas('cities', function ($cityQuery) {
                     $cityQuery->whereHas('sellers');
                 })
                     ->select('id', 'name')
                     ->get();
             } else {
-                \Log::info('Fetching all countries without filtering by seller cities.');
+                /* \Log::info('Fetching all countries without filtering by seller cities.'); */
                 $countries = Country::select('id', 'name')->get();
             }
             return $this->successResponse($countries);
