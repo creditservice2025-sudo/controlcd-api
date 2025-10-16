@@ -386,6 +386,88 @@ class PaymentService
         }
     }
 
+    public function paymentsToday($creditId, Request $request, $perPage)
+{
+    try {
+        \Log::info("paymentsToday called with creditId:", ['creditId' => $creditId]);
+        \Log::info("Server date for filter:", ['today' => \Carbon\Carbon::today()->toDateString()]);
+
+        $credit = Credit::find($creditId);
+
+        if (!$credit) {
+            \Log::warning("Credit not found for ID: $creditId");
+            throw new \Exception('El crédito no existe.');
+        }
+
+        $paymentsQuery = Payment::leftJoin('payment_installments', 'payments.id', '=', 'payment_installments.payment_id')
+            ->leftJoin('installments', 'payment_installments.installment_id', '=', 'installments.id')
+            ->join('credits', 'payments.credit_id', '=', 'credits.id')
+            ->join('clients', 'credits.client_id', '=', 'clients.id')
+            ->leftJoin('payment_images', 'payments.id', '=', 'payment_images.payment_id')
+            ->where('credits.id', $creditId)
+            ->whereDate('payments.payment_date', \Carbon\Carbon::today())
+            ->select(
+                'payments.id',
+                'clients.name as client_name',
+                'clients.dni as client_dni',
+                'credits.credit_value',
+                'credits.total_interest',
+                'credits.total_amount',
+                'credits.number_installments',
+                'credits.start_date',
+                'payment_images.path as image_path',
+                'payments.payment_date',
+                'payments.created_at',
+                'payments.amount as total_payment',
+                'payments.payment_method',
+                'payments.payment_reference',
+                'payments.status',
+                \DB::raw('GROUP_CONCAT(installments.quota_number ORDER BY installments.quota_number) as quotas'),
+                \DB::raw('COALESCE(SUM(payment_installments.applied_amount), 0) as total_applied')
+            )
+            ->groupBy(
+                'payments.id',
+                'clients.name',
+                'clients.dni',
+                'credits.credit_value',
+                'credits.total_interest',
+                'credits.total_amount',
+                'credits.number_installments',
+                'credits.start_date',
+                'payments.payment_date',
+                'payments.amount',
+                'payments.payment_method',
+                'payments.payment_reference',
+                'payments.status',
+                'payments.created_at',
+                'payment_images.path'
+            )
+            ->orderBy('payments.created_at', 'desc');
+
+            if ($request->filled('status')) {
+                $paymentsQuery->where('payments.status', $request->status);
+            }
+
+        // Log SQL query
+        \Log::info("SQL Query:", ['sql' => $paymentsQuery->toSql(), 'bindings' => $paymentsQuery->getBindings()]);
+
+        // Log count before paginating
+        $count = $paymentsQuery->count();
+        \Log::info("Payments found before paginate:", ['count' => $count]);
+
+        $payments = $paymentsQuery->paginate($perPage, ['*']);
+
+        return $this->successResponse([
+            'success' => true,
+            'message' => 'Pagos del día para el crédito obtenidos correctamente',
+            'data' => $payments
+        ]);
+    } catch (\Exception $e) {
+        \Log::error($e->getMessage());
+        return $this->errorResponse($e->getMessage(), 500);
+    }
+}
+
     public function getPaymentsBySeller($sellerId, Request $request, $perPage)
     {
         $seller = Seller::find($sellerId);
@@ -584,7 +666,7 @@ class PaymentService
             $sellerId = $credit->client->seller_id;
 
             $liquidationExists = Liquidation::where('seller_id', $sellerId)
-                ->whereDate('created_at', $paymentDate)
+                ->whereDate('date', $paymentDate)
                 ->exists();
 
             if ($liquidationExists && Auth::user()->role_id !== 1) {
