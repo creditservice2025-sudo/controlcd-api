@@ -29,62 +29,58 @@ class LoginService
                 'email' => ['required', 'string'],
                 'password' => ['required'],
             ]);
-
+    
             if ($validator->fails()) {
                 return $this->errorResponse($validator->errors(), 422);
             }
-
+    
             $user = User::where('email', 'LIKE', $credentials['email'] . '%')
                 ->with('city', 'seller')
                 ->first();
-
-            // Check user and password first
-            if (!$user || !Hash::check($credentials['password'], $user->password)) {
+    
+            if (!$user || !Hash::check($credentials['password'], $user->password)) {  
                 return $this->errorResponse(['Los datos introducidos son inválidos, verifica e intenta nuevamente'], 401);
             }
-
-            // Now, check if the user is a seller and has a liquidation today
+    
             $seller = $user->seller;
             if ($seller) {
                 $liquidation = Liquidation::where('seller_id', $seller->id)
-                    ->where(DB::raw('DATE(created_at)'), Carbon::today()->toDateString())
+                    ->where(DB::raw('DATE(date)'), Carbon::today()->toDateString())
                     ->first();
-
+    
                 if ($liquidation) {
-                    // 1. Si la liquidación NO está en pendiente, bloquear
                     if ($liquidation->status !== 'pending') {
+                  
                         return $this->errorResponse(['Ya has realizado una liquidación hoy. Intenta nuevamente mañana.'], 401);
                     }
-
-                    // 2. Si existe un registro en la auditoría de actualización hoy de este usuario para esta liquidación, bloquear
+    
                     $auditExists = \App\Models\LiquidationAudit::where('liquidation_id', $liquidation->id)
                         ->where('user_id', $user->id)
                         ->whereIn('action', ['updated', 'created'])
                         ->whereDate('created_at', Carbon::today())
                         ->exists();
-
+    
                     if ($auditExists) {
                         return $this->errorResponse(['Ya has realizado una liquidación hoy. Intenta nuevamente mañana.'], 401);
                     }
                 }
             }
-
+    
             $token = $user->createToken('USER_AUTH_TOKEN')->accessToken;
-
+    
             if ($user->token_revoked) {
                 $user->update([
                     "token_revoked" => 0
                 ]);
             }
-
-
+    
             SessionLog::create([
                 'user_id'    => $user->id,
                 'login_at'   => now(),
                 'ip'         => request()->ip(),
                 'user_agent' => request()->header('User-Agent'),
             ]);
-
+    
             return $this->successResponse([
                 'success' => true,
                 'access_token' => $token,
