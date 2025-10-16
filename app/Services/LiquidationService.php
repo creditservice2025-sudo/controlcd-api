@@ -261,12 +261,16 @@ class LiquidationService
                 $seller = Seller::find($sellerId);
                 $lastApprovedDate = $seller ? $seller->created_at->toDateString() : null;
             }
+            $seller = Seller::find($sellerId);
+            $sellerDate = $seller ? $seller->created_at->toDateString() : null;
     
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Liquidaciones obtenidas exitosamente',
                 'data' => $liquidations,
-                'last_approved_liquidation_date' => $lastApprovedDate
+                'seller_liquidation' => $lastApprovedLiquidation ? true : false,
+                'last_approved_liquidation_date' => $lastApprovedDate,
+                'seller_initial_date' => isset($seller) ? $seller->created_at->toDateString() : null, 
             ]);
         } catch (\Exception $e) {
             Log::error($e->getMessage());

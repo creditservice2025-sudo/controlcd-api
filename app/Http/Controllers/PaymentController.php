@@ -43,6 +43,20 @@ class PaymentController extends Controller
         }
     }
 
+    
+    public function paymentsToday(Request $request, $creditId)
+    {
+        try {
+            $perPage = $request->get('perPage') ?? 5;
+
+            return $this->paymentService->paymentsToday($creditId, $request, $perPage);
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+
     public function indexBySeller(Request $request, $sellerId)
     {
         try {
