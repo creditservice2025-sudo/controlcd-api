@@ -60,36 +60,23 @@ class CreateHistoricalLiquidation extends Command
                     continue;
                 }
 
-                // Movimientos del día
                 $total_collected = Payment::whereHas('credit', function($q) use ($seller) {
                         $q->where('seller_id', $seller->id);
                     })
-                    ->whereBetween('created_at', [
-                        Carbon::parse($currentDate, $timezone)->startOfDay(),
-                        Carbon::parse($currentDate, $timezone)->endOfDay()
-                    ])
+                    ->whereDate('created_at', $currentDate)
                     ->sum('amount');
 
                 $total_expenses = Expense::where('user_id', $seller->user_id)
-                    ->whereBetween('created_at', [
-                        Carbon::parse($currentDate, $timezone)->startOfDay(),
-                        Carbon::parse($currentDate, $timezone)->endOfDay()
-                    ])
+                    ->whereDate('created_at', $currentDate)
                     ->sum('value');
 
                 $total_income = Income::where('user_id', $seller->user_id)
-                    ->whereBetween('created_at', [
-                        Carbon::parse($currentDate, $timezone)->startOfDay(),
-                        Carbon::parse($currentDate, $timezone)->endOfDay()
-                    ])
+                    ->whereDate('created_at', $currentDate)
                     ->sum('value');
 
-                // Créditos creados en la fecha y timezone correcto
+                // Créditos creados en la fecha (ignorando hora)
                 $creditTest = Credit::where('seller_id', $seller->id)
-                    ->whereBetween('created_at', [
-                        Carbon::parse($currentDate, $timezone)->startOfDay(),
-                        Carbon::parse($currentDate, $timezone)->endOfDay()
-                    ])
+                    ->whereDate('created_at', $currentDate)
                     ->get();
 
                 $new_credits = $creditTest->whereNull('renewed_from_id')->sum('credit_value');
@@ -100,19 +87,13 @@ class CreateHistoricalLiquidation extends Command
                     ->join('credits', 'installments.credit_id', '=', 'credits.id')
                     ->where('credits.seller_id', $seller->id)
                     ->where('credits.status', 'Cartera Irrecuperable')
-                    ->whereBetween('credits.updated_at', [
-                        Carbon::parse($currentDate, $timezone)->startOfDay()->setTimezone('UTC'),
-                        Carbon::parse($currentDate, $timezone)->endOfDay()->setTimezone('UTC')
-                    ])
+                    ->whereDate('credits.updated_at', $currentDate)
                     ->where('installments.status', 'Pendiente')
                     ->sum('installments.quota_amount');
 
                 // === Detalle de renovaciones ===
-                $startUTC = Carbon::parse($currentDate, $timezone)->startOfDay()->setTimezone('UTC');
-                $endUTC   = Carbon::parse($currentDate, $timezone)->endOfDay()->setTimezone('UTC');
-
                 $renewalCredits = Credit::where('seller_id', $seller->id)
-                    ->whereBetween('created_at', [$startUTC, $endUTC])
+                    ->whereDate('created_at', $currentDate)
                     ->whereNotNull('renewed_from_id')
                     ->get();
 
