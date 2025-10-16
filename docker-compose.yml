@@ -7,6 +7,10 @@ networks:
 volumes:
     database-data-controlcd:
         driver: local
+    app-node-controlcd:
+        driver: local
+    app-vendor-controlcd:
+        driver: local
 
 services:
 
@@ -49,10 +53,11 @@ services:
             PMA_HOST: ${DOCKER_DB_HOST:-database-controlcd}
             PMA_PORT: ${DOCKER_DB_PORT:-3306}
             MYSQL_ROOT_PASSWORD: ${DOCKER_DB_PASSWORD:-root}
-            UPLOAD_LIMIT: ${PMA_UPLOAD_LIMIT:-300M}
+            UPLOAD_LIMIT: ${PMA_UPLOAD_LIMIT:-4G}
             MEMORY_LIMIT: ${PMA_MEMORY_LIMIT:-512M}
-            PHP_UPLOAD_MAX_FILESIZE: ${PMA_PHP_UPLOAD_MAX_FILESIZE:-300M}
+            PHP_UPLOAD_MAX_FILESIZE: ${PMA_PHP_UPLOAD_MAX_FILESIZE:-4G}
             PHP_MAX_INPUT_VARS: ${PMA_PHP_MAX_INPUT_VARS:-1000}
+            MAX_EXECUTION_TIME: ${PHP_MAX_EXECUTION_TIME:-0}
         healthcheck:
             test: ["CMD", "curl", "-f", "http://localhost:80"]
             interval: 90s
@@ -83,12 +88,18 @@ services:
             DB_DATABASE: ${DOCKER_DB_DATABASE:-app}
             DB_USERNAME: root
             DB_PASSWORD: ${DOCKER_DB_PASSWORD:-root}
+            UPLOAD_LIMIT: ${PHP_UPLOAD_LIMIT:-100M}
+            MEMORY_LIMIT: ${PHP_MEMORY_LIMIT:-512M}
+            MAX_EXECUTION_TIME: ${PHP_MAX_EXECUTION_TIME:-600}
             APP_DEBUG: true
         working_dir: /var/www/html
         volumes:
             - ./.docker/php/conf.d/error_reporting.ini:/usr/local/etc/php/conf.d/docker-php-ext-error_reporting.ini
             - ./.docker/php/conf.d/xdebug.ini:/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini
+            - ./.docker/php/conf.d/extra.ini:/usr/local/etc/php/conf.d/docker-php-extra.ini
             - ./:/var/www/html:cached
+            - app-node-controlcd:/var/www/html/node_modules
+            - app-vendor-controlcd:/var/www/html/vendor
         links:
             - database-controlcd
         networks:
@@ -124,30 +135,48 @@ services:
             dockerfile: Dockerfile
         hostname: setup-controlcd
         container_name: setup-controlcd
+        depends_on:
+            database-controlcd:
+                condition: service_healthy
+        environment:
+            SERVICE_NAME: app
+            SERVICE_TAGS: dev
+            DB_CONNECTION: mysql
+            DB_HOST: database-controlcd
+            DB_PORT: 3306
+            DB_DATABASE: ${DOCKER_DB_DATABASE:-app}
+            DB_USERNAME: root
+            DB_PASSWORD: ${DOCKER_DB_PASSWORD:-root}
+            UPLOAD_LIMIT: ${PHP_UPLOAD_LIMIT:-100M}
+            MEMORY_LIMIT: ${PHP_MEMORY_LIMIT:-512M}
+            MAX_EXECUTION_TIME: ${PHP_MAX_EXECUTION_TIME:-600}
+            APP_DEBUG: true
         volumes:
             - ./:/var/www/html
+            - app-node-controlcd:/var/www/html/node_modules
+            - app-vendor-controlcd:/var/www/html/vendor
         command: >
             bash -c '
+              rm -rf composer.lock package-lock.json 2> /dev/null;
               mkdir -p storage/logs 2> /dev/null;
               chown -R www-data:www-data storage bootstrap/cache 2> /dev/null;
               chmod -R 775 storage 2> /dev/null;
-              if [ ! -f ".env" ]; then cp .env.example .env; php artisan key:generate --ansi; fi;
-              if [ ! -d "./vendor" ]; then
-                composer --ignore-platform-reqs --no-interaction install 2> /dev/null;
+
+              # Install Composer dependencies
+              composer --ignore-platform-reqs --no-interaction install 2> /dev/null;
+
+              # Create .env file if it does not exist
+              if [ ! -f ".env" ]; then
+                cp .env.example .env;
                 php artisan key:generate --ansi;
                 php artisan passport:keys;
-                php artisan migrate --ansi --force --no-interaction 2> /dev/null;
-                php artisan db:seed --quiet --no-interaction 2> /dev/null;
-              else
-                composer --ignore-platform-reqs --no-interaction update 2> /dev/null;
-                php artisan migrate --ansi --no-interaction 2> /dev/null;
+                php artisan migrate --seed --ansi --force --no-interaction 2> /dev/null;
               fi;
+
+              php artisan migrate --seed --ansi --no-interaction 2> /dev/null;
 
               php artisan optimize:clear 2> /dev/null;
               npm install;
             '
-        depends_on:
-            database-controlcd:
-                condition: service_healthy
         networks:
             - app-controlcd-network
