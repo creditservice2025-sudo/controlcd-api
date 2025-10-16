@@ -49,6 +49,11 @@ class Liquidation extends Model
         'path' => 'string',
     ];
 
+    protected function serializeDate(\DateTimeInterface $date)
+    {
+        return $date->format('Y-m-d H:i:s');
+    }
+
     // Relación con el vendedor
     public function seller(): BelongsTo
     {
