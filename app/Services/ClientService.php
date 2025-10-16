@@ -1390,7 +1390,7 @@ class ClientService
             ]);
         } catch (\Exception $e) {
             \Log::error("Error en getDebtorClientsBySeller: " . $e->getMessage());
-            /* \Log::error($e->getTraceAsString() */);
+            /* \Log::error($e->getTraceAsString() */
             return $this->errorResponse('Error al obtener los clientes morosos', 500);
         }
     }
