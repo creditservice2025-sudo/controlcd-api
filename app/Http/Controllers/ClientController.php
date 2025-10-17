@@ -365,20 +365,24 @@ class ClientController extends Controller
     public function getLiquidationWithAllClients($sellerId, $date, $userId)
     {
         try {
+            // 1. Definir la zona horaria deseada
+            $timezone = 'America/Caracas';
+    
             $seller = Seller::find($sellerId);
             if (!$seller) {
                 return $this->errorResponse('Vendedor no encontrado', 404);
             }
-
-            $today = \Carbon\Carbon::today();
-            $inputDate = \Carbon\Carbon::parse($date);
-
-            if ($inputDate->gt($today)) {
+    
+            $todayCaracas = \Carbon\Carbon::now($timezone)->startOfDay(); 
+            
+            $inputDateCaracas = \Carbon\Carbon::parse($date, $timezone)->startOfDay();
+    
+            if ($inputDateCaracas->gt($todayCaracas)) {
                 return $this->errorResponse('La fecha seleccionada no puede ser mayor que la fecha actual.', 422);
             }
-
+    
             $result = $this->clientService->getLiquidationWithAllClients($sellerId, $date, $userId);
-
+    
             return response()->json([
                 'success' => true,
                 'message' => 'Clientes obtenidos exitosamente',
