@@ -856,16 +856,30 @@ class CreditService
         }
     }
 
-    public function generateDailyReport($date, $sellerId = null)
+    public function generateDailyReport($date)
     {
         $user = Auth::user();
+        $sellerId = $user && $user->seller ? $user->seller->id : null;
         $maxDate = Carbon::now(self::TIMEZONE);
         $minDate = Carbon::now(self::TIMEZONE)->subDays(7);
         $reportDate = Carbon::createFromFormat('Y-m-d', $date, self::TIMEZONE);
 
         if ($reportDate->lt($minDate) || $reportDate->gt($maxDate)) {
-            throw new \Exception('Solo se pueden consultar fechas dentro de los últimos 7 días');
+            return $this->errorResponse('Solo se pueden consultar fechas dentro de los últimos 7 días', 422);
         }
+
+        $liquidation = Liquidation::where('seller_id', $sellerId)
+            ->whereDate('date', $reportDate->format('Y-m-d'))
+            ->where('status', 'approved')
+            ->first();
+
+        if (!$liquidation) {
+            return $this->errorResponse(
+                'No puedes generar un reporte para este día. Contacta al vendedor para cerrar la liquidación correspondiente.',
+                422
+            );
+        }
+
 
         $start = $reportDate->copy()->startOfDay()->timezone('UTC');
         $end = $reportDate->copy()->endOfDay()->timezone('UTC');
@@ -1009,23 +1023,30 @@ class CreditService
     }
     public function generatePDF($reportData)
     {
-        $safeDate = Carbon::parse($reportData['report_date'])->format('Y-m-d');
+        if ($reportData instanceof \Illuminate\Http\JsonResponse) {
+            return $reportData;
+        }
+    
+        $safeDate = \Carbon\Carbon::parse($reportData['report_date'])->format('Y-m-d');
         $filename = 'daily_collection_report_' . $safeDate . '.pdf';
-
+    
         $pdf = Pdf::loadView('reports.daily-collection', $reportData);
         return $pdf->download($filename);
     }
+    
     public function getReport($request)
     {
-        $date = $request->date ?? Carbon::now(self::TIMEZONE)->format('Y-m-d');
-        $sellerId = $request->seller_id ?? null;
-
-        $reportData = $this->generateDailyReport($date, $sellerId);
-
+        $date = $request->date ?? \Carbon\Carbon::now(self::TIMEZONE)->format('Y-m-d');
+        $reportData = $this->generateDailyReport($date);
+    
+        if ($reportData instanceof \Illuminate\Http\JsonResponse) {
+            return $reportData;
+        }
+    
         if ($request->has('download') && $request->download == 'pdf') {
             return $this->generatePDF($reportData);
         }
-
+    
         return $reportData;
     }
 }

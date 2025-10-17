@@ -28,7 +28,7 @@ class DashboardController extends Controller
     public function getPendingPortfolios(Request $request)
     {
         try {
-            return $this->dashboardService->loadPendingPortfolios();
+            return $this->dashboardService->loadPendingPortfolios($request);
         } catch (Exception $e) {
             \Log::error("Error in getPendingPortfolios: " . $e->getMessage());
             return $this->errorResponse('Error al obtener las carteras pendientes.', 500);

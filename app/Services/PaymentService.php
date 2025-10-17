@@ -331,8 +331,23 @@ class PaymentService
                     'payments.payment_reference',
                     'payments.status',
 
+
                     DB::raw('GROUP_CONCAT(installments.quota_number ORDER BY installments.quota_number) as quotas'),
-                    DB::raw('COALESCE(SUM(payment_installments.applied_amount), 0) as total_applied')
+                    DB::raw('COALESCE(SUM(payment_installments.applied_amount), 0) as total_applied'),
+                    DB::raw("
+            CONCAT(
+                '[', 
+                GROUP_CONCAT(
+                    JSON_OBJECT(
+                        'quota_number', installments.quota_number,
+                        'applied_amount', payment_installments.applied_amount
+                    ) 
+                    ORDER BY installments.quota_number
+                ), 
+                ']'
+            ) as installment_details_json
+        "),
+
                 )
                 ->groupBy(
                     'payments.id',
@@ -387,86 +402,86 @@ class PaymentService
     }
 
     public function paymentsToday($creditId, Request $request, $perPage)
-{
-    try {
-        \Log::info("paymentsToday called with creditId:", ['creditId' => $creditId]);
-        \Log::info("Server date for filter:", ['today' => \Carbon\Carbon::today()->toDateString()]);
+    {
+        try {
+            \Log::info("paymentsToday called with creditId:", ['creditId' => $creditId]);
+            \Log::info("Server date for filter:", ['today' => \Carbon\Carbon::today()->toDateString()]);
 
-        $credit = Credit::find($creditId);
+            $credit = Credit::find($creditId);
 
-        if (!$credit) {
-            \Log::warning("Credit not found for ID: $creditId");
-            throw new \Exception('El crédito no existe.');
-        }
+            if (!$credit) {
+                \Log::warning("Credit not found for ID: $creditId");
+                throw new \Exception('El crédito no existe.');
+            }
 
-        $paymentsQuery = Payment::leftJoin('payment_installments', 'payments.id', '=', 'payment_installments.payment_id')
-            ->leftJoin('installments', 'payment_installments.installment_id', '=', 'installments.id')
-            ->join('credits', 'payments.credit_id', '=', 'credits.id')
-            ->join('clients', 'credits.client_id', '=', 'clients.id')
-            ->leftJoin('payment_images', 'payments.id', '=', 'payment_images.payment_id')
-            ->where('credits.id', $creditId)
-            ->whereDate('payments.payment_date', \Carbon\Carbon::today())
-            ->select(
-                'payments.id',
-                'clients.name as client_name',
-                'clients.dni as client_dni',
-                'credits.credit_value',
-                'credits.total_interest',
-                'credits.total_amount',
-                'credits.number_installments',
-                'credits.start_date',
-                'payment_images.path as image_path',
-                'payments.payment_date',
-                'payments.created_at',
-                'payments.amount as total_payment',
-                'payments.payment_method',
-                'payments.payment_reference',
-                'payments.status',
-                \DB::raw('GROUP_CONCAT(installments.quota_number ORDER BY installments.quota_number) as quotas'),
-                \DB::raw('COALESCE(SUM(payment_installments.applied_amount), 0) as total_applied')
-            )
-            ->groupBy(
-                'payments.id',
-                'clients.name',
-                'clients.dni',
-                'credits.credit_value',
-                'credits.total_interest',
-                'credits.total_amount',
-                'credits.number_installments',
-                'credits.start_date',
-                'payments.payment_date',
-                'payments.amount',
-                'payments.payment_method',
-                'payments.payment_reference',
-                'payments.status',
-                'payments.created_at',
-                'payment_images.path'
-            )
-            ->orderBy('payments.created_at', 'desc');
+            $paymentsQuery = Payment::leftJoin('payment_installments', 'payments.id', '=', 'payment_installments.payment_id')
+                ->leftJoin('installments', 'payment_installments.installment_id', '=', 'installments.id')
+                ->join('credits', 'payments.credit_id', '=', 'credits.id')
+                ->join('clients', 'credits.client_id', '=', 'clients.id')
+                ->leftJoin('payment_images', 'payments.id', '=', 'payment_images.payment_id')
+                ->where('credits.id', $creditId)
+                ->whereDate('payments.payment_date', \Carbon\Carbon::today())
+                ->select(
+                    'payments.id',
+                    'clients.name as client_name',
+                    'clients.dni as client_dni',
+                    'credits.credit_value',
+                    'credits.total_interest',
+                    'credits.total_amount',
+                    'credits.number_installments',
+                    'credits.start_date',
+                    'payment_images.path as image_path',
+                    'payments.payment_date',
+                    'payments.created_at',
+                    'payments.amount as total_payment',
+                    'payments.payment_method',
+                    'payments.payment_reference',
+                    'payments.status',
+                    \DB::raw('GROUP_CONCAT(installments.quota_number ORDER BY installments.quota_number) as quotas'),
+                    \DB::raw('COALESCE(SUM(payment_installments.applied_amount), 0) as total_applied')
+                )
+                ->groupBy(
+                    'payments.id',
+                    'clients.name',
+                    'clients.dni',
+                    'credits.credit_value',
+                    'credits.total_interest',
+                    'credits.total_amount',
+                    'credits.number_installments',
+                    'credits.start_date',
+                    'payments.payment_date',
+                    'payments.amount',
+                    'payments.payment_method',
+                    'payments.payment_reference',
+                    'payments.status',
+                    'payments.created_at',
+                    'payment_images.path'
+                )
+                ->orderBy('payments.created_at', 'desc');
 
             if ($request->filled('status')) {
                 $paymentsQuery->where('payments.status', $request->status);
             }
 
-        // Log SQL query
-        \Log::info("SQL Query:", ['sql' => $paymentsQuery->toSql(), 'bindings' => $paymentsQuery->getBindings()]);
+            // Log SQL query
+            \Log::info("SQL Query:", ['sql' => $paymentsQuery->toSql(), 'bindings' => $paymentsQuery->getBindings()]);
 
-        // Log count before paginating
-        $count = $paymentsQuery->count();
-        \Log::info("Payments found before paginate:", ['count' => $count]);
+            // Log count before paginating
+            $count = $paymentsQuery->count();
+            \Log::info("Payments found before paginate:", ['count' => $count]);
 
-        $payments = $paymentsQuery->paginate($perPage, ['*']);
+            $payments = $paymentsQuery->paginate($perPage, ['*']);
 
-        return $this->successResponse([
-            'success' => true,
-            'message' => 'Pagos del día para el crédito obtenidos correctamente',
-            'data' => $payments
-        ]);
-    } catch (\Exception $e) {
-        \Log::error($e->getMessage());
-        return $this->errorResponse($e->getMessage(), 500);
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Pagos del día para el crédito obtenidos correctamente',
+                'data' => $payments
+            ]);
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->errorResponse($e->getMessage(), 500);
+        }
     }
-}
 
     public function getPaymentsBySeller($sellerId, Request $request, $perPage)
     {
@@ -478,15 +493,15 @@ class PaymentService
                 'data' => null
             ], 404);
         }
-    
+
         $timezone = 'America/Caracas';
-    
+
         $page = (int)$request->input('page', 1);
         $perPage = (int)$request->input('perPage', 10);
-    
+
         // 1. Filtra los pagos por fecha, estado y seller
         $paymentsFilterQuery = Payment::query();
-    
+
         if ($request->has('start_date') && $request->has('end_date')) {
             $startDate = Carbon::parse($request->get('start_date'), $timezone)->startOfDay();
             $endDate = Carbon::parse($request->get('end_date'), $timezone)->endOfDay();
@@ -498,40 +513,40 @@ class PaymentService
             $filterDate = Carbon::now($timezone)->toDateString();
             $paymentsFilterQuery->whereDate('created_at', $filterDate);
         }
-    
+
         if ($request->has('status') && in_array($request->status, ['Abonado', 'Pagado'])) {
             $paymentsFilterQuery->where('status', $request->status);
         }
-    
+
         // Solo pagos de créditos del seller
         $paymentsFilterQuery->whereHas('credit', function ($q) use ($sellerId) {
             $q->where('seller_id', $sellerId);
         });
-    
+
         // 2. Obtén los pagos filtrados
         $filteredPayments = $paymentsFilterQuery->get();
-    
+
         // 3. Obtén los credit_id de esos pagos
         $filteredCreditIds = $filteredPayments->pluck('credit_id')->unique();
-    
+
         // 4. Trae los créditos que tienen esos pagos y el cliente
         $creditsQuery = Credit::whereIn('id', $filteredCreditIds)
             ->with('client')
             ->orderBy('id');
-    
+
         $creditsPaginator = $creditsQuery->paginate($perPage, ['*'], 'page', $page);
         $credits = collect($creditsPaginator->items());
-    
+
         // 5. Agrupa pagos por crédito
         $groupedPayments = collect();
-    
+
         foreach ($credits as $credit) {
             // Solo los pagos filtrados para este crédito
             $payments = $filteredPayments->where('credit_id', $credit->id)->values();
-    
+
             // Calcular el total pagado para este crédito en el rango filtrado
             $total_paid = $payments->sum('amount');
-    
+
             // Obtener cuotas de pagos "Pagado"
             $paymentIds = $payments->where('status', 'Pagado')->pluck('id');
             $installmentsDetails = collect();
@@ -548,7 +563,7 @@ class PaymentService
                     ->get()
                     ->groupBy('payment_id');
             }
-    
+
             $payments->transform(function ($payment) use ($installmentsDetails) {
                 if ($payment->status === 'Pagado') {
                     $payment->installments_details = $installmentsDetails->get($payment->id, collect());
@@ -559,7 +574,7 @@ class PaymentService
                 }
                 return $payment;
             });
-    
+
             $groupedPayments->push([
                 'client_id' => $credit->client->id,
                 'client_name' => $credit->client->name,
@@ -575,10 +590,10 @@ class PaymentService
                 'total_paid' => $total_paid, // <-- aquí se agrega el campo
             ]);
         }
-    
+
         // 6. Suma total solo de pagos filtrados
         $totalPaymentsAmount = $filteredPayments->sum('amount');
-    
+
         return $this->successResponse([
             'success' => true,
             'message' => 'Pagos obtenidos correctamente',

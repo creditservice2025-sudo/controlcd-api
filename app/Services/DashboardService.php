@@ -14,6 +14,7 @@ use App\Models\PaymentInstallment;
 use App\Models\Seller;
 use App\Traits\ApiResponse;
 use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -22,6 +23,22 @@ use Illuminate\Support\Facades\Log;
 class DashboardService
 {
     use ApiResponse;
+
+    protected function applyLocationFilters(Builder $query, Request $request): Builder
+    {
+        $countryId = $request->input('country_id');
+        $cityId = $request->input('city_id');
+
+        if ($cityId) {
+            $query->where('city_id', $cityId);
+        } elseif ($countryId) {
+            $query->whereHas('city', function ($q) use ($countryId) {
+                $q->where('country_id', $countryId);
+            });
+        }
+
+        return $query;
+    }
 
     public function loadCounters(Request $request)
     {
@@ -36,11 +53,32 @@ class DashboardService
                 'clients' => 0,
             ];
 
+            // ------------------------------------------------------------------
+            // ROL 1 (ADMIN - Global con filtros de ubicación)
+            // ------------------------------------------------------------------
             if ($role === 1) {
-                $data['members'] = User::count();
-                $data['routes'] = Seller::count();
-                $data['credits'] = Credit::count();
-                $data['clients'] = Client::count();
+                // MIEMBROS: Usuarios filtrados por ubicación a través de su Vendedor (Seller)
+                $data['members'] = User::whereHas('seller', function ($query) use ($request) {
+                    // Aplicamos filtros de ubicación al Vendedor asociado al Usuario
+                    $this->applyLocationFilters($query, $request);
+                })->count();
+
+                // RUTAS/VENDEDORES: Vendedores filtrados por su ubicación
+                $routesQuery = Seller::query();
+                $data['routes'] = $this->applyLocationFilters($routesQuery, $request)->count();
+
+                // CRÉDITOS & CLIENTES: Obtenemos los IDs de los vendedores filtrados por ubicación
+                $sellerIdsQuery = Seller::query();
+                $sellerIds = $this->applyLocationFilters($sellerIdsQuery, $request)->pluck('id');
+
+                // Aplicamos los filtros de vendedor (que ya llevan la ubicación) a Créditos y Clientes
+                $data['credits'] = Credit::whereIn('seller_id', $sellerIds)->count();
+                $data['clients'] = Client::whereIn('seller_id', $sellerIds)->count();
+
+
+                // ------------------------------------------------------------------
+                // ROL 2 (COMPAÑÍA - Filtrado por Compañía + Filtros de Ubicación)
+                // ------------------------------------------------------------------
             } elseif ($role === 2) {
                 if (!$user->company) {
                     return $this->successResponse([
@@ -52,16 +90,29 @@ class DashboardService
 
                 $companyId = $user->company->id;
 
-                $data['routes'] = Seller::where('company_id', $companyId)->count();
+                // 1. Obtener IDs de vendedores filtrados por Compañía Y Ubicación
+                $sellerIdsQuery = Seller::where('company_id', $companyId);
+                $sellerIds = $this->applyLocationFilters($sellerIdsQuery, $request)->pluck('id');
 
-                $data['members'] = User::whereHas('seller', function ($query) use ($companyId) {
+                // RUTAS/VENDEDORES: Ya está contado en el paso anterior (contar el array de IDs)
+                $data['routes'] = count($sellerIds);
+
+                // MIEMBROS: Usuarios filtrados por la compañía del vendedor Y ubicación
+                $data['members'] = User::whereHas('seller', function ($query) use ($companyId, $request) {
                     $query->where('company_id', $companyId);
+                    $this->applyLocationFilters($query, $request);
                 })->count();
 
-                $sellerIds = Seller::where('company_id', $companyId)->pluck('id');
+                // CRÉDITOS Y CLIENTES: Usamos el array de IDs de vendedores filtrados
                 $data['credits'] = Credit::whereIn('seller_id', $sellerIds)->count();
                 $data['clients'] = Client::whereIn('seller_id', $sellerIds)->count();
+
+
+                // ------------------------------------------------------------------
+                // ROL 5 (VENDEDOR - Filtrado solo por Vendedor, ubicación no aplica)
+                // ------------------------------------------------------------------
             } elseif ($role === 5) {
+                // Se mantiene igual, ya está filtrado por el vendedor logueado
                 $seller = $user->seller;
                 if ($seller) {
                     $data['clients'] = $seller->clients()->count();
@@ -79,7 +130,7 @@ class DashboardService
         }
     }
 
-    public function loadPendingPortfolios()
+    public function loadPendingPortfolios(Request $request)
     {
         try {
             $user = Auth::user();
@@ -93,7 +144,6 @@ class DashboardService
             $sellersQuery = Seller::with([
                 'credits' => function ($query) use ($todayDate) {
                     $query->whereNull('deleted_at');
-                        
                 },
                 'credits.installments.payments',
                 'city:id,name,country_id',
@@ -114,6 +164,10 @@ class DashboardService
                 return response()->json(['success' => true, 'data' => []]);
             }
 
+            if (in_array($role, [1, 2])) {
+                $this->applyLocationFilters($sellersQuery, $request);
+            }
+
             $sellers = $sellersQuery->take(10)->get();
             $result = [];
 
@@ -121,8 +175,8 @@ class DashboardService
                 $location = $this->getSellerLocation($seller);
                 $sellerData = [
                     'id' => $seller->id,
-                    'route' => $seller->name, 
-                    'name' => $seller->user ? $seller->user->name : 'No name', 
+                    'route' => $seller->name,
+                    'name' => $seller->user ? $seller->user->name : 'No name',
                     'location' => $location,
                     'initial_portfolio' => ['T' => 0, 'C' => 0, 'U' => 0],
                     'collected'         => ['T' => 0, 'C' => 0, 'U' => 0],
@@ -131,38 +185,49 @@ class DashboardService
                     'collected_today'   => ['T' => 0, 'C' => 0, 'U' => 0],
                     'previous_cash'     => 0,
                     'current_cash'      => 0,
+                    'utility_collected_today' => 0,
                 ];
 
-                $creditsActivos = $seller->credits->filter(function($credit) {
-    return $credit->status !== 'Cartera Irrecuperable';
-});
-                
+                $creditsActivos = $seller->credits->filter(function ($credit) {
+                    return $credit->status !== 'Cartera Irrecuperable';
+                });
+
 
                 foreach ($creditsActivos as $credit) {
                     $capitalInitial   = $credit->credit_value;
                     $utilityInitial   = $credit->credit_value * $credit->total_interest / 100;
                     $totalInitial     = $capitalInitial + $utilityInitial;
-                
+
                     $percentageCapital = $totalInitial > 0 ? $capitalInitial / $totalInitial : 0;
                     $percentageUtility = $totalInitial > 0 ? $utilityInitial / $totalInitial : 0;
-                
+
                     $capitalPagado = 0;
                     $utilityPagado = 0;
-                    foreach ($credit->installments ?? [] as $installment) {
+
+                    $totalPagado = $credit->payments->sum('amount');
+                   /*  foreach ($credit->installments ?? [] as $installment) {
                         if ($installment->status == 'Pagado') {
                             $quotaAmount = $installment->quota_amount ?? 0;
                             $capitalPagado += $quotaAmount * $percentageCapital;
                             $utilityPagado += $quotaAmount * $percentageUtility;
                         }
-                    }
-                    $capitalPendiente = $capitalInitial - $capitalPagado;
-                    $utilityPendiente = $utilityInitial - $utilityPagado;
-                    $totalPendiente = $capitalPendiente + $utilityPendiente;
-                
+                    } */
+
+                    $capitalPagado = $totalPagado * $percentageCapital;
+                $utilityPagado = $totalPagado * $percentageUtility;
+
+                $capitalPendiente = $capitalInitial - $capitalPagado;
+                $utilityPendiente = $utilityInitial - $utilityPagado;
+                $totalPendiente   = $capitalPendiente + $utilityPendiente;
+
+                    $capitalPendiente = max(0, $capitalPendiente);
+                $utilityPendiente = max(0, $utilityPendiente);
+                $totalPendiente   = max(0, $totalPendiente);
+
                     $sellerData['to_collect']['C'] += $capitalPendiente;
                     $sellerData['to_collect']['U'] += $utilityPendiente;
                     $sellerData['to_collect']['T'] += $totalPendiente;
-                
+
                     $sellerData['initial_portfolio']['C'] += $capitalInitial;
                     $sellerData['initial_portfolio']['U'] += $utilityInitial;
                     $sellerData['initial_portfolio']['T'] += $totalInitial;
@@ -170,43 +235,49 @@ class DashboardService
 
                 foreach ($seller->credits as $credit) {
                     $isIrrecuperable = $credit->status === 'Cartera Irrecuperable';
-                
+
                     $capitalInitial   = $credit->credit_value;
                     $utilityInitial   = $credit->credit_value * $credit->total_interest / 100;
                     $totalInitial     = $capitalInitial + $utilityInitial;
-                
+
                     $percentageCapital = $totalInitial > 0 ? $capitalInitial / $totalInitial : 0;
                     $percentageUtility = $totalInitial > 0 ? $utilityInitial / $totalInitial : 0;
-                
+
                     $capitalPaid = 0;
                     $utilityPaid = 0;
                     $totalPaid = 0;
-                    foreach ($credit->installments ?? [] as $installment) {
+                /*     foreach ($credit->installments ?? [] as $installment) {
                         if ($installment->status == 'Pagado') {
                             $quotaAmount = $installment->quota_amount ?? 0;
                             $totalPaid += $installment->quota_amount ?? 0;
                             $capitalPaid += $quotaAmount * $percentageCapital;
                             $utilityPaid += $quotaAmount * $percentageUtility;
                         }
-                    }
+                    } */
+
+                    $totalPaid = $credit->payments->sum('amount'); // Suma total pagada
+                    $capitalPaid = $totalPaid * $percentageCapital;
+                    $utilityPaid = $totalPaid * $percentageUtility;
+
+
                     $sellerData['collected']['C'] += $capitalPaid;
                     $sellerData['collected']['U'] += $utilityPaid;
                     $sellerData['collected']['T'] += $totalPaid;
-                
+
                     if (
                         Carbon::parse($credit->created_at)->toDateString() == $todayDate
                         && $credit->renewed_from_id === null
-                       
+
                     ) {
                         $sellerData['credits_today']['C'] += $capitalInitial;
                         $sellerData['credits_today']['U'] += $utilityInitial;
                         $sellerData['credits_today']['T'] += $totalInitial;
                     }
 
-                    
-                
+
+
                     // 3. Inicial y pendiente (solo si NO es cartera irrecuperable)
-                   /*  if (!$isIrrecuperable) {
+                    /*  if (!$isIrrecuperable) {
                         // Pendiente
                         $capitalPagado = 0;
                         $utilityPagado = 0;
@@ -230,25 +301,29 @@ class DashboardService
                         $sellerData['initial_portfolio']['U'] += $utilityInitial;
                         $sellerData['initial_portfolio']['T'] += $totalInitial;
                     } */
-                
+
                     // 4. Pagos de hoy (de todos los créditos)
                     $paymentsToday = $credit->payments()->whereBetween('created_at', [$startUTC, $endUTC])->get();
-                    $collectedTodayCapital = 0;
-                    $collectedTodayUtility = 0;
-                    $collectedTodayTotal   = 0;
-                
-                    foreach ($paymentsToday as $payment) {
+                    
+
+                    $collectedTodayTotal = $paymentsToday->sum('amount'); 
+                    $collectedTodayCapital = $collectedTodayTotal * $percentageCapital;
+                    $collectedTodayUtility = $collectedTodayTotal * $percentageUtility;
+
+                    /* foreach ($paymentsToday as $payment) {
                         $amount = $payment->amount ?? 0;
                         $collectedTodayCapital += $amount * $percentageCapital;
                         $collectedTodayUtility += $amount * $percentageUtility;
                         $collectedTodayTotal   += $amount;
-                    }
+                    } */
                     $sellerData['collected_today']['C'] += $collectedTodayCapital;
                     $sellerData['collected_today']['U'] += $collectedTodayUtility;
                     $sellerData['collected_today']['T'] += $collectedTodayTotal;
+
+                    $sellerData['utility_collected_today'] += $collectedTodayUtility;
                 }
 
-                
+
 
                 $renewalCredits = DB::table('credits')
                     ->where('seller_id', $seller->id)
@@ -368,58 +443,99 @@ class DashboardService
             $startUTC = Carbon::now($timezone)->startOfDay()->timezone('UTC');
             $endUTC = Carbon::now($timezone)->endOfDay()->timezone('UTC');
 
-            $totalBalance = 0;
-            $capitalPending = 0;
-            $profitPending = 0;
-            $currentCash = 0;
-            $incomeTotal = 0;
-            $expenseTotal = 0;
-            $newCredits = 0;
-            $total_renewal_disbursed = 0;
 
+            $totalBalance = $capitalPending = $profitPending = $currentCash = 0;
+            $incomeTotal = $expenseTotal = $newCredits = $total_renewal_disbursed = 0;
+            $cashDayBalance = 0;
+            $dailyPolicy = 0;
+            $irrecoverableCredits = 0;
+            $initialCash = 0;
+
+            // ------------------------------------------------------------------
+            // ROL 1 (ADMIN - Global con filtros de ubicación)
+            // ------------------------------------------------------------------
             if ($role === 1) {
-                $creditIds = Credit::pluck('id');
+                // 1. Obtener IDs de créditos filtrados por ubicación (a través del Seller)
+                $creditIdsQuery = Credit::query();
+                if ($request->has(['country_id', 'city_id'])) {
+                    // Si se pasa ubicación, filtramos los créditos que pertenecen a un vendedor en esa ubicación
+                    $creditIdsQuery->whereHas('seller', function ($query) use ($request) {
+                        $this->applyLocationFilters($query, $request);
+                    });
+                }
+                $creditIds = $creditIdsQuery->pluck('id');
 
+                // 2. Obtener IDs de usuarios (para Ingresos/Gastos)
+                $userIds = User::pluck('id');
+                // Si hay filtros de ubicación, filtramos los usuarios que tienen un vendedor en esa ubicación
+                if ($request->has(['country_id', 'city_id'])) {
+                    $userIds = User::whereHas('seller', function ($query) use ($request) {
+                        $this->applyLocationFilters($query, $request);
+                    })->pluck('id');
+                }
+
+                // CÁLCULOS PRINCIPALES DE CARTERA
                 if ($creditIds->isNotEmpty()) {
                     $totalBalance = Credit::whereIn('id', $creditIds)
                         ->sum(DB::raw('credit_value + (credit_value * total_interest / 100)'));
-
-                    $incomeTotal = Income::sum('value');
-                    $expenseTotal = Expense::sum('value');
 
                     $totalCapitalPaid = PaymentInstallment::whereIn('installment_id', function ($query) use ($creditIds) {
                         $query->select('id')
                             ->from('installments')
                             ->whereIn('credit_id', $creditIds);
                     })->sum('applied_amount');
-
                     $totalPayments = Payment::whereIn('credit_id', $creditIds)->sum('amount');
                     $totalProfitPaid = $totalPayments - $totalCapitalPaid;
                     $capitalPending = $totalBalance - $totalCapitalPaid;
-
                     $totalExpectedProfit = Credit::whereIn('id', $creditIds)
                         ->sum(DB::raw('credit_value * total_interest / 100'));
                     $profitPending = $totalExpectedProfit - $totalProfitPaid;
                 }
 
-                $todayDate = Carbon::now($timezone)->toDateString();
+                // CÁLCULOS GLOBALES DE INGRESOS/GASTOS (filtrados por usuario/vendedor)
+                $incomeTotal = Income::whereIn('user_id', $userIds)->sum('value');
+                $expenseTotal = Expense::whereIn('user_id', $userIds)->sum('value');
 
-                $lastLiquidation = Liquidation::orderBy('date', 'desc')
-                    ->where('date', '<', $todayDate)
-                    ->first();
+                // CÁLCULOS DE CAJA DEL DÍA
 
-                $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
+                // 1. Obtener IDs de vendedores filtrados para la liquidación
+                $sellerIdsQuery = Seller::query();
+                if ($request->has(['country_id', 'city_id'])) {
+                    $this->applyLocationFilters($sellerIdsQuery, $request);
+                }
+                $sellerIds = $sellerIdsQuery->pluck('id');
 
-                $cashPayments = Payment::whereBetween('created_at', [$startUTC, $endUTC])->sum('amount');
-                $expenses = Expense::whereBetween('created_at', [$startUTC, $endUTC])->sum('value');
-                $income = Income::whereBetween('created_at', [$startUTC, $endUTC])->sum('value');
-                $newCredits = Credit::whereBetween('created_at', [$startUTC, $endUTC])->whereNull('renewed_from_id')->sum('credit_value');
+                // 2. Última liquidación SUMADA de CADA VENDEDOR (CORRECCIÓN APLICADA AQUÍ)
+                if ($sellerIds->isNotEmpty()) {
+                    $sub = Liquidation::selectRaw('MAX(date) as max_date, seller_id')
+                        ->whereIn('seller_id', $sellerIds)
+                        ->where('date', '<', $today)
+                        ->groupBy('seller_id');
 
-                // Créditos renovados del día (administrador)
-                $renewalCredits = Credit::whereBetween('created_at', [$startUTC, $endUTC])
+                    $initialCash = Liquidation::query()
+                        ->joinSub($sub, 'last_liquidations', function ($join) {
+                            $join->on('liquidations.seller_id', '=', 'last_liquidations.seller_id')
+                                ->on('liquidations.date', '=', 'last_liquidations.max_date');
+                        })
+                        ->whereIn('liquidations.seller_id', $sellerIds)
+                        ->sum('real_to_deliver');
+                } else {
+                    $initialCash = 0;
+                }
+                // FIN DE CORRECCIÓN PARA $initialCash
+
+                // 3. Flujos de caja del día
+                $cashPayments = Payment::whereIn('credit_id', $creditIds)->whereBetween('created_at', [$startUTC, $endUTC])->sum('amount');
+                $expenses = Expense::whereIn('user_id', $userIds)->whereBetween('created_at', [$startUTC, $endUTC])->sum('value');
+                $income = Income::whereIn('user_id', $userIds)->whereBetween('created_at', [$startUTC, $endUTC])->sum('value');
+
+                $newCredits = Credit::whereIn('seller_id', $sellerIds)->whereBetween('created_at', [$startUTC, $endUTC])->whereNull('renewed_from_id')->sum('credit_value');
+
+                // 4. Renovaciones
+                $renewalCredits = Credit::whereIn('seller_id', $sellerIds)
+                    ->whereBetween('created_at', [$startUTC, $endUTC])
                     ->whereNotNull('renewed_from_id')
                     ->get();
-
                 $total_renewal_disbursed = $renewalCredits->sum(function ($renewCredit) {
                     $oldCredit = Credit::find($renewCredit->renewed_from_id);
                     $pendingAmount = 0;
@@ -431,34 +547,44 @@ class DashboardService
                     return $renewCredit->credit_value - $pendingAmount;
                 });
 
-                $dailyPolicy = Credit::whereBetween('created_at', [$startUTC, $endUTC])
+                // 5. Política/Seguro
+                $dailyPolicy = Credit::whereIn('seller_id', $sellerIds)
+                    ->whereBetween('created_at', [$startUTC, $endUTC])
                     ->get()
                     ->sum(function ($credit) {
-                        return $credit->credit_value * ($credit->micro_insurance_percentage ?? 0);
+                        return ($credit->credit_value * ($credit->micro_insurance_percentage ?? 0) / 100);
                     });
 
+                // 6. Cartera Irrecuperable
                 $irrecoverableCredits = DB::table('installments')
                     ->join('credits', 'installments.credit_id', '=', 'credits.id')
+                    ->whereIn('credits.seller_id', $sellerIds)
                     ->where('credits.status', 'Cartera Irrecuperable')
-                    ->whereDate('credits.updated_at', $todayDate)
+                    ->whereDate('credits.updated_at', $today)
                     ->where('installments.status', 'Pendiente')
                     ->sum('installments.quota_amount');
-/* 
-                \Log::debug("=== INICIO cálculo de caja actual (currentCash) ===");
-                \Log::debug("initialCash: {$initialCash}");
-                \Log::debug("income: {$income}");
-                \Log::debug("cashPayments: {$cashPayments}");
-                \Log::debug("expenses: {$expenses}");
-                \Log::debug("newCredits: {$newCredits}");
-                \Log::debug("total_renewal_disbursed: {$total_renewal_disbursed}");
-                \Log::debug("irrecoverableCredits: {$irrecoverableCredits}");
-                \Log::debug("Fórmula: initialCash({$initialCash}) + (income({$income}) + cashPayments({$cashPayments})) - (expenses({$expenses}) + newCredits({$newCredits}) + total_renewal_disbursed({$total_renewal_disbursed}) + irrecoverableCredits({$irrecoverableCredits}))"); */
+
+                \Log::debug("ROL 1 [CASH-DEBUG] Inicio Caja");
+                \Log::debug("ROL 1 [CASH-DEBUG] Filtros: Country: " . $request->input('country_id', 'N/A') . ", City: " . $request->input('city_id', 'N/A'));
+                \Log::debug("ROL 1 [CASH-DEBUG] initialCash (última liquidación SUMADA): {$initialCash}"); // Log actualizado
+                \Log::debug("ROL 1 [CASH-DEBUG] + Ingresos (Income): {$income}");
+                \Log::debug("ROL 1 [CASH-DEBUG] + Cobros (Payments): {$cashPayments}");
+                \Log::debug("ROL 1 [CASH-DEBUG] - Gastos (Expenses): {$expenses}");
+                \Log::debug("ROL 1 [CASH-DEBUG] - Nuevos Créditos Desembolsados (New Credits): {$newCredits}");
+                \Log::debug("ROL 1 [CASH-DEBUG] - Renovaciones Desembolsadas (Renewals): {$total_renewal_disbursed}");
+                \Log::debug("ROL 1 [CASH-DEBUG] - Irrecuperable (Irrecoverable): {$irrecoverableCredits}");
 
                 $currentCash = $initialCash + ($income + $cashPayments) - ($expenses + $newCredits + $total_renewal_disbursed + $irrecoverableCredits);
                 $cashDayBalance = ($income + $cashPayments) - ($expenses + $newCredits + $total_renewal_disbursed + $irrecoverableCredits);
-              /*   \Log::debug("currentCash: {$currentCash}");
-                \Log::debug("=== FIN cálculo de caja actual (currentCash) ==="); */
-            } elseif ($role === 2) {
+                \Log::debug("ROL 1 [CASH-DEBUG] cashDayBalance (Flujo del día): {$cashDayBalance}");
+                \Log::debug("ROL 1 [CASH-DEBUG] currentCash (Caja Actual): {$currentCash}");
+                \Log::debug("ROL 1 [CASH-DEBUG] Fin Caja");
+            }
+
+            // ------------------------------------------------------------------
+            // ROL 2 (COMPAÑÍA - Filtrado por Compañía + Filtros de Ubicación)
+            // ------------------------------------------------------------------
+            elseif ($role === 2) {
                 if (!$user->company) {
                     return $this->successResponse([
                         'success' => true,
@@ -476,63 +602,62 @@ class DashboardService
                 }
 
                 $companyId = $user->company->id;
-                $sellerIds = Seller::where('company_id', $companyId)->pluck('id');
+
+                // 1. Obtener IDs de vendedores filtrados por Compañía Y Ubicación
+                $sellerIdsQuery = Seller::where('company_id', $companyId);
+                $this->applyLocationFilters($sellerIdsQuery, $request); // Aplicar filtro de ubicación
+                $sellerIds = $sellerIdsQuery->pluck('id');
 
                 if ($sellerIds->isNotEmpty()) {
+                    // 2. Obtener IDs de créditos para cálculos de cartera
                     $creditIds = Credit::whereIn('seller_id', $sellerIds)->pluck('id');
 
                     if ($creditIds->isNotEmpty()) {
-                        $totalBalance = Credit::whereIn('id', $creditIds)
-                            ->sum(DB::raw('credit_value + (credit_value * total_interest / 100)'));
+                        $totalBalance = Credit::whereIn('id', $creditIds)->sum(DB::raw('credit_value + (credit_value * total_interest / 100)'));
                         $totalCapitalPaid = PaymentInstallment::whereIn('installment_id', function ($query) use ($creditIds) {
-                            $query->select('id')
-                                ->from('installments')
-                                ->whereIn('credit_id', $creditIds);
+                            $query->select('id')->from('installments')->whereIn('credit_id', $creditIds);
                         })->sum('applied_amount');
                         $totalPayments = Payment::whereIn('credit_id', $creditIds)->sum('amount');
                         $totalProfitPaid = $totalPayments - $totalCapitalPaid;
                         $capitalPending = $totalBalance - $totalCapitalPaid;
-                        $totalExpectedProfit = Credit::whereIn('id', $creditIds)
-                            ->sum(DB::raw('credit_value * total_interest / 100'));
+                        $totalExpectedProfit = Credit::whereIn('id', $creditIds)->sum(DB::raw('credit_value * total_interest / 100'));
                         $profitPending = $totalExpectedProfit - $totalProfitPaid;
                     }
 
-                    $userIds = User::whereHas('seller', function ($query) use ($companyId) {
-                        $query->where('company_id', $companyId);
+                    // 3. Obtener IDs de usuarios para Ingresos/Gastos
+                    $userIds = User::whereHas('seller', function ($query) use ($sellerIds) {
+                        $query->whereIn('id', $sellerIds);
                     })->pluck('id');
 
+                    // CÁLCULOS GLOBALES DE INGRESOS/GASTOS (filtrados por Compañía y Ubicación)
                     $incomeTotal = Income::whereIn('user_id', $userIds)->sum('value');
                     $expenseTotal = Expense::whereIn('user_id', $userIds)->sum('value');
-                    $todayDate = Carbon::now($timezone)->toDateString();
-                    $lastLiquidation = Liquidation::whereIn('seller_id', $sellerIds)
-                        ->orderBy('date', 'desc')
-                        ->where('date', '<', $todayDate)
-                        ->first();
 
+                    // CÁLCULOS DE CAJA DEL DÍA
 
-                    $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
+                    // Última liquidación SUMADA de CADA VENDEDOR (CORRECCIÓN APLICADA AQUÍ)
+                    $sub = Liquidation::selectRaw('MAX(date) as max_date, seller_id')
+                        ->whereIn('seller_id', $sellerIds)
+                        ->where('date', '<', $today)
+                        ->groupBy('seller_id');
 
-                    $cashPayments = Payment::whereIn('credit_id', $creditIds ?? [])
-                        ->whereBetween('created_at', [$startUTC, $endUTC])
-                        ->sum('amount');
-                    $expenses = Expense::whereIn('user_id', $userIds)
-                        ->whereBetween('created_at', [$startUTC, $endUTC])
-                        ->where('status', 'Aprobado')
-                        ->sum('value');
-                    $income = Income::whereIn('user_id', $userIds)
-                        ->whereBetween('created_at', [$startUTC, $endUTC])
-                        ->sum('value');
-                    $newCredits = Credit::whereIn('seller_id', $sellerIds)
-                        ->whereBetween('created_at', [$startUTC, $endUTC])
-                        ->whereNull('renewed_from_id')
-                        ->sum('credit_value');
+                    $initialCash = Liquidation::query()
+                        ->joinSub($sub, 'last_liquidations', function ($join) {
+                            $join->on('liquidations.seller_id', '=', 'last_liquidations.seller_id')
+                                ->on('liquidations.date', '=', 'last_liquidations.max_date');
+                        })
+                        ->whereIn('liquidations.seller_id', $sellerIds)
+                        ->sum('real_to_deliver');
+                    // FIN DE CORRECCIÓN PARA $initialCash
 
-                    // Créditos renovados del día (empresa)
-                    $renewalCredits = Credit::whereIn('seller_id', $sellerIds)
-                        ->whereBetween('created_at', [$startUTC, $endUTC])
-                        ->whereNotNull('renewed_from_id')
-                        ->get();
+                    // Flujos de caja del día (el resto del código se mantiene igual, usando $creditIds, $userIds, $sellerIds)
+                    $cashPayments = Payment::whereIn('credit_id', $creditIds ?? [])->whereBetween('created_at', [$startUTC, $endUTC])->sum('amount');
+                    $expenses = Expense::whereIn('user_id', $userIds)->whereBetween('created_at', [$startUTC, $endUTC])->where('status', 'Aprobado')->sum('value');
+                    $income = Income::whereIn('user_id', $userIds)->whereBetween('created_at', [$startUTC, $endUTC])->sum('value');
+                    $newCredits = Credit::whereIn('seller_id', $sellerIds)->whereBetween('created_at', [$startUTC, $endUTC])->whereNull('renewed_from_id')->sum('credit_value');
 
+                    // Renovaciones
+                    $renewalCredits = Credit::whereIn('seller_id', $sellerIds)->whereBetween('created_at', [$startUTC, $endUTC])->whereNotNull('renewed_from_id')->get();
                     $total_renewal_disbursed = $renewalCredits->sum(function ($renewCredit) {
                         $oldCredit = Credit::find($renewCredit->renewed_from_id);
                         $pendingAmount = 0;
@@ -544,39 +669,45 @@ class DashboardService
                         return $renewCredit->credit_value - $pendingAmount;
                     });
 
-                    $dailyPolicy = Credit::whereIn('seller_id', $sellerIds)
-                        ->whereBetween('created_at', [$startUTC, $endUTC])
-                        ->get()
-                        ->sum(function ($credit) {
-                            return $credit->credit_value * ($credit->micro_insurance_percentage ?? 0);
-                        });
+                    // Política/Seguro
+                    $dailyPolicy = Credit::whereIn('seller_id', $sellerIds)->whereBetween('created_at', [$startUTC, $endUTC])->get()->sum(function ($credit) {
+                        return ($credit->credit_value * ($credit->micro_insurance_percentage ?? 0)) / 100;
+                    });
 
-                    $todayDate = Carbon::now($timezone)->toDateString();
-
+                    // Cartera Irrecuperable
                     $irrecoverableCredits = DB::table('installments')
                         ->join('credits', 'installments.credit_id', '=', 'credits.id')
                         ->whereIn('credits.seller_id', $sellerIds)
                         ->where('credits.status', 'Cartera Irrecuperable')
-                        ->whereDate('credits.updated_at', $todayDate)
+                        ->whereDate('credits.updated_at', $today)
                         ->where('installments.status', 'Pendiente')
                         ->sum('installments.quota_amount');
 
-                    /* \Log::debug("=== INICIO cálculo de caja actual (currentCash) ===");
-                    \Log::debug("initialCash: {$initialCash}");
-                    \Log::debug("income: {$income}");
-                    \Log::debug("cashPayments: {$cashPayments}");
-                    \Log::debug("expenses: {$expenses}");
-                    \Log::debug("newCredits: {$newCredits}");
-                    \Log::debug("total_renewal_disbursed: {$total_renewal_disbursed}");
-                    \Log::debug("irrecoverableCredits: {$irrecoverableCredits}");
-                    \Log::debug("Fórmula: initialCash({$initialCash}) + (income({$income}) + cashPayments({$cashPayments})) - (expenses({$expenses}) + newCredits({$newCredits}) + total_renewal_disbursed({$total_renewal_disbursed}) + irrecoverableCredits({$irrecoverableCredits}))"); */
+                    // === LOGS AÑADIDOS PARA DEBUGGING ===
+                    \Log::debug("ROL 2 [CASH-DEBUG] Inicio Caja");
+                    \Log::debug("ROL 2 [CASH-DEBUG] Company ID: {$companyId}, Filtros: Country: " . $request->input('country_id', 'N/A') . ", City: " . $request->input('city_id', 'N/A'));
+                    \Log::debug("ROL 2 [CASH-DEBUG] initialCash (última liquidación SUMADA): {$initialCash}"); // Log actualizado
+                    \Log::debug("ROL 2 [CASH-DEBUG] + Ingresos (Income): {$income}");
+                    \Log::debug("ROL 2 [CASH-DEBUG] + Cobros (Payments): {$cashPayments}");
+                    \Log::debug("ROL 2 [CASH-DEBUG] - Gastos (Expenses): {$expenses}");
+                    \Log::debug("ROL 2 [CASH-DEBUG] - Nuevos Créditos Desembolsados (New Credits): {$newCredits}");
+                    \Log::debug("ROL 2 [CASH-DEBUG] - Renovaciones Desembolsadas (Renewals): {$total_renewal_disbursed}");
+                    \Log::debug("ROL 2 [CASH-DEBUG] - Irrecuperable (Irrecoverable): {$irrecoverableCredits}");
+                    // === FIN LOGS AÑADIDOS ===
 
                     $currentCash = $initialCash + ($income + $cashPayments) - ($expenses + $newCredits + $total_renewal_disbursed + $irrecoverableCredits);
                     $cashDayBalance = ($income + $cashPayments) - ($expenses + $newCredits + $total_renewal_disbursed + $irrecoverableCredits);
-                   /*  \Log::debug("currentCash: {$currentCash}");
-                    \Log::debug("=== FIN cálculo de caja actual (currentCash) ==="); */
+
+                    \Log::debug("ROL 2 [CASH-DEBUG] cashDayBalance (Flujo del día): {$cashDayBalance}");
+                    \Log::debug("ROL 2 [CASH-DEBUG] currentCash (Caja Actual): {$currentCash}");
+                    \Log::debug("ROL 2 [CASH-DEBUG] Fin Caja");
                 }
-            } elseif ($role === 5) {
+            }
+
+            // ------------------------------------------------------------------
+            // ROL 5 (VENDEDOR - Filtrado por Vendedor, ubicación no aplica)
+            // ------------------------------------------------------------------
+            elseif ($role === 5) {
                 $seller = $user->seller;
                 if ($seller) {
 
@@ -603,11 +734,13 @@ class DashboardService
 
                     $todayDate = Carbon::now($timezone)->toDateString();
 
+                    // Última liquidación del VENDEDOR (Este código es correcto para ROL 5 y se mantiene)
                     $lastLiquidation = Liquidation::where('seller_id', $seller->id)
                         ->orderBy('date', 'desc')
                         ->where('date', '<', $todayDate)
                         ->first();
                     $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
+                    // Fin del código de $initialCash para ROL 5
 
                     $cashPayments = Payment::whereIn('credit_id', $creditIds ?? [])
                         ->whereBetween('created_at', [$startUTC, $endUTC])
@@ -645,7 +778,7 @@ class DashboardService
                         ->whereBetween('created_at', [$startUTC, $endUTC])
                         ->get()
                         ->sum(function ($credit) {
-                            return $credit->credit_value * ($credit->micro_insurance_percentage ?? 0);
+                            return ($credit->credit_value * ($credit->micro_insurance_percentage ?? 0)) / 100;
                         });
 
                     $todayDate = Carbon::now($timezone)->toDateString();
@@ -658,20 +791,21 @@ class DashboardService
                         ->where('installments.status', 'Pendiente')
                         ->sum('installments.quota_amount');
 
-                   /*  \Log::debug("=== INICIO cálculo de caja actual (currentCash) ===");
-                    \Log::debug("initialCash: {$initialCash}");
-                    \Log::debug("income: {$income}");
-                    \Log::debug("cashPayments: {$cashPayments}");
-                    \Log::debug("expenses: {$expenses}");
-                    \Log::debug("newCredits: {$newCredits}");
-                    \Log::debug("total_renewal_disbursed: {$total_renewal_disbursed}");
-                    \Log::debug("irrecoverableCredits: {$irrecoverableCredits}");
-                    \Log::debug("Fórmula: initialCash({$initialCash}) + (income({$income}) + cashPayments({$cashPayments})) - (expenses({$expenses}) + newCredits({$newCredits}) + total_renewal_disbursed({$total_renewal_disbursed}) + irrecoverableCredits({$irrecoverableCredits}))"); */
 
+                    \Log::debug("ROL 5 [CASH-DEBUG] Inicio Caja");
+                    \Log::debug("ROL 5 [CASH-DEBUG] Seller ID: {$seller->id}");
+                    \Log::debug("ROL 5 [CASH-DEBUG] initialCash (última liquidación): {$initialCash}");
+                    \Log::debug("ROL 5 [CASH-DEBUG] + Ingresos (Income): {$income}");
+                    \Log::debug("ROL 5 [CASH-DEBUG] + Cobros (Payments): {$cashPayments}");
+                    \Log::debug("ROL 5 [CASH-DEBUG] - Gastos (Expenses): {$expenses}");
+                    \Log::debug("ROL 5 [CASH-DEBUG] - Nuevos Créditos Desembolsados (New Credits): {$newCredits}");
+                    \Log::debug("ROL 5 [CASH-DEBUG] - Renovaciones Desembolsadas (Renewals): {$total_renewal_disbursed}");
+                    \Log::debug("ROL 5 [CASH-DEBUG] - Irrecuperable (Irrecoverable): {$irrecoverableCredits}");
                     $currentCash = $initialCash + ($income + $cashPayments) - ($expenses + $newCredits + $total_renewal_disbursed + $irrecoverableCredits);
                     $cashDayBalance = ($income + $cashPayments) - ($expenses + $newCredits + $total_renewal_disbursed + $irrecoverableCredits);
-                   /*  \Log::debug("currentCash: {$currentCash}");
-                    \Log::debug("=== FIN cálculo de caja actual (currentCash) ==="); */
+                    \Log::debug("ROL 5 [CASH-DEBUG] cashDayBalance (Flujo del día): {$cashDayBalance}");
+                    \Log::debug("ROL 5 [CASH-DEBUG] currentCash (Caja Actual): {$currentCash}");
+                    \Log::debug("ROL 5 [CASH-DEBUG] Fin Caja");
                 }
             }
 
@@ -702,35 +836,62 @@ class DashboardService
             $user = Auth::user();
             $role = $user->role_id;
             $timezone = 'America/Caracas';
+
+            // Define el rango de fechas UTC
             $startOfWeek = Carbon::now($timezone)->startOfWeek()->timezone('UTC');
             $endOfWeek = Carbon::now($timezone)->endOfWeek()->timezone('UTC');
-            $todayDate = Carbon::now($timezone)->toDateString();
+            $startOfWeekDate = $startOfWeek->toDateString(); // Fecha de inicio de semana para liquidación
 
-            $initialCash = 0;
-            $income = 0;
-            $cashPayments = 0;
-            $newCredits = 0;
-            $expenses = 0;
-            $irrecoverableCredits = 0;
+            // Inicialización de variables
+            $initialCash = $income = $cashPayments = $newCredits = $expenses = $irrecoverableCredits = 0;
 
-            if ($role === 1) { // Admin
-                $lastLiquidation = Liquidation::orderBy('date', 'asc')
-                    ->whereDate('date', $startOfWeek->toDateString())
+            // ------------------------------------------------------------------
+            // ROL 1 (ADMIN - Global con filtros de ubicación)
+            // ------------------------------------------------------------------
+            if ($role === 1) {
+                // 1. Obtener IDs de vendedores filtrados por ubicación
+                $sellerIdsQuery = Seller::query();
+                $this->applyLocationFilters($sellerIdsQuery, $request); // <-- Aplicar filtro de ubicación
+                $sellerIds = $sellerIdsQuery->pluck('id');
+
+                // 2. Obtener IDs de créditos y usuarios filtrados
+                $creditIds = Credit::whereIn('seller_id', $sellerIds)->pluck('id');
+                $userIds = User::whereHas('seller', function ($query) use ($sellerIds) {
+                    $query->whereIn('id', $sellerIds);
+                })->pluck('id');
+
+                // 3. Efectivo inicial (Liquidación al inicio de la semana)
+                // Se busca la liquidación más antigua que coincida con el inicio de la semana para los vendedores filtrados.
+                $lastLiquidation = Liquidation::whereIn('seller_id', $sellerIds)
+                    ->orderBy('date', 'asc')
+                    ->whereDate('date', $startOfWeekDate)
                     ->first();
                 $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
 
-                $income = Income::whereBetween('created_at', [$startOfWeek, $endOfWeek])->sum('value');
-                $cashPayments = Payment::whereBetween('created_at', [$startOfWeek, $endOfWeek])->sum('amount');
-                $newCredits = Credit::whereBetween('created_at', [$startOfWeek, $endOfWeek])->whereNull('renewed_from_id')->sum('credit_value');
-                $expenses = Expense::whereBetween('created_at', [$startOfWeek, $endOfWeek])->sum('value');
+                // 4. Cálculos Semanales (aplicando los IDs filtrados)
+                $income = Income::whereIn('user_id', $userIds)
+                    ->whereBetween('created_at', [$startOfWeek, $endOfWeek])->sum('value');
+                $cashPayments = Payment::whereIn('credit_id', $creditIds)
+                    ->whereBetween('created_at', [$startOfWeek, $endOfWeek])->sum('amount');
+                $newCredits = Credit::whereIn('seller_id', $sellerIds)
+                    ->whereBetween('created_at', [$startOfWeek, $endOfWeek])
+                    ->whereNull('renewed_from_id')->sum('credit_value');
+                $expenses = Expense::whereIn('user_id', $userIds)
+                    ->whereBetween('created_at', [$startOfWeek, $endOfWeek])->sum('value');
 
+                // 5. Cartera Irrecuperable
                 $irrecoverableCredits = DB::table('installments')
                     ->join('credits', 'installments.credit_id', '=', 'credits.id')
+                    ->whereIn('credits.seller_id', $sellerIds)
                     ->where('credits.status', 'Cartera Irrecuperable')
                     ->whereBetween('credits.updated_at', [$startOfWeek, $endOfWeek])
                     ->where('installments.status', 'Pendiente')
                     ->sum('installments.quota_amount');
-            } elseif ($role === 2) { // Empresa
+
+                // ------------------------------------------------------------------
+                // ROL 2 (EMPRESA - Filtrado por Compañía + Filtros de Ubicación)
+                // ------------------------------------------------------------------
+            } elseif ($role === 2) {
                 if (!$user->company) {
                     return $this->successResponse([
                         'success' => true,
@@ -739,33 +900,39 @@ class DashboardService
                     ]);
                 }
                 $companyId = $user->company->id;
-                $sellerIds = Seller::where('company_id', $companyId)->pluck('id');
-                $creditIds = Credit::whereIn('seller_id', $sellerIds)->pluck('id');
 
+                // 1. Obtener IDs de vendedores filtrados por Compañía Y Ubicación
+                $sellerIdsQuery = Seller::where('company_id', $companyId);
+                $this->applyLocationFilters($sellerIdsQuery, $request); // <-- Aplicar filtro de ubicación
+                $sellerIds = $sellerIdsQuery->pluck('id');
+
+                // 2. Obtener IDs de créditos y usuarios filtrados
+                $creditIds = Credit::whereIn('seller_id', $sellerIds)->pluck('id');
+                $userIds = User::whereHas('seller', function ($query) use ($sellerIds) {
+                    $query->whereIn('id', $sellerIds);
+                })->pluck('id');
+
+                // Si no hay vendedores filtrados, los IDs serán vacíos y los sum serán 0.
+
+                // 3. Efectivo inicial
                 $lastLiquidation = Liquidation::whereIn('seller_id', $sellerIds)
                     ->orderBy('date', 'asc')
-                    ->whereDate('date', $startOfWeek->toDateString())
+                    ->whereDate('date', $startOfWeekDate)
                     ->first();
                 $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
 
-                $userIds = User::whereHas('seller', function ($query) use ($companyId) {
-                    $query->where('company_id', $companyId);
-                })->pluck('id');
-
+                // 4. Cálculos Semanales (usando los IDs filtrados por compañía/ubicación)
                 $income = Income::whereIn('user_id', $userIds)
-                    ->whereBetween('created_at', [$startOfWeek, $endOfWeek])
-                    ->sum('value');
+                    ->whereBetween('created_at', [$startOfWeek, $endOfWeek])->sum('value');
                 $cashPayments = Payment::whereIn('credit_id', $creditIds)
-                    ->whereBetween('created_at', [$startOfWeek, $endOfWeek])
-                    ->sum('amount');
+                    ->whereBetween('created_at', [$startOfWeek, $endOfWeek])->sum('amount');
                 $newCredits = Credit::whereIn('seller_id', $sellerIds)
                     ->whereNull('renewed_from_id')
-                    ->whereBetween('created_at', [$startOfWeek, $endOfWeek])
-                    ->sum('credit_value');
+                    ->whereBetween('created_at', [$startOfWeek, $endOfWeek])->sum('credit_value');
                 $expenses = Expense::whereIn('user_id', $userIds)
-                    ->whereBetween('created_at', [$startOfWeek, $endOfWeek])
-                    ->sum('value');
+                    ->whereBetween('created_at', [$startOfWeek, $endOfWeek])->sum('value');
 
+                // 5. Cartera Irrecuperable
                 $irrecoverableCredits = DB::table('installments')
                     ->join('credits', 'installments.credit_id', '=', 'credits.id')
                     ->whereIn('credits.seller_id', $sellerIds)
@@ -773,9 +940,12 @@ class DashboardService
                     ->whereBetween('credits.updated_at', [$startOfWeek, $endOfWeek])
                     ->where('installments.status', 'Pendiente')
                     ->sum('installments.quota_amount');
+
+                // ------------------------------------------------------------------
+                // ROL 5 (VENDEDOR - Filtrado por Vendedor, ubicación no aplica)
+                // ------------------------------------------------------------------
             } elseif ($role === 5) { // Vendedor
                 $seller = $user->seller;
-                $creditIds = Credit::where('seller_id', $seller->id)->pluck('id');
                 if (!$seller) {
                     return $this->successResponse([
                         'success' => true,
@@ -783,27 +953,22 @@ class DashboardService
                         'message' => 'Usuario no tiene vendedor asociado'
                     ]);
                 }
+                $creditIds = $seller->credits()->pluck('id');
 
+                // Efectivo inicial
                 $lastLiquidation = Liquidation::where('seller_id', $seller->id)
                     ->orderBy('date', 'asc')
-                    ->whereDate('date', $startOfWeek->toDateString())
+                    ->whereDate('date', $startOfWeekDate)
                     ->first();
                 $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
 
-                $income = Income::where('user_id', $user->id)
-                    ->whereBetween('created_at', [$startOfWeek, $endOfWeek])
-                    ->sum('value');
-                $cashPayments = Payment::whereIn('credit_id', $creditIds)
-                    ->whereBetween('created_at', [$startOfWeek, $endOfWeek])
-                    ->sum('amount');
-                $newCredits = Credit::where('seller_id', $seller->id)
-                    ->whereNull('renewed_from_id')
-                    ->whereBetween('created_at', [$startOfWeek, $endOfWeek])
-                    ->sum('credit_value');
-                $expenses = Expense::where('user_id', $user->id)
-                    ->whereBetween('created_at', [$startOfWeek, $endOfWeek])
-                    ->sum('value');
+                // Cálculos Semanales (usando el ID de vendedor/usuario logueado)
+                $income = Income::where('user_id', $user->id)->whereBetween('created_at', [$startOfWeek, $endOfWeek])->sum('value');
+                $cashPayments = Payment::whereIn('credit_id', $creditIds)->whereBetween('created_at', [$startOfWeek, $endOfWeek])->sum('amount');
+                $newCredits = Credit::where('seller_id', $seller->id)->whereNull('renewed_from_id')->whereBetween('created_at', [$startOfWeek, $endOfWeek])->sum('credit_value');
+                $expenses = Expense::where('user_id', $user->id)->whereBetween('created_at', [$startOfWeek, $endOfWeek])->sum('value');
 
+                // Cartera Irrecuperable
                 $irrecoverableCredits = DB::table('installments')
                     ->join('credits', 'installments.credit_id', '=', 'credits.id')
                     ->where('credits.seller_id', $seller->id)
@@ -813,6 +978,7 @@ class DashboardService
                     ->sum('installments.quota_amount');
             }
 
+            // Cálculos Finales
             $balanceGeneral = $initialCash + ($income + $cashPayments) - ($newCredits + $expenses + $irrecoverableCredits);
             $currentDayBalance = ($income + $cashPayments) - ($newCredits + $expenses + $irrecoverableCredits);
 
@@ -820,7 +986,7 @@ class DashboardService
                 'success' => true,
                 'data' => [
                     'balanceGeneral' => (float) number_format($balanceGeneral, 2, '.', ''),
-                    'currentDayBalance'    => (float) number_format($currentDayBalance, 2, '.', ''),
+                    'currentDayBalance' => (float) number_format($currentDayBalance, 2, '.', ''),
                     'initialCash' => (float) $initialCash,
                     'incomeWeek' => (float) $income,
                     'cashPaymentsWeek' => (float) $cashPayments,
@@ -840,36 +1006,104 @@ class DashboardService
             $user = Auth::user();
             $role = $user->role_id;
             $timezone = 'America/Caracas';
-            $filter = $request->input('filter', 'day'); // 'day', 'week', 'month'
 
-            if ($filter === 'week') {
+            $filter = $request->input('filter');
+
+            $start = Carbon::create(2000, 1, 1, 0, 0, 0, 'UTC');
+            $end = Carbon::now($timezone)->addYears(10)->timezone('UTC');
+
+
+            if ($filter === 'day') {
+                $start = Carbon::now($timezone)->startOfDay()->timezone('UTC');
+                $end = Carbon::now($timezone)->endOfDay()->timezone('UTC');
+            } elseif ($filter === 'week') {
                 $start = Carbon::now($timezone)->startOfWeek()->timezone('UTC');
                 $end = Carbon::now($timezone)->endOfWeek()->timezone('UTC');
             } elseif ($filter === 'month') {
                 $start = Carbon::now($timezone)->startOfMonth()->timezone('UTC');
                 $end = Carbon::now($timezone)->endOfMonth()->timezone('UTC');
-            } else {
-                $start = Carbon::now($timezone)->startOfDay()->timezone('UTC');
-                $end = Carbon::now($timezone)->endOfDay()->timezone('UTC');
             }
 
             $income = 0;
             $expenses = 0;
             $collected = 0;
             $newCredits = 0;
-            $policy = 0; // Si tienes tabla de pólizas, agrega aquí
+            $policy = 0;
             $profit = 0;
 
-            if ($role === 1) { // Admin
-                $income = Income::whereBetween('created_at', [$start, $end])->sum('value');
-                $expenses = Expense::whereBetween('created_at', [$start, $end])->sum('value');
-                $collected = Payment::whereBetween('created_at', [$start, $end])->sum('amount');
-                $newCredits = Credit::whereBetween('created_at', [$start, $end])->whereNull('renewed_from_id')->sum('credit_value');
-                // $policy = Policy::whereBetween('created_at', [$start, $end])->sum('value');
-                $totalCapitalPaid = PaymentInstallment::whereBetween('created_at', [$start, $end])->sum('applied_amount');
-                $totalPayments = Payment::whereBetween('created_at', [$start, $end])->sum('amount');
+            // ------------------------------------------------------------------
+            // ROL 1 (ADMIN - Global con filtros de ubicación)
+            // ------------------------------------------------------------------
+            if ($role === 1) {
+                // 1. Obtener IDs de vendedores filtrados por ubicación
+                $sellerIdsQuery = Seller::query();
+                // Si el filtro es 'all', se asume que se quiere ver la ubicación total de la empresa (sin filtro geográfico).
+                // Mantenemos la aplicación de filtros si se envían country_id o city_id, incluso si $filter es 'all'.
+                $this->applyLocationFilters($sellerIdsQuery, $request); // <-- Aplicar filtro de ubicación
+                $sellerIds = $sellerIdsQuery->pluck('id');
+
+                // 2. Obtener IDs de créditos y usuarios filtrados
+                $creditIds = Credit::whereIn('seller_id', $sellerIds)->pluck('id');
+                $userIds = User::whereHas('seller', function ($query) use ($sellerIds) {
+                    $query->whereIn('id', $sellerIds);
+                })->pluck('id');
+
+                // 3. Obtener IDs de cuotas (Installments) filtradas
+                $installmentIds = Installment::whereIn('credit_id', $creditIds)->pluck('id');
+
+                // 4. Cálculos filtrados por tiempo y ubicación
+                $income = Income::whereIn('user_id', $userIds)
+                    ->whereBetween('created_at', [$start, $end])->sum('value');
+                $expenses = Expense::whereIn('user_id', $userIds)
+                    ->whereBetween('created_at', [$start, $end])->sum('value');
+                $collected = Payment::whereIn('credit_id', $creditIds)
+                    ->whereBetween('created_at', [$start, $end])->sum('amount');
+                $newCredits = Credit::whereIn('seller_id', $sellerIds)
+                    ->whereBetween('created_at', [$start, $end])
+                    ->whereNull('renewed_from_id')->sum('credit_value');
+
+                // $policy = Policy::whereIn('seller_id', $sellerIds)->whereBetween('created_at', [$start, $end])->sum('value');
+
+                $totalCapitalPaid = PaymentInstallment::whereIn('installment_id', $installmentIds)
+                    ->whereBetween('created_at', [$start, $end])->sum('applied_amount');
+
+                $totalPayments = Payment::whereIn('credit_id', $creditIds)
+                    ->whereBetween('created_at', [$start, $end])->sum('amount');
+
                 $profit = $totalPayments - $totalCapitalPaid;
-            } elseif ($role === 2) { // Empresa
+
+                $sellers = Seller::whereIn('id', $sellerIds)->get();
+            
+            foreach ($sellers as $seller) {
+                $sellerUserId = $seller->user_id;
+
+                // A. Ingresos del vendedor
+                $sellerIncome = Income::where('user_id', $sellerUserId)
+                    ->whereBetween('created_at', [$start, $end])->sum('value');
+
+                // B. Gastos del vendedor
+                $sellerExpenses = Expense::where('user_id', $sellerUserId)
+                    ->whereBetween('created_at', [$start, $end])->sum('value');
+                
+                // C. Recaudado (Cobros) del vendedor
+                $sellerCreditIds = Credit::where('seller_id', $seller->id)->pluck('id');
+                $sellerCollected = Payment::whereIn('credit_id', $sellerCreditIds)
+                    ->whereBetween('created_at', [$start, $end])->sum('amount');
+
+                // D. Agregar al array de desglose
+                $sellerBreakdown[] = [
+                    'seller_id' => $seller->id,
+                    'name' => $seller->user->name ?? 'Vendedor sin nombre', 
+                    'income' => (float) number_format($sellerIncome, 2, '.', ''),
+                    'expenses' => (float) number_format($sellerExpenses, 2, '.', ''),
+                    'collected' => (float) number_format($sellerCollected, 2, '.', ''),
+                ];
+            }
+
+                // ------------------------------------------------------------------
+                // ROL 2 (EMPRESA - Filtrado por Compañía + Filtros de Ubicación)
+                // ------------------------------------------------------------------
+            } elseif ($role === 2) {
                 if (!$user->company) {
                     return $this->successResponse([
                         'success' => true,
@@ -878,36 +1112,72 @@ class DashboardService
                     ]);
                 }
                 $companyId = $user->company->id;
-                $sellerIds = Seller::where('company_id', $companyId)->pluck('id');
-                $userIds = User::whereHas('seller', function ($query) use ($companyId) {
-                    $query->where('company_id', $companyId);
-                })->pluck('id');
+
+                // 1. Obtener IDs de vendedores filtrados por Compañía Y Ubicación
+                $sellerIdsQuery = Seller::where('company_id', $companyId);
+                $this->applyLocationFilters($sellerIdsQuery, $request); // <-- Aplicar filtro de ubicación
+                $sellerIds = $sellerIdsQuery->pluck('id');
+
+                // 2. Obtener IDs de créditos y usuarios filtrados
                 $creditIds = Credit::whereIn('seller_id', $sellerIds)->pluck('id');
+                $userIds = User::whereHas('seller', function ($query) use ($sellerIds) {
+                    $query->whereIn('id', $sellerIds);
+                })->pluck('id');
                 $installmentIds = Installment::whereIn('credit_id', $creditIds)->pluck('id');
 
+                // 3. Cálculos filtrados por tiempo, compañía y ubicación
                 $income = Income::whereIn('user_id', $userIds)
-                    ->whereBetween('created_at', [$start, $end])
-                    ->sum('value');
+                    ->whereBetween('created_at', [$start, $end])->sum('value');
                 $expenses = Expense::whereIn('user_id', $userIds)
-                    ->whereBetween('created_at', [$start, $end])
-                    ->sum('value');
+                    ->whereBetween('created_at', [$start, $end])->sum('value');
                 $collected = Payment::whereIn('credit_id', $creditIds)
-                    ->whereBetween('created_at', [$start, $end])
-                    ->sum('amount');
+                    ->whereBetween('created_at', [$start, $end])->sum('amount');
                 $newCredits = Credit::whereIn('seller_id', $sellerIds)
                     ->whereNull('renewed_from_id')
-                    ->whereBetween('created_at', [$start, $end])
-                    ->sum('credit_value');
+                    ->whereBetween('created_at', [$start, $end])->sum('credit_value');
+
                 // $policy = Policy::whereIn('seller_id', $sellerIds)->whereBetween('created_at', [$start, $end])->sum('value');
+
                 $totalCapitalPaid = PaymentInstallment::whereIn('installment_id', $installmentIds)
-                    ->whereBetween('created_at', [$start, $end])
-                    ->sum('applied_amount');
+                    ->whereBetween('created_at', [$start, $end])->sum('applied_amount');
 
                 $totalPayments = Payment::whereIn('credit_id', $creditIds)
-                    ->whereBetween('created_at', [$start, $end])
-                    ->sum('amount');
+                    ->whereBetween('created_at', [$start, $end])->sum('amount');
+
                 $profit = $totalPayments - $totalCapitalPaid;
-            } elseif ($role === 5) { // Vendedor
+
+                $sellers = Seller::whereIn('id', $sellerIds)->get();
+            
+            foreach ($sellers as $seller) {
+                $sellerUserId = $seller->user_id;
+
+                // A. Ingresos del vendedor
+                $sellerIncome = Income::where('user_id', $sellerUserId)
+                    ->whereBetween('created_at', [$start, $end])->sum('value');
+
+                // B. Gastos del vendedor
+                $sellerExpenses = Expense::where('user_id', $sellerUserId)
+                    ->whereBetween('created_at', [$start, $end])->sum('value');
+                
+                // C. Recaudado (Cobros) del vendedor
+                $sellerCreditIds = Credit::where('seller_id', $seller->id)->pluck('id');
+                $sellerCollected = Payment::whereIn('credit_id', $sellerCreditIds)
+                    ->whereBetween('created_at', [$start, $end])->sum('amount');
+
+                // D. Agregar al array de desglose
+                $sellerBreakdown[] = [
+                    'seller_id' => $seller->id,
+                    'name' => $seller->user->name ?? 'Vendedor sin nombre',
+                    'income' => (float) number_format($sellerIncome, 2, '.', ''),
+                    'expenses' => (float) number_format($sellerExpenses, 2, '.', ''),
+                    'collected' => (float) number_format($sellerCollected, 2, '.', ''),
+                ];
+            }
+
+                // ------------------------------------------------------------------
+                // ROL 5 (VENDEDOR - Filtrado por Vendedor)
+                // ------------------------------------------------------------------
+            } elseif ($role === 5) {
                 $seller = $user->seller;
                 if (!$seller) {
                     return $this->successResponse([
@@ -918,51 +1188,48 @@ class DashboardService
                 }
 
                 $income = Income::where('user_id', $user->id)
-                    ->whereBetween('created_at', [$start, $end])
-                    ->sum('value');
+                    ->whereBetween('created_at', [$start, $end])->sum('value');
                 $expenses = Expense::where('user_id', $user->id)
-                    ->whereBetween('created_at', [$start, $end])
-                    ->sum('value');
+                    ->whereBetween('created_at', [$start, $end])->sum('value');
 
-                // Obtener los créditos de ese vendedor
                 $creditIds = Credit::where('seller_id', $seller->id)->pluck('id');
                 $installmentIds = Installment::whereIn('credit_id', $creditIds)->pluck('id');
 
-                // Filtrar los pagos por esos créditos
                 $collected = Payment::whereIn('credit_id', $creditIds)
-                    ->whereBetween('created_at', [$start, $end])
-                    ->sum('amount');
-
+                    ->whereBetween('created_at', [$start, $end])->sum('amount');
                 $newCredits = Credit::where('seller_id', $seller->id)
                     ->whereNull('renewed_from_id')
-                    ->whereBetween('created_at', [$start, $end])
-                    ->sum('credit_value');
+                    ->whereBetween('created_at', [$start, $end])->sum('credit_value');
 
                 $totalCapitalPaid = PaymentInstallment::whereIn('installment_id', $installmentIds)
-                    ->whereBetween('created_at', [$start, $end])
-                    ->sum('applied_amount');
-
+                    ->whereBetween('created_at', [$start, $end])->sum('applied_amount');
                 $totalPayments = Payment::whereIn('credit_id', $creditIds)
-                    ->whereBetween('created_at', [$start, $end])
-                    ->sum('amount');
-
+                    ->whereBetween('created_at', [$start, $end])->sum('amount');
                 $profit = $totalPayments - $totalCapitalPaid;
+                $sellerBreakdown[] = [
+                    'seller_id' => $seller->id,
+                    'name' => $user->name ?? 'Mi Movimiento',
+                    'income' => (float) number_format($income, 2, '.', ''),
+                    'expenses' => (float) number_format($expenses, 2, '.', ''),
+                    'collected' => (float) number_format($collected, 2, '.', ''),
+                ];
             }
 
             return $this->successResponse([
                 'success' => true,
                 'data' => [
-                    'income' => (float) $income,
-                    'expenses'  => (float) $expenses,
-                    'collected' => (float) $collected,
-                    'newCredits' => (float) $newCredits,
-                    'policy' => (float) $policy,
-                    'profit' => (float) $profit
+                    'income' => (float) number_format($income, 2, '.', ''),
+                    'expenses' => (float) number_format($expenses, 2, '.', ''),
+                    'collected' => (float) number_format($collected, 2, '.', ''),
+                    'newCredits' => (float) number_format($newCredits, 2, '.', ''),
+                    'policy' => (float) number_format($policy, 2, '.', ''),
+                    'profit' => (float) number_format($profit, 2, '.', ''),
+                    'seller_breakdown' => $sellerBreakdown,
                 ],
                 'period' => [
                     'start' => $start,
                     'end' => $end,
-                    'filter' => $filter
+                    'filter' => $filter 
                 ]
             ]);
         } catch (\Exception $e) {
