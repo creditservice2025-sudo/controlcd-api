@@ -23,10 +23,10 @@ use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\ReportExportController;
 
 // Auth routes
-Route::post('login', [AuthController::class, 'login']);
-Route::post('forgot-password', [AuthController::class, 'forgotPassword']);
-Route::post('reset-password', [AuthController::class, 'resetPassword']);
-Route::put('client/update/{id}', [ClientController::class, 'update']);
+Route::post('login', [AuthController::class, 'login'])->middleware('throttle:6,1');
+Route::post('forgot-password', [AuthController::class, 'forgotPassword'])->middleware('throttle:3,1');
+Route::post('reset-password', [AuthController::class, 'resetPassword'])->middleware('throttle:3,1');
+
 
 Route::middleware('auth:api')->group(function () {
 
