@@ -10,6 +10,13 @@ use App\Http\Requests\Client\ClientRequest;
 use App\Models\Seller;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
+use App\Http\Requests\Client\UpdateOrderRequest;
+use App\Http\Requests\Client\ReactivateClientsByCriteriaRequest;
+use App\Http\Requests\Client\ReactivateClientsByIdsRequest;
+use App\Http\Requests\Client\DeleteClientsByIdsRequest;
+use App\Http\Requests\Client\ToggleStatusRequest;
+use App\Http\Requests\Client\InactiveClientsWithFiltersRequest;
+use App\Http\Requests\Client\DeletedClientsWithFiltersRequest;
 
 class ClientController extends Controller
 {
@@ -41,22 +48,8 @@ class ClientController extends Controller
         }
     }
 
-    public function updateOrder(Request $request)
+    public function updateOrder(UpdateOrderRequest $request)
     {
-        $validator = Validator::make($request->all(), [
-            'clients' => 'required|array',
-            'clients.*.id' => 'required|exists:clients,id',
-            'clients.*.routing_order' => 'required|integer|min:1',
-        ]);
-
-        if ($validator->fails()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Datos de entrada inválidos',
-                'errors' => $validator->errors()
-            ], 422);
-        }
-
         DB::beginTransaction();
         try {
             $clientIds = collect($request->clients)->pluck('id');
@@ -155,14 +148,8 @@ class ClientController extends Controller
         }
     }
 
-    public function reactivateClientsByCriteria(Request $request)
+    public function reactivateClientsByCriteria(ReactivateClientsByCriteriaRequest $request)
     {
-        $request->validate([
-            'country_id' => 'nullable|integer|exists:countries,id',
-            'city_id' => 'nullable|integer|exists:cities,id',
-            'seller_id' => 'nullable|integer|exists:sellers,id'
-        ]);
-
         $countryId = $request->input('country_id');
         $cityId = $request->input('city_id');
         $sellerId = $request->input('seller_id');
@@ -177,13 +164,8 @@ class ClientController extends Controller
         return $this->clientService->reactivateClients($countryId, $cityId, $sellerId);
     }
 
-    public function reactivateClientsByIds(Request $request)
+    public function reactivateClientsByIds(ReactivateClientsByIdsRequest $request)
     {
-        $request->validate([
-            'client_ids' => 'required|array',
-            'client_ids.*' => 'integer|exists:clients,id',
-        ]);
-    
         try {
             $clientIds = $request->input('client_ids');
     
@@ -220,15 +202,10 @@ class ClientController extends Controller
         }
     }
 
-    public function deleteClientsByIds(Request $request)
+    public function deleteClientsByIds(DeleteClientsByIdsRequest $request)
     {
         try {
-            $params = $request->validate([
-                'client_ids' => 'required|array',
-                'client_ids.*' => 'integer|exists:clients,id',
-            ]);
-
-            $result = $this->clientService->deleteClientsByIds($params['client_ids']);
+            $result = $this->clientService->deleteClientsByIds($request->input('client_ids'));
 
             return $this->successResponse([
                 'success' => true,
@@ -394,14 +371,10 @@ class ClientController extends Controller
         }
     }
 
-    public function toggleStatus(Request $request, $clientId)
+    public function toggleStatus(ToggleStatusRequest $request, $clientId)
     {
         try {
-            $params = $request->validate([
-                'status' => 'required|string|in:active,inactive,uncollectible',
-            ]);
-
-            return $this->clientService->toggleStatus($clientId, $params['status']);
+            return $this->clientService->toggleStatus($clientId, $request->input('status'));
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
@@ -416,41 +389,27 @@ class ClientController extends Controller
         }
     }
 
-    public function getInactiveClientsWithoutCreditsWithFilters(Request $request)
+    public function getInactiveClientsWithoutCreditsWithFilters(InactiveClientsWithFiltersRequest $request)
     {
-        $search = $request->query('search', '');
-        $orderBy = $request->query('orderBy', 'created_at');
-        $orderDirection = $request->query('orderDirection', 'desc');
-        $countryId = $request->query('countryId');
-        $cityId = $request->query('cityId');
-        $sellerId = $request->query('sellerId');
-
         return app(ClientService::class)->getInactiveClientsWithoutCreditsWithFilters(
-            $search,
-            $orderBy,
-            $orderDirection,
-            $countryId,
-            $cityId,
-            $sellerId
+            $request->input('search', ''),
+            $request->input('orderBy', 'created_at'),
+            $request->input('orderDirection', 'desc'),
+            $request->input('countryId'),
+            $request->input('cityId'),
+            $request->input('sellerId')
         );
     }
 
-    public function getDeletedClientsWithFilters(Request $request)
+    public function getDeletedClientsWithFilters(DeletedClientsWithFiltersRequest $request)
     {
-        $search = $request->query('search', '');
-        $orderBy = $request->query('orderBy', 'deleted_at');
-        $orderDirection = $request->query('orderDirection', 'desc');
-        $countryId = $request->query('countryId');
-        $cityId = $request->query('cityId');
-        $sellerId = $request->query('sellerId');
-
         return app(ClientService::class)->getDeletedClientsWithFilters(
-            $search,
-            $orderBy,
-            $orderDirection,
-            $countryId,
-            $cityId,
-            $sellerId
+            $request->input('search', ''),
+            $request->input('orderBy', 'deleted_at'),
+            $request->input('orderDirection', 'desc'),
+            $request->input('countryId'),
+            $request->input('cityId'),
+            $request->input('sellerId')
         );
     }
 }
