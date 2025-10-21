@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\ExpenseController;
 use App\Http\Controllers\LiquidationController;
+use App\Http\Controllers\SellerConfigController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
@@ -53,6 +54,9 @@ Route::middleware('auth:api')->group(function () {
     Route::put('route/update/{sellerId}', [SellerController::class, 'update']);
     Route::delete('route/delete/{id}', [SellerController::class, 'delete']);
     Route::put('/routes/toggle-status/{routeId}', [SellerController::class, 'toggleStatus']);
+
+    Route::get('seller/{sellerId}/config', [SellerConfigController::class, 'show']);
+    Route::put('seller/{sellerId}/config', [SellerConfigController::class, 'update']);
 
     //route user
     Route::get('users', [UserController::class, 'index']);
@@ -113,8 +117,7 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/{id}/details', [ClientController::class, 'getClientDetails']);
         Route::put('/update/{id}', [ClientController::class, 'update']);
         Route::delete('/delete/{id}', [ClientController::class, 'delete']);
-
-
+        Route::post('/{id}/capacity', [ClientController::class, 'updateCapacity']);
 
         // Orden de ruta
         Route::post('/update-order', [ClientController::class, 'updateOrder']);
@@ -217,14 +220,14 @@ Route::middleware('auth:api')->group(function () {
     //route payment
     Route::get('payments/daily-totals', [PaymentController::class, 'dailyPaymentTotals']);
     Route::get('payments/{creditId}', [PaymentController::class, 'index']);
-    Route::get('payments/today/{creditId}', [PaymentController::class, 'paymentsToday']); 
+    Route::get('payments/today/{creditId}', [PaymentController::class, 'paymentsToday']);
     Route::post('payment/create', [PaymentController::class, 'create']);
     Route::get('payment/{creditId}/{paymentId}', [PaymentController::class, 'show']);
     Route::delete('payment/delete/{paymentId}', [PaymentController::class, 'delete']);
     Route::get('payments/seller/{sellerId}', [PaymentController::class, 'indexBySeller']);
     Route::get('payments/total/{creditId}', [PaymentController::class, 'getTotalWithoutInstallments']);
 
-    
+
     //reports
     Route::get('reports/daily-collection', [CreditController::class, 'dailyCollectionReport']);
     Route::prefix('reports/excel')->group(function () {

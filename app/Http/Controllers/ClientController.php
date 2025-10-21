@@ -412,4 +412,17 @@ class ClientController extends Controller
             $request->input('sellerId')
         );
     }
+
+    public function updateCapacity(Request $request, $id)
+    {
+        $request->validate([
+            'capacity' => 'required|numeric|min:0'
+        ]);
+        $client = $this->clientService->updateCapacity($id, $request->input('capacity'));
+        return response()->json([
+            'success' => true,
+            'message' => 'Cupo actualizado correctamente',
+            'data' => $client
+        ]);
+    }
 }
