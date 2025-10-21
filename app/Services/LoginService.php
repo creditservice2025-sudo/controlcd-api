@@ -29,58 +29,62 @@ class LoginService
                 'email' => ['required', 'string'],
                 'password' => ['required'],
             ]);
-    
+
             if ($validator->fails()) {
                 return $this->errorResponse($validator->errors(), 422);
             }
-    
+
+            \Log::info('Intento de inicio de sesión: ' . $credentials['email']);
+
             $user = User::where('email', 'LIKE', $credentials['email'] . '%')
                 ->with('city', 'seller')
                 ->first();
-    
-            if (!$user || !Hash::check($credentials['password'], $user->password)) {  
+
+                \Log::info('Usuario encontrado: ' . ($user ? $user->email : 'Ninguno'));
+
+            if (!$user || !Hash::check($credentials['password'], $user->password)) {
                 return $this->errorResponse(['Los datos introducidos son inválidos, verifica e intenta nuevamente'], 401);
             }
-    
+
             $seller = $user->seller;
             if ($seller) {
                 $liquidation = Liquidation::where('seller_id', $seller->id)
                     ->where(DB::raw('DATE(date)'), Carbon::today()->toDateString())
                     ->first();
-    
+
                 if ($liquidation) {
                     if ($liquidation->status !== 'pending') {
-                  
+
                         return $this->errorResponse(['Ya has realizado una liquidación hoy. Intenta nuevamente mañana.'], 401);
                     }
-    
+
                     $auditExists = \App\Models\LiquidationAudit::where('liquidation_id', $liquidation->id)
                         ->where('user_id', $user->id)
                         ->whereIn('action', ['updated', 'created'])
                         ->whereDate('created_at', Carbon::today())
                         ->exists();
-    
+
                     if ($auditExists) {
                         return $this->errorResponse(['Ya has realizado una liquidación hoy. Intenta nuevamente mañana.'], 401);
                     }
                 }
             }
-    
+
             $token = $user->createToken('USER_AUTH_TOKEN')->accessToken;
-    
+
             if ($user->token_revoked) {
                 $user->update([
                     "token_revoked" => 0
                 ]);
             }
-    
+
             SessionLog::create([
                 'user_id'    => $user->id,
                 'login_at'   => now(),
                 'ip'         => request()->ip(),
                 'user_agent' => request()->header('User-Agent'),
             ]);
-    
+
             return $this->successResponse([
                 'success' => true,
                 'access_token' => $token,
@@ -154,12 +158,9 @@ class LoginService
         }
     }
 
-
     public function sendPasswordResetLink($email)
     {
-
         try {
-
             $validator = Validator::make(['email' => $email], [
                 'email' => ['required', 'email'],
             ]);
@@ -168,23 +169,16 @@ class LoginService
                 return $this->errorResponse($validator->errors(), 422);
             }
 
-            // Generar un token de un solo uso
-            $token = Str::random(30);
+            $response = Password::sendResetLink(['email' => $email]);
 
-            // Guardar el token en cache con una duración de 10 minutos
-            DB::table('password_reset_tokens')->insert([
-                'email' => $email,
-                'token' => $token,
-            ]);
-
-            //$resetLink = url('/password/reset', $token);
-            Mail::to($email)->send(new ResetPassword($token));
-
-
-            return $this->successResponse([
-                'success' => true,
-                'message' => 'El enlace para restablecer la contraseña ha sido enviado a su correo electrónico'
-            ]);
+            if ($response === Password::RESET_LINK_SENT) {
+                return $this->successResponse([
+                    'success' => true,
+                    'message' => 'El enlace para restablecer la contraseña ha sido enviado a su correo electrónico'
+                ]);
+            } else {
+                return $this->errorResponse('No se pudo enviar el enlace de reseteo', 500);
+            }
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             return $this->handlerException('Error al enviar el enlace para restablecer la contraseña');
@@ -193,35 +187,39 @@ class LoginService
 
     public function resetPassword($params)
     {
-        DB::beginTransaction();
-
         try {
-
-            $token = DB::table('password_reset_tokens')->where('token', $params['token'])->first();
-
-            if (!$token) {
-                return $this->errorResponse('Token invalido', 401);
-            }
-
-            $user = User::where('email', $token->email)->first();
-
-            if (!$user) {
-                return $this->errorResponse('Usuario no encontrado', 404);
-            }
-
-            $user->password = Hash::make($params['password']);
-            $user->save();
-
-            DB::table('password_reset_tokens')->where('token', $params['token'])->delete();
-
-            DB::commit();
-
-            return $this->successResponse([
-                'success' => true,
-                'message' => 'Contraseña restablecida correctamente',
+            $validator = Validator::make($params, [
+                'email' => ['required', 'email'],
+                'token' => ['required', 'string'],
+                'password' => ['required', 'string', 'min:8', 'confirmed'],
             ]);
+
+            if ($validator->fails()) {
+                return $this->errorResponse($validator->errors(), 422);
+            }
+
+            $response = Password::reset(
+                [
+                    'email' => $params['email'],
+                    'password' => $params['password'],
+                    'password_confirmation' => $params['password_confirmation'],
+                    'token' => $params['token'],
+                ],
+                function ($user, $password) {
+                    $user->password = Hash::make($password);
+                    $user->save();
+                }
+            );
+
+            if ($response === Password::PASSWORD_RESET) {
+                return $this->successResponse([
+                    'success' => true,
+                    'message' => 'Contraseña restablecida correctamente',
+                ]);
+            } else {
+                return $this->errorResponse('Token inválido o expirado', 401);
+            }
         } catch (\Exception $e) {
-            DB::rollBack();
             \Log::error($e->getMessage());
             return $this->handlerException('Error al restablecer la contraseña');
         }

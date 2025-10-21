@@ -349,7 +349,8 @@ class CreditService
         try {
             DB::beginTransaction();
 
-            $credit = Credit::with('seller')->find($creditId);
+            $credit = Credit::with(['seller', 'installments', 'payments'])->find($creditId);
+
 
             if (!$credit) {
                 DB::rollBack();
@@ -363,6 +364,7 @@ class CreditService
                     403
                 );
             }
+
 
             $liquidationExists = Liquidation::where('seller_id', $credit->seller_id)
                 ->whereDate('created_at', Carbon::today())

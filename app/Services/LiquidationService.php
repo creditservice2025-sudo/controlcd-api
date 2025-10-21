@@ -1094,4 +1094,44 @@ class LiquidationService
             ->orderBy('date', 'asc')
             ->get();
     }
+
+    public function reopenRoute($sellerId, $date)
+    {
+        $timezone = 'America/Caracas';
+        $dateLocal = \Carbon\Carbon::parse($date, $timezone)->format('Y-m-d');
+        $startUTC = \Carbon\Carbon::parse($dateLocal, $timezone)->startOfDay()->setTimezone('UTC');
+        $endUTC   = \Carbon\Carbon::parse($dateLocal, $timezone)->endOfDay()->setTimezone('UTC');
+
+        $liquidation = \App\Models\Liquidation::where('seller_id', $sellerId)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->first();
+
+        if (!$liquidation) {
+            return ['message' => 'No existe liquidación para ese vendedor y fecha', 'audits_deleted' => 0];
+        }
+
+        $seller = \App\Models\Seller::find($liquidation->seller_id);
+        $userId = $seller ? $seller->user_id : null;
+
+        $deleted = \App\Models\LiquidationAudit::where('liquidation_id', $liquidation->id)
+            ->where('user_id', $userId)
+            ->whereIn('action', ['updated', 'created'])
+            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->delete();
+
+        return [
+            'message' => 'Ruta reabierta correctamente',
+            'audits_deleted' => $deleted
+        ];
+    }
+
+    public function getLiquidationHistory($sellerId, $startDate, $endDate)
+    {
+        $history = \App\Models\Liquidation::with(['expenses', 'credits'])
+            ->where('seller_id', $sellerId)
+            ->whereBetween('date', [$startDate, $endDate])
+            ->orderBy('date', 'desc')
+            ->get();
+        return $history;
+    }
 }

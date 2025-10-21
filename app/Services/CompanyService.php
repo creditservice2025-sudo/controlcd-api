@@ -135,6 +135,10 @@ class CompanyService
             ]);
 
             if ($request->hasFile('logo')) {
+                $validationResponse = $this->validateLogo($request);
+                if ($validationResponse !== true) {
+                    return $validationResponse;
+                }
                 if ($company->logo_path) {
                     Helper::deleteFile($company->logo_path);
                 }

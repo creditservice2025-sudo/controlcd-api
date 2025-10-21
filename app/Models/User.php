@@ -68,7 +68,7 @@ class User extends Authenticatable
         return $this->belongsTo(User::class);
     }
 
-    public function route()
+    public function routes()
     {
         return $this->belongsToMany(Seller::class, 'users_routes');
     }
@@ -76,16 +76,6 @@ class User extends Authenticatable
     public function clients()
     {
         return $this->belongsToMany(Client::class, 'users_clients')->withTimestamps();
-    }
-
-    public function userRoutes()
-    {
-        return $this->belongsToMany(UserRoute::class, 'users_routes')->withTimestamps();
-    }
-
-    public function routes()
-    {
-        return $this->belongsToMany(Seller::class, 'user_routes');
     }
 
     public function seller()

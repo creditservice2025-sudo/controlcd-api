@@ -7,14 +7,12 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Foundation\Auth\Guarantor as Authenticatable;
 use Illuminate\Notifications\Notifiable;
-use Spatie\Permission\Traits\HasRoles;
-use Laravel\Passport\HasApiTokens;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Facades\DB;
 
 class Client extends Model
 {
-    use HasFactory, Notifiable, HasRoles, HasApiTokens, SoftDeletes;
+    use HasFactory, Notifiable, SoftDeletes;
 
     protected $fillable = [
         'name',
@@ -27,7 +25,8 @@ class Client extends Model
         'company_name',
         'guarantor_id',
         'seller_id',
-        'routing_order'
+        'routing_order',
+        'capacity',
     ];
 
     protected $casts = [
