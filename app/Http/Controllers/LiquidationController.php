@@ -21,6 +21,11 @@ use Illuminate\Support\Facades\Validator;
 use App\Notifications\GeneralNotification;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
+use App\Http\Requests\Liquidation\CalculateLiquidationRequest;
+use App\Http\Requests\Liquidation\StoreLiquidationRequest;
+use App\Http\Requests\Liquidation\UpdateLiquidationRequest;
+use App\Http\Requests\Liquidation\ReopenRouteRequest;
+use App\Http\Requests\Liquidation\LiquidationHistoryRequest;
 
 class LiquidationController extends Controller
 {
@@ -30,13 +35,8 @@ class LiquidationController extends Controller
     {
         $this->liquidationService = $liquidationService;
     }
-    public function calculateLiquidation(Request $request)
+    public function calculateLiquidation(CalculateLiquidationRequest $request)
     {
-        $request->validate([
-            'date' => 'required|date',
-            'seller_id' => 'required|exists:sellers,id'
-        ]);
-
         $user = Auth::user();
         $sellerId = $request->seller_id;
         $date = $request->date;
@@ -58,26 +58,12 @@ class LiquidationController extends Controller
         ]);
     }
 
-    public function storeLiquidation(Request $request)
+    public function storeLiquidation(StoreLiquidationRequest $request)
     {
         $user = Auth::user();
 
         $timezone = 'America/Caracas';
         $todayDate = Carbon::now($timezone)->toDateString();
-
-        $request->validate([
-            'date' => 'required|date',
-            'seller_id' => 'required|exists:sellers,id',
-            'cash_delivered' => 'required|numeric|min:0',
-            'path' => 'nullable|image|max:2048',
-            'initial_cash' => 'required|numeric',
-            'base_delivered' => 'required|numeric|min:0',
-            'total_collected' => 'required|numeric|min:0',
-            'total_expenses' => 'required|numeric|min:0',
-            'total_income' => 'required|numeric|min:0',
-            'new_credits' => 'required|numeric|min:0',
-            'created_at' => 'nullable|date',
-        ]);
 
         // Verificar si ya existe liquidación para este día
         $existingLiquidation = Liquidation::where('seller_id', $request->seller_id)
@@ -229,25 +215,11 @@ class LiquidationController extends Controller
         ]);
     }
 
-    public function updateLiquidation(Request $request, $id)
+    public function updateLiquidation(UpdateLiquidationRequest $request, $id)
     {
         $user = Auth::user();
 
         $timezone = 'America/Caracas';
-
-        $request->validate([
-            'date' => 'nullable|date',
-            'seller_id' => 'nullable|exists:sellers,id',
-            'cash_delivered' => 'nullable|numeric|min:0',
-            'initial_cash' => 'nullable|numeric',
-            'base_delivered' => 'nullable|numeric|min:0',
-            'total_collected' => 'nullable|numeric|min:0',
-            'total_expenses' => 'nullable|numeric|min:0',
-            'new_credits' => 'nullable|numeric|min:0',
-            'total_income' => 'nullable|numeric|min:0',
-            'collection_target' => 'nullable|numeric|min:0',
-            'created_at' => 'nullable|date',
-        ]);
 
         $liquidation = Liquidation::findOrFail($id);
 
@@ -416,52 +388,10 @@ class LiquidationController extends Controller
         ]);
     }
 
-    public function reopenRoute(Request $request)
+    public function reopenRoute(ReopenRouteRequest $request)
     {
-        /* \Log::info('reopenRoute - Request recibido', $request->all()); */
-
-        $request->validate([
-            'seller_id' => 'required|exists:sellers,id',
-            'date' => 'required|date'
-        ]);
-
-        $timezone = 'America/Caracas';
-        $dateLocal = Carbon::parse($request->date, $timezone)->format('Y-m-d');
-        $startUTC = Carbon::parse($dateLocal, $timezone)->startOfDay()->setTimezone('UTC');
-        $endUTC   = Carbon::parse($dateLocal, $timezone)->endOfDay()->setTimezone('UTC');
-
-        $liquidation = Liquidation::where('seller_id', $request->seller_id)
-            ->whereBetween('created_at', [$startUTC, $endUTC])
-            ->first();
-
-       /*  \Log::info('reopenRoute - Liquidación encontrada', ['liquidation' => $liquidation]);
- */
-        if (!$liquidation) {
-
-            return response()->json(['message' => 'No existe liquidación para ese vendedor y fecha'], 404);
-        }
-
-        $seller = Seller::find($liquidation->seller_id);
-        $userId = $seller ? $seller->user_id : null;
-        /*      \Log::info('reopenRoute - Seller y user_id', [
-            'seller' => $seller,
-            'user_id' => $userId
-        ]); */
-
-        $deleted = LiquidationAudit::where('liquidation_id', $liquidation->id)
-            ->where('user_id', $userId)
-            ->whereIn('action', ['updated', 'created'])
-            ->whereBetween('created_at', [$startUTC, $endUTC])
-            ->delete();
-
-        /* \Log::info('reopenRoute - Auditorías eliminadas', [
-            'deleted_count' => $deleted
-        ]); */
-
-        return response()->json([
-            'message' => 'Ruta reabierta correctamente',
-            'audits_deleted' => $deleted
-        ]);
+        $result = $this->liquidationService->reopenRoute($request->seller_id, $request->date);
+        return response()->json($result);
     }
 
     // Tu función de recalculo debe estar en el mismo controlador:
@@ -1060,33 +990,15 @@ class LiquidationController extends Controller
             'created_at' => $liquidation->created_at
         ];
     }
-    public function getLiquidationHistory(Request $request)
+    public function getLiquidationHistory(LiquidationHistoryRequest $request)
     {
-        $request->validate([
-            'seller_id' => 'required|exists:sellers,id',
-            'start_date' => 'required|date',
-            'end_date' => 'required|date|after_or_equal:start_date'
-        ]);
-
         $user = Auth::user();
         $sellerId = $request->seller_id;
-
-
-        // Verificar permisos
         if (!$this->checkAuthorization($user, $sellerId)) {
             return response()->json(['error' => 'Unauthorized'], 403);
         }
-
-        $history = Liquidation::with(['expenses', 'credits'])
-            ->where('seller_id', $sellerId)
-            ->whereBetween('date', [$request->start_date, $request->end_date])
-            ->orderBy('date', 'desc')
-            ->get();
-
-        return response()->json([
-            'success' => true,
-            'data' => $history
-        ]);
+        $result = $this->liquidationService->getLiquidationHistory($sellerId, $request->start_date, $request->end_date);
+        return response()->json(['success' => true, 'data' => $result]);
     }
     public function getAccumulatedByCity(Request $request)
     {

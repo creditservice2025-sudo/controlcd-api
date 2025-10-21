@@ -6,6 +6,7 @@ use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
 use App\Services\UserService;
 use App\Http\Requests\User\UserRequest;
+use App\Http\Requests\User\ToggleStatusRequest;
 
 class UserController extends Controller
 {
@@ -85,14 +86,10 @@ class UserController extends Controller
         }
     }
 
-    public function toggleStatus(Request $request, $userId)
+    public function toggleStatus(ToggleStatusRequest $request, $userId)
     {
         try {
-            $params = $request->validate([
-                'status' => 'required|string|in:active,inactive',
-            ]);
-
-            return $this->userService->toggleStatus($userId, $params['status']);
+            return $this->userService->toggleStatus($userId, $request->input('status'));
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }

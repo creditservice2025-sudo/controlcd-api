@@ -5,12 +5,11 @@ namespace App\Http\Controllers;
 use App\Exports\SellerLiquidationsDetailExport;
 use App\Services\ClientService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Validator;
 use App\Services\LiquidationService;
 use Maatwebsite\Excel\Facades\Excel;
 use App\Exports\AccumulatedByCityExport;
 use App\Exports\SellersSummaryByCityExport;
-
+use App\Http\Requests\Report\ExportDateRangeRequest;
 
 class ReportExportController extends Controller
 {
@@ -39,31 +38,19 @@ class ReportExportController extends Controller
     /**
      * Descarga un archivo de Excel con el resumen acumulado por ciudad.
      *
-     * @param Request $request
+     * @param ExportDateRangeRequest $request
      * @return \Symfony\Component\HttpFoundation\BinaryFileResponse
      */
-    public function downloadAccumulatedByCityExcel(Request $request)
+    public function downloadAccumulatedByCityExcel(ExportDateRangeRequest $request)
     {
-        $validator = Validator::make($request->all(), [
-            'start_date' => 'required|date',
-            'end_date' => 'required|date|after_or_equal:start_date'
-        ]);
-    
-        if ($validator->fails()) {
-            throw new \InvalidArgumentException('Validación fallida: ' . $validator->errors()->first());
-        }
-    
         $startDate = $request->input('start_date');
         $endDate = $request->input('end_date');
-    
         $safeStartDate = str_replace(['/', '\\'], '-', $startDate);
         $safeEndDate = str_replace(['/', '\\'], '-', $endDate);
-    
         try {
             $fileName = 'Reporte_Acumulado_Ciudad_' . $safeStartDate . '_' . $safeEndDate . '.xlsx';
-    
-            return Excel::download(
-                new AccumulatedByCityExport($startDate, $endDate, $this->liquidationService),
+            return \Maatwebsite\Excel\Facades\Excel::download(
+                new \App\Exports\AccumulatedByCityExport($startDate, $endDate, $this->liquidationService),
                 $fileName
             );
         } catch (\Exception $e) {
@@ -77,31 +64,20 @@ class ReportExportController extends Controller
     /**
      * Descarga un archivo de Excel con el resumen de liquidaciones por vendedor en una ciudad.
      *
-     * @param Request $request
+     * @param ExportDateRangeRequest $request
+     * @param int $sellerId
      * @return \Symfony\Component\HttpFoundation\BinaryFileResponse
      */
-    public function downloadSellersSummaryByCityExcel(Request $request, $sellerId)
+    public function downloadSellersSummaryByCityExcel(ExportDateRangeRequest $request, $sellerId)
     {
-        $validator = Validator::make($request->all(), [
-            'start_date' => 'required|date',
-            'end_date' => 'required|date|after_or_equal:start_date'
-        ]);
-
-        if ($validator->fails()) {
-            throw new \InvalidArgumentException('Validación fallida: ' . $validator->errors()->first());
-        }
-
+        $startDate = $request->input('start_date');
+        $endDate = $request->input('end_date');
+        $safeStartDate = str_replace(['/', '\\'], '-', $startDate);
+        $safeEndDate = str_replace(['/', '\\'], '-', $endDate);
         try {
-            $startDate = $request->input('start_date');
-            $endDate = $request->input('end_date');
-
-            $safeStartDate = str_replace(['/', '\\'], '-', $startDate);
-            $safeEndDate = str_replace(['/', '\\'], '-', $endDate);
-
             $fileName = 'resumen_liquidaciones_vendedores_' . $sellerId . '_' . $safeStartDate . '_' . $safeEndDate . '.xlsx';
-
-            return Excel::download(
-                new SellersSummaryByCityExport($sellerId, $startDate, $endDate, $this->clientService),
+            return \Maatwebsite\Excel\Facades\Excel::download(
+                new \App\Exports\SellersSummaryByCityExport($sellerId, $startDate, $endDate, $this->clientService),
                 $fileName
             );
         } catch (\Exception $e) {
@@ -109,32 +85,23 @@ class ReportExportController extends Controller
             throw new \RuntimeException('No se pudo generar el reporte. Por favor, intente nuevamente.');
         }
     }
-    public function downloadSellerLiquidationsDetailExcel(Request $request, $sellerId)
+
+    /**
+     * Descarga un archivo de Excel con el detalle de liquidaciones por vendedor.
+     *
+     * @param ExportDateRangeRequest $request
+     * @param int $sellerId
+     * @return \Symfony\Component\HttpFoundation\BinaryFileResponse
+     */
+    public function downloadSellerLiquidationsDetailExcel(ExportDateRangeRequest $request, $sellerId)
     {
-        $validator = Validator::make($request->all(), [
-            'start_date' => 'required|date',
-            'end_date' => 'required|date|after_or_equal:start_date'
-        ]);
-
-        if ($validator->fails()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Validación fallida',
-                'errors' => $validator->errors()
-            ], 422);
-        }
-
+        $startDate = $request->input('start_date');
+        $endDate = $request->input('end_date');
+        $fileName = 'liquidaciones_detalladas_vendedor_' . $sellerId . '_' . $startDate . '_a_' . $endDate . '.xlsx';
         try {
-            $startDate = $request->input('start_date');
-            $endDate = $request->input('end_date');
-
-
-
-            $fileName = 'liquidaciones_detalladas_vendedor_' . $sellerId . '_' . $startDate . '_a_' . $endDate . '.xlsx';
-
-            return Excel::download(
-                new SellerLiquidationsDetailExport($sellerId, $startDate, $endDate, $this->liquidationService),
-                'liquidaciones_detalladas_vendedor_'
+            return \Maatwebsite\Excel\Facades\Excel::download(
+                new \App\Exports\SellerLiquidationsDetailExport($sellerId, $startDate, $endDate, $this->liquidationService),
+                $fileName
             );
         } catch (\Exception $e) {
             \Log::error('Error al exportar el reporte de liquidaciones detalladas: ' . $e->getMessage());

@@ -3,6 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Http\Requests\Company\CompanyRequest;
+use App\Http\Requests\Company\CompanyCodeRequest;
+use App\Http\Requests\Company\CompanyRucRequest;
 use App\Models\Company;
 use App\Services\CompanyService;
 use App\Traits\ApiResponse;
@@ -99,37 +101,20 @@ class CompanyController extends Controller
         }
     }
 
-    public function validateCompanyCode(Request $request)
+    public function validateCompanyCode(CompanyCodeRequest $request)
     {
-        $validator = Validator::make($request->all(), [
-            'code' => 'required|string|size:3|alpha_num|unique:companies,code'
-        ]);
-
-        if ($validator->fails()) {
-            return $this->errorResponse('Código de empresa no válido o ya existe', 422, $validator->errors());
-        }
-
         return $this->successResponse([
             'success' => true,
             'message' => 'Código de empresa válido'
         ]);
     }
 
-    public function validateCompanyRuc(Request $request)
+    public function validateCompanyRuc(CompanyRucRequest $request)
     {
-        $validator = Validator::make($request->all(), [
-            'ruc' => 'required|string|size:11|unique:companies,ruc'
-        ]);
-
-        if ($validator->fails()) {
-            return $this->errorResponse('RUC no válido o ya existe', 422, $validator->errors());
-        }
-
         return $this->successResponse([
             'success' => true,
             'message' => 'RUC válido'
         ]);
     }
-
 
 }
