@@ -26,6 +26,7 @@ use App\Http\Requests\Liquidation\StoreLiquidationRequest;
 use App\Http\Requests\Liquidation\UpdateLiquidationRequest;
 use App\Http\Requests\Liquidation\ReopenRouteRequest;
 use App\Http\Requests\Liquidation\LiquidationHistoryRequest;
+use App\Exports\LiquidationExport;
 
 class LiquidationController extends Controller
 {
@@ -188,6 +189,42 @@ class LiquidationController extends Controller
             'changes' => json_encode($liquidation->toArray()),
         ]);
 
+        // Notificación de sobrante/faltante si está activo en SellerConfig
+        $sellerConfig = \App\Models\SellerConfig::where('seller_id', $request->seller_id)->first();
+        if ($sellerConfig && $sellerConfig->notify_shortage_surplus) {
+            $seller = Seller::find($request->seller_id);
+            $admins = \App\Models\User::whereIn('role_id', [1, 2])->get();
+            $userToNotify = $seller->user;
+            if ($shortage > 0) {
+                $message = 'Alerta: El vendedor ' . $seller->user->name . ' tiene un faltante de $' . number_format($shortage, 2) . ' en la liquidación del ' . $request->date . '.';
+                $link = '/dashboard/liquidaciones/' . $liquidation->id;
+                $data = [
+                    'liquidation_id' => $liquidation->id,
+                    'seller_id' => $seller->id,
+                    'shortage' => $shortage,
+                    'date' => $request->date,
+                ];
+                $userToNotify->notify(new \App\Notifications\GeneralNotification('Alerta de faltante en liquidación', $message, $link, $data));
+                foreach ($admins as $admin) {
+                    $admin->notify(new \App\Notifications\GeneralNotification('Alerta de faltante en liquidación', $message, $link, $data));
+                }
+            }
+            if ($surplus > 0) {
+                $message = 'Alerta: El vendedor ' . $seller->user->name . ' tiene un sobrante de $' . number_format($surplus, 2) . ' en la liquidación del ' . $request->date . '.';
+                $link = '/dashboard/liquidaciones/' . $liquidation->id;
+                $data = [
+                    'liquidation_id' => $liquidation->id,
+                    'seller_id' => $seller->id,
+                    'surplus' => $surplus,
+                    'date' => $request->date,
+                ];
+                $userToNotify->notify(new \App\Notifications\GeneralNotification('Alerta de sobrante en liquidación', $message, $link, $data));
+                foreach ($admins as $admin) {
+                    $admin->notify(new \App\Notifications\GeneralNotification('Alerta de sobrante en liquidación', $message, $link, $data));
+                }
+            }
+        }
+
         if ($user->role_id === 5) {
             $seller = Seller::find($request->seller_id);
 
@@ -345,6 +382,42 @@ class LiquidationController extends Controller
 
         $liquidation->refresh();
         $changedData = $liquidation->getChanges();
+
+        // Notificación de sobrante/faltante si está activo en SellerConfig
+        $sellerConfig = \App\Models\SellerConfig::where('seller_id', $sellerId)->first();
+        if ($sellerConfig && $sellerConfig->notify_shortage_surplus) {
+            $seller = Seller::find($sellerId);
+            $admins = \App\Models\User::whereIn('role_id', [1, 2])->get();
+            $userToNotify = $seller->user;
+            if ($shortage > 0) {
+                $message = 'Alerta: El vendedor ' . $seller->user->name . ' tiene un faltante de $' . number_format($shortage, 2) . ' en la liquidación del ' . $date . '.';
+                $link = '/dashboard/liquidaciones/' . $liquidation->id;
+                $data = [
+                    'liquidation_id' => $liquidation->id,
+                    'seller_id' => $seller->id,
+                    'shortage' => $shortage,
+                    'date' => $date,
+                ];
+                $userToNotify->notify(new \App\Notifications\GeneralNotification('Alerta de faltante en liquidación', $message, $link, $data));
+                foreach ($admins as $admin) {
+                    $admin->notify(new \App\Notifications\GeneralNotification('Alerta de faltante en liquidación', $message, $link, $data));
+                }
+            }
+            if ($surplus > 0) {
+                $message = 'Alerta: El vendedor ' . $seller->user->name . ' tiene un sobrante de $' . number_format($surplus, 2) . ' en la liquidación del ' . $date . '.';
+                $link = '/dashboard/liquidaciones/' . $liquidation->id;
+                $data = [
+                    'liquidation_id' => $liquidation->id,
+                    'seller_id' => $seller->id,
+                    'surplus' => $surplus,
+                    'date' => $date,
+                ];
+                $userToNotify->notify(new \App\Notifications\GeneralNotification('Alerta de sobrante en liquidación', $message, $link, $data));
+                foreach ($admins as $admin) {
+                    $admin->notify(new \App\Notifications\GeneralNotification('Alerta de sobrante en liquidación', $message, $link, $data));
+                }
+            }
+        }
 
         // Registra la auditoría
         LiquidationAudit::create([
@@ -1145,5 +1218,14 @@ class LiquidationController extends Controller
                 'error' => $e->getMessage()
             ], 500);
         }
+    }
+
+    /**
+     * Descarga el reporte de liquidación en PDF o Excel
+     */
+    public function downloadReport($id, Request $request)
+    {
+        $format = $request->get('format', 'pdf');
+        return $this->liquidationService->downloadLiquidationReport($id, $format);
     }
 }

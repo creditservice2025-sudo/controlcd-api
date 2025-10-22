@@ -74,7 +74,7 @@ Route::middleware('auth:api')->group(function () {
     Route::put('/cities/{id}', [CitiesController::class, 'update']);
     Route::delete('/cities/delete/{id}', [CitiesController::class, 'destroy']);
     Route::get('/cities/country/{country_id}', [CitiesController::class, 'getByCountry']);
-    Route::get('/sellers/city/{city_id}', [CitiesController::class, 'getByCities']);
+    Route::get('sellers/city/{city_id?}', [CitiesController::class, 'getByCities']);
 
     //route countries
     Route::get('/countries', [CountriesController::class, 'index']);
@@ -193,6 +193,8 @@ Route::middleware('auth:api')->group(function () {
         Route::put('update/{liquidationId}', [LiquidationController::class, 'updateLiquidation']);
 
         Route::post('reopen-route', [LiquidationController::class, 'reopenRoute']);
+
+        Route::get('download-report/{id}', [LiquidationController::class, 'downloadReport']);
 
         Route::prefix('seller/{sellerId}')->group(function () {
             Route::get('/', [LiquidationController::class, 'getBySeller']);
