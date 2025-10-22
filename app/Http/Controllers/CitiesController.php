@@ -83,7 +83,7 @@ class CitiesController extends Controller
         }
     }
 
-    public function getByCities(Request $request, $city_id)
+    public function getByCities(Request $request, $city_id = null)
     {
         try {
             return $this->citiesService->getSellersByCity(

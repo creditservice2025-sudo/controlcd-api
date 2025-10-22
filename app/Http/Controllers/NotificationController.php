@@ -6,6 +6,7 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use App\Notifications\GeneralNotification;
 use Illuminate\Support\Facades\Auth;
+use App\Http\Requests\Notification\SendNotificationRequest;
 
 class NotificationController extends Controller
 {
@@ -40,22 +41,14 @@ class NotificationController extends Controller
         return response()->json(['success' => true]);
     }
 
-    public function sendNotification(Request $request)
+    public function sendNotification(SendNotificationRequest $request)
     {
-        $request->validate([
-            'user_id' => 'required|exists:users,id',
-            'title' => 'required|string',
-            'message' => 'required|string',
-            'action_url' => 'nullable|url'
-        ]);
-
         $user = User::find($request->user_id);
         $user->notify(new GeneralNotification(
             $request->title,
             $request->message,
             $request->action_url
         ));
-
         return response()->json(['success' => true]);
     }
 }

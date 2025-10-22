@@ -18,6 +18,7 @@ use Illuminate\Validation\ValidationException;
 
 class LiquidationService
 {
+    const TIMEZONE = 'America/Caracas';
 
     use ApiResponse;
     /**
@@ -33,7 +34,45 @@ class LiquidationService
 
         return DB::transaction(function () use ($validated) {
             $this->calculateFields($validated);
-            return Liquidation::create($validated);
+            $liquidation = Liquidation::create($validated);
+
+            // Notificación de sobrante/faltante si está activo en SellerConfig
+            $sellerConfig = \App\Models\SellerConfig::where('seller_id', $validated['seller_id'])->first();
+            if ($sellerConfig && $sellerConfig->notify_shortage_surplus) {
+                $seller = Seller::find($validated['seller_id']);
+                $admins = \App\Models\User::whereIn('role_id', [1, 2])->get();
+                $userToNotify = $seller->user;
+                if ($validated['shortage'] > 0) {
+                    $message = 'Alerta: El vendedor ' . $seller->user->name . ' tiene un faltante de $' . number_format($validated['shortage'], 2) . ' en la liquidación del ' . $validated['date'] . '.';
+                    $link = '/dashboard/liquidaciones/' . $liquidation->id;
+                    $data = [
+                        'liquidation_id' => $liquidation->id,
+                        'seller_id' => $seller->id,
+                        'shortage' => $validated['shortage'],
+                        'date' => $validated['date'],
+                    ];
+                    $userToNotify->notify(new \App\Notifications\GeneralNotification('Alerta de faltante en liquidación', $message, $link, $data));
+                    foreach ($admins as $admin) {
+                        $admin->notify(new \App\Notifications\GeneralNotification('Alerta de faltante en liquidación', $message, $link, $data));
+                    }
+                }
+                if ($validated['surplus'] > 0) {
+                    $message = 'Alerta: El vendedor ' . $seller->user->name . ' tiene un sobrante de $' . number_format($validated['surplus'], 2) . ' en la liquidación del ' . $validated['date'] . '.';
+                    $link = '/dashboard/liquidaciones/' . $liquidation->id;
+                    $data = [
+                        'liquidation_id' => $liquidation->id,
+                        'seller_id' => $seller->id,
+                        'surplus' => $validated['surplus'],
+                        'date' => $validated['date'],
+                    ];
+                    $userToNotify->notify(new \App\Notifications\GeneralNotification('Alerta de sobrante en liquidación', $message, $link, $data));
+                    foreach ($admins as $admin) {
+                        $admin->notify(new \App\Notifications\GeneralNotification('Alerta de sobrante en liquidación', $message, $link, $data));
+                    }
+                }
+            }
+
+            return $liquidation;
         });
     }
 
@@ -52,6 +91,46 @@ class LiquidationService
         return DB::transaction(function () use ($liquidation, $validated) {
             $this->calculateFields($validated);
             $liquidation->update($validated);
+
+            $liquidation->refresh();
+            $changedData = $liquidation->getChanges();
+
+            // Notificación de sobrante/faltante si está activo en SellerConfig
+            $sellerConfig = \App\Models\SellerConfig::where('seller_id', $validated['seller_id'])->first();
+            if ($sellerConfig && $sellerConfig->notify_shortage_surplus) {
+                $seller = Seller::find($validated['seller_id']);
+                $admins = \App\Models\User::whereIn('role_id', [1, 2])->get();
+                $userToNotify = $seller->user;
+                if ($validated['shortage'] > 0) {
+                    $message = 'Alerta: El vendedor ' . $seller->user->name . ' tiene un faltante de $' . number_format($validated['shortage'], 2) . ' en la liquidación del ' . $validated['date'] . '.';
+                    $link = '/dashboard/liquidaciones/' . $liquidation->id;
+                    $data = [
+                        'liquidation_id' => $liquidation->id,
+                        'seller_id' => $seller->id,
+                        'shortage' => $validated['shortage'],
+                        'date' => $validated['date'],
+                    ];
+                    $userToNotify->notify(new \App\Notifications\GeneralNotification('Alerta de faltante en liquidación', $message, $link, $data));
+                    foreach ($admins as $admin) {
+                        $admin->notify(new \App\Notifications\GeneralNotification('Alerta de faltante en liquidación', $message, $link, $data));
+                    }
+                }
+                if ($validated['surplus'] > 0) {
+                    $message = 'Alerta: El vendedor ' . $seller->user->name . ' tiene un sobrante de $' . number_format($validated['surplus'], 2) . ' en la liquidación del ' . $validated['date'] . '.';
+                    $link = '/dashboard/liquidaciones/' . $liquidation->id;
+                    $data = [
+                        'liquidation_id' => $liquidation->id,
+                        'seller_id' => $seller->id,
+                        'surplus' => $validated['surplus'],
+                        'date' => $validated['date'],
+                    ];
+                    $userToNotify->notify(new \App\Notifications\GeneralNotification('Alerta de sobrante en liquidación', $message, $link, $data));
+                    foreach ($admins as $admin) {
+                        $admin->notify(new \App\Notifications\GeneralNotification('Alerta de sobrante en liquidación', $message, $link, $data));
+                    }
+                }
+            }
+
             return $liquidation->fresh();
         });
     }
@@ -233,28 +312,28 @@ class LiquidationService
         try {
             $query = Liquidation::with(['seller', 'seller.city.country'])
                 ->where('seller_id', $sellerId);
-    
+
             if ($request->has('start_date') && $request->has('end_date')) {
                 $startDate = Carbon::parse($request->get('start_date'))->startOfDay();
                 $endDate = Carbon::parse($request->get('end_date'))->endOfDay();
                 $query->whereBetween('date', [$startDate, $endDate]);
             }
-    
+
             $query->orderBy('date', 'desc');
-    
+
             $liquidations = $query->get();
-    
+
             foreach ($liquidations as $liq) {
                 if ($liq->status !== 'approved') {
                     $this->recalculateLiquidation($sellerId, $liq->date);
                 }
             }
-    
+
             $lastApprovedLiquidation = Liquidation::where('seller_id', $sellerId)
                 ->where('status', 'approved')
                 ->orderBy('date', 'desc')
                 ->first();
-    
+
             if ($lastApprovedLiquidation) {
                 $lastApprovedDate = $lastApprovedLiquidation->date;
             } else {
@@ -263,14 +342,14 @@ class LiquidationService
             }
             $seller = Seller::find($sellerId);
             $sellerDate = $seller ? $seller->created_at->toDateString() : null;
-    
+
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Liquidaciones obtenidas exitosamente',
                 'data' => $liquidations,
                 'seller_liquidation' => $lastApprovedLiquidation ? true : false,
                 'last_approved_liquidation_date' => $lastApprovedDate,
-                'seller_initial_date' => isset($seller) ? $seller->created_at->toDateString() : null, 
+                'seller_initial_date' => isset($seller) ? $seller->created_at->toDateString() : null,
             ]);
         } catch (\Exception $e) {
             Log::error($e->getMessage());
@@ -438,7 +517,7 @@ class LiquidationService
                 // Vuelve a obtener la liquidación actualizada
                 $updatedLiquidation = Liquidation::with('audits')->where('seller_id', $sellerId)
                     ->whereDate('date', $date)  // Cambiado de 'created_at' a 'date'
-                    ->first(); 
+                    ->first();
                 \Log::debug("Liquidación existente para fecha pasada, no se recalcula. Fecha: $existingLiquidation->date");
                 return $this->formatLiquidationResponse($updatedLiquidation, true);
             }
@@ -514,7 +593,7 @@ class LiquidationService
         $startUTC = Carbon::parse($date, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC   = Carbon::parse($date, $timezone)->endOfDay()->setTimezone('UTC');
 
-    /*     \Log::debug("=== INICIO recalculateLiquidation ===");
+        /*     \Log::debug("=== INICIO recalculateLiquidation ===");
         \Log::debug("Seller ID: $sellerId, Fecha: $date");
         \Log::debug("Rango UTC: $startUTC a $endUTC"); */
 
@@ -524,7 +603,7 @@ class LiquidationService
             ->first();
 
         if (!$liquidation) {
-          /*   \Log::debug("❌ NO se encontró liquidación para recálculo");
+            /*   \Log::debug("❌ NO se encontró liquidación para recálculo");
             \Log::debug("Consulta ejecutada: seller_id = $sellerId, date = $date"); */
             return;
         }
@@ -535,7 +614,7 @@ class LiquidationService
         // 1. Obtener el user_id del vendedor
         $seller = Seller::find($sellerId);
         $userId = $seller ? $seller->user_id : null;
-       /*  \Log::debug("User ID del vendedor: $userId"); */
+        /*  \Log::debug("User ID del vendedor: $userId"); */
 
         // 2. Recalcula los totales actuales desde la BD
         $totalExpenses = $userId
@@ -562,7 +641,7 @@ class LiquidationService
             ->whereBetween('payments.created_at', [$startUTC, $endUTC])
             ->sum('payments.amount');
 
-       /*  \Log::debug("Nuevos valores calculados desde BD:");
+        /*  \Log::debug("Nuevos valores calculados desde BD:");
         \Log::debug("- totalExpenses: $totalExpenses");
         \Log::debug("- totalIncome: $totalIncome");
         \Log::debug("- newCredits: $newCredits");
@@ -597,7 +676,7 @@ class LiquidationService
             \Log::debug("Renovación - ID: {$renewCredit->id}, Valor: {$renewCredit->credit_value}, Pendiente absorbido: $pendingAmount, Neto desembolsado: $netDisbursement");
         }
 
-      /*   \Log::debug("Total pending absorbed: $total_pending_absorbed");
+        /*   \Log::debug("Total pending absorbed: $total_pending_absorbed");
         \Log::debug("Total renewal disbursed: $total_renewal_disbursed"); */
 
         $irrecoverableCredits = DB::table('installments')
@@ -618,7 +697,7 @@ class LiquidationService
                 + $newCredits
                 + $total_renewal_disbursed
                 + $irrecoverableCredits);
-/* 
+        /* 
         \Log::debug("Cálculo realToDeliver:");
         \Log::debug("initial_cash ({$liquidation->initial_cash}) + base_delivered ({$liquidation->base_delivered}) + (totalIncome ($totalIncome) + totalCollected ($totalCollected)) - (totalExpenses ($totalExpenses) + newCredits ($newCredits) + total_renewal_disbursed ($total_renewal_disbursed) + irrecoverableCredits ($irrecoverableCredits)) = $realToDeliver");
  */
@@ -641,7 +720,7 @@ class LiquidationService
             }
         }
 
-       /*  \Log::debug("cashDelivered: $cashDelivered, shortage: $shortage, surplus: $surplus");
+        /*  \Log::debug("cashDelivered: $cashDelivered, shortage: $shortage, surplus: $surplus");
  */
         // Verificar si hay cambios
         $hasChanges = !(
@@ -657,11 +736,11 @@ class LiquidationService
         );
 
         if (!$hasChanges) {
-           /*  \Log::debug("✅ NO hay cambios en los datos - No se actualiza la liquidación");
+            /*  \Log::debug("✅ NO hay cambios en los datos - No se actualiza la liquidación");
             \Log::debug("=== FIN recalculateLiquidation (sin cambios) ==="); */
             return; // No hay cambios, no actualizar
         }
-/* 
+        /* 
         \Log::debug("🔄 HAY CAMBIOS - Actualizando liquidación:");
         \Log::debug("Antes -> Después:");
         \Log::debug("total_expenses: {$liquidation->total_expenses} -> $totalExpenses");
@@ -687,7 +766,7 @@ class LiquidationService
             'total_pending_absorbed'    => $total_pending_absorbed,
         ]);
 
-      /*   \Log::debug("✅ Liquidación actualizada exitosamente");
+        /*   \Log::debug("✅ Liquidación actualizada exitosamente");
         \Log::debug("=== FIN recalculateLiquidation (con actualización) ==="); */
     }
 
@@ -1093,5 +1172,219 @@ class LiquidationService
             ->whereBetween('date', [$startUTC, $endUTC])
             ->orderBy('date', 'asc')
             ->get();
+    }
+
+    public function reopenRoute($sellerId, $date)
+    {
+        $timezone = 'America/Caracas';
+        $dateLocal = \Carbon\Carbon::parse($date, $timezone)->format('Y-m-d');
+        $startUTC = \Carbon\Carbon::parse($dateLocal, $timezone)->startOfDay()->setTimezone('UTC');
+        $endUTC   = \Carbon\Carbon::parse($dateLocal, $timezone)->endOfDay()->setTimezone('UTC');
+
+        $liquidation = \App\Models\Liquidation::where('seller_id', $sellerId)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->first();
+
+        if (!$liquidation) {
+            return ['message' => 'No existe liquidación para ese vendedor y fecha', 'audits_deleted' => 0];
+        }
+
+        $seller = \App\Models\Seller::find($liquidation->seller_id);
+        $userId = $seller ? $seller->user_id : null;
+
+        $deleted = \App\Models\LiquidationAudit::where('liquidation_id', $liquidation->id)
+            ->where('user_id', $userId)
+            ->whereIn('action', ['updated', 'created'])
+            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->delete();
+
+        return [
+            'message' => 'Ruta reabierta correctamente',
+            'audits_deleted' => $deleted
+        ];
+    }
+
+    public function getLiquidationHistory($sellerId, $startDate, $endDate)
+    {
+        $history = \App\Models\Liquidation::with(['expenses', 'credits'])
+            ->where('seller_id', $sellerId)
+            ->whereBetween('date', [$startDate, $endDate])
+            ->orderBy('date', 'desc')
+            ->get();
+        return $history;
+    }
+
+    /**
+     * Descarga una liquidación individual en PDF o Excel
+     * @param int $liquidationId
+     * @param string $format ('pdf'|'excel')
+     * @return \Illuminate\Http\Response
+     */
+    public function downloadLiquidationReport($liquidationId, $format = 'pdf')
+    {
+        $liquidation = Liquidation::with(['seller', 'seller.user', 'seller.city.country'])->find($liquidationId);
+        if (!$liquidation) {
+            return response()->make('Liquidación no encontrada', 404);
+        }
+
+        // Generar el reporte detallado usando la fecha y el vendedor de la liquidación
+        $reportDate = $liquidation->date;
+        $sellerId = $liquidation->seller_id;
+        $user = $liquidation->seller->user;
+
+        $reportData = $this->generateDailyReportByLiquidation($reportDate, $sellerId, $user);
+
+        if ($format === 'pdf') {
+            $pdf = app('dompdf.wrapper');
+            $pdf->loadView('liquidations.report', ['report' => $reportData, 'liquidation' => $liquidation]);
+            return response()->make($pdf->stream(), 200, [
+                'Content-Type' => 'application/pdf',
+                'Content-Disposition' => 'attachment; filename="liquidacion_' . $liquidationId . '.pdf"',
+            ]);
+        } elseif ($format === 'excel') {
+            if (!class_exists(\App\Exports\LiquidationExport::class)) {
+                throw new \RuntimeException('The LiquidationExport class does not exist. Please create it in the App\Exports namespace.');
+            }
+            $export = new \App\Exports\LiquidationExport($reportData);
+            return response()->make(\Maatwebsite\Excel\Facades\Excel::download($export, 'liquidacion_' . $liquidationId . '.xlsx')->getFile()->getContent(), 200, [
+                'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'Content-Disposition' => 'attachment; filename="liquidacion_' . $liquidationId . '.xlsx"',
+            ]);
+        } else {
+            return response('Formato no soportado', 400);
+        }
+    }
+
+    public function generateDailyReportByLiquidation($date, $sellerId, $user)
+    {
+        $dateOnly = substr($date, 0, 10);
+        $reportDate = Carbon::createFromFormat('Y-m-d', $dateOnly, self::TIMEZONE);
+        $start = $reportDate->copy()->startOfDay()->timezone('UTC');
+        $end = $reportDate->copy()->endOfDay()->timezone('UTC');
+
+        $creditsQuery = Credit::with(['client', 'installments', 'payments'])
+            ->whereHas('payments', function ($query) use ($start, $end) {
+                $query->whereBetween('payments.created_at', [$start, $end]);
+            });
+        if ($sellerId) {
+            $creditsQuery->whereHas('client', function ($query) use ($sellerId) {
+                $query->where('seller_id', $sellerId);
+            });
+        }
+        $credits = $creditsQuery->get();
+
+        $expensesQuery = Expense::whereBetween('expenses.created_at', [$start, $end]);
+        if ($user) {
+            $expensesQuery->where('user_id', $user->id);
+        }
+        $expenses = $expensesQuery->get();
+        $totalExpenses = $expenses->sum('value');
+
+        $incomesQuery = Income::whereBetween('incomes.created_at', [$start, $end]);
+        if ($user) {
+            $incomesQuery->where('user_id', $user->id);
+        }
+        $incomes = $incomesQuery->get();
+        $totalIncomes = $incomes->sum('value');
+
+        $reportData = [];
+        $totalCollected = 0;
+        $withPayment = 0;
+        $withoutPayment = 0;
+        $totalCapital = 0;
+        $totalInterest = 0;
+        $totalMicroInsurance = 0;
+        $capitalCollected = 0;
+        $interestCollected = 0;
+        $microInsuranceCollected = 0;
+
+        foreach ($credits as $index => $credit) {
+            $interestAmount = $credit->credit_value * ($credit->total_interest / 100);
+            $quotaAmount = ($credit->credit_value + $interestAmount + $credit->micro_insurance_amount) / $credit->number_installments;
+            $totalCreditValue = $credit->credit_value + $interestAmount + $credit->micro_insurance_amount;
+            $totalPaid = $credit->payments->sum('amount');
+            $remainingAmount = $totalCreditValue - $totalPaid;
+            $dayPayments = $credit->payments()->whereBetween('payments.created_at', [$start, $end])->get();
+            $paidToday = $dayPayments->sum('amount');
+            $paymentTime = $dayPayments->isNotEmpty() ? $dayPayments->last()->created_at->timezone(self::TIMEZONE)->format('H:i:s') : null;
+
+            if ($paidToday > 0) {
+                $withPayment++;
+            } else {
+                $withoutPayment++;
+            }
+
+            $totalCollected += $paidToday;
+            $totalCapital += $credit->credit_value;
+            $totalInterest += $interestAmount;
+            $totalMicroInsurance += $credit->micro_insurance_amount;
+
+            $totalCreditAmount = $credit->credit_value + $interestAmount + $credit->micro_insurance_amount;
+            if ($totalCreditAmount > 0) {
+                $capitalRatio = $credit->credit_value / $totalCreditAmount;
+                $interestRatio = $interestAmount / $totalCreditAmount;
+                $microInsuranceRatio = $credit->micro_insurance_amount / $totalCreditAmount;
+            } else {
+                $capitalRatio = $interestRatio = $microInsuranceRatio = 0;
+            }
+
+            $capitalCollected += $paidToday * $capitalRatio;
+            $interestCollected += $paidToday * $interestRatio;
+            $microInsuranceCollected += $paidToday * $microInsuranceRatio;
+
+            $reportData[] = [
+                'no' => $index + 1,
+                'client_name' => $credit->client->name,
+                'credit_id' => $credit->id,
+                'payment_frequency' => $credit->payment_frequency,
+                'capital' => $credit->credit_value,
+                'interest' => $interestAmount,
+                'micro_insurance' => $credit->micro_insurance_amount,
+                'total_credit' => $totalCreditValue,
+                'quota_amount' => $quotaAmount,
+                'remaining_amount' => $remainingAmount,
+                'paid_today' => $paidToday,
+                'payment_time' => $paymentTime,
+            ];
+        }
+
+        $newCredits = Credit::whereBetween('credits.created_at', [$start, $end])
+            ->whereNull('renewed_from_id');
+        if ($sellerId) {
+            $newCredits->whereHas('client', function ($query) use ($sellerId) {
+                $query->where('seller_id', $sellerId);
+            });
+        }
+        $newCredits = $newCredits->get();
+        $totalNewCredits = $newCredits->sum('credit_value');
+
+        $netUtility = $totalCollected + $totalIncomes - $totalExpenses;
+        $netAmount = $totalCollected - $totalExpenses;
+        $netUtilityPlusCapital = $netUtility + $totalCapital;
+
+        return [
+            'report_date' => $date,
+            'report_data' => $reportData,
+            'total_collected' => $totalCollected,
+            'with_payment' => $withPayment,
+            'without_payment' => $withoutPayment,
+            'total_credits' => count($reportData),
+            'new_credits' => $newCredits,
+            'total_new_credits' => $totalNewCredits,
+            'seller' => $sellerId ? Seller::find($sellerId) : null,
+            'user' => $user,
+            'expenses' => $expenses,
+            'total_expenses' => $totalExpenses,
+            'incomes' => $incomes,
+            'total_incomes' => $totalIncomes,
+            'total_capital' => $totalCapital,
+            'total_interest' => $totalInterest,
+            'total_micro_insurance' => $totalMicroInsurance,
+            'capital_collected' => $capitalCollected,
+            'interest_collected' => $interestCollected,
+            'microinsurance_collected' => $microInsuranceCollected,
+            'net_utility' => $netUtility,
+            'net_utility_plus_capital' => $netUtilityPlusCapital,
+        ];
     }
 }

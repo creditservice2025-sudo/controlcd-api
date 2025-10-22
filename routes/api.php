@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\ExpenseController;
 use App\Http\Controllers\LiquidationController;
+use App\Http\Controllers\SellerConfigController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
@@ -23,10 +24,10 @@ use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\ReportExportController;
 
 // Auth routes
-Route::post('login', [AuthController::class, 'login']);
-Route::post('forgot-password', [AuthController::class, 'forgotPassword']);
-Route::post('reset-password', [AuthController::class, 'resetPassword']);
-Route::put('client/update/{id}', [ClientController::class, 'update']);
+Route::post('login', [AuthController::class, 'login'])->middleware('throttle:6,1');
+Route::post('forgot-password', [AuthController::class, 'forgotPassword'])->middleware('throttle:3,1');
+Route::post('reset-password', [AuthController::class, 'resetPassword'])->middleware('throttle:3,1');
+
 
 Route::middleware('auth:api')->group(function () {
 
@@ -54,6 +55,9 @@ Route::middleware('auth:api')->group(function () {
     Route::delete('route/delete/{id}', [SellerController::class, 'delete']);
     Route::put('/routes/toggle-status/{routeId}', [SellerController::class, 'toggleStatus']);
 
+    Route::get('seller/{sellerId}/config', [SellerConfigController::class, 'show']);
+    Route::put('seller/{sellerId}/config', [SellerConfigController::class, 'update']);
+
     //route user
     Route::get('users', [UserController::class, 'index']);
     Route::get('users/select', [UserController::class, 'getUsersSelect']);
@@ -70,7 +74,7 @@ Route::middleware('auth:api')->group(function () {
     Route::put('/cities/{id}', [CitiesController::class, 'update']);
     Route::delete('/cities/delete/{id}', [CitiesController::class, 'destroy']);
     Route::get('/cities/country/{country_id}', [CitiesController::class, 'getByCountry']);
-    Route::get('/sellers/city/{city_id}', [CitiesController::class, 'getByCities']);
+    Route::get('sellers/city/{city_id?}', [CitiesController::class, 'getByCities']);
 
     //route countries
     Route::get('/countries', [CountriesController::class, 'index']);
@@ -113,8 +117,7 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/{id}/details', [ClientController::class, 'getClientDetails']);
         Route::put('/update/{id}', [ClientController::class, 'update']);
         Route::delete('/delete/{id}', [ClientController::class, 'delete']);
-
-
+        Route::post('/{id}/capacity', [ClientController::class, 'updateCapacity']);
 
         // Orden de ruta
         Route::post('/update-order', [ClientController::class, 'updateOrder']);
@@ -191,6 +194,8 @@ Route::middleware('auth:api')->group(function () {
 
         Route::post('reopen-route', [LiquidationController::class, 'reopenRoute']);
 
+        Route::get('download-report/{id}', [LiquidationController::class, 'downloadReport']);
+
         Route::prefix('seller/{sellerId}')->group(function () {
             Route::get('/', [LiquidationController::class, 'getBySeller']);
             Route::get('/stats', [LiquidationController::class, 'getSellerStats']);
@@ -217,14 +222,14 @@ Route::middleware('auth:api')->group(function () {
     //route payment
     Route::get('payments/daily-totals', [PaymentController::class, 'dailyPaymentTotals']);
     Route::get('payments/{creditId}', [PaymentController::class, 'index']);
-    Route::get('payments/today/{creditId}', [PaymentController::class, 'paymentsToday']); 
+    Route::get('payments/today/{creditId}', [PaymentController::class, 'paymentsToday']);
     Route::post('payment/create', [PaymentController::class, 'create']);
     Route::get('payment/{creditId}/{paymentId}', [PaymentController::class, 'show']);
     Route::delete('payment/delete/{paymentId}', [PaymentController::class, 'delete']);
     Route::get('payments/seller/{sellerId}', [PaymentController::class, 'indexBySeller']);
     Route::get('payments/total/{creditId}', [PaymentController::class, 'getTotalWithoutInstallments']);
 
-    
+
     //reports
     Route::get('reports/daily-collection', [CreditController::class, 'dailyCollectionReport']);
     Route::prefix('reports/excel')->group(function () {

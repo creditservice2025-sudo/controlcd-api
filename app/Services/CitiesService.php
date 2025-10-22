@@ -111,7 +111,7 @@ class CitiesService
         }
     }
 
-    public function getSellersByCity($city_id, Request $request)
+    public function getSellersByCity($city_id = null, Request $request)
     {
         try {
             $search = $request->query('search', '');
@@ -119,19 +119,21 @@ class CitiesService
             $seller = $user->seller;
             $company = $user->company;
 
-            $query = Seller::with('user')
-                ->where('city_id', $city_id);
+            $query = Seller::with('user');
+            if (!empty($city_id)) {
+                $query->where('city_id', $city_id);
+            }
 
             // === FILTRO POR ROL ===
             switch ($user->role_id) {
-                case 1: // Admin: ve todos los vendedores en la ciudad
+                case 1: // Admin: ve todos los vendedores
                     break;
-                case 2: // Empresa: solo vendedores de la empresa en la ciudad
+                case 2: // Empresa: solo vendedores de la empresa
                     if ($company) {
                         $query->where('company_id', $company->id);
                     }
                     break;
-                case 3: // Supervisor/Vendedor: solo su propio registro en la ciudad
+                case 3: // Supervisor/Vendedor: solo su propio registro
                     if ($seller) {
                         $query->where('id', $seller->id);
                     } else {
@@ -151,7 +153,7 @@ class CitiesService
                 'success' => true,
                 'data' => $query->get()
             ]);
-        } catch (Exception $e) {
+        } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
                 'message' => 'Error obteniendo vendedores: ' . $e->getMessage()

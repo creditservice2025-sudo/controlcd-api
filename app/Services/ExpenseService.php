@@ -54,6 +54,31 @@ class ExpenseService
 
             $expense = Expense::create($expenseData);
 
+            // Notificación si supera el límite
+            $seller = Seller::where('user_id', $userId)->first();
+            if ($seller) {
+                $config = \App\Models\SellerConfig::where('seller_id', $seller->id)->first();
+                $limit = $config ? floatval($config->notify_expense_limit) : null;
+                if ($limit && $expense->value > $limit) {
+                    $admins = \App\Models\User::where('role_id', 1)->get();
+                    $userToNotify = $user;
+                    $message = 'Alerta: El gasto "' . $expense->description . '" creado por ' . $user->name . ' supera el límite configurado ($' . $limit . ').';
+                    $link = '/dashboard/expenses';
+                    $data = [
+                        'expense_id' => $expense->id,
+                        'value' => $expense->value,
+                        'limit' => $limit,
+                        'description' => $expense->description,
+                        'seller_name' => $user->name,
+                    ];
+                    if ($userToNotify) {
+                        $userToNotify->notify(new \App\Notifications\GeneralNotification('Alerta de gasto', $message, $link, $data));
+                        foreach ($admins as $admin) {
+                            $admin->notify(new \App\Notifications\GeneralNotification('Alerta de gasto', $message, $link, $data));
+                        }
+                    }
+                }
+            }
 
             if ($request->hasFile('image')) {
                 $imageFile = $request->file('image');
@@ -108,6 +133,30 @@ class ExpenseService
             ]);
 
             $expense->update($validated);
+
+            // Notificación si supera el límite
+            $seller = Seller::where('user_id', $expense->user_id)->first();
+            if ($seller) {
+                $config = \App\Models\SellerConfig::where('seller_id', $seller->id)->first();
+                $limit = $config ? floatval($config->notify_expense_limit) : null;
+                if ($limit && $expense->value > $limit) {
+                    $admins = \App\Models\User::where('role_id', 1)->get();
+                    $userToNotify = Auth::user();
+                    $message = 'Alerta: El gasto editado "' . $expense->description . '" por ' . $userToNotify->name . ' supera el límite configurado ($' . $limit . ').';
+                    $link = '/dashboard/expenses';
+                    $data = [
+                        'expense_id' => $expense->id,
+                        'value' => $expense->value,
+                        'limit' => $limit,
+                        'description' => $expense->description,
+                        'seller_name' => $userToNotify->name,
+                    ];
+                    $userToNotify->notify(new \App\Notifications\GeneralNotification('Alerta de gasto', $message, $link, $data));
+                    foreach ($admins as $admin) {
+                        $admin->notify(new \App\Notifications\GeneralNotification('Alerta de gasto', $message, $link, $data));
+                    }
+                }
+            }
 
             return $this->successResponse([
                 'success' => true,
