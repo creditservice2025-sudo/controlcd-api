@@ -15,7 +15,6 @@ class SellerConfig extends Model
         'notify_new_credit_count_limit',
         'restrict_new_sales_amount',
         'caja_general_negative',
-        'show_caja_balance_offline',
         'auto_base_next_day',
         'require_address_phone',
         'auto_closures_collectors',

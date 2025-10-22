@@ -16,7 +16,6 @@ class SellerConfigService
             'notify_discount_cancel',
             'notify_shortage_surplus',
             'caja_general_negative',
-            'show_caja_balance_offline',
             'auto_base_next_day',
             'require_address_phone',
             'auto_closures_collectors',

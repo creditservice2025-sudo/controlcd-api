@@ -33,4 +33,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->command('liquidation:auto-daily')->dailyAt('23:55');
         $schedule->command('liquidation:historical')->dailyAt('23:55');
         $schedule->command('liquidation:notify-pending')->dailyAt('21:52');
+        $schedule->command('credits:notify-renewal-pending')->dailyAt('21:00');
+        $schedule->command('credits:notify-new-credit-amount-limit')->dailyAt('21:05');
+        $schedule->command('credits:notify-new-credit-limit')->dailyAt('21:10');
     })->create();

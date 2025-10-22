@@ -34,27 +34,6 @@ class CreditService
             $params = $request->validated();
 
             // Calcular fecha de primera cuota si no se proporciona
-            /* $firstQuotaDate = $params['first_installment_date'] ?? null;
-            if (!$firstQuotaDate) {
-                $today = now();
-                switch ($params['payment_frequency']) {
-                    case 'Diaria':
-                        $firstQuotaDate = $today->addDay()->format('Y-m-d');
-                        break;
-                    case 'Semanal':
-                        $firstQuotaDate = $today->addWeek()->format('Y-m-d');
-                        break;
-                    case 'Quincenal':
-                        $firstQuotaDate = $today->addDays(15)->format('Y-m-d');
-                        break;
-                    case 'Mensual':
-                        $firstQuotaDate = $today->addMonth()->format('Y-m-d');
-                        break;
-                    default:
-                        $firstQuotaDate = $today->addDay()->format('Y-m-d');
-                }
-            } */
-
             if ($params['is_advance_payment']) {
                 $firstQuotaDate = now()->format('Y-m-d');
             } else {
@@ -77,6 +56,19 @@ class CreditService
                 }
             }
 
+            // Restricción por monto total de ventas nuevas en el día
+            $sellerConfig = \App\Models\SellerConfig::where('seller_id', $params['seller_id'])->first();
+            $limit = $sellerConfig ? floatval($sellerConfig->restrict_new_sales_amount ?? 0) : 0;
+            if ($limit > 0) {
+                $today = Carbon::now('America/Caracas')->toDateString();
+                $newCreditsAmount = \App\Models\Credit::where('seller_id', $params['seller_id'])
+                    ->whereDate('created_at', $today)
+                    ->sum('credit_value');
+                $totalWithNew = $newCreditsAmount + floatval($params['credit_value']);
+                if ($totalWithNew > $limit) {
+                    return $this->errorResponse('No puedes crear el crédito. El monto total de ventas nuevas por el cobrador hoy supera el límite de $' . number_format($limit, 2), 403);
+                }
+            }
 
             $creditData = [
                 'client_id' => $params['client_id'],
@@ -95,6 +87,38 @@ class CreditService
             ];
 
             $credit = Credit::create($creditData);
+
+            // Notificación si el crédito supera el límite configurado
+          /*   $sellerConfig = \App\Models\SellerConfig::where('seller_id', $credit->seller_id)->first();
+            $limit = $sellerConfig ? floatval($sellerConfig->notify_new_credit_amount_limit ?? 0) : 0;
+            if ($limit > 0 && $credit->credit_value > $limit) {
+                $user = $credit->seller->user;
+                $message = 'Aviso: El crédito creado supera el límite configurado de $' . number_format($limit, 2) . '. Monto crédito: $' . number_format($credit->credit_value, 2) . '.';
+                $link = '/dashboard/creditos';
+                $data = [
+                    'seller_id' => $credit->seller_id,
+                    'date' => Carbon::now('America/Caracas')->toDateString(),
+                    'credit_value' => $credit->credit_value,
+                    'limit' => $limit,
+                ];
+                if ($user) {
+                    $user->notify(new \App\Notifications\GeneralNotification(
+                        'Crédito creado supera el límite',
+                        $message,
+                        $link,
+                        $data
+                    ));
+                }
+                $admins = \App\Models\User::where('role_id', 1)->get();
+                foreach ($admins as $admin) {
+                    $admin->notify(new \App\Notifications\GeneralNotification(
+                        'Crédito creado supera el límite',
+                        'El vendedor ' . $user->name . ' ha creado un crédito que supera el límite configurado. Monto crédito: $' . number_format($credit->credit_value, 2) . '.',
+                        $link,
+                        $data
+                    ));
+                }
+            } */
 
             $quotaAmount = (($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value) / $credit->number_installments;
 

@@ -22,7 +22,9 @@ class CreateHistoricalLiquidation extends Command
         $timezone = 'America/Caracas';
         $todayDate = Carbon::now($timezone)->toDateString();
 
-        $sellers = Seller::all();
+        $sellers = Seller::whereHas('config', function($q) {
+            $q->where('auto_closures_collectors', true);
+        })->get();
         foreach ($sellers as $seller) {
             // FECHA DE INICIO: el menor entre la fecha de creación del seller y cualquier movimiento relevante
             $firstCreditDate = Credit::where('seller_id', $seller->id)->min('created_at');
