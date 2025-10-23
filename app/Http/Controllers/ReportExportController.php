@@ -77,12 +77,16 @@ class ReportExportController extends Controller
         try {
             $fileName = 'resumen_liquidaciones_vendedores_' . $sellerId . '_' . $safeStartDate . '_' . $safeEndDate . '.xlsx';
             return \Maatwebsite\Excel\Facades\Excel::download(
-                new \App\Exports\SellersSummaryByCityExport($sellerId, $startDate, $endDate, $this->clientService),
+                new \App\Exports\SellersSummaryByCityExport($sellerId, $safeStartDate, $safeEndDate, $this->clientService),
                 $fileName
             );
         } catch (\Exception $e) {
             \Log::error('Error al generar el resumen de liquidaciones por vendedores: ' . $e->getMessage());
-            throw new \RuntimeException('No se pudo generar el reporte. Por favor, intente nuevamente.');
+            return response()->json([
+                'success' => false,
+                'message' => 'No se pudo generar el reporte. Por favor, intente nuevamente.',
+                'error' => $e->getMessage()
+            ], 500);
         }
     }
 
@@ -97,7 +101,9 @@ class ReportExportController extends Controller
     {
         $startDate = $request->input('start_date');
         $endDate = $request->input('end_date');
-        $fileName = 'liquidaciones_detalladas_vendedor_' . $sellerId . '_' . $startDate . '_a_' . $endDate . '.xlsx';
+        $safeStartDate = str_replace(['/', '\\'], '-', $startDate);
+        $safeEndDate = str_replace(['/', '\\'], '-', $endDate);
+        $fileName = 'liquidaciones_detalladas_vendedor_' . $sellerId . '_' . $safeStartDate . '_a_' . $safeEndDate . '.xlsx';
         try {
             return \Maatwebsite\Excel\Facades\Excel::download(
                 new \App\Exports\SellerLiquidationsDetailExport($sellerId, $startDate, $endDate, $this->liquidationService),

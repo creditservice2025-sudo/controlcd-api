@@ -1077,7 +1077,9 @@ class LiquidationService
         $startUTC = Carbon::parse($startDate, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC   = Carbon::parse($endDate, $timezone)->endOfDay()->setTimezone('UTC');
 
-        return DB::table('liquidations')
+        \Log::debug("getAccumulatedByCity - Rango UTC:", ['startUTC' => $startUTC, 'endUTC' => $endUTC]);
+
+        $query = DB::table('liquidations')
             ->join('sellers', 'liquidations.seller_id', '=', 'sellers.id')
             ->join('cities', 'sellers.city_id', '=', 'cities.id')
             ->select(
@@ -1095,8 +1097,13 @@ class LiquidationService
             )
             ->whereBetween('liquidations.date', [$startUTC, $endUTC])
             ->where('liquidations.status', 'approved')
-            ->groupBy('cities.id', 'cities.name')
-            ->get();
+            ->groupBy('cities.id', 'cities.name');
+
+        \Log::debug("getAccumulatedByCity - SQL:", ['sql' => $query->toSql(), 'bindings' => $query->getBindings()]);
+
+        $result = $query->get();
+        \Log::debug("getAccumulatedByCity - Resultado:", ['count' => $result->count(), 'data' => $result]);
+        return $result;
     }
 
     public function getAccumulatedBySellerInCity($cityId, $startDate, $endDate)

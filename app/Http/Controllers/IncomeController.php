@@ -16,12 +16,14 @@ class IncomeController extends Controller
 
     public function index(Request $request)
     {
+        $companyId = $request->input('company_id');
         return $this->incomeService->index(
             $request,
             $request->query('search', ''),
             $request->query('perpage', 10),
             $request->query('orderBy', 'created_at'),
-            $request->query('orderDirection', 'desc')
+            $request->query('orderDirection', 'desc'),
+            $companyId
         );
     }
 
@@ -45,8 +47,6 @@ class IncomeController extends Controller
         return $this->incomeService->delete($id);
     }
 
-
-
     public function summary()
     {
         return $this->incomeService->getIncomeSummary();
@@ -57,14 +57,13 @@ class IncomeController extends Controller
         return $this->incomeService->getMonthlyIncomeReport();
     }
 
-
-
     public function getSellerIncomeByDate(Request $request, int $sellerId)
     {
         try {
             $search = $request->get('search') ?? '';
             $perPage = $request->get('perPage') ?? 10;
-            return $this->incomeService->getSellerIncomeByDate($sellerId, $request, $perPage);
+            $companyId = $request->input('company_id');
+            return $this->incomeService->getSellerIncomeByDate($sellerId, $request, $perPage, $companyId);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }

@@ -150,7 +150,7 @@ class SellerService
         }
     }
 
-    public function listActiveRoutes($hasLiquidation = null, $search = null, $countryId = null, $cityId = null, $sellerId = null)
+    public function listActiveRoutes($hasLiquidation = null, $search = null, $countryId = null, $cityId = null, $sellerId = null, $companyId = null)
     {
         try {
             $user = Auth::user();
@@ -167,6 +167,9 @@ class SellerService
 
             switch ($user->role_id) {
                 case 1:
+                    if ($companyId) {
+                        $routes->where('company_id', $companyId);
+                    }
                     break;
                 case 2:
                     $routes->where('company_id', $company->id);
@@ -376,7 +379,7 @@ class SellerService
         }
     }
 
-    public function getRoutes($page = 1, $perPage = 10, $search = null, $countryId = null, $cityId = null)
+    public function getRoutes($page = 1, $perPage = 10, $search = null, $countryId = null, $cityId = null, $companyId = null)
     {
         try {
             $user = Auth::user();
@@ -432,6 +435,9 @@ class SellerService
 
             switch ($user->role_id) {
                 case 1:
+                    if ($companyId) {
+                        $routes->where('company_id', $companyId);
+                    }
                     break;
 
                 case 2:

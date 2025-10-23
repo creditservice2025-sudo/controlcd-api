@@ -16,12 +16,14 @@ class ExpenseController extends Controller
 
     public function index(Request $request)
     {
+        $companyId = $request->input('company_id');
         return $this->expenseService->index(
             $request,
             $request->query('search', ''),
             $request->query('perpage', 10),
             $request->query('orderBy', 'created_at'),
-            $request->query('orderDirection', 'desc')
+            $request->query('orderDirection', 'desc'),
+            $companyId
         );
     }
 
@@ -69,14 +71,13 @@ class ExpenseController extends Controller
         return $this->expenseService->getMonthlyExpenseReport();
     }
 
-
-
     public function getSellerExpensesByDate(Request $request, int $sellerId)
     {
         try {
             $search = $request->get('search') ?? '';
             $perPage = $request->get('perPage') ?? 10;
-            return $this->expenseService->getSellerExpensesByDate($sellerId, $request, $perPage);
+            $companyId = $request->input('company_id');
+            return $this->expenseService->getSellerExpensesByDate($sellerId, $request, $perPage, $companyId);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }

@@ -124,7 +124,7 @@ class UserService
         }
     }
 
-    public function getUsers(string $search, int $perpage)
+    public function getUsers(string $search, int $perpage, $companyId = null)
     {
         try {
             $user = Auth::user();
@@ -157,6 +157,12 @@ class UserService
             // === FILTRO POR ROL ===
             switch ($roleId) {
                 case 1: // Admin: ve todos
+                    // Si el admin está en modo empresa, filtra por company_id
+                    if ($companyId) {
+                        $sellerIds = Seller::where('company_id', $companyId)->pluck('id')->toArray();
+                        $userIds = UserRoute::whereIn('seller_id', $sellerIds)->pluck('user_id')->toArray();
+                        $usersQuery->whereIn('users.id', $userIds);
+                    }
                     break;
                 case 2: // Empresa: usuarios relacionados a la empresa por sellers
                     if ($company) {
@@ -239,7 +245,7 @@ class UserService
         }
     }
 
-    public function getUsersSelect(Request $request)
+    public function getUsersSelect(Request $request, $companyId = null)
     {
         try {
             $excludedRoleIds = Role::whereIn('name', ['super-admin', 'cobrador'])
@@ -256,6 +262,14 @@ class UserService
                 });
             }
 
+            // Filtrar por company_id si el admin está en modo empresa
+            $user = Auth::user();
+            if ($user->role_id == 1 && $companyId) {
+                $sellerIds = Seller::where('company_id', $companyId)->pluck('id')->toArray();
+                $userIds = UserRoute::whereIn('seller_id', $sellerIds)->pluck('user_id')->toArray();
+                $query->whereIn('id', $userIds);
+            }
+
             $users = $query->get();
 
             return $this->successResponse([
@@ -268,7 +282,7 @@ class UserService
         }
     }
 
-    public function getVendorsSelect(Request $request)
+    public function getVendorsSelect(Request $request, $companyId = null)
     {
         try {
             $cobradorRoleId = Role::where('name', 'cobrador')->value('id');
@@ -294,6 +308,14 @@ class UserService
                 $query->whereHas('city.country', function ($q) use ($request) {
                     $q->where('id', $request->country_id);
                 });
+            }
+
+            // Filtrar por company_id si el admin está en modo empresa
+            $user = Auth::user();
+            if ($user->role_id == 1 && $companyId) {
+                $sellerIds = Seller::where('company_id', $companyId)->pluck('id')->toArray();
+                $userIds = UserRoute::whereIn('seller_id', $sellerIds)->pluck('user_id')->toArray();
+                $query->whereIn('id', $userIds);
             }
 
             $vendors = $query->get();
