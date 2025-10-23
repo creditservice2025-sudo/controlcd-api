@@ -40,8 +40,7 @@ class SellerLiquidationsDetailExport implements FromCollection, WithHeadings, Wi
             $this->endDate
         );
 
-        // return collect($results); // Descomenta esto si ya tienes $results como array/collection
-        return collect([]);
+        return collect($results);
     }
 
     public function map($liquidation): array
