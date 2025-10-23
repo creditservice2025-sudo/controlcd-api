@@ -46,6 +46,7 @@ Route::middleware('auth:api')->group(function () {
     Route::get('/dashboard/weekly-movements', [DashboardController::class, 'loadWeeklyMovements']);
     Route::get('/dashboard/weekly-financial-summary', [DashboardController::class, 'weeklyFinancialSummary']);
     Route::get('/dashboard/pending-portfolios', [DashboardController::class, 'getPendingPortfolios']);
+    Route::get('/dashboard/weekly-movements-history', [DashboardController::class, 'loadWeeklyMovementsHistory']);
     // route crud
     Route::get('routes', [SellerController::class, 'index']);
     Route::get('routes/select', [SellerController::class, 'getRoutesSelect']);
