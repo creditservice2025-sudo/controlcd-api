@@ -86,9 +86,11 @@ class CitiesController extends Controller
     public function getByCities(Request $request, $city_id = null)
     {
         try {
+            $companyId = $request->input('company_id');
             return $this->citiesService->getSellersByCity(
                 $city_id,
                 $request,
+                $companyId
             );
         } catch (Exception $e) {
             return $this->handlerException($e->getMessage());

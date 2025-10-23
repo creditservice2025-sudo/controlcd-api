@@ -178,7 +178,8 @@ class IncomeService
         string $search,
         int $perpage,
         string $orderBy = 'created_at',
-        string $orderDirection = 'desc'
+        string $orderDirection = 'desc',
+        $companyId = null
     ) {
         try {
             $user = Auth::user();
@@ -192,7 +193,12 @@ class IncomeService
                         });
                 });
 
-            if ($role === 2) {
+            if ($companyId) {
+                $userIds = User::whereHas('seller', function ($query) use ($companyId) {
+                    $query->where('company_id', $companyId);
+                })->pluck('id');
+                $incomeQuery->whereIn('user_id', $userIds);
+            } else if ($role === 2) {
                 if (!$user->company) {
                     return $this->successResponse([
                         'success' => true,
@@ -200,14 +206,12 @@ class IncomeService
                         'data' => new \Illuminate\Pagination\LengthAwarePaginator([], 0, $perpage)
                     ]);
                 }
-
                 $companyId = $user->company->id;
                 $userIds = User::whereHas('seller', function ($query) use ($companyId) {
                     $query->where('company_id', $companyId);
                 })->pluck('id');
-
                 $incomeQuery->whereIn('user_id', $userIds);
-            } elseif ($role === 5) {
+            } else if ($role === 5) {
                 $timezone = 'America/Caracas';
                 $today = Carbon::now($timezone)->startOfDay();
                 $todayEnd = Carbon::now($timezone)->endOfDay();
@@ -344,10 +348,14 @@ class IncomeService
             return $this->errorResponse('Error al generar reporte mensual', 500);
         }
     }
-    public function getSellerIncomeByDate(int $sellerId, Request $request, int $perpage)
+    public function getSellerIncomeByDate(int $sellerId, Request $request, int $perpage, $companyId = null)
     {
         try {
-            $sellerUserId = Seller::where('id', $sellerId)->value('user_id');
+            $sellerUserId = Seller::where('id', $sellerId)
+                ->when($companyId, function ($query) use ($companyId) {
+                    $query->where('company_id', $companyId);
+                })
+                ->value('user_id');
 
             if (!$sellerUserId) {
                 return $this->successResponse([

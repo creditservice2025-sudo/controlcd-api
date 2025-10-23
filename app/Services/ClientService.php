@@ -373,7 +373,8 @@ class ClientService
         $countryId = null,
         $cityId = null,
         $sellerId = null,
-        $status = null
+        $status = null,
+        $companyId = null
     ) {
         try {
             $search = (string)$search;
@@ -427,6 +428,11 @@ class ClientService
                 default:
                     $clientsQuery->whereRaw('0 = 1');
                     break;
+            }
+
+            // Filtrar por company_id si el usuario es admin y el parámetro está presente
+            if (Auth::user()->role_id == 1 && $companyId) {
+                $clientsQuery->whereHas('seller', fn($q) => $q->where('company_id', $companyId));
             }
 
             if (!empty(trim($search))) {
@@ -490,7 +496,8 @@ class ClientService
         $cityId = null,
         $sellerId = null,
         $status = null,
-        $daysOverdueFilter = null
+        $daysOverdueFilter = null,
+        $companyId = null
     ) {
         try {
             $search = (string)$search;
@@ -532,6 +539,10 @@ class ClientService
             if ($cityId) $clientsQuery->whereHas('seller.city', fn($q) => $q->where('id', $cityId));
             if ($sellerId) $clientsQuery->where('clients.seller_id', $sellerId);
             elseif ($user->role_id == 5 && $seller) $clientsQuery->where('clients.seller_id', $seller->id);
+
+            if (Auth::user()->role_id == 1 && $companyId) {
+                $clientsQuery->whereHas('seller', fn($q) => $q->where('company_id', $companyId));
+            }
 
             $orderDirection = in_array(strtolower($orderDirection), ['asc', 'desc']) ? $orderDirection : 'desc';
             $clientsQuery->orderBy($orderBy, $orderDirection);
@@ -619,7 +630,7 @@ class ClientService
         return $result;
     }
 
-    public function getClientsBySeller($sellerId, $search)
+    public function getClientsBySeller($sellerId, $search = '', $companyId = null)
     {
         try {
             $search = trim((string)$search);
@@ -656,6 +667,9 @@ class ClientService
                     },
                 ])
                 ->where('seller_id', $sellerId)
+                ->when(Auth::user()->role_id == 1 && $companyId, function ($q) use ($companyId) {
+                    $q->whereHas('seller', fn($sq) => $sq->where('company_id', $companyId));
+                })
                 ->when($search !== '', function ($q) use ($search) {
                     $q->where(function ($sq) use ($search) {
                         $sq->where('name', 'like', "%{$search}%")
@@ -972,7 +986,7 @@ class ClientService
     }
 
 
-    public function getClientsSelect(string $search = '')
+    public function getClientsSelect($search = '', $companyId = null)
     {
         try {
             $user = Auth::user();
@@ -992,6 +1006,10 @@ class ClientService
             // scope to seller for role 5
             if ($user->role_id == 5 && $user->seller) {
                 $query->where('seller_id', $user->seller->id);
+            }
+
+            if (Auth::user()->role_id == 1 && $companyId) {
+                $query->whereHas('seller', fn($q) => $q->where('company_id', $companyId));
             }
 
             $clients = $query->orderBy('name', 'asc')->limit(100)->get();
@@ -1059,7 +1077,7 @@ class ClientService
 
 
 
-    public function getClientDetails($clientId)
+    public function getClientDetails($clientId, $companyId = null)
     {
         try {
             $client = Client::with([
@@ -1087,7 +1105,11 @@ class ClientService
                 'images' => function ($q) {
                     $q->select('id', 'client_id', 'path', 'type');
                 }
-            ])->find($clientId);
+            ])
+            ->when(Auth::user()->role_id == 1 && $companyId, function ($q) use ($companyId) {
+                $q->whereHas('seller', fn($sq) => $sq->where('company_id', $companyId));
+            })
+            ->find($clientId);
 
             if (!$client) {
                 return [
@@ -1117,7 +1139,8 @@ class ClientService
         string $frequency = '',
         string $paymentStatus = '',
         string $orderBy = 'created_at',
-        string $orderDirection = 'desc'
+        string $orderDirection = 'desc',
+        $companyId = null
     ) {
         try {
             $user = Auth::user();
@@ -1228,6 +1251,10 @@ class ClientService
                 $creditsQuery->whereHas('client', function ($q) use ($seller) {
                     $q->where('seller_id', $seller->id);
                 });
+            }
+
+            if (Auth::user()->role_id == 1 && $companyId) {
+                $creditsQuery->whereHas('client.seller', fn($q) => $q->where('company_id', $companyId));
             }
 
             // ordering (keep same as original)
@@ -1621,6 +1648,7 @@ class ClientService
 
             // 3. Combinar los resultados
             $totalClients = count($allClients);
+            $uniqueClientCount = count(array_unique(array_map(function($item) { return $item['client_id']; }, $allClients)));
             return [
                 'liquidation' => $liquidationData,
                 'clients' => $allClients,
@@ -1628,6 +1656,7 @@ class ClientService
                     $liquidationData['summary'] ?? [],
                     [
                         'total_clients' => $totalClients,
+                        'unique_clients' => $uniqueClientCount,
                         'total_recaudar_hoy' => $totalRecaudarHoy
                     ]
                 )
@@ -1669,7 +1698,7 @@ class ClientService
             'guarantors:id,name'
         ])
             ->where('seller_id', $sellerId)
-            ->get(['id', 'name', 'seller_id']);
+            ->get(['id', 'name', 'seller_id', 'routing_order']);
 
         $result = [];
         $totalRecaudarHoy = 0;
@@ -1697,6 +1726,7 @@ class ClientService
                 // 4. Agregar el resultado
                 $result[] = [
                     'client' => $client,
+                    'routing_order' => $client->routing_order,
                     'client_id' => $client->id,
                     'credit_id' => $credit->id,
                     'client_name' => $client->name,
@@ -2342,6 +2372,14 @@ class ClientService
         $startUTC = Carbon::createFromFormat('Y-m-d', $startDate, $timezone)->startOfDay()->timezone('UTC');
         $endUTC = Carbon::createFromFormat('Y-m-d', $endDate, $timezone)->endOfDay()->timezone('UTC');
 
+        \Log::debug('getClientPortfolioBySeller - Parámetros:', [
+            'sellerId' => $sellerId,
+            'startDate' => $startDate,
+            'endDate' => $endDate,
+            'startUTC' => $startUTC,
+            'endUTC' => $endUTC
+        ]);
+
         return DB::table('credits')
             ->join('clients', 'credits.client_id', '=', 'clients.id')
             ->leftJoin('payments', function ($join) use ($startUTC, $endUTC) {
@@ -2369,12 +2407,23 @@ class ClientService
         $startUTC = Carbon::createFromFormat('Y-m-d', $startDate, $timezone)->startOfDay()->timezone('UTC');
         $endUTC = Carbon::createFromFormat('Y-m-d', $endDate, $timezone)->endOfDay()->timezone('UTC');
 
-        return DB::table('payments')
+        \Log::debug('getTotalCollectedBySeller - Parámetros:', [
+            'sellerId' => $sellerId,
+            'startDate' => $startDate,
+            'endDate' => $endDate,
+            'startUTC' => $startUTC,
+            'endUTC' => $endUTC
+        ]);
+
+        $total = DB::table('payments')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
             ->where('credits.seller_id', $sellerId)
             ->whereBetween('payments.created_at', [$startUTC, $endUTC])
             ->whereNull('payments.deleted_at')
             ->sum('payments.amount');
+
+        \Log::debug('getTotalCollectedBySeller - Total recaudado:', ['total' => $total]);
+        return $total;
     }
 
     public function getInactiveClientsWithoutCredits()

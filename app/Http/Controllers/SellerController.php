@@ -46,7 +46,8 @@ class SellerController extends Controller
             $countryId = $request->get('country_id');
             $cityId = $request->get('city_id');
             $sellerId = $request->get('seller_id');
-            return $this->sellerService->listActiveRoutes($hasLiquidation, $search, $countryId, $cityId, $sellerId);
+            $companyId = $request->get('company_id');
+            return $this->sellerService->listActiveRoutes($hasLiquidation, $search, $countryId, $cityId, $sellerId, $companyId);
         } catch (\Exception $e) {
             \Log::error('Error listing active routes: ' . $e->getMessage());
             return $this->errorResponse($e->getMessage(), 500);
@@ -68,10 +69,10 @@ class SellerController extends Controller
             $page = $request->get('page', 1);
             $search = $request->get('search') ?? '';
             $perPage = $request->get('perPage') ?? 10;
-              $countryId = $request->input('country_id');
+            $countryId = $request->input('country_id');
             $cityId = $request->input('city_id');
-
-            return $this->sellerService->getRoutes($page, $perPage, $search, $countryId, $cityId);
+            $companyId = $request->input('company_id');
+            return $this->sellerService->getRoutes($page, $perPage, $search, $countryId, $cityId, $companyId);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }

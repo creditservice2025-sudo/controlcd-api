@@ -82,10 +82,14 @@ class CompanyController extends Controller
     {
         try {
             $search = $request->input('search', '');
+            $companyId = $request->input('company_id');
             
             $companies = Company::when($search, function ($query, $search) {
                 return $query->where('name', 'like', "%{$search}%")
                              ->orWhere('code', 'like', "%{$search}%");
+            })
+            ->when($companyId, function ($query, $companyId) {
+                return $query->where('id', $companyId);
             })
             ->select('id', 'name', 'code')
             ->limit(20)

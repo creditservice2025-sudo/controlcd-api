@@ -53,7 +53,8 @@ class UserController extends Controller
         try {
             $search = $request->get('search') ?? '';
             $perPage = $request->get('perPage') ?? 10;
-            return $this->userService->getUsers($search, $perPage);
+            $companyId = $request->get('company_id');
+            return $this->userService->getUsers($search, $perPage, $companyId);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
@@ -71,7 +72,8 @@ class UserController extends Controller
     public function getUsersSelect(Request $request)
     {
         try {
-            return $this->userService->getUsersSelect($request);
+            $companyId = $request->get('company_id');
+            return $this->userService->getUsersSelect($request, $companyId);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
@@ -80,7 +82,8 @@ class UserController extends Controller
     public function getSellersSelect(Request $request)
     {
         try {
-            return $this->userService->getVendorsSelect($request);
+            $companyId = $request->get('company_id');
+            return $this->userService->getVendorsSelect($request, $companyId);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }

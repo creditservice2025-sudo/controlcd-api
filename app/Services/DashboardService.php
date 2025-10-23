@@ -56,7 +56,7 @@ class DashboardService
     /**
      * Return seller IDs relevant for current user + optional location filters.
      */
-    private function getSellerIdsForUser(User $user, Request $request = null): Collection
+    private function getSellerIdsForUser(User $user, Request $request = null, $companyId = null): Collection
     {
         $role = $user->role_id;
 
@@ -72,7 +72,10 @@ class DashboardService
             }
             $sellersQuery->where('company_id', $user->company->id);
         }
-
+        // Filtrar por company_id si el usuario es admin y el parámetro está presente
+        if ($role === 1 && $companyId) {
+            $sellersQuery->where('company_id', $companyId);
+        }
         if ($request) {
             $this->applyLocationFilters($sellersQuery, $request);
         }
@@ -186,7 +189,7 @@ class DashboardService
     /**
      * Load counters for dashboard: members, routes, credits, clients
      */
-    public function loadCounters(Request $request)
+    public function loadCounters(Request $request, $companyId = null)
     {
         try {
             $user = Auth::user();
@@ -211,10 +214,16 @@ class DashboardService
 
                 // RUTAS/VENDEDORES: Vendedores filtrados por su ubicación
                 $routesQuery = Seller::query();
+                if ($companyId) {
+                    $routesQuery->where('company_id', $companyId);
+                }
                 $data['routes'] = $this->applyLocationFilters($routesQuery, $request)->count();
 
                 // CRÉDITOS & CLIENTES: Obtenemos los IDs de los vendedores filtrados por ubicación
                 $sellerIdsQuery = Seller::query();
+                if ($companyId) {
+                    $sellerIdsQuery->where('company_id', $companyId);
+                }
                 $sellerIds = $this->applyLocationFilters($sellerIdsQuery, $request)->pluck('id');
 
                 // Aplicamos los filtros de vendedor (que ya llevan la ubicación) a Créditos y Clientes
@@ -281,7 +290,7 @@ class DashboardService
      * - Avoids N+1 queries
      * - Uses DB aggregates for heavy sums
      */
-    public function loadPendingPortfolios(Request $request)
+    public function loadPendingPortfolios(Request $request, $companyId = null)
     {
         try {
             $user = Auth::user();
@@ -311,6 +320,9 @@ class DashboardService
             }
             if ($role === 2) $sellersQuery->where('company_id', $user->company->id);
             if ($role === 5) $sellersQuery->where('user_id', $user->id);
+            if ($role === 1 && $companyId) {
+                $sellersQuery->where('company_id', $companyId);
+            }
             if (!in_array($role, [1, 2, 5])) {
                 return response()->json(['success' => true, 'data' => []]);
             }
@@ -329,7 +341,9 @@ class DashboardService
                 ->groupBy('credit_id')
                 ->get()
                 ->pluck('total', 'credit_id')
-                ->map(function ($v) { return (float) $v; })
+                ->map(function ($v) {
+                    return (float) $v;
+                })
                 ->all();
 
             $paidTodayByCredit = Payment::whereIn('credit_id', $allCreditIds)
@@ -338,7 +352,9 @@ class DashboardService
                 ->groupBy('credit_id')
                 ->get()
                 ->pluck('total', 'credit_id')
-                ->map(function ($v) { return (float) $v; })
+                ->map(function ($v) {
+                    return (float) $v;
+                })
                 ->all();
 
             foreach ($sellers as $seller) {
@@ -551,7 +567,7 @@ class DashboardService
     /**
      * Load the financial summary (optimized and consolidated version).
      */
-    public function loadFinancialSummary(Request $request)
+    public function loadFinancialSummary(Request $request, $companyId = null)
     {
         try {
             $user = Auth::user();
@@ -570,12 +586,17 @@ class DashboardService
             $initialCash = 0;
 
             // get seller ids relevant
-            $sellerIds = $this->getSellerIdsForUser($user, $request)->all();
+            $sellerIds = $this->getSellerIdsForUser($user, $request, $companyId)->all();
 
             if (empty($sellerIds)) {
                 return $this->successResponse(['success' => true, 'data' => [
-                    'totalBalance' => 0, 'capital' => 0, 'profit' => 0, 'currentCash' => 0,
-                    'cashDayBalance' => 0, 'income' => 0, 'expenses' => 0
+                    'totalBalance' => 0,
+                    'capital' => 0,
+                    'profit' => 0,
+                    'currentCash' => 0,
+                    'cashDayBalance' => 0,
+                    'income' => 0,
+                    'expenses' => 0
                 ]]);
             }
 
@@ -677,7 +698,7 @@ class DashboardService
     /**
      * Weekly financial summary (optimized).
      */
-    public function weeklyFinancialSummary(Request $request)
+    public function weeklyFinancialSummary(Request $request, $companyId = null)
     {
         try {
             $user = Auth::user();
@@ -688,7 +709,7 @@ class DashboardService
             $endOfWeekUtc = Carbon::now($timezone)->endOfWeek()->timezone('UTC')->toDateTimeString();
             $startOfWeekDate = Carbon::now($timezone)->startOfWeek()->toDateString();
 
-            $sellerIds = $this->getSellerIdsForUser($user, $request)->all();
+            $sellerIds = $this->getSellerIdsForUser($user, $request, $companyId)->all();
 
             if (empty($sellerIds)) {
                 return $this->successResponse(['success' => true, 'data' => []]);
@@ -749,7 +770,7 @@ class DashboardService
     /**
      * Weekly movements (day/week/month/all) optimized.
      */
-    public function weeklyMovements(Request $request)
+    public function weeklyMovements(Request $request, $companyId = null)
     {
         try {
             $user = Auth::user();
@@ -772,7 +793,7 @@ class DashboardService
                 $end = Carbon::now($timezone)->endOfMonth()->timezone('UTC');
             }
 
-            $sellerIds = $this->getSellerIdsForUser($user, $request)->all();
+            $sellerIds = $this->getSellerIdsForUser($user, $request, $companyId)->all();
             if (empty($sellerIds)) {
                 return $this->successResponse(['success' => true, 'data' => []]);
             }
@@ -843,6 +864,149 @@ class DashboardService
         } catch (\Exception $e) {
             Log::error("Error loading movements: {$e->getMessage()} | " . $e->getTraceAsString());
             return $this->errorResponse('Error al obtener movimientos.', 500);
+        }
+    }
+
+    public function weeklyMovementsHistory(Request $request, $sellerId = null, $companyId = null)
+    {
+        try {
+            $filter = $request->input('filter', 'all');
+            $type = $request->input('type', 'income');
+            $timezone = self::TIMEZONE;
+            $start = Carbon::create(2000, 1, 1, 0, 0, 0, 'UTC');
+            $end = Carbon::now($timezone)->addYears(10)->timezone('UTC');
+            if ($filter === 'day') {
+                $start = Carbon::now($timezone)->startOfDay()->timezone('UTC');
+                $end = Carbon::now($timezone)->endOfDay()->timezone('UTC');
+            } elseif ($filter === 'week') {
+                $start = Carbon::now($timezone)->startOfWeek()->timezone('UTC');
+                $end = Carbon::now($timezone)->endOfWeek()->timezone('UTC');
+            } elseif ($filter === 'month') {
+                $start = Carbon::now($timezone)->startOfMonth()->timezone('UTC');
+                $end = Carbon::now($timezone)->endOfMonth()->timezone('UTC');
+            }
+            $data = [];
+            $user = Auth::user();
+            $sellerIds = $this->getSellerIdsForUser($user, $request, $companyId)->all();
+            if ($type === 'income') {
+                $query = Income::with('user')->whereBetween('created_at', [$start, $end]);
+                if ($sellerId) {
+                    $seller = Seller::find($sellerId);
+                    if ($seller && $seller->user_id) {
+                        $query->where('user_id', $seller->user_id);
+                    } else {
+                        $query->whereRaw('0 = 1');
+                    }
+                } elseif (!empty($sellerIds)) {
+                    $userIds = Seller::whereIn('id', $sellerIds)->pluck('user_id')->all();
+                    $query->whereIn('user_id', $userIds);
+                }
+                $incomes = $query->orderBy('created_at', 'asc')->get();
+                $grouped = [];
+                foreach ($incomes as $income) {
+                    $date = $income->created_at->format('Y-m-d');
+                    if (!isset($grouped[$date])) $grouped[$date] = [];
+                    $grouped[$date][] = [
+                        'value' => $income->value,
+                        'user' => $income->user ? $income->user->name : 'Sin usuario',
+                        'description' => $income->description ?? '',
+                    ];
+                }
+                foreach ($grouped as $date => $items) {
+                    foreach ($items as $item) {
+                        $data[] = [
+                            'date' => $date,
+                            'value' => $item['value'],
+                            'user' => $item['user'],
+                            'description' => $item['description'],
+                        ];
+                    }
+                }
+            } elseif ($type === 'expenses') {
+                $query = Expense::with('user')->whereBetween('created_at', [$start, $end]);
+                if ($sellerId) {
+                    $seller = Seller::find($sellerId);
+                    if ($seller && $seller->user_id) {
+                        $query->where('user_id', $seller->user_id);
+                    } else {
+                        $query->whereRaw('0 = 1');
+                    }
+                } elseif (!empty($sellerIds)) {
+                    $userIds = Seller::whereIn('id', $sellerIds)->pluck('user_id')->all();
+                    $query->whereIn('user_id', $userIds);
+                }
+                $expenses = $query->orderBy('created_at', 'asc')->get();
+                $grouped = [];
+                foreach ($expenses as $expense) {
+                    $date = $expense->created_at->format('Y-m-d');
+                    if (!isset($grouped[$date])) $grouped[$date] = [];
+                    $grouped[$date][] = [
+                        'value' => $expense->value,
+                        'user' => $expense->user ? $expense->user->name : 'Sin usuario',
+                        'description' => $expense->description ?? '',
+                    ];
+                }
+                foreach ($grouped as $date => $items) {
+                    foreach ($items as $item) {
+                        $data[] = [
+                            'date' => $date,
+                            'value' => $item['value'],
+                            'user' => $item['user'],
+                            'description' => $item['description'],
+                        ];
+                    }
+                }
+            } elseif ($type === 'collected') {
+                if ($sellerId) {
+                    $creditIds = Credit::where('seller_id', $sellerId)->pluck('id')->all();
+                } elseif (!empty($sellerIds)) {
+                    $creditIds = Credit::whereIn('seller_id', $sellerIds)->pluck('id')->all();
+                } else {
+                    $creditIds = Credit::pluck('id')->all();
+                }
+                $payments = Payment::with(['credit.seller', 'credit.seller.user'])
+                    ->whereIn('credit_id', $creditIds)
+                    ->whereBetween('created_at', [$start, $end])
+                    ->orderBy('created_at', 'asc')
+                    ->get();
+                $grouped = [];
+                foreach ($payments as $payment) {
+                    $date = $payment->created_at->format('Y-m-d');
+                    if (!isset($grouped[$date])) $grouped[$date] = [];
+                    $sellerName = $payment->credit && $payment->credit->seller && $payment->credit->seller->user
+                        ? $payment->credit->seller->user->name
+                        : 'Sin vendedor';
+                    $grouped[$date][] = [
+                        'value' => $payment->amount,
+                        'seller' => $sellerName,
+                        'payment_id' => $payment->id,
+                    ];
+                }
+                foreach ($grouped as $date => $items) {
+                    foreach ($items as $item) {
+                        $data[] = [
+                            'date' => $date,
+                            'value' => $item['value'],
+                            'seller' => $item['seller'],
+                            'payment_id' => $item['payment_id'],
+                        ];
+                    }
+                }
+            }
+
+            return $this->successResponse([
+                'success' => true,
+                'data' => $data,
+                'period' => [
+                    'start' => $start,
+                    'end' => $end,
+                    'filter' => $filter,
+                    'type' => $type,
+                ]
+            ]);
+        } catch (\Exception $e) {
+            Log::error("Error loading movements history: {$e->getMessage()} | " . $e->getTraceAsString());
+            return $this->errorResponse('Error al obtener histórico de movimientos.', 500);
         }
     }
 }

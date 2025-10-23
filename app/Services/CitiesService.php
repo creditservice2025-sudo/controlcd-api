@@ -111,7 +111,7 @@ class CitiesService
         }
     }
 
-    public function getSellersByCity($city_id = null, Request $request)
+    public function getSellersByCity($city_id = null, Request $request, $companyId = null)
     {
         try {
             $search = $request->query('search', '');
@@ -124,12 +124,19 @@ class CitiesService
                 $query->where('city_id', $city_id);
             }
 
+            \Log::info("Getting sellers for city_id: " . ($city_id ?? 'all') . ", companyId: " . ($companyId ?? 'none') . ", user role: " . $user->role_id);
+
+            // FILTRO POR company_id SIEMPRE QUE EXISTA
+            if ($companyId) {
+                $query->where('company_id', $companyId);
+            }
+
             // === FILTRO POR ROL ===
             switch ($user->role_id) {
                 case 1: // Admin: ve todos los vendedores
                     break;
                 case 2: // Empresa: solo vendedores de la empresa
-                    if ($company) {
+                    if (!$companyId && $company) {
                         $query->where('company_id', $company->id);
                     }
                     break;

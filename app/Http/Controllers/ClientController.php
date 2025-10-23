@@ -100,8 +100,9 @@ class ClientController extends Controller
             $cityId = $request->input('city_id');
             $sellerId = $request->input('seller_id');
             $status = $request->input('status', null);
+            $companyId = $request->input('company_id');
 
-            return $this->clientService->index($search, $orderBy, $orderDirection, $countryId, $cityId, $sellerId, $status);
+            return $this->clientService->index($search, $orderBy, $orderDirection, $countryId, $cityId, $sellerId, $status, $companyId);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
@@ -118,8 +119,9 @@ class ClientController extends Controller
             $sellerId = $request->input('sellerId');
             $status = $request->input('status', null);
             $daysOverdue = $request->input('daysOverdue', null);
+            $companyId = $request->input('company_id');
 
-            return $this->clientService->indexWithCredits($search, $orderBy, $orderDirection, $countryId, $cityId, $sellerId, $status, $daysOverdue);
+            return $this->clientService->indexWithCredits($search, $orderBy, $orderDirection, $countryId, $cityId, $sellerId, $status, $daysOverdue, $companyId);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
@@ -129,13 +131,14 @@ class ClientController extends Controller
     {
         try {
             $search = $request->input('search', '');
+            $companyId = $request->input('company_id');
 
             $seller = Seller::find($sellerId);
             if (!$seller) {
                 return $this->errorResponse('Vendedor no encontrado', 404);
             }
 
-            $clients = $this->clientService->getClientsBySeller($sellerId, $search);
+            $clients = $this->clientService->getClientsBySeller($sellerId, $search, $companyId);
 
             return $this->successResponse([
                 'success' => true,
@@ -229,10 +232,12 @@ class ClientController extends Controller
         }
     }
 
-    public function getClientsSelect(string $search = '')
+    public function getClientsSelect(Request $request)
     {
         try {
-            return $this->clientService->getClientsSelect($search);
+            $search = $request->input('search', '');
+            $companyId = $request->input('company_id');
+            return $this->clientService->getClientsSelect($search, $companyId);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
@@ -249,10 +254,11 @@ class ClientController extends Controller
         }
     }
 
-    public function getClientDetails($clientId)
+    public function getClientDetails(Request $request, $clientId)
     {
         try {
-            return $this->clientService->getClientDetails($clientId);
+            $companyId = $request->input('company_id');
+            return $this->clientService->getClientDetails($clientId, $companyId);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
@@ -286,6 +292,7 @@ class ClientController extends Controller
             $orderDirection = (string) $request->input('orderDirection', 'desc');
             $frequency = (string) $request->input('frequency', '');
             $paymentStatus = (string) $request->input('payment_status', '');
+            $companyId = $request->input('company_id');
 
             return $this->clientService->getForCollections(
                 $search,
@@ -296,7 +303,7 @@ class ClientController extends Controller
                 $paymentStatus,
                 $orderBy,
                 $orderDirection,
-
+                $companyId
             );
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
