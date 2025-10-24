@@ -1690,7 +1690,6 @@ class ClientService
             },
 
             'credits.installments' => function ($query) use ($formattedDate) {
-                $query->where('due_date', $formattedDate);
                 $query->orderBy('due_date', 'asc');
             },
 
@@ -1698,7 +1697,7 @@ class ClientService
             'guarantors:id,name'
         ])
             ->where('seller_id', $sellerId)
-            ->get(['id', 'name', 'seller_id', 'routing_order']);
+            ->get(['id', 'name', 'seller_id', 'routing_order', 'dni']);
 
         $result = [];
         $totalRecaudarHoy = 0;
@@ -1733,11 +1732,10 @@ class ClientService
                     'client_code' => $client->id,
                     'credit_info' => $credit,
 
-                    'installment' => $cuotasHoyCollection,
+                    'installment' => $credit->installments,
                     'client_code' => $client->id,
                     'credit_info' => $credit,
 
-                    'installment' => $cuotasHoyCollection,
 
                     'seller_name' => $client->seller->user->name ?? 'Sin vendedor',
                     'credit' => $creditInfo,
