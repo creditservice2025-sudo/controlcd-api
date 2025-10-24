@@ -561,6 +561,16 @@ class LiquidationService
                 + $dailyTotals['total_expenses'] + $dailyTotals['total_renewal_disbursed'] + $irrecoverableCredits
             );
 
+        $cashcollection = (
+            $dailyTotals['total_income']
+            + $dailyTotals['collected_total']
+            + $baseDelivered
+        )
+            - (
+                $dailyTotals['created_credits_value']
+                + $dailyTotals['total_expenses'] + $dailyTotals['total_renewal_disbursed'] + $irrecoverableCredits
+            );
+
         // 5. Estructurar respuesta completa
         return [
             'collection_target' => $dailyTotals['daily_goal'],
@@ -571,6 +581,7 @@ class LiquidationService
             'total_income' => $dailyTotals['total_income'],
             'new_credits' => $dailyTotals['created_credits_value'],
             'real_to_deliver' => $realToDeliver,
+            'cash_collection' => $cashcollection,
             'date' => $date,
             'seller_id' => $sellerId,
             'cash' => $dailyTotals['cash'],

@@ -275,6 +275,18 @@ class DashboardService
                 }
             }
 
+            // Filtro por vendedor si se recibe seller_id
+            $sellerId = $request->input('seller_id');
+            if ($sellerId) {
+                // Filtrar todos los conteos solo por ese vendedor
+                $data['routes'] = 1;
+                $data['members'] = User::whereHas('seller', function ($query) use ($sellerId) {
+                    $query->where('id', $sellerId);
+                })->count();
+                $data['credits'] = Credit::where('seller_id', $sellerId)->count();
+                $data['clients'] = Client::where('seller_id', $sellerId)->count();
+            }
+
             return $this->successResponse([
                 'success' => true,
                 'data' => $data
@@ -329,6 +341,12 @@ class DashboardService
 
             if (in_array($role, [1, 2])) {
                 $this->applyLocationFilters($sellersQuery, $request);
+            }
+
+            // Filtro por vendedor si se recibe seller_id
+            $sellerId = $request->input('seller_id');
+            if ($sellerId) {
+                $sellersQuery->where('id', $sellerId);
             }
 
             $sellers = $sellersQuery->take(10)->get();
@@ -588,6 +606,12 @@ class DashboardService
             // get seller ids relevant
             $sellerIds = $this->getSellerIdsForUser($user, $request, $companyId)->all();
 
+            // Filtro por vendedor si se recibe seller_id
+            $sellerId = $request->input('seller_id');
+            if ($sellerId) {
+                $sellerIds = collect([$sellerId]);
+            }
+
             if (empty($sellerIds)) {
                 return $this->successResponse(['success' => true, 'data' => [
                     'totalBalance' => 0,
@@ -626,7 +650,7 @@ class DashboardService
             $expenseTotal = (float) Expense::whereIn('user_id', $userIds)->sum('value');
 
             // initial cash: sum of last liquidation per seller (prior to today)
-            $initialCash = $this->getLastLiquidationsSum($sellerIds, $today);
+            $initialCash = $this->getLastLiquidationsSum(is_array($sellerIds) ? $sellerIds : (method_exists($sellerIds, 'all') ? $sellerIds->all() : (array)$sellerIds), $today);
 
             // Flujos del día
             $cashPayments = (float) Payment::whereIn('credit_id', $creditIds)
@@ -711,6 +735,12 @@ class DashboardService
 
             $sellerIds = $this->getSellerIdsForUser($user, $request, $companyId)->all();
 
+            // Filtro por vendedor si se recibe seller_id
+            $sellerId = $request->input('seller_id');
+            if ($sellerId) {
+                $sellerIds = [$sellerId];
+            }
+
             if (empty($sellerIds)) {
                 return $this->successResponse(['success' => true, 'data' => []]);
             }
@@ -794,6 +824,13 @@ class DashboardService
             }
 
             $sellerIds = $this->getSellerIdsForUser($user, $request, $companyId)->all();
+
+            // Filtro por vendedor si se recibe seller_id
+            $sellerId = $request->input('seller_id');
+            if ($sellerId) {
+                $sellerIds = [$sellerId];
+            }
+
             if (empty($sellerIds)) {
                 return $this->successResponse(['success' => true, 'data' => []]);
             }
@@ -976,9 +1013,13 @@ class DashboardService
                     $sellerName = $payment->credit && $payment->credit->seller && $payment->credit->seller->user
                         ? $payment->credit->seller->user->name
                         : 'Sin vendedor';
+                    $clientName = $payment->credit && $payment->credit->client
+                        ? $payment->credit->client->name
+                        : 'Sin cliente';
                     $grouped[$date][] = [
                         'value' => $payment->amount,
                         'seller' => $sellerName,
+                        'client' => $clientName,
                         'payment_id' => $payment->id,
                     ];
                 }
@@ -988,6 +1029,7 @@ class DashboardService
                             'date' => $date,
                             'value' => $item['value'],
                             'seller' => $item['seller'],
+                            'client' => $item['client'],
                             'payment_id' => $item['payment_id'],
                         ];
                     }

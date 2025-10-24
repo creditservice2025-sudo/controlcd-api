@@ -43,7 +43,7 @@ class PaymentController extends Controller
         }
     }
 
-    
+
     public function paymentsToday(Request $request, $creditId)
     {
         try {
@@ -319,15 +319,22 @@ class PaymentController extends Controller
             ->where('installments.status', 'Pendiente')
             ->sum('installments.quota_amount');
 
-            $realToDeliver = $initialCash
+        $realToDeliver = $initialCash
             + ($totals['total_income'] + $totals['collected_total'])
             - ($totals['created_credits_value']
                 + $totals['total_expenses']
-                + $totals['total_renewal_disbursed']  
+                + $totals['total_renewal_disbursed']
+                + $irrecoverableCredits);
+
+        $cashCollection = ($totals['total_income'] + $totals['collected_total'])
+            - ($totals['created_credits_value']
+                + $totals['total_expenses']
+                + $totals['total_renewal_disbursed']
                 + $irrecoverableCredits);
 
         $totals['initial_cash'] = $initialCash;
         $totals['real_to_deliver'] = $realToDeliver;
+        $totals['cash_collection'] = $cashCollection;
 
         // Valor Total de Entrega = Saldo inicial + Total Cobrado
         $totals['total_delivery_value'] = $initialCash + $totals['collected_total'];
