@@ -592,23 +592,23 @@ class LiquidationController extends Controller
     public function annulBase(Request $request, $id)
     {
         $liquidation = Liquidation::findOrFail($id);
-    
+
         try {
             DB::beginTransaction();
-    
+
             // Anula la base
             $liquidation->update([
                 'base_delivered' => 0,
             ]);
-    
+
             // Recalcula todas las liquidaciones posteriores al día de esta liquidación
             $this->recalculateNextLiquidations($liquidation->seller_id, $liquidation->date);
-    
+
             DB::commit();
-    
+
             // Refresca los datos
             $liquidation->refresh();
-    
+
             return response()->json([
                 'success' => true,
                 'data' => $liquidation,
@@ -616,7 +616,7 @@ class LiquidationController extends Controller
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
-    
+
             return response()->json([
                 'success' => false,
                 'message' => 'Error al anular la base: ' . $e->getMessage()
@@ -743,7 +743,7 @@ class LiquidationController extends Controller
             ->where('installments.status', 'Pendiente')
             ->sum('installments.quota_amount');
 
-       /*  Log::info('INcome: ' . $dailyTotals['total_income']);
+        /*  Log::info('INcome: ' . $dailyTotals['total_income']);
         Log::info('Initial Cash: ' . $initialCash); */
         // 4. Calcular valor real a entregar
         $realToDeliver = $initialCash
@@ -753,10 +753,17 @@ class LiquidationController extends Controller
                 + $dailyTotals['total_expenses']
                 + $irrecoverableCredits);
 
+        $cashCollection = ($dailyTotals['total_income'] + $dailyTotals['collected_total'])
+            - ($dailyTotals['created_credits_value']
+                + $dailyTotals['total_renewal_disbursed']
+                + $dailyTotals['total_expenses']
+                + $irrecoverableCredits);
+
         // 5. Estructurar respuesta completa
         return [
             'collection_target' => $dailyTotals['daily_goal'],
             'initial_cash' => $initialCash,
+            'cash_collection' => $cashCollection,
             'base_delivered' => $dailyTotals['base_value'],
             'total_collected' => $dailyTotals['collected_total'],
             'total_expenses' => $dailyTotals['total_expenses'],
@@ -892,7 +899,7 @@ class LiquidationController extends Controller
         $totals['daily_goal'] = $totals['expected_total'];
         $totals['current_balance'] = $totals['collected_total'] - $totals['total_expenses'];
 
-       /*  Log::info($totals['expected_total']); */
+        /*  Log::info($totals['expected_total']); */
 
         $renewalCredits = DB::table('credits')
             ->where('seller_id', $sellerId)

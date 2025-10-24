@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Client;
+use App\Models\Liquidation;
 use Illuminate\Http\Request;
 use App\Traits\ApiResponse;
 use App\Services\ClientService;
@@ -171,9 +172,9 @@ class ClientController extends Controller
     {
         try {
             $clientIds = $request->input('client_ids');
-    
+
             $result = $this->clientService->reactivateClientsByIds($clientIds);
-    
+
             return response()->json([
                 'success' => true,
                 'message' => 'Clientes reactivados exitosamente',
@@ -351,22 +352,30 @@ class ClientController extends Controller
         try {
             // 1. Definir la zona horaria deseada
             $timezone = 'America/Caracas';
-    
+
             $seller = Seller::find($sellerId);
             if (!$seller) {
                 return $this->errorResponse('Vendedor no encontrado', 404);
             }
-    
-            $todayCaracas = \Carbon\Carbon::now($timezone)->startOfDay(); 
-            
+
+            $todayCaracas = \Carbon\Carbon::now($timezone)->startOfDay();
+
             $inputDateCaracas = \Carbon\Carbon::parse($date, $timezone)->startOfDay();
-    
+
             if ($inputDateCaracas->gt($todayCaracas)) {
                 return $this->errorResponse('La fecha seleccionada no puede ser mayor que la fecha actual.', 422);
             }
-    
+
+            $previousLiquidation = Liquidation::where('seller_id', $sellerId)
+                ->whereDate('created_at', '<', $inputDateCaracas->format('Y-m-d'))
+                ->orderByDesc('created_at')
+                ->first();
+            if ($previousLiquidation && $previousLiquidation->status !== 'approved') {
+                return $this->errorResponse('No puede consultar la liquidación porque la anterior no está aprobada.', 422);
+            }
+
             $result = $this->clientService->getLiquidationWithAllClients($sellerId, $date, $userId);
-    
+
             return response()->json([
                 'success' => true,
                 'message' => 'Clientes obtenidos exitosamente',

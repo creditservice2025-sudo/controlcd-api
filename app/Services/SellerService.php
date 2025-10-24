@@ -155,7 +155,7 @@ class SellerService
         try {
             $user = Auth::user();
             $company = $user->company;
-            $today = now()->format('Y-m-d');
+            $today = Carbon::now('America/Caracas')->format('Y-m-d');
 
             $routes = Seller::with([
                 'user:id,name',
@@ -207,7 +207,6 @@ class SellerService
                 $routes->where('user_id', $sellerId);
             }
 
-            $today = now()->format('Y-m-d');
 
             $routesList = $routes->whereHas('user.sessionLogs', function ($q) use ($today) {
                 $q->whereDate('login_at', $today)
@@ -223,7 +222,7 @@ class SellerService
 
             $data = $routesList->map(function ($route) use ($today) {
                 $liquidationToday = Liquidation::where('seller_id', $route->id)
-                    ->whereDate('created_at', $today)
+                    ->where(DB::raw('DATE(created_at)'), $today)
                     ->first();
 
                 $liquidationOpen = null;
