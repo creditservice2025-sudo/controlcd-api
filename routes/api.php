@@ -196,6 +196,7 @@ Route::middleware('auth:api')->group(function () {
         Route::post('reopen-route', [LiquidationController::class, 'reopenRoute']);
 
         Route::get('download-report/{id}', [LiquidationController::class, 'downloadReport']);
+        Route::get('first-approved-by-seller', [LiquidationController::class, 'getFirstApprovedLiquidationBySeller']);
 
         Route::prefix('seller/{sellerId}')->group(function () {
             Route::get('/', [LiquidationController::class, 'getBySeller']);
@@ -233,6 +234,7 @@ Route::middleware('auth:api')->group(function () {
 
     //reports
     Route::get('reports/daily-collection', [CreditController::class, 'dailyCollectionReport']);
+    Route::get('reports/credits/{credit}/report', [CreditController::class, 'creditReport']);
     Route::prefix('reports/excel')->group(function () {
         Route::get('accumulated-by-city', [ReportExportController::class, 'downloadAccumulatedByCityExcel']);
         Route::get('seller-liquidations/{sellerId}/export-detail', [ReportExportController::class, 'downloadSellerLiquidationsDetailExcel']);

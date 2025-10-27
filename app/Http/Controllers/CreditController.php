@@ -189,4 +189,14 @@ class CreditController extends Controller
             return $this->errorResponse('Error al obtener reporte: ' . $e->getMessage(), 500);
         }
     }
+
+    public function creditReport(Request $request, $creditId)
+    {
+        try {
+            return $this->creditService->getCreditReport($request, (int) $creditId);
+        } catch (\Exception $e) {
+            \Log::error("Error al generar reporte de crédito (ID: {$creditId}): " . $e->getMessage());
+            return $this->errorResponse('Error al generar el reporte: ' . $e->getMessage(), 500);
+        }
+    }
 }

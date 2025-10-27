@@ -1405,4 +1405,30 @@ class LiquidationService
             'net_utility_plus_capital' => $netUtilityPlusCapital,
         ];
     }
+
+    /**
+     * Obtiene la fecha de la primera liquidación aprobada de cada vendedor (seller).
+     * Si no tiene liquidaciones aprobadas, devuelve la fecha de creación del seller.
+     *
+     * @return array
+     */
+    public function getFirstApprovedLiquidationBySeller()
+    {
+        $sellers = Seller::with(['user', 'city.country'])->get();
+        $result = [];
+        foreach ($sellers as $seller) {
+            $firstApproved = Liquidation::where('seller_id', $seller->id)
+                ->where('status', 'approved')
+                ->orderBy('date', 'asc')
+                ->first();
+            $result[] = [
+                'seller_id' => $seller->id,
+                'seller_name' => $seller->user ? $seller->user->name : null,
+                'city' => $seller->city ? $seller->city->name : null,
+                'country' => ($seller->city && $seller->city->country) ? $seller->city->country->name : null,
+                'first_approved_liquidation_date' => $firstApproved ? $firstApproved->date : $seller->created_at->toDateString(),
+            ];
+        }
+        return $result;
+    }
 }

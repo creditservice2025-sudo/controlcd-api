@@ -1235,4 +1235,16 @@ class LiquidationController extends Controller
         $format = $request->get('format', 'pdf');
         return $this->liquidationService->downloadLiquidationReport($id, $format);
     }
+
+    /**
+     * Devuelve la fecha de la primera liquidación aprobada de cada vendedor (con ciudad y país)
+     */
+    public function getFirstApprovedLiquidationBySeller()
+    {
+        $result = $this->liquidationService->getFirstApprovedLiquidationBySeller();
+        return response()->json([
+            'success' => true,
+            'data' => $result
+        ]);
+    }
 }

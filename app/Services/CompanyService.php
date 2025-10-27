@@ -198,10 +198,12 @@ class CompanyService
             $company = Company::with('user')->find($companyId);
 
             if ($company == null) {
+                DB::rollBack();
                 return $this->errorNotFoundResponse('Empresa no encontrada');
             }
 
             if ($company->sellers()->exists()) {
+                DB::rollBack();
                 return $this->errorResponse('No se puede eliminar la empresa porque tiene vendedores asociados', 422);
             }
 
@@ -211,7 +213,9 @@ class CompanyService
 
             $user = $company->user;
             $company->delete();
-            $user->delete();
+            if ($user) {
+                $user->delete();
+            }
 
             DB::commit();
 
