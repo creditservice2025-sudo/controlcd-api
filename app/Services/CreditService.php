@@ -89,7 +89,7 @@ class CreditService
             $credit = Credit::create($creditData);
 
             // Notificación si el crédito supera el límite configurado
-          /*   $sellerConfig = \App\Models\SellerConfig::where('seller_id', $credit->seller_id)->first();
+            /*   $sellerConfig = \App\Models\SellerConfig::where('seller_id', $credit->seller_id)->first();
             $limit = $sellerConfig ? floatval($sellerConfig->notify_new_credit_amount_limit ?? 0) : 0;
             if ($limit > 0 && $credit->credit_value > $limit) {
                 $user = $credit->seller->user;
@@ -1052,27 +1052,323 @@ class CreditService
         if ($reportData instanceof \Illuminate\Http\JsonResponse) {
             return $reportData;
         }
-    
+
         $safeDate = \Carbon\Carbon::parse($reportData['report_date'])->format('Y-m-d');
         $filename = 'daily_collection_report_' . $safeDate . '.pdf';
-    
+
         $pdf = Pdf::loadView('reports.daily-collection', $reportData);
         return $pdf->download($filename);
     }
-    
+
     public function getReport($request)
     {
         $date = $request->date ?? \Carbon\Carbon::now(self::TIMEZONE)->format('Y-m-d');
         $reportData = $this->generateDailyReport($date);
-    
+
         if ($reportData instanceof \Illuminate\Http\JsonResponse) {
             return $reportData;
         }
-    
+
         if ($request->has('download') && $request->download == 'pdf') {
             return $this->generatePDF($reportData);
         }
-    
+
+        return $reportData;
+    }
+
+    public function generateCreditReport(int $creditId)
+    {
+        $credit = Credit::with([
+            'client',
+            'seller.city.country',
+            'installments' => function ($q) {
+                $q->orderBy('due_date', 'asc');
+            },
+            'payments'
+        ])->find($creditId);
+
+        if (!$credit) {
+            return $this->errorResponse('El crédito no existe.', 404);
+        }
+
+        $today = Carbon::now(self::TIMEZONE)->startOfDay();
+
+        $interestAmount = $credit->credit_value * ($credit->total_interest / 100);
+        $microInsurance = ($credit->credit_value * $credit->micro_insurance_percentage) / 100 ?? 0;
+        $totalCreditValue = $credit->credit_value + $interestAmount;
+        $quotaAmount = $credit->number_installments > 0
+            ? round($totalCreditValue / $credit->number_installments, 2)
+            : 0;
+
+        // Preparar datos de applied_amount por cuota y detalles
+        try {
+            $paymentInstallmentsDetails = \DB::table('payment_installments')
+                ->join('payments', 'payment_installments.payment_id', '=', 'payments.id')
+                ->where('payments.credit_id', $credit->id)
+                ->select(
+                    'payment_installments.installment_id',
+                    'payment_installments.payment_id',
+                    'payment_installments.applied_amount',
+                    'payments.amount as payment_amount',
+                    'payments.status as payment_status',
+                    'payments.payment_date as payment_record_date',
+                    'payments.created_at as payment_created_at'
+                )
+                ->orderBy('payment_installments.id', 'asc')
+                ->get()
+                ->groupBy('installment_id'); // grouped by installment_id
+        } catch (\Throwable $e) {
+            \Log::error("ERROR generateCreditReport - error querying payment_installments details: " . $e->getMessage(), [
+                'credit_id' => $credit->id
+            ]);
+            $paymentInstallmentsDetails = collect();
+        }
+
+        try {
+            $payments = \DB::table('payments')
+                ->where('credit_id', $credit->id)
+                ->select('id', 'amount', 'status', 'payment_date', 'created_at')
+                ->orderBy('created_at', 'asc')
+                ->get();
+        } catch (\Throwable $e) {
+            \Log::error("ERROR generateCreditReport - error querying payments: " . $e->getMessage(), [
+                'credit_id' => $credit->id
+            ]);
+            $payments = collect();
+        }
+
+        $installmentsData = [];
+        $acumPaid = 0;
+        $overdueCounter = 0;
+
+        // Pre-calc arrays for counts
+        $totalInstallments = $credit->installments->count();
+        $canceledCountTotal = $credit->installments->where('status', 'Cancelado')->count();
+
+        foreach ($credit->installments as $index => $ins) {
+            // Sumar lo aplicado a esta cuota
+            $paidAmount = 0.0;
+            $paymentsDetailsArr = [];
+
+            if ($paymentInstallmentsDetails->has($ins->id)) {
+                foreach ($paymentInstallmentsDetails->get($ins->id) as $row) {
+                    $applied = (float) ($row->applied_amount ?? 0);
+                    $paidAmount += $applied;
+
+                    // payment_date prefer payment_record_date else created_at
+                    $paymentDateRaw = $row->payment_record_date ?? $row->payment_created_at ?? null;
+                    $paymentDate = $paymentDateRaw ? Carbon::parse($paymentDateRaw) : null;
+
+                    // calcular days delay respecto a due_date
+                    $delayDays = 0;
+                    if ($paymentDate) {
+                        $due = Carbon::parse($ins->due_date)->startOfDay();
+                        if ($paymentDate->startOfDay()->greaterThan($due)) {
+                            $delayDays = $paymentDate->startOfDay()->diffInDays($due);
+                        } else {
+                            $delayDays = 0;
+                        }
+                    }
+
+                    $paymentsDetailsArr[] = [
+                        'payment_id' => $row->payment_id,
+                        'applied_amount' => round($applied, 2),
+                        'payment_amount' => round((float) ($row->payment_amount ?? 0), 2),
+                        'payment_status' => $row->payment_status ?? null,
+                        'payment_date' => $paymentDate ? $paymentDate->format('Y-m-d') : null,
+                        'days_delay' => $delayDays,
+                    ];
+                }
+            }
+
+            // Normalizar
+            $paidAmount = round($paidAmount, 2);
+            $acumPaid += $paidAmount;
+
+            // pending amount for this installment
+            $quotaAmountThis = $ins->quota_amount ?? $quotaAmount;
+            $pendingForInstallment = max(0, round($quotaAmountThis - $paidAmount, 2));
+
+            // Estado: si cuota completamente pagada -> 'Pagado', si cancelada -> 'Cancelado', else 'Pendiente'
+            $status = $ins->status ?? 'Pendiente';
+            if ($pendingForInstallment <= 0 && $status !== 'Cancelado') {
+                $status = 'Pagado';
+            }
+
+            // Cuotas pagas hasta este punto (contar installments con paid fully)
+            // Count installments with paid_amount >= quota_amount
+            $paidInstallmentsCount = 0;
+            // to compute efficiently: check previous installments in loop:
+            for ($j = 0; $j <= $index; $j++) {
+                $other = $credit->installments[$j];
+                $otherPaid = 0.0;
+                if ($paymentInstallmentsDetails->has($other->id)) {
+                    foreach ($paymentInstallmentsDetails->get($other->id) as $r) {
+                        $otherPaid += (float) ($r->applied_amount ?? 0);
+                    }
+                }
+                $otherQuota = $other->quota_amount ?? $quotaAmount;
+                if ($otherPaid >= $otherQuota) $paidInstallmentsCount++;
+            }
+
+            // C.Pend: number of installments remaining with pending > 0
+            $countPending = $credit->installments->filter(function ($it) use ($paymentInstallmentsDetails, $quotaAmount) {
+                $paid = 0;
+                if ($paymentInstallmentsDetails->has($it->id)) {
+                    foreach ($paymentInstallmentsDetails->get($it->id) as $r) {
+                        $paid += (float) ($r->applied_amount ?? 0);
+                    }
+                }
+                $quota = $it->quota_amount ?? $quotaAmount;
+                return $paid < $quota && $it->status !== 'Cancelado';
+            })->count();
+
+            // C.Canc: total canceled installments (or per installment status)
+            $countCanceled = $credit->installments->filter(function ($it) {
+                return $it->status === 'Cancelado' || $it->status === 'Anulado';
+            })->count();
+
+            // Atrasos: if there are payment details, show max days_delay among payments applied (or min); else if unpaid and due_date < today show days since due_date
+            $daysDelayForInstallment = 0;
+            if (!empty($paymentsDetailsArr)) {
+                // take maximum delay among applied payments (a payment that covered it late)
+                $daysDelayForInstallment = max(array_map(function ($x) {
+                    return $x['days_delay'] ?? 0;
+                }, $paymentsDetailsArr));
+            } else {
+                // if unpaid and due_date passed
+                $dueDate = Carbon::parse($ins->due_date)->startOfDay();
+                if ($dueDate->lt($today)) {
+                    $daysDelayForInstallment = $today->diffInDays($dueDate);
+                } else {
+                    $daysDelayForInstallment = 0;
+                }
+            }
+
+            // Balance remaining after this installment (total credit - acumPaid)
+            $balanceRemaining = max(0, round($totalCreditValue - $acumPaid, 2));
+
+          
+            $installmentsData[] = [
+                'no' => $index + 1,
+                'due_date' => Carbon::parse($ins->due_date)->format('Y-m-d'),
+                'quota_amount' => round($quotaAmountThis, 2),
+                'cuo_pagas' => $paidInstallmentsCount,
+                'status' => $status,
+                'paid_amount' => round($paidAmount, 2),
+                'acum_paid' => round($acumPaid, 2),
+                'pending_amount' => round($pendingForInstallment, 2),
+                'balance' => round($balanceRemaining, 2),
+                'count_pending' => $countPending,
+                'count_canceled' => $countCanceled,
+                'days_delay' => $daysDelayForInstallment,
+                'payments_details' => $paymentsDetailsArr,
+            ];
+        }
+
+        // Construir payments_list usado en la vista (cada pago y a qué cuotas se aplicó)
+        $paymentsList = [];
+        foreach ($payments as $p) {
+            $appliedRows = \DB::table('payment_installments')
+                ->join('installments', 'payment_installments.installment_id', '=', 'installments.id')
+                ->where('payment_installments.payment_id', $p->id)
+                ->select('payment_installments.installment_id', 'payment_installments.applied_amount', 'installments.quota_number', 'installments.due_date')
+                ->get();
+
+            $appliedTo = [];
+            foreach ($appliedRows as $ar) {
+                $paymentDateRaw = $p->payment_date ?? $p->created_at;
+                $paymentDate = $paymentDateRaw ? Carbon::parse($paymentDateRaw) : null;
+                $due = Carbon::parse($ar->due_date)->startOfDay();
+                $delayDays = 0;
+                if ($paymentDate && $paymentDate->startOfDay()->greaterThan($due)) {
+                    $delayDays = $paymentDate->startOfDay()->diffInDays($due);
+                }
+                $appliedTo[] = [
+                    'installment_id' => $ar->installment_id,
+                    'quota_number' => $ar->quota_number,
+                    'due_date' => Carbon::parse($ar->due_date)->format('Y-m-d'),
+                    'applied_amount' => round((float) ($ar->applied_amount ?? 0), 2),
+                    'days_delay' => $delayDays,
+                ];
+            }
+
+            $paymentsList[] = [
+                'payment_id' => $p->id,
+                'amount' => round((float) $p->amount, 2),
+                'status' => $p->status,
+                'created_at' => Carbon::parse($p->created_at)->format('Y-m-d H:i:s'),
+                'payment_date' => $p->payment_date ? Carbon::parse($p->payment_date)->format('Y-m-d H:i:s') : Carbon::parse($p->created_at)->format('Y-m-d H:i:s'),
+                'is_global' => (count($appliedTo) === 0),
+                'applied_to' => $appliedTo,
+            ];
+        }
+
+        // Totales
+        $totalApplied = collect($installmentsData)->sum('paid_amount');
+        $totalCollected = $totalApplied + (float) (\DB::table('payments')->leftJoin('payment_installments', 'payments.id', '=', 'payment_installments.payment_id')->where('payments.credit_id', $credit->id)->whereNull('payment_installments.id')->sum('payments.amount'));
+
+        $report = [
+            'credit' => $credit,
+            'client' => $credit->client,
+            'seller' => $credit->seller,
+            'report_date' => Carbon::now(self::TIMEZONE)->format('Y-m-d'),
+            'start_date' => $credit->first_quota_date,
+            'end_date' => optional($credit->installments->sortByDesc('due_date')->first())->due_date,
+            'total_credit_value' => round($totalCreditValue, 2),
+            'capital' => round($credit->credit_value, 2),
+            'interest' => round($interestAmount, 2),
+            'micro_insurance' => round($microInsurance, 2),
+            'quota_amount' => $quotaAmount,
+            'number_installments' => $credit->number_installments,
+            'installments' => $installmentsData,
+            'payments_list' => $paymentsList,
+            'total_collected' => round($totalCollected, 2),
+            'total_applied' => round($totalApplied, 2),
+        ];
+
+        return $report;
+    }
+
+
+    /**
+     * Genera y descarga el PDF a partir de los datos generados por generateCreditReport.
+     *
+     * @param array $reportData
+     * @return \Symfony\Component\HttpFoundation\BinaryFileResponse|\Illuminate\Http\JsonResponse
+     */
+    public function generateCreditPDF($reportData)
+    {
+        if ($reportData instanceof \Illuminate\Http\JsonResponse) {
+            return $reportData;
+        }
+
+        $safeDate = Carbon::parse($reportData['report_date'])->format('Y-m-d');
+        $filename = 'credit_detail_' . ($reportData['credit']->id ?? 'unknown') . '_' . $safeDate . '.pdf';
+
+        $pdf = Pdf::loadView('reports.credit-details', $reportData);
+        return $pdf->download($filename);
+    }
+
+    /**
+     * Punto de entrada: devuelve datos o descarga directa si ?download=pdf
+     *
+     * @param \Illuminate\Http\Request $request
+     * @param int $creditId
+     * @return array|\Symfony\Component\HttpFoundation\BinaryFileResponse|\Illuminate\Http\JsonResponse
+     */
+    public function getCreditReport($request, int $creditId)
+    {
+        $reportData = $this->generateCreditReport($creditId);
+
+        if ($reportData instanceof \Illuminate\Http\JsonResponse) {
+            return $reportData;
+        }
+
+        if ($request->has('download') && $request->download === 'pdf') {
+            return $this->generateCreditPDF($reportData);
+        }
+
         return $reportData;
     }
 }
