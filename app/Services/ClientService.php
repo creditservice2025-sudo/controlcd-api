@@ -993,7 +993,7 @@ class ClientService
             $search = trim($search);
 
             $query = Client::query()
-                ->select('id', 'name', 'seller_id');
+                ->select('id', 'name', 'seller_id', 'dni', 'email', 'phone', 'address');
 
             if ($search !== '') {
                 $query->where(function ($q) use ($search) {
@@ -1097,8 +1097,12 @@ class ClientService
                     $q->select('id', 'user_id', 'city_id');
                 },
                 'seller.city' => function ($q) {
+                    $q->select('id', 'name', 'country_id');
+                },
+                'seller.city.country' => function ($q) {
                     $q->select('id', 'name');
                 },
+                
                 'guarantors' => function ($q) {
                     $q->select('guarantors.id as id', 'guarantors.name', 'guarantors.dni', 'guarantors.phone');
                 },
