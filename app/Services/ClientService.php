@@ -382,6 +382,11 @@ class ClientService
             $seller = $user->seller;
             $company = $user->company;
 
+            // Consultor (rol 7) y Supervisor (rol 11): obtener seller_ids asociados
+            if (in_array($user->role_id, [7, 11])) {
+                $sellerIds = \App\Models\UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
+            }
+
             $clientsQuery = Client::query()
                 ->select('id', 'name', 'dni', 'email', 'status', 'seller_id', 'geolocation', 'routing_order', 'capacity')
                 // eager load seller basic columns and seller.user for name
@@ -424,6 +429,14 @@ class ClientService
                 case 5:
                     if ($seller) $clientsQuery->where('seller_id', $seller->id);
                     else $clientsQuery->whereRaw('0 = 1');
+                    break;
+                case 7:
+                case 11:
+                    if (!empty($sellerIds)) {
+                        $clientsQuery->whereIn('seller_id', $sellerIds);
+                    } else {
+                        $clientsQuery->whereRaw('0 = 1');
+                    }
                     break;
                 default:
                     $clientsQuery->whereRaw('0 = 1');
@@ -708,7 +721,7 @@ class ClientService
 
 
             $clients = Client::query()
-                ->select('id', 'name', 'dni', 'address', 'seller_id', 'routing_order', 'coordinates')
+                ->select('id', 'name', 'dni', 'address', 'seller_id', 'routing_order', 'geolocation', 'phone', 'capacity')
                 ->with([
                     'guarantors' => function ($q) {
                         $q->select('guarantors.id as id', 'guarantors.name', 'guarantors.dni', 'guarantors.phone');
