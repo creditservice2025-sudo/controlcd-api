@@ -31,6 +31,8 @@ class ExpenseService
                 'user_id' => 'nullable|numeric',
                 'image' => 'nullable|image|max:2048',
                 'created_at' => 'nullable|date',
+                'latitude' => 'nullable',
+                'longitude' => 'nullable',
             ]);
 
             $user = Auth::user();
@@ -47,6 +49,13 @@ class ExpenseService
                 'category_id' => $validated['category_id'],
                 'status' => 'Aprobado',
             ];
+            if ($request->has('latitude')) {
+                $expenseData['latitude'] = $validated['latitude'];
+            }
+
+            if ($request->has('longitude')) {
+                $expenseData['longitude'] = $validated['longitude'];
+            }
 
             if ($request->has('created_at')) {
                 $expenseData['created_at'] = $validated['created_at'];
