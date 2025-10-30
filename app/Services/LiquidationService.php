@@ -841,6 +841,7 @@ class LiquidationService
         $credits = DB::table('credits')
             ->where('seller_id', $sellerId)
             ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereNull('deleted_at')
             ->whereNull('renewed_from_id')
             ->whereNull('unification_reason')
             ->select([

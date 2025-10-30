@@ -110,7 +110,7 @@ class PaymentController extends Controller
         $todayDate = Carbon::now($timezone)->toDateString();
         $user = Auth::user();
 
-        if (!in_array($user->role_id, [1, 2, 5])) {
+        if (!in_array($user->role_id, [1, 2, 5, 11])) {
             return response()->json([
                 'error' => 'Unauthorized'
             ], 403);
@@ -183,6 +183,7 @@ class PaymentController extends Controller
                 DB::raw('COALESCE(SUM(credit_value * (total_interest / 100)), 0) as total_interest_amount')
             )
             ->whereBetween('created_at', [$start, $end])
+            ->whereNull('deleted_at')
             ->whereNull('unification_reason')
             ->whereNull('renewed_from_id');
 

@@ -849,6 +849,7 @@ class LiquidationController extends Controller
             ->where('seller_id', $sellerId)
             ->whereBetween('created_at', [$startUTC, $endUTC])
             ->whereNull('renewed_from_id')
+            ->whereNull('deleted_at')
             ->whereNull('unification_reason')
             ->select([
                 DB::raw('COALESCE(SUM(credit_value), 0) as value'),
