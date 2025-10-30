@@ -24,6 +24,10 @@ class SellerService
 
     public function create(SellerRequest $request)
     {
+        if (Auth::user()->role_id == 11) {
+            return $this->errorResponse('No tiene permisos para crear vendedores.', 403);
+        }
+
         DB::beginTransaction();
 
         try {
@@ -41,7 +45,7 @@ class SellerService
                 'email' => $params['email'],
                 'dni' => $params['dni'],
                 'password' => Hash::make($params['password']),
-                'role_id' => 5
+                'role_id' => $params['role_id'] ?? 5
             ]);
 
             $seller = Seller::create([
@@ -87,6 +91,10 @@ class SellerService
 
     public function update($sellerId, SellerRequest $request)
     {
+        if (Auth::user()->role_id == 11) {
+            return $this->errorResponse('No tiene permisos para editar vendedores.', 403);
+        }
+
         DB::beginTransaction();
 
         try {
@@ -97,12 +105,16 @@ class SellerService
                 'name' => $params['name'],
                 'email' => $params['email'],
                 'dni' => $params['dni'],
+
+                'role_id' => $params['role_id'],
                 'password' => isset($params['password']) ? Hash::make($params['password']) : $seller->user->password
             ]);
 
             $seller->update([
                 'city_id' => $params['city_id'],
             ]);
+
+
 
             $memberIds = array_map('intval', $params['members'] ?? []);
             $memberIds = array_filter($memberIds);
@@ -159,11 +171,21 @@ class SellerService
 
             $routes = Seller::with([
                 'user:id,name',
+                'user.sessionLogs' => function ($q) use ($today) {
+                    $q->whereDate('login_at', $today)
+                      ->whereNull('logout_at');
+                },
                 'city:id,name,country_id',
                 'city.country:id,name'
             ])
                 ->whereNull('deleted_at')
                 ->orderBy('created_at', 'desc');
+
+            // Filtro para rol 11: solo sellers asociados en UserRoute
+            if ($user->role_id == 11) {
+                $sellerIds = UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
+                $routes->whereIn('id', $sellerIds);
+            }
 
             switch ($user->role_id) {
                 case 1:
@@ -178,7 +200,9 @@ class SellerService
                     $routes->where('user_id', $user->id);
                     break;
                 default:
-                    return $this->successResponse(['data' => []]);
+                    if ($user->role_id != 11) {
+                        return $this->successResponse(['data' => []]);
+                    }
             }
 
             if ($search) {
@@ -245,7 +269,7 @@ class SellerService
                     ->sortBy('created_at')
                     ->first();
 
-               
+
 
                 if ($liquidationToday) {
                     $liquidationStatus = $liquidationToday->status;
@@ -264,6 +288,8 @@ class SellerService
                     }
                 }
 
+                \Log::info($route->toArray());
+
                 return [
                     'route_id'              => $route->id,
                     'country'               => $route->city->country->name ?? null,
@@ -275,6 +301,14 @@ class SellerService
                     'liquidation_closed'    => $liquidationClosed,
                     'liquidation_audit_id'  => $liquidationAuditId,
                     'liquidation_status'    => $liquidationStatus,
+                    'created_at'            => $route->user->sessionLogs[0]->created_at ?? null,
+                    'session_logs'          => $route->user && $route->user->sessionLogs ? $route->user->sessionLogs->map(function($log) {
+                        return [
+                            'id' => $log->id,
+                            'login_at' => $log->login_at,
+                            'logout_at' => $log->logout_at,
+                        ];
+                    }) : [],
                 ];
             });
 
@@ -394,14 +428,14 @@ class SellerService
                 ->withCount([
                     'credits as credits_count' => function ($query) {
                         $query->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
-                              ->whereNull('deleted_at');
+                            ->whereNull('deleted_at');
                     }
                 ])
                 // Suma solo del capital
                 ->withSum([
                     'credits as credits_value_sum' => function ($query) {
                         $query->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
-                              ->whereNull('deleted_at');
+                            ->whereNull('deleted_at');
                     }
                 ], 'credit_value')
                 // Suma solo de la utilidad monetaria
@@ -432,6 +466,12 @@ class SellerService
                 ->whereNull('deleted_at')
                 ->orderBy('created_at', 'desc');
 
+            // Filtro para rol 11: solo sellers asociados en UserRoute
+            if ($user->role_id == 11) {
+                $sellerIds = UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
+                $routes->whereIn('id', $sellerIds);
+            }
+
             switch ($user->role_id) {
                 case 1:
                     if ($companyId) {
@@ -448,15 +488,17 @@ class SellerService
                     break;
 
                 default:
-                    return $this->successResponse([
-                        'data' => [],
-                        'pagination' => [
-                            'total' => 0,
-                            'current_page' => 1,
-                            'per_page' => $perPage,
-                            'last_page' => 1,
-                        ]
-                    ]);
+                    if ($user->role_id != 11) {
+                        return $this->successResponse([
+                            'data' => [],
+                            'pagination' => [
+                                'total' => 0,
+                                'current_page' => 1,
+                                'per_page' => $perPage,
+                                'last_page' => 1,
+                            ]
+                        ]);
+                    }
             }
 
             // Resto del código de búsqueda y paginación...

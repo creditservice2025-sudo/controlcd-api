@@ -392,6 +392,7 @@ class CreditService
 
             $liquidationExists = Liquidation::where('seller_id', $credit->seller_id)
                 ->whereDate('created_at', Carbon::today())
+                ->where('status', operator: 'approved')
                 ->exists();
 
             if ($liquidationExists) {

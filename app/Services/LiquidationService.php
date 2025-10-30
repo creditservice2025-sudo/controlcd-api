@@ -979,7 +979,9 @@ class LiquidationService
             'total_pending_absorbed' => $liquidation->total_pending_absorbed,
             'total_crossed_credits' => $dailyTotals['total_crossed_credits'],
             'total_renewal_disbursed' => $dailyTotals['total_renewal_disbursed'],
-            'audits' => $liquidation->audits,
+            'audits' => $liquidation->audits->filter(function ($audit) {
+                return in_array(optional($audit->user)->role_id, [5]);
+            })->values(),
             'end_date' => $liquidation->end_date,
 
         ];

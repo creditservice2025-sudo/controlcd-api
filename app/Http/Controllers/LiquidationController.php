@@ -69,6 +69,7 @@ class LiquidationController extends Controller
         // Verificar si ya existe liquidación para este día
         $existingLiquidation = Liquidation::where('seller_id', $request->seller_id)
             ->whereDate('date', $request->date)
+            ->where('status', 'approved')
             ->first();
 
         if ($existingLiquidation && $user->role_id !== 1) {
@@ -712,13 +713,14 @@ class LiquidationController extends Controller
 
         // 1. Verificar si ya existe liquidación para esta fecha
         $existingLiquidation = Liquidation::where('seller_id', $sellerId)
-            ->whereBetween('date', [$start, $end])
+            ->whereBetween('created_at', [$start, $end])
             ->first();
-
-        // Si existe liquidación, retornar directamente esos datos
+       /*  \Log::debug("liquidation existente: " . ($existingLiquidation ? 'sí' : 'no'));
+        \Log::debug("Verificando liquidación para vendedor $sellerId en fecha desde $start hasta $end"); */
         if ($existingLiquidation) {
+           /*  \Log::debug('Datos de la liquidación encontrada: ' . json_encode($existingLiquidation->toArray())); */
             $updatedLiquidation = Liquidation::where('seller_id', $sellerId)
-                ->whereBetween('date', [$start, $end])
+                ->whereBetween('created_at', [$start, $end])
                 ->first();
             return $this->formatLiquidationResponse($updatedLiquidation, true);
         }

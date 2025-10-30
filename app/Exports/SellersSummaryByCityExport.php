@@ -100,14 +100,26 @@ class SellersSummaryByCityExport implements FromCollection, WithHeadings, WithTi
     {
         return [
             // Fila de encabezados
-            2 => [
-                'font' => ['bold' => true, 'color' => ['rgb' => 'FFFFFF']],
-                'fill' => ['fillType' => 'solid', 'startColor' => ['rgb' => '2563EB']], // Azul claro
+            5 => [
+                'font' => ['bold' => true, 'color' => ['rgb' => 'FFFFFF'], 'name' => 'Arial', 'size' => 14],
+                'fill' => ['fillType' => 'solid', 'startColor' => ['rgb' => '2B69E8']],
                 'alignment' => ['horizontal' => 'center', 'vertical' => 'center'],
             ],
-            // Fila fecha de generación
+            // Fila fecha de generación y fechas (negras)
+            2 => [
+                'font' => ['italic' => true, 'color' => ['rgb' => '000000'], 'name' => 'Arial', 'size' => 12],
+                'alignment' => ['horizontal' => 'left', 'vertical' => 'center'],
+            ],
+            3 => [
+                'font' => ['italic' => true, 'color' => ['rgb' => '000000'], 'name' => 'Arial', 'size' => 12],
+                'alignment' => ['horizontal' => 'left', 'vertical' => 'center'],
+            ],
+            4 => [
+                'font' => ['italic' => true, 'color' => ['rgb' => '000000'], 'name' => 'Arial', 'size' => 12],
+                'alignment' => ['horizontal' => 'left', 'vertical' => 'center'],
+            ],
             1 => [
-                'font' => ['italic' => true, 'color' => ['rgb' => '555555']],
+                'font' => ['italic' => true, 'color' => ['rgb' => '555555'], 'name' => 'Arial', 'size' => 12],
                 'alignment' => ['horizontal' => 'left', 'vertical' => 'center'],
             ],
         ];
@@ -145,10 +157,10 @@ class SellersSummaryByCityExport implements FromCollection, WithHeadings, WithTi
                 // Fila de total resaltada con azul claro
                 $sheet->getStyle('A' . $highestRow . ':' . $highestColumn . $highestRow)
                     ->applyFromArray([
-                        'font' => ['bold' => true],
+                        'font' => ['bold' => true, 'name' => 'Arial', 'size' => 12],
                         'fill' => [
                             'fillType' => 'solid',
-                            'startColor' => ['rgb' => '2563EB']
+                            'startColor' => ['rgb' => '2B69E8']
                         ],
                         'alignment' => ['horizontal' => 'right', 'vertical' => 'center'],
                     ]);
@@ -159,7 +171,7 @@ class SellersSummaryByCityExport implements FromCollection, WithHeadings, WithTi
                 $sheet->mergeCells('B5:F5');
 
                 $sheet->getStyle('B2:F5')->applyFromArray([
-                    'font' => ['bold' => true, 'color' => ['rgb' => '2563EB']],
+                    'font' => ['bold' => true, 'color' => ['rgb' => '2B69E8'], 'name' => 'Arial', 'size' => 16],
                     'alignment' => ['horizontal' => 'center', 'vertical' => 'center'],
                 ]);
 
@@ -168,8 +180,8 @@ class SellersSummaryByCityExport implements FromCollection, WithHeadings, WithTi
                 }
 
                 $sheet->getStyle('A6:' . $highestColumn . '6')->applyFromArray([
-                    'font' => ['bold' => true, 'color' => ['rgb' => 'FFFFFF']],
-                    'fill' => ['fillType' => 'solid', 'startColor' => ['rgb' => '2563EB']],
+                    'font' => ['bold' => true, 'color' => ['rgb' => 'FFFFFF'], 'name' => 'Arial', 'size' => 14],
+                    'fill' => ['fillType' => 'solid', 'startColor' => ['rgb' => '2B69E8']],
                     'alignment' => ['horizontal' => 'center', 'vertical' => 'center'],
                 ]);
 
