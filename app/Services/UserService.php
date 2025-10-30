@@ -33,10 +33,19 @@ class UserService
             $user = User::create($params);
 
             if (isset($params['seller_id']) && $params['seller_id']) {
-                UserRoute::create([
-                    'user_id' => $user->id,
-                    'seller_id' => $params['seller_id']
-                ]);
+                if (is_array($params['seller_id'])) {
+                    foreach ($params['seller_id'] as $sid) {
+                        UserRoute::create([
+                            'user_id' => $user->id,
+                            'seller_id' => $sid
+                        ]);
+                    }
+                } else {
+                    UserRoute::create([
+                        'user_id' => $user->id,
+                        'seller_id' => $params['seller_id']
+                    ]);
+                }
             }
 
             // Asignar rutas al usuario

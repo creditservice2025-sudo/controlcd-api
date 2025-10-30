@@ -470,6 +470,11 @@ class ClientService
                     ->where(fn($q) => $q->whereDoesntHave('credits', fn($qq) => $qq->where('status', 'Cartera Irrecuperable'))
                         ->orWhereHas('credits', fn($qq) => $qq->whereIn('status', ['Activo', 'Vigente'])))
                     ->with(['credits' => fn($qq) => $qq->whereIn('status', ['Activo', 'Vigente'])]);
+            } elseif ($status === 'con_creditos') {
+                $clientsQuery->whereHas('credits', fn($q) => $q->whereIn('status', ['Activo', 'Vigente']));
+                $clientsQuery->with(['credits' => fn($q) => $q->whereIn('status', ['Activo', 'Vigente'])]);
+            } elseif ($status === 'sin_creditos') {
+                $clientsQuery->whereDoesntHave('credits', fn($q) => $q->whereIn('status', ['Activo', 'Vigente']));
             } else {
                 $clientsQuery->where('status', 'active');
             }
@@ -643,17 +648,15 @@ class ClientService
         return $result;
     }
 
-    public function getClientsBySeller($sellerId, $search = '', $companyId = null)
+    public function getClientsBySeller($sellerId, $search = '', $companyId = null, $status = null)
     {
         try {
             $search = trim((string)$search);
+            Log::info('status: ' . $status);   
 
-            // Seleccionar solo las columnas necesarias para el front y evitar cargar colecciones pesadas.
-            // Para créditos pedimos sums y counts útiles para mostrar en UI sin cargar todos los pagos.
-            $clients = Client::query()
+            $clientsQuery = Client::query()
                 ->select('id', 'name', 'dni', 'email', 'address', 'seller_id', 'routing_order', 'geolocation', 'phone', 'capacity')
                 ->with([
-                    // Cargar seller básico y su usuario para mostrar el nombre del vendedor si hace falta
                     'seller' => function ($q) {
                         $q->select('id', 'user_id', 'city_id', 'company_id');
                     },
@@ -666,10 +669,9 @@ class ClientService
                     'seller.city.country' => function ($q) {
                         $q->select('id', 'name');
                     },
-                    // Cargar créditos con agregados para evitar N+1 (payments_sum, pending installments)
                     'credits' => function ($q) {
                         $q->select('id', 'client_id', 'credit_value', 'number_installments', 'payment_frequency', 'status', 'total_interest')
-                            ->withSum('payments', 'amount') // payments_sum_amount
+                            ->withSum('payments', 'amount')
                             ->withCount(['installments as pending_installments_count' => function ($iq) {
                                 $iq->where('status', '<>', 'Pagado');
                             }])
@@ -689,14 +691,24 @@ class ClientService
                             ->orWhere('dni', 'like', "%{$search}%")
                             ->orWhere('email', 'like', "%{$search}%");
                     });
-                })
-                ->whereDoesntHave('credits', function ($q) {
-                    $q->where('status', 'Cartera Irrecuperable');
-                })
-                ->orderBy('routing_order', 'asc')
-                ->get();
+                });
 
-            // Agregar campo total_credits_value a cada cliente
+            // Filtro solo para con_creditos y sin_creditos
+            if ($status === 'con_creditos') {
+                $clientsQuery->whereHas('credits', fn($q) => $q->whereIn('status', ['Activo', 'Vigente']));
+                $clientsQuery->with(['credits' => fn($q) => $q->whereIn('status', ['Activo', 'Vigente'])]);
+            } elseif ($status === 'sin_creditos') {
+                $clientsQuery->whereDoesntHave('credits', fn($q) => $q->whereIn('status', ['Activo', 'Vigente']));
+            }
+
+            $clientsQuery->whereDoesntHave('credits', function ($q) {
+                $q->where('status', 'Cartera Irrecuperable');
+            });
+
+            $clientsQuery->orderBy('routing_order', 'asc');
+
+            $clients = $clientsQuery->get();
+
             $clients->transform(function ($client) {
                 $totalCreditsValue = $client->credits
                     ->whereIn('status', ['Activo', 'Vigente'])
@@ -1019,6 +1031,12 @@ class ClientService
             // scope to seller for role 5
             if ($user->role_id == 5 && $user->seller) {
                 $query->where('seller_id', $user->seller->id);
+            }
+
+            // scope to sellers asociados para role 11
+            if ($user->role_id == 11) {
+                $sellerIds = \App\Models\UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
+                $query->whereIn('seller_id', $sellerIds);
             }
 
             if (Auth::user()->role_id == 1 && $companyId) {

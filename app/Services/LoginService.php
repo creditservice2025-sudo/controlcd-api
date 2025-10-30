@@ -58,11 +58,16 @@ class LoginService
                         return $this->errorResponse(['Ya has realizado una liquidación hoy. Intenta nuevamente mañana.'], 401);
                     }
 
+                    \Log::info('Verificando auditoría para usuario: ' . $user->id);
+
                     $auditExists = \App\Models\LiquidationAudit::where('liquidation_id', $liquidation->id)
                         ->where('user_id', $user->id)
                         ->whereIn('action', ['updated', 'created'])
                         ->whereDate('created_at', Carbon::today())
+                        ->whereNull('deleted_at')
                         ->exists();
+
+                        \Log::info('Auditoría encontrada: ' . ($auditExists ? 'Si' : 'No'));
 
                     if ($auditExists) {
                         return $this->errorResponse(['Ya has realizado una liquidación hoy. Intenta nuevamente mañana.'], 401);
@@ -90,6 +95,7 @@ class LoginService
                 'access_token' => $token,
                 'token_type' => 'Bearer',
                 'user' => $user,
+                'permissions' => $user->getAllPermissions()->pluck('name'),
             ]);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());

@@ -29,6 +29,11 @@ class ClientController extends Controller
     public function __construct(ClientService $clientService)
     {
         $this->clientService = $clientService;
+
+       /*  $this->middleware('permission:ver_clientes')->only('index');
+        $this->middleware('permission:crear_clientes')->only('store');
+        $this->middleware('permission:editar_clientes')->only('update');
+        $this->middleware('permission:eliminar_clientes')->only('destroy'); */
     }
 
     public function create(ClientRequest $request)
@@ -133,13 +138,14 @@ class ClientController extends Controller
         try {
             $search = $request->input('search', '');
             $companyId = $request->input('company_id');
+            $status = $request->input('status', null);
 
             $seller = Seller::find($sellerId);
             if (!$seller) {
                 return $this->errorResponse('Vendedor no encontrado', 404);
             }
 
-            $clients = $this->clientService->getClientsBySeller($sellerId, $search, $companyId);
+            $clients = $this->clientService->getClientsBySeller($sellerId, $search, $companyId, $status);
 
             return $this->successResponse([
                 'success' => true,

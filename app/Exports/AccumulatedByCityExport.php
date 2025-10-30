@@ -114,24 +114,24 @@ class AccumulatedByCityExport implements FromArray, WithEvents
 
                 $sheet->getStyle('B1')->getFill()
                     ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
-                    ->getStartColor()->setARGB('FF2563EB'); 
+                    ->getStartColor()->setARGB('2B69E8'); 
                 $sheet->getStyle('B2:B4')->getFill()
                     ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
-                    ->getStartColor()->setARGB('FF2563EB'); 
+                    ->getStartColor()->setARGB('2B69E8'); 
 
                 $sheet->getStyle('A6:' . $sheet->getHighestColumn() . '6')->getFill()
                     ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
-                    ->getStartColor()->setARGB('FF2563EB'); 
+                    ->getStartColor()->setARGB('2B69E8'); 
 
                 $totalCiudadRow = $highestRow - 3;
                 $sheet->getStyle("A$totalCiudadRow:" . $sheet->getHighestColumn() . "$totalCiudadRow")->getFill()
                     ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
-                    ->getStartColor()->setARGB('FF2563EB');
+                    ->getStartColor()->setARGB('2B69E8');
 
                 $totalGlobalRow = $highestRow - 1;
                 $sheet->getStyle("A$totalGlobalRow:" . $sheet->getHighestColumn() . "$totalGlobalRow")->getFill()
                     ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
-                    ->getStartColor()->setARGB('FF2563EB'); 
+                    ->getStartColor()->setARGB('2B69E8'); 
 
                 $sheet->getStyle('B1:B4')->getFont()->setBold(true)->setSize(16);
                 $sheet->getStyle('A6:' . $sheet->getHighestColumn() . '6')->getFont()->setBold(true)->setSize(14);
