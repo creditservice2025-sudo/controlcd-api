@@ -176,6 +176,9 @@
             </tr>
         </thead>
         <tbody>
+            @php
+                $total_new_credits_value = 0;
+            @endphp
             @if(count($report['new_credits'] ?? []) === 0)
                 <tr>
                     <td colspan="5" class="text-center">No hay créditos nuevos para la fecha.</td>
@@ -185,6 +188,7 @@
                     @php
                         $utilidad = $credit->credit_value * ($credit->total_interest / 100);
                         $total = $credit->credit_value + $utilidad;
+                        $total_new_credits_value += $credit->credit_value + $utilidad;
                     @endphp
                     <tr>
                         <td>{{ $index + 1 }}</td>
@@ -203,7 +207,7 @@
         <tfoot>
             <tr>
                 <th colspan="4">TOTAL CRÉDITOS NUEVOS:</th>
-                <th class="text-right">$ {{ number_format($total_new_credits_value ?? 0, 2) }}</th>
+                <th class="text-right">$ {{ number_format($total_new_credits_value, 2) }}</th>
             </tr>
         </tfoot>
     </table>
@@ -275,12 +279,14 @@
             </tr>
         </thead>
         <tbody>
+            @php $total_expenses_value = 0; @endphp
             @if(!isset($report['expenses']) || count($report['expenses'] ?? []) === 0)
                 <tr>
                     <td colspan="4" class="text-center">No hay gastos para la fecha.</td>
                 </tr>
             @else
                 @foreach ($report['expenses'] ?? [] as $index => $expense)
+                    @php $total_expenses_value += $expense->value; @endphp
                     <tr>
                         <td>{{ $index + 1 }}</td>
                         <td class="text-left">{{ $expense->description }}</td>
@@ -293,7 +299,7 @@
         <tfoot>
             <tr>
                 <th colspan="3">TOTAL DE GASTOS</th>
-                <th class="text-right">$ {{ number_format($total_expenses_value ?? 0, 2) }}</th>
+                <th class="text-right">$ {{ number_format($total_expenses_value, 2) }}</th>
             </tr>
         </tfoot>
     </table>
