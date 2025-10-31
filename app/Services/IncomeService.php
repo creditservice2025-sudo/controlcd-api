@@ -28,6 +28,7 @@ class IncomeService
                 'user_id' => 'nullable|numeric',
                 'image' => 'nullable|image|max:2048',
                 'created_at' => 'nullable|date',
+                'timezone' => 'nullable|string',
             ]);
 
             $user = Auth::user();
@@ -37,28 +38,34 @@ class IncomeService
                 ? $validated['user_id']
                 : $user->id;
 
+            if (isset($validated['timezone']) && !empty($validated['timezone'])) {
+                $createdAt = Carbon::now($validated['timezone']);
+                $updatedAt = Carbon::now($validated['timezone']);
+                unset($validated['timezone']);
+            } else {
+                $createdAt = null;
+                $updatedAt = null;
+            }
+
             $incomeData = [
                 'value' => $validated['value'],
                 'description' => $validated['description'],
                 'user_id' => $userId,
+                'created_at' => $createdAt ?? ($request->has('created_at') ? $validated['created_at'] : null),
+                'updated_at' => $updatedAt ?? null
             ];
-
-            if ($request->has('created_at')) {
-                $incomeData['created_at'] = $validated['created_at'];
-            }
 
             $income = Income::create($incomeData);
 
-
             if ($request->hasFile('image')) {
                 $imageFile = $request->file('image');
-
                 $imagePath = Helper::uploadFile($imageFile, 'incomes');
-
                 IncomeImage::create([
                     'income_id' => $income->id,
                     'user_id' => $userId,
-                    'path' => $imagePath
+                    'path' => $imagePath,
+                    'created_at' => $createdAt ?? null,
+                    'updated_at' => $updatedAt ?? null
                 ]);
             }
 
@@ -103,7 +110,13 @@ class IncomeService
             $validated = $request->validate([
                 'value' => 'required|numeric|min:0',
                 'description' => 'required|string',
+                'timezone' => 'nullable|string',
             ]);
+
+            if (isset($validated['timezone']) && !empty($validated['timezone'])) {
+                $validated['updated_at'] = Carbon::now($validated['timezone']);
+                unset($validated['timezone']);
+            }
 
             $income->update($validated);
 
@@ -118,7 +131,7 @@ class IncomeService
         }
     }
 
-    public function delete($incomeId)
+    public function delete($incomeId, Request $request = null)
     {
         try {
             $user = Auth::user();
@@ -129,7 +142,7 @@ class IncomeService
             }
 
             // Solo permitir eliminar ingresos del día actual
-            $timezone = 'America/Caracas';
+            $timezone = 'America/Lima';
 
             $incomeDate = Carbon::parse($income->created_at)->timezone($timezone)->format('Y-m-d');
             $currentDate = Carbon::now($timezone)->format('Y-m-d');
@@ -160,7 +173,14 @@ class IncomeService
                 );
             }
 
-            $income->delete();
+            $timezone = $request && $request->has('timezone') ? $request->get('timezone') : null;
+            if ($timezone) {
+                $income->deleted_at = Carbon::now($timezone);
+                $income->save();
+                $income->delete();
+            } else {
+                $income->delete();
+            }
 
             return $this->successResponse([
                 'success' => true,
@@ -212,7 +232,7 @@ class IncomeService
                 })->pluck('id');
                 $incomeQuery->whereIn('user_id', $userIds);
             } else if ($role === 5) {
-                $timezone = 'America/Caracas';
+                $timezone = 'America/Lima';
                 $today = Carbon::now($timezone)->startOfDay();
                 $todayEnd = Carbon::now($timezone)->endOfDay();
                 $incomeQuery->whereBetween('created_at', [
@@ -226,10 +246,10 @@ class IncomeService
             }
 
             if ($request->has('start_date') && $request->has('end_date')) {
-                $incomeQuery->whereBetween('created_at', [
-                    $request->start_date . " 00:00:00",
-                    $request->end_date . " 23:59:59"
-                ]);
+                $timezone = $request->input('timezone', 'America/Lima');
+                $start = Carbon::parse($request->start_date, $timezone)->startOfDay()->timezone('UTC');
+                $end = Carbon::parse($request->end_date, $timezone)->endOfDay()->timezone('UTC');
+                $incomeQuery->whereBetween('created_at', [$start, $end]);
             }
 
             $validOrderDirections = ['asc', 'desc'];
@@ -368,7 +388,7 @@ class IncomeService
             $incomeQuery = Income::with(['user', 'images'])
                 ->where('user_id', $sellerUserId);
 
-            $timezone = 'America/Caracas';
+            $timezone = $request->input('timezone', 'America/Lima');
 
             if ($request->has('start_date') && $request->has('end_date')) {
                 $startDate = $request->get('start_date');

@@ -57,7 +57,8 @@ class CompanyRequest extends FormRequest
             'company_name' => 'required|string|max:255',
             'company_phone' => 'nullable|string|max:20',
             'company_email' => 'nullable|email|max:255',
-            'logo' => 'nullable|image|mimes:jpeg,png,jpg,gif,svg|max:2048'
+            'logo' => 'nullable|image|mimes:jpeg,png,jpg,gif,svg|max:2048',
+            'timezone' => 'nullable|string',
         ];
     }
 

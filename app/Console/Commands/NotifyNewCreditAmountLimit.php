@@ -17,7 +17,7 @@ class NotifyNewCreditAmountLimit extends Command
 
     public function handle()
     {
-        $timezone = 'America/Caracas';
+        $timezone = 'America/Lima';
         $today = Carbon::now($timezone)->toDateString();
         $this->info('Verificando límite de monto de créditos nuevos por vendedor...');
 

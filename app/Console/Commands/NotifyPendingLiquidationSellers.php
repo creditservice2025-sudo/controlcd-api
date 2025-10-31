@@ -16,7 +16,7 @@ class NotifyPendingLiquidationSellers extends Command
 
     public function handle()
     {
-        $timezone = 'America/Caracas';
+        $timezone = 'America/Lima';
         $todayDate = Carbon::now($timezone)->toDateString();
 
         $this->info("Hoy es: $todayDate");

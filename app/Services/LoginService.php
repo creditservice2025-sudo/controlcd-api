@@ -83,9 +83,11 @@ class LoginService
                 ]);
             }
 
+            $timezone = request()->has('timezone') ? request()->get('timezone') : null;
+            $loginAt = $timezone ? Carbon::now($timezone) : now();
             SessionLog::create([
                 'user_id'    => $user->id,
-                'login_at'   => now(),
+                'login_at'   => $loginAt,
                 'ip'         => request()->ip(),
                 'user_agent' => request()->header('User-Agent'),
             ]);
@@ -108,13 +110,19 @@ class LoginService
         try {
             $user = Auth::user();
             $user->token_revoked = 1;
-            $user->save();
+            if ($user instanceof \App\Models\User) {
+                $user->save();
+            } else {
+                throw new \Exception('Invalid user instance');
+            }
 
+            $timezone = request()->has('timezone') ? request()->get('timezone') : null;
+            $logoutAt = $timezone ? Carbon::now($timezone) : now();
             SessionLog::where('user_id', $user->id)
                 ->whereNull('logout_at')
                 ->latest()
                 ->first()
-                ?->update(['logout_at' => now()]);
+                ?->update(['logout_at' => $logoutAt]);
 
             Auth::logout();
 

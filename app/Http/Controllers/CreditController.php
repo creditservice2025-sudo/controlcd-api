@@ -18,6 +18,10 @@ class CreditController extends Controller
     public function __construct(CreditService $creditService)
     {
         $this->creditService = $creditService;
+       /*  $this->middleware('permission:ver_creditos')->only('index');
+        $this->middleware('permission:crear_creditos')->only('create');
+        $this->middleware('permission:editar_creditos')->only('update');
+        $this->middleware('permission:eliminar_creditos')->only('delete'); */
     }
 
     public function create(CreditRequest $request)

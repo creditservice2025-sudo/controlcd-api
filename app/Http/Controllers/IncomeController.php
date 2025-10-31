@@ -12,6 +12,10 @@ class IncomeController extends Controller
     public function __construct(IncomeService $incomeService)
     {
         $this->incomeService = $incomeService;
+        /* $this->middleware('permission:ver_ingresos')->only('index');
+        $this->middleware('permission:crear_ingresos')->only('store');
+        $this->middleware('permission:editar_ingresos')->only('update');
+        $this->middleware('permission:eliminar_ingresos')->only('destroy'); */
     }
 
     public function index(Request $request)

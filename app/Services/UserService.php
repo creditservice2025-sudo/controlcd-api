@@ -30,20 +30,37 @@ class UserService
             }
 
             $params['password'] = Hash::make($params['password']);
+
+            if (isset($params['timezone']) && !empty($params['timezone'])) {
+                $params['created_at'] = \Carbon\Carbon::now($params['timezone']);
+                $params['updated_at'] = \Carbon\Carbon::now($params['timezone']);
+                $userTimezone = $params['timezone'];
+                unset($params['timezone']); // Evitar error en fillable
+            } else {
+                $userTimezone = null;
+            }
+
             $user = User::create($params);
+
+            $createdAt = isset($params['created_at']) ? $params['created_at'] : null;
+            $updatedAt = isset($params['updated_at']) ? $params['updated_at'] : null;
 
             if (isset($params['seller_id']) && $params['seller_id']) {
                 if (is_array($params['seller_id'])) {
                     foreach ($params['seller_id'] as $sid) {
                         UserRoute::create([
                             'user_id' => $user->id,
-                            'seller_id' => $sid
+                            'seller_id' => $sid,
+                            'created_at' => $createdAt,
+                            'updated_at' => $updatedAt
                         ]);
                     }
                 } else {
                     UserRoute::create([
                         'user_id' => $user->id,
-                        'seller_id' => $params['seller_id']
+                        'seller_id' => $params['seller_id'],
+                        'created_at' => $createdAt,
+                        'updated_at' => $updatedAt
                     ]);
                 }
             }
@@ -87,10 +104,27 @@ class UserService
                 unset($params['password']);
             }
 
+            if (isset($params['timezone']) && !empty($params['timezone'])) {
+                $params['updated_at'] = \Carbon\Carbon::now($params['timezone']);
+                $userTimezone = $params['timezone'];
+                unset($params['timezone']);
+            } else {
+                $userTimezone = null;
+            }
+
             $user->update($params);
 
             if (isset($params['routes'])) {
-                $user->routes()->sync($params['routes']);
+                $pivotData = [];
+                if ($userTimezone) {
+                    $now = \Carbon\Carbon::now($userTimezone);
+                    foreach ($params['routes'] as $routeId) {
+                        $pivotData[$routeId] = ['updated_at' => $now];
+                    }
+                    $user->routes()->sync($pivotData);
+                } else {
+                    $user->routes()->sync($params['routes']);
+                }
             }
             DB::commit();
 
@@ -106,7 +140,7 @@ class UserService
         }
     }
 
-    public function delete($userId)
+    public function delete($userId, $timezone = null)
     {
         try {
             $user = User::find($userId);
@@ -118,10 +152,22 @@ class UserService
             $userRoute = UserRoute::where('user_id', $userId)->get();
 
             foreach ($userRoute as $route) {
-                $route->delete();
+                if ($timezone) {
+                    $route->deleted_at = \Carbon\Carbon::now($timezone);
+                    $route->save();
+                    $route->delete();
+                } else {
+                    $route->delete();
+                }
             }
 
-            $user->delete();
+            if ($timezone) {
+                $user->deleted_at = \Carbon\Carbon::now($timezone);
+                $user->save();
+                $user->delete();
+            } else {
+                $user->delete();
+            }
 
             return $this->successResponse([
                 'success' => true,

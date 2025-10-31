@@ -12,6 +12,7 @@ use App\Models\Liquidation;
 use App\Models\Payment;
 use App\Models\PaymentInstallment;
 use App\Models\Seller;
+use App\Models\UserRoute;
 use App\Traits\ApiResponse;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
@@ -25,7 +26,7 @@ class DashboardService
 {
     use ApiResponse;
 
-    private const TIMEZONE = 'America/Caracas';
+    private const TIMEZONE = 'America/Lima';
 
     /**
      * Apply location filters (country_id / city_id) to a query builder that has city relation or city_id column.
@@ -62,6 +63,10 @@ class DashboardService
 
         if ($role === 5 && $user->seller) {
             return collect([$user->seller->id]);
+        }
+        // Consultor: solo los sellers asociados en UserRoute
+        if ($role === 11) {
+            return UserRoute::where('user_id', $user->id)->pluck('seller_id')->unique()->values();
         }
 
         $sellersQuery = Seller::query();
@@ -273,6 +278,15 @@ class DashboardService
                     $data['clients'] = $seller->clients()->count();
                     $data['credits'] = $seller->credits()->count();
                 }
+            // Consultor: solo los sellers asociados en UserRoute
+            } elseif ($role === 11) {
+                $sellerIds = UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
+                $data['routes'] = count($sellerIds);
+                $data['members'] = User::whereHas('seller', function ($query) use ($sellerIds) {
+                    $query->whereIn('id', $sellerIds);
+                })->count();
+                $data['credits'] = Credit::whereIn('seller_id', $sellerIds)->count();
+                $data['clients'] = Client::whereIn('seller_id', $sellerIds)->count();
             }
 
             // Filtro por vendedor si se recibe seller_id
@@ -308,7 +322,7 @@ class DashboardService
             $user = Auth::user();
             $role = $user->role_id;
 
-            $timezone  = 'America/Caracas';
+            $timezone  = 'America/Lima';
             $startUTC  = Carbon::now($timezone)->startOfDay()->timezone('UTC');
             $endUTC    = Carbon::now($timezone)->endOfDay()->timezone('UTC');
             $todayDate = Carbon::now($timezone)->toDateString();

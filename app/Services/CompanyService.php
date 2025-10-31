@@ -66,12 +66,22 @@ class CompanyService
             return $this->errorResponse('Error al obtener las empresas', 500);
         }
     }
+
     public function create(CompanyRequest $request)
     {
         DB::beginTransaction();
 
         try {
             $params = $request->validated();
+
+            if (isset($params['timezone']) && !empty($params['timezone'])) {
+                $params['created_at'] = \Carbon\Carbon::now($params['timezone']);
+                $params['updated_at'] = \Carbon\Carbon::now($params['timezone']);
+                $userTimezone = $params['timezone'];
+                unset($params['timezone']);
+            } else {
+                $userTimezone = null;
+            }
 
             if ($request->hasFile('logo')) {
                 $validationResponse = $this->validateLogo($request);
@@ -86,7 +96,9 @@ class CompanyService
                 'dni' => $params['dni'],
                 'phone' => $params['phone'] ?? null,
                 'password' => Hash::make($params['password']),
-                'role_id' => $params['role_id'] ?? 2
+                'role_id' => $params['role_id'] ?? 2,
+                'created_at' => $params['created_at'] ?? null,
+                'updated_at' => $params['updated_at'] ?? null
             ]);
 
             $logoPath = null;
@@ -101,7 +113,9 @@ class CompanyService
                 'name' => $params['company_name'],
                 'phone' => $params['company_phone'] ?? '',
                 'email' => $params['company_email'],
-                'logo_path' => $logoPath
+                'logo_path' => $logoPath,
+                'created_at' => $params['created_at'] ?? null,
+                'updated_at' => $params['updated_at'] ?? null
             ]);
 
             DB::commit();
@@ -126,12 +140,22 @@ class CompanyService
             $params = $request->validated();
             $company = Company::with('user')->findOrFail($companyId);
 
+            // Si se recibe timezone, usarlo para la hora local en updated_at
+            if (isset($params['timezone']) && !empty($params['timezone'])) {
+                $params['updated_at'] = \Carbon\Carbon::now($params['timezone']);
+                $userTimezone = $params['timezone'];
+                unset($params['timezone']);
+            } else {
+                $userTimezone = null;
+            }
+
             $company->user->update([
                 'name' => $params['name'],
                 'email' => $params['email'],
                 'dni' => $params['dni'],
                 'phone' => $params['phone'] ?? $company->user->phone,
-                'password' => isset($params['password']) ? Hash::make($params['password']) : $company->user->password
+                'password' => isset($params['password']) ? Hash::make($params['password']) : $company->user->password,
+                'updated_at' => $params['updated_at'] ?? null
             ]);
 
             if ($request->hasFile('logo')) {
@@ -153,7 +177,8 @@ class CompanyService
                 'name' => $params['company_name'],
                 'phone' => $params['company_phone'] ?? $company->phone,
                 'email' => $params['company_email'],
-                'logo_path' => $params['logo_path'] ?? $company->logo_path
+                'logo_path' => $params['logo_path'] ?? $company->logo_path,
+                'updated_at' => $params['updated_at'] ?? null
             ]);
 
             DB::commit();
@@ -190,7 +215,7 @@ class CompanyService
         return true;
     }
 
-    public function delete($companyId)
+    public function delete($companyId, $timezone = null)
     {
         DB::beginTransaction();
 
@@ -212,9 +237,20 @@ class CompanyService
             }
 
             $user = $company->user;
-            $company->delete();
-            if ($user) {
-                $user->delete();
+            if ($timezone) {
+                $company->deleted_at = \Carbon\Carbon::now($timezone);
+                $company->save();
+                $company->delete();
+                if ($user) {
+                    $user->deleted_at = \Carbon\Carbon::now($timezone);
+                    $user->save();
+                    $user->delete();
+                }
+            } else {
+                $company->delete();
+                if ($user) {
+                    $user->delete();
+                }
             }
 
             DB::commit();

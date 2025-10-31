@@ -19,11 +19,17 @@ class RolesSeeder extends Seeder
             'Socio',
             'Asistente',
             'Cobrador',
-            'Revisador'
+            'Revisador',
+
+            'Cobrador-abono',
+            'Limitado',
+            'Digitador',
+            'Contador',
+            'Consultor',
         ];
 
         foreach ($roles as $role) {
-            Role::create(['name' => $role, 'guard_name' => 'api']);
+            Role::firstOrCreate(['name' => $role, 'guard_name' => 'api']);
         }
     }
 }

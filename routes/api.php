@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\ExpenseController;
 use App\Http\Controllers\LiquidationController;
+use App\Http\Controllers\RolePermissionController;
 use App\Http\Controllers\SellerConfigController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -85,6 +86,8 @@ Route::middleware('auth:api')->group(function () {
 
     //route roles
     Route::apiResource('roles', RoleController::class);
+    Route::post('/roles/{role}/permisos', [RolePermissionController::class, 'assignPermissions']);
+    Route::get('/roles/{role}/permisos', [RolePermissionController::class, 'show']);
 
     //route client
     Route::prefix('clients')->group(function () {
@@ -197,7 +200,7 @@ Route::middleware('auth:api')->group(function () {
 
         Route::get('download-report/{id}', [LiquidationController::class, 'downloadReport']);
         Route::get('first-approved-by-seller', [LiquidationController::class, 'getFirstApprovedLiquidationBySeller']);
-
+        Route::get('{id}/detail', [LiquidationController::class, 'getLiquidationDetail']); // <-- Nueva ruta para detalle de liquidación
         Route::prefix('seller/{sellerId}')->group(function () {
             Route::get('/', [LiquidationController::class, 'getBySeller']);
             Route::get('/stats', [LiquidationController::class, 'getSellerStats']);

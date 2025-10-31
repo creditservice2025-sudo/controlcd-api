@@ -29,7 +29,8 @@ class UserRequest extends FormRequest
             'password' => 'required|string|min:8',
             'routes' => 'array',
             'phone' => 'required|integer|unique:users',
-            'role_id' => 'required|integer|in:3,4,6',
+            'role_id' => 'required|integer',
+            'timezone' => 'nullable|string',
         ];
     }
 
@@ -53,7 +54,6 @@ class UserRequest extends FormRequest
             'dni.unique' => 'El dni ya existe',
             'password.min' => 'La contraseña debe tener minimo 8 caracteres',
             'role_id.required' => 'El rol del miembro es requerido',
-            'role_id.in' => 'El rol del miembro debe ser una de las siguientes opciones: 3, 4, 6'
         ];
     }
 }

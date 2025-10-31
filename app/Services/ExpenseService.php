@@ -19,7 +19,7 @@ class ExpenseService
 {
     use ApiResponse;
 
-    const TIMEZONE = 'America/Caracas';
+    const TIMEZONE = 'America/Lima';
 
     public function create(Request $request)
     {
@@ -33,6 +33,7 @@ class ExpenseService
                 'created_at' => 'nullable|date',
                 'latitude' => 'nullable',
                 'longitude' => 'nullable',
+                'timezone' => 'nullable|string',
             ]);
 
             $user = Auth::user();
@@ -42,12 +43,23 @@ class ExpenseService
                 ? $validated['user_id']
                 : $user->id;
 
+            if (isset($validated['timezone']) && !empty($validated['timezone'])) {
+                $createdAt = Carbon::now($validated['timezone']);
+                $updatedAt = Carbon::now($validated['timezone']);
+                unset($validated['timezone']);
+            } else {
+                $createdAt = null;
+                $updatedAt = null;
+            }
+
             $expenseData = [
                 'value' => $validated['value'],
                 'description' => $validated['description'],
                 'user_id' => $userId,
                 'category_id' => $validated['category_id'],
                 'status' => 'Aprobado',
+                'created_at' => $createdAt ?? ($request->has('created_at') ? $validated['created_at'] : null),
+                'updated_at' => $updatedAt ?? null
             ];
             if ($request->has('latitude')) {
                 $expenseData['latitude'] = $validated['latitude'];
@@ -55,10 +67,6 @@ class ExpenseService
 
             if ($request->has('longitude')) {
                 $expenseData['longitude'] = $validated['longitude'];
-            }
-
-            if ($request->has('created_at')) {
-                $expenseData['created_at'] = $validated['created_at'];
             }
 
             $expense = Expense::create($expenseData);
@@ -97,7 +105,9 @@ class ExpenseService
                 ExpenseImage::create([
                     'expense_id' => $expense->id,
                     'user_id' => $userId,
-                    'path' => $imagePath
+                    'path' => $imagePath,
+                    'created_at' => $createdAt ?? null,
+                    'updated_at' => $updatedAt ?? null
                 ]);
             }
 
@@ -139,7 +149,13 @@ class ExpenseService
                 'category_id' => 'required|numeric',
                 'value' => 'required|numeric|min:0',
                 'description' => 'required|string',
+                'timezone' => 'nullable|string',
             ]);
+
+            if (isset($validated['timezone']) && !empty($validated['timezone'])) {
+                $validated['updated_at'] = Carbon::now($validated['timezone']);
+                unset($validated['timezone']);
+            }
 
             $expense->update($validated);
 
@@ -178,7 +194,7 @@ class ExpenseService
         }
     }
 
-    public function delete($expenseId)
+    public function delete($expenseId, Request $request = null)
     {
         try {
             $user = Auth::user();
@@ -203,7 +219,14 @@ class ExpenseService
                 ], 422);
             }
 
-            $expense->delete();
+            $timezone = $request && $request->has('timezone') ? $request->get('timezone') : null;
+            if ($timezone) {
+                $expense->deleted_at = Carbon::now($timezone);
+                $expense->save();
+                $expense->delete();
+            } else {
+                $expense->delete();
+            }
 
             return $this->successResponse([
                 'success' => true,
@@ -305,10 +328,10 @@ class ExpenseService
             }
 
             if ($request->has('start_date') && $request->has('end_date')) {
-                $expensesQuery->whereBetween('created_at', [
-                    $request->start_date . " 00:00:00",
-                    $request->end_date . " 23:59:59"
-                ]);
+                $timezone = $request->input('timezone', self::TIMEZONE);
+                $start = Carbon::parse($request->start_date, $timezone)->startOfDay()->timezone('UTC');
+                $end = Carbon::parse($request->end_date, $timezone)->endOfDay()->timezone('UTC');
+                $expensesQuery->whereBetween('created_at', [$start, $end]);
             }
 
             $validOrderDirections = ['asc', 'desc'];
@@ -447,19 +470,16 @@ class ExpenseService
             $expensesQuery = Expense::with(['user', 'category', 'images'])
                 ->where('user_id', $sellerUserId);
 
-            $timezone = 'America/Caracas';
+            $timezone = $request->input('timezone', 'America/Lima');
 
             if ($request->has('start_date') && $request->has('end_date')) {
                 $startDate = Carbon::parse($request->get('start_date'), $timezone)->startOfDay()->timezone('UTC');
                 $endDate = Carbon::parse($request->get('end_date'), $timezone)->endOfDay()->timezone('UTC');
-
                 $expensesQuery->whereBetween('created_at', [$startDate, $endDate]);
             } elseif ($request->has('date')) {
                 $filterDate = Carbon::parse($request->get('date'), $timezone);
-
                 $start = $filterDate->copy()->startOfDay()->timezone('UTC');
                 $end = $filterDate->copy()->endOfDay()->timezone('UTC');
-
                 $expensesQuery->whereBetween('created_at', [$start, $end]);
             } else {
                 $todayStart = Carbon::now($timezone)->startOfDay()->timezone('UTC');

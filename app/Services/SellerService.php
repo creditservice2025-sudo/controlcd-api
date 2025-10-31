@@ -33,6 +33,15 @@ class SellerService
         try {
             $params = $request->validated();
 
+            if (isset($params['timezone']) && !empty($params['timezone'])) {
+                $params['created_at'] = Carbon::now($params['timezone']);
+                $params['updated_at'] = Carbon::now($params['timezone']);
+                $userTimezone = $params['timezone'];
+                unset($params['timezone']);
+            } else {
+                $userTimezone = null;
+            }
+
             if ($request->has('images')) {
                 $validationResponse = $this->validateImages($request);
                 if ($validationResponse !== true) {
@@ -44,22 +53,30 @@ class SellerService
                 'name' => $params['name'],
                 'email' => $params['email'],
                 'dni' => $params['dni'],
+                'phone' => $params['phone'] ?? null,
                 'password' => Hash::make($params['password']),
-                'role_id' => $params['role_id'] ?? 5
+                'role_id' => $params['role_id'] ?? 5,
+                'created_at' => $params['created_at'] ?? null,
+                'updated_at' => $params['updated_at'] ?? null
             ]);
 
             $seller = Seller::create([
                 'user_id' => $user->id,
                 'city_id' => $params['city_id'],
                 'company_id' => $params['company_id'],
-                'status' => 'ACTIVE'
+                'status' => 'ACTIVE',
+                'routing_order' => $params['routing_order'] ?? null,
+                'created_at' => $params['created_at'] ?? null,
+                'updated_at' => $params['updated_at'] ?? null
             ]);
 
             if (isset($params['members']) && is_array($params['members'])) {
                 foreach ($params['members'] as $memberId) {
                     UserRoute::create([
                         'user_id' => $memberId,
-                        'seller_id' => $seller->id
+                        'seller_id' => $seller->id,
+                        'created_at' => $params['created_at'] ?? null,
+                        'updated_at' => $params['updated_at'] ?? null
                     ]);
                 }
             }
@@ -71,9 +88,21 @@ class SellerService
                     $imagePath = Helper::uploadFile($imageFile, 'clients');
                     $seller->images()->create([
                         'path' => $imagePath,
-                        'type' => $imageData['type']
+                        'type' => $imageData['type'],
+                        'created_at' => $params['created_at'] ?? null,
+                        'updated_at' => $params['updated_at'] ?? null
                     ]);
                 }
+            }
+
+            if ($request->hasFile('image')) {
+                $imageFile = $request->file('image');
+                $imagePath = Helper::uploadFile($imageFile, 'sellers');
+                $seller->images()->create([
+                    'path' => $imagePath,
+                    'created_at' => $params['created_at'] ?? null,
+                    'updated_at' => $params['updated_at'] ?? null
+                ]);
             }
 
             DB::commit();
@@ -101,29 +130,47 @@ class SellerService
             $params = $request->validated();
             $seller = Seller::with(['user', 'images'])->findOrFail($sellerId);
 
+            if (isset($params['timezone']) && !empty($params['timezone'])) {
+                $params['updated_at'] = Carbon::now($params['timezone']);
+                $userTimezone = $params['timezone'];
+                unset($params['timezone']);
+            } else {
+                $userTimezone = null;
+            }
+
             $seller->user->update([
                 'name' => $params['name'],
                 'email' => $params['email'],
                 'dni' => $params['dni'],
-
+                'phone' => $params['phone'] ?? $seller->user->phone,
                 'role_id' => $params['role_id'],
-                'password' => isset($params['password']) ? Hash::make($params['password']) : $seller->user->password
+                'password' => isset($params['password']) ? Hash::make($params['password']) : $seller->user->password,
+                'updated_at' => $params['updated_at'] ?? null
             ]);
 
             $seller->update([
                 'city_id' => $params['city_id'],
+                'company_id' => $params['company_id'],
+                'routing_order' => $params['routing_order'] ?? $seller->routing_order,
+                'updated_at' => $params['updated_at'] ?? null
             ]);
-
-
 
             $memberIds = array_map('intval', $params['members'] ?? []);
             $memberIds = array_filter($memberIds);
 
-            $this->syncMembers($seller, $memberIds);
-
+            $this->syncMembersWithTimezone($seller, $memberIds, $params['updated_at'] ?? null);
 
             if ($request->hasFile('profilePhoto')) {
                 $this->updateProfilePhoto($seller, $request->file('profilePhoto'));
+            }
+
+            if ($request->hasFile('image')) {
+                $imageFile = $request->file('image');
+                $imagePath = Helper::uploadFile($imageFile, 'sellers');
+                $seller->images()->create([
+                    'path' => $imagePath,
+                    'updated_at' => $params['updated_at'] ?? null
+                ]);
             }
 
             DB::commit();
@@ -140,12 +187,10 @@ class SellerService
         }
     }
 
-    private function syncMembers(Seller $seller, array $memberIds)
+    private function syncMembersWithTimezone(Seller $seller, array $memberIds, $updatedAt = null)
     {
         $existingMemberIds = $seller->userRoutes->pluck('user_id')->toArray();
-
         $toDelete = array_diff($existingMemberIds, $memberIds);
-
         $toAdd = array_diff($memberIds, $existingMemberIds);
 
         if (!empty($toDelete)) {
@@ -157,7 +202,8 @@ class SellerService
         foreach ($toAdd as $memberId) {
             UserRoute::create([
                 'seller_id' => $seller->id,
-                'user_id' => $memberId
+                'user_id' => $memberId,
+                'updated_at' => $updatedAt
             ]);
         }
     }
@@ -167,7 +213,7 @@ class SellerService
         try {
             $user = Auth::user();
             $company = $user->company;
-            $today = Carbon::now('America/Caracas')->format('Y-m-d');
+            $today = Carbon::now('America/Lima')->format('Y-m-d');
 
             $routes = Seller::with([
                 'user:id,name',
@@ -383,32 +429,52 @@ class SellerService
         return true;
     }
 
-    public function delete($routeId)
+    public function delete($sellerId, $timezone = null)
     {
         try {
-            $route = Seller::find($routeId);
+            $seller = Seller::with('user')->find($sellerId);
 
-            if ($route == null) {
-                return $this->errorNotFoundResponse('Ruta no encontrada');
+            if ($seller == null) {
+                return $this->errorNotFoundResponse('Vendedor no encontrado');
             }
 
-            $userRoutes = UserRoute::where('seller_id', $routeId)->get();
+            $userRoutes = UserRoute::where('seller_id', $sellerId)->get();
 
             foreach ($userRoutes as $userRoute) {
-                $userRoute->delete();
+                if ($timezone) {
+                    $userRoute->deleted_at = Carbon::now($timezone);
+                    $userRoute->save();
+                    $userRoute->delete();
+                } else {
+                    $userRoute->delete();
+                }
             }
 
-            \Log::info('Eliminando ruta con ID: ' . $routeId);
-            \Log::info('Ruta: ' . $route);
-            $route->delete();
+            if ($timezone) {
+                $seller->deleted_at = Carbon::now($timezone);
+                $seller->save();
+                $seller->delete();
+                if ($seller->user) {
+                    $seller->user->deleted_at = Carbon::now($timezone);
+                    $seller->user->save();
+                    $seller->user->delete();
+                }
+            } else {
+                $seller->delete();
+                if ($seller->user) {
+                    $seller->user->delete();
+                }
+            }
 
+            \Log::info('Eliminando vendedor con ID: ' . $sellerId);
+            \Log::info('Vendedor: ' . $seller);
             return $this->successResponse([
                 'success' => true,
-                'message' => "Ruta eliminada con éxito"
+                'message' => "Vendedor eliminado con éxito"
             ]);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
-            $this->handlerException('Error al eliminar la ruta');
+            $this->handlerException('Error al eliminar el vendedor');
         }
     }
 

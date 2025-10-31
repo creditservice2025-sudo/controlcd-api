@@ -36,6 +36,10 @@ class PaymentService
             $cachePaymentsKey = null;
             $user = Auth::user();
 
+            $timezone = $request->has('timezone') ? $request->get('timezone') : null;
+            $createdAt = $timezone ? Carbon::now($timezone) : null;
+            $updatedAt = $timezone ? Carbon::now($timezone) : null;
+
             if (!$credit) {
                 throw new \Exception('El crédito no existe.');
             }
@@ -49,7 +53,9 @@ class PaymentService
                     'payment_method' => $request->payment_method,
                     'payment_reference' => $request->payment_reference ?: 'Registro de no pago',
                     'latitude' => $request->latitude,
-                    'longitude' => $request->longitude
+                    'longitude' => $request->longitude,
+                    'created_at' => $createdAt,
+                    'updated_at' => $updatedAt
                 ]);
 
                 $nextInstallment = Installment::where('credit_id', $credit->id)
@@ -100,7 +106,9 @@ class PaymentService
                 'payment_method' => $request->payment_method,
                 'payment_reference' => $request->payment_reference ?: '',
                 'latitude' => $request->latitude,
-                'longitude' => $request->longitude
+                'longitude' => $request->longitude,
+                'created_at' => $createdAt,
+                'updated_at' => $updatedAt
             ]);
 
             if (!$isAbono) {
@@ -279,7 +287,9 @@ class PaymentService
                 PaymentImage::create([
                     'payment_id' => $payment->id,
                     'user_id' => $user->id,
-                    'path' => $imagePath
+                    'path' => $imagePath,
+                    'created_at' => $createdAt,
+                    'updated_at' => $updatedAt
                 ]);
             }
 
@@ -494,7 +504,7 @@ class PaymentService
             ], 404);
         }
 
-        $timezone = 'America/Caracas';
+        $timezone = 'America/Lima';
 
         $page = (int)$request->input('page', 1);
         $perPage = (int)$request->input('perPage', 10);
