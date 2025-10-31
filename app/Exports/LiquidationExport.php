@@ -30,24 +30,30 @@ class LiquidationExport implements FromArray, WithHeadings, WithStyles, WithColu
         $data[] = ['Pagos del día'];
         $data[] = ['No.', 'Cliente', 'Crédito', 'Frecuencia', 'Vr. Cuota', 'Saldo Actual', 'Vr. Pago Hoy', 'Hora'];
         $total_paid_today = 0;
-        foreach ($this->reportData['report_data'] ?? [] as $item) {
-            $data[] = [
-                $item['no'],
-                $item['client_name'],
-                '#00' . $item['credit_id'],
-                $item['payment_frequency'],
-                number_format($item['quota_amount'], 2),
-                number_format($item['remaining_amount'], 2),
-                number_format($item['paid_today'], 2),
-                $item['payment_time'] ?? 'N/A',
-            ];
-            $total_paid_today += $item['paid_today'];
+        if (count($this->reportData['report_data'] ?? []) === 0) {
+            $data[] = ['No hay pagos para la fecha.', '', '', '', '', '', '', ''];
+        } else {
+            foreach ($this->reportData['report_data'] ?? [] as $item) {
+                $data[] = [
+                    $item['no'],
+                    $item['client_name'],
+                    '#00' . $item['credit_id'],
+                    $item['payment_frequency'],
+                    number_format($item['quota_amount'], 2),
+                    number_format($item['remaining_amount'], 2),
+                    number_format($item['paid_today'], 2),
+                    $item['payment_time'] ?? 'N/A',
+                ];
+                $total_paid_today += $item['paid_today'];
+            }
         }
         $data[] = ['', '', '', '', '', 'TOTAL DE PAGOS', number_format($total_paid_today, 2), ''];
         // Créditos nuevos
-        if (count($this->reportData['new_credits'] ?? []) > 0) {
-            $data[] = ['LISTADO DE CRÉDITOS NUEVOS DENTRO DEL COBRO'];
-            $data[] = ['No.', 'Cliente', 'Crédito', 'F. Pago', 'V.C + U'];
+        $data[] = ['LISTADO DE CRÉDITOS NUEVOS DENTRO DEL COBRO'];
+        $data[] = ['No.', 'Cliente', 'Crédito', 'F. Pago', 'V.C + U'];
+        if (count($this->reportData['new_credits'] ?? []) === 0) {
+            $data[] = ['No hay créditos nuevos para la fecha.', '', '', '', ''];
+        } else {
             $total_new_credits_value = 0;
             foreach ($this->reportData['new_credits'] as $index => $credit) {
                 $utilidad = $credit->credit_value * ($credit->total_interest / 100);
@@ -92,9 +98,11 @@ class LiquidationExport implements FromArray, WithHeadings, WithStyles, WithColu
             $data[] = ['', '', '', '', 'TOTAL MICROSEGUROS', '$' . number_format($totalMicroinsurance, 2)];
         }
         // Gastos
-        if (isset($this->reportData['expenses']) && count($this->reportData['expenses']) > 0) {
-            $data[] = ['LISTADO DE GASTOS DENTRO DEL COBRO'];
-            $data[] = ['No.', 'Descripción', 'Categoría', 'Vr. Gasto'];
+        $data[] = ['LISTADO DE GASTOS DENTRO DEL COBRO'];
+        $data[] = ['No.', 'Descripción', 'Categoría', 'Vr. Gasto'];
+        if (!isset($this->reportData['expenses']) || count($this->reportData['expenses']) === 0) {
+            $data[] = ['No hay gastos para la fecha.', '', '', ''];
+        } else {
             $total_expenses_value = 0;
             foreach ($this->reportData['expenses'] as $index => $expense) {
                 $data[] = [
@@ -108,9 +116,11 @@ class LiquidationExport implements FromArray, WithHeadings, WithStyles, WithColu
             $data[] = ['', '', 'TOTAL DE GASTOS', '$' . number_format($total_expenses_value, 2)];
         }
         // Ingresos
-        if (isset($this->reportData['incomes']) && count($this->reportData['incomes']) > 0) {
-            $data[] = ['LISTADO DE INGRESOS DENTRO DEL COBRO'];
-            $data[] = ['No.', 'Descripción', 'Vr. Ingreso'];
+        $data[] = ['LISTADO DE INGRESOS DENTRO DEL COBRO'];
+        $data[] = ['No.', 'Descripción', 'Vr. Ingreso'];
+        if (!isset($this->reportData['incomes']) || count($this->reportData['incomes']) === 0) {
+            $data[] = ['No hay ingresos para la fecha.', '', ''];
+        } else {
             $total_incomes_value = 0;
             foreach ($this->reportData['incomes'] as $index => $income) {
                 $data[] = [
