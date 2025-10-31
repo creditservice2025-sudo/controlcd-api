@@ -18,7 +18,7 @@ use Illuminate\Validation\ValidationException;
 
 class LiquidationService
 {
-    const TIMEZONE = 'America/Caracas';
+    const TIMEZONE = 'America/Lima';
 
     use ApiResponse;
     /**
@@ -30,6 +30,11 @@ class LiquidationService
      */
     public function createLiquidation(array $data): Liquidation
     {
+        if (isset($data['timezone']) && !empty($data['timezone'])) {
+            $data['created_at'] = Carbon::now($data['timezone']);
+            $data['updated_at'] = Carbon::now($data['timezone']);
+            unset($data['timezone']);
+        }
         $validated = $this->validateData($data);
 
         return DB::transaction(function () use ($validated) {
@@ -86,6 +91,10 @@ class LiquidationService
      */
     public function updateLiquidation(Liquidation $liquidation, array $data): Liquidation
     {
+        if (isset($data['timezone']) && !empty($data['timezone'])) {
+            $data['updated_at'] = Carbon::now($data['timezone']);
+            unset($data['timezone']);
+        }
         $validated = $this->validateData($data, $liquidation);
 
         return DB::transaction(function () use ($liquidation, $validated) {
@@ -159,7 +168,7 @@ class LiquidationService
         $data['cash_delivered'] = $data['base_delivered'] + $data['surplus'] - $data['shortage'];
     }
 
-    public function approve($id)
+    public function approve($id, $timezone = null)
     {
         try {
             $user = Auth::user();
@@ -186,10 +195,11 @@ class LiquidationService
                 );
             }
 
-            $liquidation->update([
+            $updateData = [
                 'status' => 'approved',
-                'end_date' => now()
-            ]);
+                'end_date' => $timezone ? Carbon::now($timezone) : now()
+            ];
+            $liquidation->update($updateData);
 
             $this->recalculateLiquidation($liquidation->seller_id, $liquidation->date);
 
@@ -207,7 +217,7 @@ class LiquidationService
         }
     }
 
-    public function approveMultiple($ids)
+    public function approveMultiple($ids, $timezone = null)
     {
         try {
             $user = Auth::user();
@@ -241,10 +251,11 @@ class LiquidationService
                     );
                 }
 
-                $liquidation->update([
+                $updateData = [
                     'status' => 'approved',
-                    'end_date' => now()
-                ]);
+                    'end_date' => $timezone ? Carbon::now($timezone) : now()
+                ];
+                $liquidation->update($updateData);
 
                 $this->recalculateLiquidation($liquidation->seller_id, $liquidation->date);
 
@@ -295,7 +306,7 @@ class LiquidationService
      * @param string $status
      * @return Liquidation
      */
-    public function closeLiquidation(Liquidation $liquidation, string $status): Liquidation
+    public function closeLiquidation(Liquidation $liquidation, string $status, $timezone = null): Liquidation
     {
         $validStatuses = ['approved', 'rejected'];
 
@@ -303,19 +314,23 @@ class LiquidationService
             throw new \InvalidArgumentException("Estado inválido para cierre");
         }
 
-        $liquidation->update(['status' => $status]);
+        $updateData = ['status' => $status];
+        if ($timezone) {
+            $updateData['updated_at'] = Carbon::now($timezone);
+        }
+        $liquidation->update($updateData);
         return $liquidation;
     }
 
     public function getLiquidationsBySeller(int $sellerId, Request $request)
     {
         try {
-            $query = Liquidation::with(['seller', 'seller.city.country'])
+            $query = Liquidation::with(['seller', 'seller.city.country', 'seller.user'])
                 ->where('seller_id', $sellerId);
 
             if ($request->has('start_date') && $request->has('end_date')) {
-                $startDate = Carbon::parse($request->get('start_date'))->startOfDay();
-                $endDate = Carbon::parse($request->get('end_date'))->endOfDay();
+                $startDate = Carbon::parse($request->get('start_date'), 'America/Lima')->startOfDay()->setTimezone('UTC');
+                $endDate = Carbon::parse($request->get('end_date'), 'America/Lima')->endOfDay()->setTimezone('UTC');
                 $query->whereBetween('date', [$startDate, $endDate]);
             }
 
@@ -401,7 +416,7 @@ class LiquidationService
 
     protected function recalculateNextLiquidations($sellerId, $fromDate)
     {
-        $timezone = 'America/Caracas';
+        $timezone = 'America/Lima';
 
         $liquidations = Liquidation::where('seller_id', $sellerId)
             ->where('date', '>', $fromDate)
@@ -483,11 +498,11 @@ class LiquidationService
         }
     }
 
-    public function getLiquidationData($sellerId, $date, $userId)
+    public function getLiquidationData($sellerId, $date, $userId, $timezone = null)
     {
-        $timezone = 'America/Caracas';
-        $startUTC = Carbon::parse($date, $timezone)->startOfDay()->setTimezone('UTC');
-        $endUTC   = Carbon::parse($date, $timezone)->endOfDay()->setTimezone('UTC');
+        $tz = $timezone ?: self::TIMEZONE;
+        $startUTC = Carbon::parse($date, $tz)->startOfDay()->setTimezone('UTC');
+        $endUTC   = Carbon::parse($date, $tz)->endOfDay()->setTimezone('UTC');
 
         // 1. Verificar si ya existe liquidación para esta fecha (usando el campo 'date')
         $existingLiquidation = Liquidation::with('audits')->where('seller_id', $sellerId)
@@ -496,7 +511,7 @@ class LiquidationService
 
         // Si existe liquidación, retornar directamente esos datos
         if ($existingLiquidation) {
-            $today = Carbon::now($timezone)->toDateString(); // Formato 'Y-m-d'
+            $today = Carbon::now($tz)->toDateString(); // Formato 'Y-m-d'
             $liquidationDate = Carbon::parse($existingLiquidation->date)->toDateString();
             \Log::debug("Liquidación existente para fecha $date: $today: $existingLiquidation->date");
             // Solo recalculamos si la liquidación es del día actual (comparando con el campo 'date')
@@ -523,7 +538,7 @@ class LiquidationService
             }
         }
         // 2. Obtener datos del endpoint dailyPaymentTotals
-        $dailyTotals = $this->getDailyTotals($sellerId, $date, $userId);
+        $dailyTotals = $this->getDailyTotals($sellerId, $date, $userId, $tz);
 
         // 3. Obtener última liquidación para saldo inicial
         $lastLiquidation = Liquidation::where('seller_id', $sellerId)
@@ -600,7 +615,7 @@ class LiquidationService
 
     public function recalculateLiquidation($sellerId, $date)
     {
-        $timezone = 'America/Caracas';
+        $timezone = 'America/Lima';
         $startUTC = Carbon::parse($date, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC   = Carbon::parse($date, $timezone)->endOfDay()->setTimezone('UTC');
 
@@ -781,12 +796,11 @@ class LiquidationService
         \Log::debug("=== FIN recalculateLiquidation (con actualización) ==="); */
     }
 
-    protected function getDailyTotals($sellerId, $date, $userId)
+    protected function getDailyTotals($sellerId, $date, $userId, $timezone = null)
     {
-
-        $timezone = 'America/Caracas';
-        $startUTC = Carbon::parse($date, $timezone)->startOfDay()->setTimezone('UTC');
-        $endUTC   = Carbon::parse($date, $timezone)->endOfDay()->setTimezone('UTC');
+        $tz = $timezone ?: self::TIMEZONE;
+        $startUTC = Carbon::parse($date, $tz)->startOfDay()->setTimezone('UTC');
+        $endUTC   = Carbon::parse($date, $tz)->endOfDay()->setTimezone('UTC');
 
         $query = DB::table('payments')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
@@ -1007,7 +1021,7 @@ class LiquidationService
     }
     protected function getPreviousLiquidation($sellerId, $date)
     {
-        $timezone = 'America/Caracas';
+        $timezone = 'America/Lima';
         $startUTC = Carbon::parse($date, $timezone)->startOfDay()->setTimezone('UTC');
 
         $lastLiquidation = Liquidation::where('seller_id', $sellerId)
@@ -1020,7 +1034,7 @@ class LiquidationService
 
     public function getReportByCity($startDate, $endDate)
     {
-        $timezone = 'America/Caracas';
+        $timezone = 'America/Lima';
         $startUTC = Carbon::parse($startDate, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC   = Carbon::parse($endDate, $timezone)->endOfDay()->setTimezone('UTC');
 
@@ -1087,7 +1101,7 @@ class LiquidationService
     }
     public function getAccumulatedByCity($startDate, $endDate)
     {
-        $timezone = 'America/Caracas';
+        $timezone = 'America/Lima';
         $startUTC = Carbon::parse($startDate, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC   = Carbon::parse($endDate, $timezone)->endOfDay()->setTimezone('UTC');
 
@@ -1122,7 +1136,7 @@ class LiquidationService
 
     public function getAccumulatedBySellerInCity($cityId, $startDate, $endDate)
     {
-        $timezone = 'America/Caracas';
+        $timezone = 'America/Lima';
         $startUTC = Carbon::parse($startDate, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC   = Carbon::parse($endDate, $timezone)->endOfDay()->setTimezone('UTC');
 
@@ -1152,7 +1166,7 @@ class LiquidationService
 
     public function getAccumulatedBySellersInCity($cityId, $startDate, $endDate)
     {
-        $timezone = 'America/Caracas';
+        $timezone = 'America/Lima';
         $startUTC = Carbon::parse($startDate, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC   = Carbon::parse($endDate, $timezone)->endOfDay()->setTimezone('UTC');
 
@@ -1184,7 +1198,7 @@ class LiquidationService
 
     public function getSellerLiquidationsDetail($sellerId, $startDate, $endDate)
     {
-        $timezone = 'America/Caracas';
+        $timezone = 'America/Lima';
         $startUTC = Carbon::parse($startDate, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC   = Carbon::parse($endDate, $timezone)->endOfDay()->setTimezone('UTC');
 
@@ -1197,7 +1211,7 @@ class LiquidationService
 
     public function reopenRoute($sellerId, $date)
     {
-        $timezone = 'America/Caracas';
+        $timezone = 'America/Lima';
         $dateLocal = \Carbon\Carbon::parse($date, $timezone)->format('Y-m-d');
         $startUTC = \Carbon\Carbon::parse($dateLocal, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC   = \Carbon\Carbon::parse($dateLocal, $timezone)->endOfDay()->setTimezone('UTC');
@@ -1239,9 +1253,10 @@ class LiquidationService
      * Descarga una liquidación individual en PDF o Excel
      * @param int $liquidationId
      * @param string $format ('pdf'|'excel')
+     * @param string $timezone
      * @return \Illuminate\Http\Response
      */
-    public function downloadLiquidationReport($liquidationId, $format = 'pdf')
+    public function downloadLiquidationReport($liquidationId, $format = 'pdf', $timezone = 'America/Lima')
     {
         $liquidation = Liquidation::with(['seller', 'seller.user', 'seller.city.country'])->find($liquidationId);
         if (!$liquidation) {
@@ -1253,7 +1268,11 @@ class LiquidationService
         $sellerId = $liquidation->seller_id;
         $user = $liquidation->seller->user;
 
-        $reportData = $this->generateDailyReportByLiquidation($reportDate, $sellerId, $user);
+        $reportData = $this->generateDailyReportByLiquidation($reportDate, $sellerId, $user, $timezone);
+
+        $sellerName = $user->name ?? 'vendedor';
+        $dateStr = \Carbon\Carbon::parse($reportDate)->format('Y-m-d');
+        $safeSellerName = preg_replace('/[^A-Za-z0-9_\\-]/', '_', $sellerName);
 
         if ($format === 'pdf') {
             $pdf = app('dompdf.wrapper');
@@ -1265,28 +1284,28 @@ class LiquidationService
             ]);
             return response()->make($pdf->stream(), 200, [
                 'Content-Type' => 'application/pdf',
-                'Content-Disposition' => 'attachment; filename="liquidacion_' . $liquidationId . '.pdf"',
+                'Content-Disposition' => 'attachment; filename="liquidacion_' . $safeSellerName . '_' . $dateStr . '.pdf"',
             ]);
         } elseif ($format === 'excel') {
             if (!class_exists(\App\Exports\LiquidationExport::class)) {
                 throw new \RuntimeException('The LiquidationExport class does not exist. Please create it in the App\Exports namespace.');
             }
             $export = new \App\Exports\LiquidationExport($reportData);
-            return response()->make(\Maatwebsite\Excel\Facades\Excel::download($export, 'liquidacion_' . $liquidationId . '.xlsx')->getFile()->getContent(), 200, [
+            return response()->make(\Maatwebsite\Excel\Facades\Excel::download($export, 'liquidacion_' . $safeSellerName . '_' . $dateStr . '.xlsx')->getFile()->getContent(), 200, [
                 'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                'Content-Disposition' => 'attachment; filename="liquidacion_' . $liquidationId . '.xlsx"',
+                'Content-Disposition' => 'attachment; filename="liquidacion_' . $safeSellerName . '_' . $dateStr . '.xlsx"',
             ]);
         } else {
             return response('Formato no soportado', 400);
         }
     }
 
-    public function generateDailyReportByLiquidation($date, $sellerId, $user)
+    public function generateDailyReportByLiquidation($date, $sellerId, $user, $timezone = 'America/Lima')
     {
         $dateOnly = substr($date, 0, 10);
-        $reportDate = Carbon::createFromFormat('Y-m-d', $dateOnly, self::TIMEZONE);
-        $start = $reportDate->copy()->startOfDay()->setTimezone('America/Caracas')->setTimezone('UTC');
-        $end = $reportDate->copy()->endOfDay()->setTimezone('America/Caracas')->setTimezone('UTC');
+        $reportDate = Carbon::createFromFormat('Y-m-d', $dateOnly, $timezone);
+        $start = $reportDate->copy()->startOfDay()->setTimezone('America/Lima')->setTimezone('UTC');
+        $end = $reportDate->copy()->endOfDay()->setTimezone('America/Lima')->setTimezone('UTC');
 
         $creditsQuery = Credit::with(['client', 'installments', 'payments'])
             ->whereHas('payments', function ($query) use ($start, $end) {
@@ -1514,6 +1533,9 @@ class LiquidationService
                 Carbon::parse($liquidation->date, self::TIMEZONE)->endOfDay()->setTimezone('UTC')
             ]);
         $ingresosPaginados = $ingresosQuery->paginate($perPage, ['*'], 'ingresos_page', $page);
+        $ingresosCount = $ingresosQuery->count();
+        $egresosCount = $gastosQuery->count();
+        $creditosNuevosCount = $creditosNuevosQuery->count();
 
         return [
             'success' => true,
@@ -1522,8 +1544,11 @@ class LiquidationService
                 'caja_anterior' => $cajaAnterior,
                 'caja_actual' => $cajaActual,
                 'ingresos' => $ingresos,
+                'ingresos_count' => $ingresosCount,
                 'egresos' => $egresos,
+                'egresos_count' => $egresosCount,
                 'creditos_nuevos' => $creditosNuevos,
+                'creditos_nuevos_count' => $creditosNuevosCount,
                 'base_entregada' => $baseEntregada,
                 'collection_target' => $liquidation->collection_target,
                 'initial_cash' => $liquidation->initial_cash,

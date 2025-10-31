@@ -20,6 +20,10 @@ class CompanyController extends Controller
     public function __construct(CompanyService $companyService)
     {
         $this->companyService = $companyService;
+     /*    $this->middleware('permission:ver_empresa')->only('index');
+        $this->middleware('permission:crear_empresa')->only('create');
+        $this->middleware('permission:editar_empresa')->only('update');
+        $this->middleware('permission:eliminar_empresa')->only('delete'); */
     }
 
     public function create(CompanyRequest $request)

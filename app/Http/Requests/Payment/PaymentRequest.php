@@ -31,6 +31,7 @@ class PaymentRequest extends FormRequest
             'credit_id' => 'required|exists:credits,id',
             'latitude' => 'nullable',
             'longitude' => 'nullable',
+            'timezone' => 'nullable|string',
         ];
 
         if ($this->isMethod('put')) {

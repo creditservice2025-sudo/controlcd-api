@@ -19,7 +19,7 @@ class CreateHistoricalLiquidation extends Command
 
     public function handle()
     {
-        $timezone = 'America/Caracas';
+        $timezone = 'America/Lima';
         $todayDate = Carbon::now($timezone)->toDateString();
 
         $sellers = Seller::whereHas('config', function($q) {

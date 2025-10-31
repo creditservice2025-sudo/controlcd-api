@@ -18,6 +18,10 @@ class SellerController extends Controller
     public function __construct(SellerService $sellerService)
     {
         $this->sellerService = $sellerService;
+       /*  $this->middleware('permission:ver_vendedores')->only('index');
+        $this->middleware('permission:crear_vendedores')->only('create');
+        $this->middleware('permission:editar_vendedores')->only('update');
+        $this->middleware('permission:eliminar_vendedores')->only('delete'); */
     }
 
     public function create(SellerRequest $request)

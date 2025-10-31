@@ -42,7 +42,7 @@ class LiquidationController extends Controller
         $sellerId = $request->seller_id;
         $date = $request->date;
 
-        $timezone = 'America/Caracas';
+        $timezone = 'America/Lima';
         $dateLocal = Carbon::parse($date, $timezone)->format('Y-m-d');
 
         // Verificar permisos
@@ -63,7 +63,7 @@ class LiquidationController extends Controller
     {
         $user = Auth::user();
 
-        $timezone = 'America/Caracas';
+        $timezone = 'America/Lima';
         $todayDate = Carbon::now($timezone)->toDateString();
 
         // Verificar si ya existe liquidación para este día
@@ -257,7 +257,7 @@ class LiquidationController extends Controller
     {
         $user = Auth::user();
 
-        $timezone = 'America/Caracas';
+        $timezone = 'America/Lima';
 
         $liquidation = Liquidation::findOrFail($id);
 
@@ -471,7 +471,7 @@ class LiquidationController extends Controller
     // Tu función de recalculo debe estar en el mismo controlador:
     public function recalculateLiquidation($sellerId, $date)
     {
-        $timezone = 'America/Caracas';
+        $timezone = 'America/Lima';
         $startUTC = Carbon::parse($date, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC   = Carbon::parse($date, $timezone)->endOfDay()->setTimezone('UTC');
 
@@ -627,7 +627,7 @@ class LiquidationController extends Controller
 
     protected function recalculateNextLiquidations($sellerId, $fromDate)
     {
-        $timezone = 'America/Caracas';
+        $timezone = 'America/Lima';
 
         // Busca todas las liquidaciones posteriores
         $liquidations = Liquidation::where('seller_id', $sellerId)
@@ -706,7 +706,7 @@ class LiquidationController extends Controller
         $user = Auth::user();
 
         // Zona horaria Venezuela
-        $timezone = 'America/Caracas';
+        $timezone = 'America/Lima';
         $start = Carbon::createFromFormat('Y-m-d', $date, $timezone)->startOfDay()->setTimezone('UTC');
         $end = Carbon::createFromFormat('Y-m-d', $date, $timezone)->endOfDay()->setTimezone('UTC');
         $todayDate = Carbon::now($timezone)->toDateString();
@@ -790,7 +790,7 @@ class LiquidationController extends Controller
 
     protected function getDailyTotals($sellerId, $date, $user)
     {
-        $timezone = 'America/Caracas';
+        $timezone = 'America/Lima';
 
         $targetDate = Carbon::parse($date, $timezone);
         $formattedDate = $targetDate->format('Y-m-d');
@@ -1236,7 +1236,8 @@ class LiquidationController extends Controller
     public function downloadReport($id, Request $request)
     {
         $format = $request->get('format', 'pdf');
-        return $this->liquidationService->downloadLiquidationReport($id, $format);
+        $timezone = $request->get('timezone', 'America/Lima');
+        return $this->liquidationService->downloadLiquidationReport($id, $format, $timezone);
     }
 
     /**
@@ -1249,5 +1250,17 @@ class LiquidationController extends Controller
             'success' => true,
             'data' => $result
         ]);
+    }
+
+    /**
+     * Devuelve el detalle de una liquidación con totalizadores y listados paginados
+     * @param int $id
+     * @param Request $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function getLiquidationDetail($id, Request $request)
+    {
+        $response = $this->liquidationService->getLiquidationDetail($id, $request);
+        return response()->json($response);
     }
 }

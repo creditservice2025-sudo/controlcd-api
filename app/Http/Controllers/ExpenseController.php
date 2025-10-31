@@ -12,6 +12,10 @@ class ExpenseController extends Controller
     public function __construct(ExpenseService $expenseService)
     {
         $this->expenseService = $expenseService;
+        /* $this->middleware('permission:ver_egresos')->only('index');
+        $this->middleware('permission:crear_egresos')->only('store');
+        $this->middleware('permission:editar_egresos')->only('update');
+        $this->middleware('permission:eliminar_egresos')->only('destroy'); */
     }
 
     public function index(Request $request)

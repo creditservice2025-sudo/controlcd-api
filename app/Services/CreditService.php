@@ -26,12 +26,21 @@ class CreditService
 {
     use ApiResponse;
 
-    const TIMEZONE = 'America/Caracas';
+    const TIMEZONE = 'America/Lima';
 
     public function create(CreditRequest $request)
     {
         try {
             $params = $request->validated();
+            \Log::info('Creando crédito con parámetros: ' . json_encode($params));
+            if (isset($params['timezone']) && !empty($params['timezone'])) {
+                $params['created_at'] = Carbon::now($params['timezone']);
+                $params['updated_at'] = Carbon::now($params['timezone']);
+                $userTimezone = $params['timezone'];
+                unset($params['timezone']);
+            } else {
+                $userTimezone = null;
+            }
 
             // Calcular fecha de primera cuota si no se proporciona
             if ($params['is_advance_payment']) {
@@ -60,7 +69,7 @@ class CreditService
             $sellerConfig = \App\Models\SellerConfig::where('seller_id', $params['seller_id'])->first();
             $limit = $sellerConfig ? floatval($sellerConfig->restrict_new_sales_amount ?? 0) : 0;
             if ($limit > 0) {
-                $today = Carbon::now('America/Caracas')->toDateString();
+                $today = Carbon::now('America/Lima')->toDateString();
                 $newCreditsAmount = \App\Models\Credit::where('seller_id', $params['seller_id'])
                     ->whereDate('created_at', $today)
                     ->sum('credit_value');
@@ -83,7 +92,9 @@ class CreditService
                 'micro_insurance_amount' => $params['micro_insurance_amount'] ?? null,
                 'first_quota_date' => $firstQuotaDate,
                 'is_advance_payment' => $params['is_advance_payment'],
-                'status' => 'Vigente'
+                'status' => 'Vigente',
+                'created_at' => $params['created_at'] ?? null,
+                'updated_at' => $params['updated_at'] ?? null
             ];
 
             $credit = Credit::create($creditData);
@@ -97,7 +108,7 @@ class CreditService
                 $link = '/dashboard/creditos';
                 $data = [
                     'seller_id' => $credit->seller_id,
-                    'date' => Carbon::now('America/Caracas')->toDateString(),
+                    'date' => Carbon::now('America/Lima')->toDateString(),
                     'credit_value' => $credit->credit_value,
                     'limit' => $limit,
                 ];
@@ -158,7 +169,9 @@ class CreditService
                     'quota_number' => $i,
                     'due_date' => $dueDate->format('Y-m-d'),
                     'quota_amount' => round($quotaAmount, 2),
-                    'status' => 'Pendiente'
+                    'status' => 'Pendiente',
+                    'created_at' => $params['created_at'] ?? null,
+                    'updated_at' => $params['updated_at'] ?? null
                 ]);
 
                 if ($i < $credit->number_installments) {
@@ -193,7 +206,9 @@ class CreditService
 
                     $credit->client->images()->create([
                         'path' => $imagePath,
-                        'type' => $imageData['type']
+                        'type' => $imageData['type'],
+                        'created_at' => $params['created_at'] ?? null,
+                        'updated_at' => $params['updated_at'] ?? null
                     ]);
                 }
             }
@@ -219,6 +234,16 @@ class CreditService
     {
         try {
             DB::beginTransaction();
+
+            $params = $request->all();
+            if (isset($params['timezone']) && !empty($params['timezone'])) {
+                $createdAt = Carbon::now($params['timezone']);
+                $updatedAt = Carbon::now($params['timezone']);
+                unset($params['timezone']);
+            } else {
+                $createdAt = null;
+                $updatedAt = null;
+            }
 
             // 1. Buscar crédito anterior 
             $oldCredit = Credit::findOrFail($request->old_credit_id);
@@ -258,6 +283,8 @@ class CreditService
                 'previous_pending_amount' => $pendingAmount,
                 'renewed_from_id'     => $request->old_credit_id,
                 'status'           => 'Vigente',
+                'created_at' => $createdAt,
+                'updated_at' => $updatedAt
             ]);
 
             $quotaAmount = (($newCredit->credit_value * $newCredit->total_interest / 100) + $newCredit->credit_value) / $newCredit->number_installments;
@@ -296,7 +323,9 @@ class CreditService
                     'quota_number' => $i,
                     'due_date'     => $dueDate->format('Y-m-d'),
                     'quota_amount' => round($quotaAmount, 2),
-                    'status'       => 'Pendiente'
+                    'status'       => 'Pendiente',
+                    'created_at' => $createdAt,
+                    'updated_at' => $updatedAt
                 ]);
 
                 if ($i < $newCredit->number_installments) {
@@ -368,7 +397,7 @@ class CreditService
         }
     }
 
-    public function delete($creditId)
+    public function delete($creditId, $timezone = null)
     {
         try {
             DB::beginTransaction();
@@ -403,8 +432,20 @@ class CreditService
                 );
             }
 
-            $credit->installments()->delete();
-            $credit->delete();
+            if ($timezone) {
+                $now = Carbon::now($timezone);
+                foreach ($credit->installments as $installment) {
+                    $installment->deleted_at = $now;
+                    $installment->save();
+                    $installment->delete();
+                }
+                $credit->deleted_at = $now;
+                $credit->save();
+                $credit->delete();
+            } else {
+                $credit->installments()->delete();
+                $credit->delete();
+            }
 
             DB::commit();
 
@@ -481,6 +522,10 @@ class CreditService
             }
 
             $params = $request->validated();
+            if (isset($params['timezone']) && !empty($params['timezone'])) {
+                $params['updated_at'] = Carbon::now($params['timezone']);
+                unset($params['timezone']);
+            }
             $credit->update($params);
 
             return $this->successResponse([
@@ -569,6 +614,16 @@ class CreditService
         try {
             DB::beginTransaction();
 
+            $params = $request->all();
+            if (isset($params['timezone']) && !empty($params['timezone'])) {
+                $createdAt = Carbon::now($params['timezone']);
+                $updatedAt = Carbon::now($params['timezone']);
+                unset($params['timezone']);
+            } else {
+                $createdAt = null;
+                $updatedAt = null;
+            }
+
             // 1. Obtener los créditos a unificar
             $creditIds = $request->input('credit_ids'); // array de IDs
             $credits = Credit::whereIn('id', $creditIds)->get();
@@ -616,6 +671,8 @@ class CreditService
                 'first_quota_date' => $firstQuotaDate,
                 'status' => 'Vigente',
                 'unification_reason' => $params['description'] ?? null,
+                'created_at' => $createdAt,
+                'updated_at' => $updatedAt
             ]);
 
             // 3. Generar cuotas para el nuevo crédito
@@ -625,7 +682,9 @@ class CreditService
                 $quotaAmount,
                 $newCredit->first_quota_date,
                 $newCredit->payment_frequency,
-                $newCredit->number_installments
+                $newCredit->number_installments,
+                $createdAt,
+                $updatedAt
             );
 
             // 4. Actualizar los créditos originales
@@ -650,7 +709,7 @@ class CreditService
         }
     }
 
-    protected function generateInstallments(Credit $credit, float $quotaAmount, string $firstQuotaDate, string $paymentFrequency, int $numberInstallments)
+    protected function generateInstallments(Credit $credit, float $quotaAmount, string $firstQuotaDate, string $paymentFrequency, int $numberInstallments, $createdAt = null, $updatedAt = null)
     {
         try {
             // Obtener días excluidos del crédito
@@ -685,7 +744,9 @@ class CreditService
                     'quota_number' => $i,
                     'due_date' => $dueDate->format('Y-m-d'),
                     'quota_amount' => round($quotaAmount, 2),
-                    'status' => 'Pendiente'
+                    'status' => 'Pendiente',
+                    'created_at' => $createdAt,
+                    'updated_at' => $updatedAt
                 ]);
 
                 if ($i < $numberInstallments) {

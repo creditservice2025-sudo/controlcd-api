@@ -38,6 +38,8 @@ class SellerRequest extends FormRequest
             'city_id' => 'required|exists:cities,id',
             'members' => 'nullable|array',
             'members.*' => 'exists:users,id',
+            'role_id' => 'nullable|exists:roles,id',
+            'timezone' => 'nullable|string',
         ];
 
 

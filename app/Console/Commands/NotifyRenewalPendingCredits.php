@@ -15,7 +15,7 @@ class NotifyRenewalPendingCredits extends Command
 
     public function handle()
     {
-        $timezone = 'America/Caracas';
+        $timezone = 'America/Lima';
         $today = Carbon::now($timezone);
         $this->info('Buscando créditos próximos a renovar...');
 

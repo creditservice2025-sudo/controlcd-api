@@ -27,6 +27,7 @@ class GuarantorRequest extends FormRequest
             "dni" => "required|numeric|unique:guarantors,dni,",
             "phone" => "required|numeric",
             "email" => "email|unique:guarantors,email,",
+            'timezone' => 'nullable|string',
         ];
 
 

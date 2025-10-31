@@ -33,6 +33,7 @@ class CreditRequest extends FormRequest
             'micro_insurance_amount' => 'nullable|numeric',
             'first_installment_date' => 'nullable|date',
             'is_advance_payment' => 'nullable|boolean',
+            'timezone' => 'nullable|string',
         ];
 
         if ($this->isMethod('put') || $this->isMethod('get')) {

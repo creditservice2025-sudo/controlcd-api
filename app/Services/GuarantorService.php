@@ -18,8 +18,15 @@ class GuarantorService
     {
         try {
             $params = $request->validated();
-            
-            $guarantor = Guarantor::create($request->except('clients_ids'));
+            if (isset($params['timezone']) && !empty($params['timezone'])) {
+                $params['created_at'] = \Carbon\Carbon::now($params['timezone']);
+                $params['updated_at'] = \Carbon\Carbon::now($params['timezone']);
+                unset($params['timezone']);
+            }
+            $guarantor = Guarantor::create(array_merge($request->except('clients_ids'), [
+                'created_at' => $params['created_at'] ?? null,
+                'updated_at' => $params['updated_at'] ?? null
+            ]));
 
             return $this->successResponse([
                 'success' => true,
@@ -49,12 +56,20 @@ class GuarantorService
                 }
             }
 
+            $params = $request->validated();
+            if (isset($params['timezone']) && !empty($params['timezone'])) {
+                $params['updated_at'] = \Carbon\Carbon::now($params['timezone']);
+                unset($params['timezone']);
+            }
+
             $guarantor = Guarantor::find($guarantorId);
             if (!$guarantor) {
                 return $this->errorNotFoundResponse('Fiador no encontrado');
             }
 
-            $guarantor->update($request->except('clients_ids'));
+            $guarantor->update(array_merge($request->except('clients_ids'), [
+                'updated_at' => $params['updated_at'] ?? null
+            ]));
 
             if ($request->has('clients_ids')) {
                 $guarantor->clients()->sync($request->input('clients_ids'));
@@ -71,7 +86,7 @@ class GuarantorService
         }
     }
 
-    public function delete($guarantorId)
+    public function delete($guarantorId, $timezone = null)
     {
         try {
             $guarantor = Guarantor::find($guarantorId);
@@ -80,7 +95,13 @@ class GuarantorService
             }
 
             $guarantor->clients()->detach();
-            $guarantor->delete();
+            if ($timezone) {
+                $guarantor->deleted_at = \Carbon\Carbon::now($timezone);
+                $guarantor->save();
+                $guarantor->delete();
+            } else {
+                $guarantor->delete();
+            }
 
             return $this->successResponse([
                 'success' => true,
@@ -157,5 +178,5 @@ class GuarantorService
         }
     }
 }
-    
+
 

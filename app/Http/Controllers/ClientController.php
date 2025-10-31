@@ -338,7 +338,8 @@ class ClientController extends Controller
         try {
             $search = $request->input('search', '');
             $date = $request->input('date', null);
-            $clients = $this->clientService->getAllClientsBySeller($sellerId, $search, $date);
+            $timezone = $request->input('timezone', null);
+            $clients = $this->clientService->getAllClientsBySeller($sellerId, $search, $date, $timezone);
 
             return response()->json([
                 'success' => true,
@@ -353,35 +354,31 @@ class ClientController extends Controller
             ], 500);
         }
     }
-    public function getLiquidationWithAllClients($sellerId, $date, $userId)
+    public function getLiquidationWithAllClients($sellerId, $date, $userId, Request $request)
     {
         try {
-            // 1. Definir la zona horaria deseada
-            $timezone = 'America/Caracas';
-
+            // Obtener timezone del request si está presente
+            $timezone = $request->input('timezone', 'America/Lima');
+            if (!in_array($timezone, \DateTimeZone::listIdentifiers())) {
+                $timezone = 'America/Lima';
+            }
             $seller = Seller::find($sellerId);
             if (!$seller) {
                 return $this->errorResponse('Vendedor no encontrado', 404);
             }
-
-            $todayCaracas = \Carbon\Carbon::now($timezone)->startOfDay();
-
-            $inputDateCaracas = \Carbon\Carbon::parse($date, $timezone)->startOfDay();
-
-            if ($inputDateCaracas->gt($todayCaracas)) {
+            $todayLocal = \Carbon\Carbon::now($timezone)->startOfDay();
+            $inputDateLocal = \Carbon\Carbon::parse($date, $timezone)->startOfDay();
+            if ($inputDateLocal->gt($todayLocal)) {
                 return $this->errorResponse('La fecha seleccionada no puede ser mayor que la fecha actual.', 422);
             }
-
             $previousLiquidation = Liquidation::where('seller_id', $sellerId)
-                ->whereDate('created_at', '<', $inputDateCaracas->format('Y-m-d'))
+                ->whereDate('created_at', '<', $inputDateLocal->format('Y-m-d'))
                 ->orderByDesc('created_at')
                 ->first();
             if ($previousLiquidation && $previousLiquidation->status !== 'approved') {
                 return $this->errorResponse('No puede consultar la liquidación porque la anterior no está aprobada.', 422);
             }
-
-            $result = $this->clientService->getLiquidationWithAllClients($sellerId, $date, $userId);
-
+            $result = $this->clientService->getLiquidationWithAllClients($sellerId, $date, $userId, $timezone);
             return response()->json([
                 'success' => true,
                 'message' => 'Clientes obtenidos exitosamente',

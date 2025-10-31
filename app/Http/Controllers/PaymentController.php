@@ -103,7 +103,7 @@ class PaymentController extends Controller
     public function dailyPaymentTotals(Request $request)
     {
         $date = $request->get('date');
-        $timezone = 'America/Caracas'; // Zona horaria de Venezuela
+        $timezone = 'America/Lima'; 
 
         $start = Carbon::createFromFormat('Y-m-d', $date, $timezone)->startOfDay()->timezone('UTC');
         $end = Carbon::createFromFormat('Y-m-d', $date, $timezone)->endOfDay()->timezone('UTC');

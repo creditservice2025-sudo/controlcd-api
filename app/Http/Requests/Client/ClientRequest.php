@@ -46,6 +46,7 @@ class ClientRequest extends FormRequest
             'micro_insurance_amount' => 'nullable|numeric',
             'is_advance_payment' => 'nullable|boolean',
             'first_installment_date' => 'nullable|date',
+            'timezone' => 'nullable|string',
 
 
 

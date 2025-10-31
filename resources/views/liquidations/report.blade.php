@@ -314,12 +314,14 @@
             </tr>
         </thead>
         <tbody>
+            @php $total_incomes_value = 0; @endphp
             @if(!isset($report['incomes']) || count($report['incomes'] ?? []) === 0)
                 <tr>
                     <td colspan="3" class="text-center">No hay ingresos para la fecha.</td>
                 </tr>
             @else
                 @foreach ($report['incomes'] ?? [] as $index => $income)
+                    @php $total_incomes_value += $income->value; @endphp
                     <tr>
                         <td>{{ $index + 1 }}</td>
                         <td class="text-left">{{ $income->description }}</td>
@@ -331,7 +333,7 @@
         <tfoot>
             <tr>
                 <th colspan="2">TOTAL DE INGRESOS</th>
-                <th class="text-right">$ {{ number_format($total_incomes_value ?? 0, 2) }}</th>
+                <th class="text-right">$ {{ number_format($total_incomes_value, 2) }}</th>
             </tr>
         </tfoot>
     </table>
