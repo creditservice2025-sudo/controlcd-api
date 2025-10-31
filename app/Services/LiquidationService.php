@@ -352,7 +352,7 @@ class LiquidationService
                 'seller_initial_date' => isset($seller) ? $seller->created_at->toDateString() : null,
             ]);
         } catch (\Exception $e) {
-            Log::error($e->getMessage());
+            \Log::error($e->getMessage());
             return $this->errorResponse('Error al obtener las liquidaciones', 500);
         }
     }
@@ -478,7 +478,7 @@ class LiquidationService
                 'data' => $stats
             ]);
         } catch (\Exception $e) {
-            Log::error($e->getMessage());
+            \Log::error($e->getMessage());
             return $this->errorResponse('Error al obtener estadísticas', 500);
         }
     }
@@ -1257,7 +1257,12 @@ class LiquidationService
 
         if ($format === 'pdf') {
             $pdf = app('dompdf.wrapper');
-            $pdf->loadView('liquidations.report', ['report' => $reportData, 'liquidation' => $liquidation]);
+            $pdf->loadView('liquidations.report', [
+                'report' => $reportData,
+                'liquidation' => $liquidation,
+                'expenses' => $reportData['expenses'] ?? [],
+                'incomes' => $reportData['incomes'] ?? [],
+            ]);
             return response()->make($pdf->stream(), 200, [
                 'Content-Type' => 'application/pdf',
                 'Content-Disposition' => 'attachment; filename="liquidacion_' . $liquidationId . '.pdf"',
@@ -1280,8 +1285,8 @@ class LiquidationService
     {
         $dateOnly = substr($date, 0, 10);
         $reportDate = Carbon::createFromFormat('Y-m-d', $dateOnly, self::TIMEZONE);
-        $start = $reportDate->copy()->startOfDay()->timezone('UTC');
-        $end = $reportDate->copy()->endOfDay()->timezone('UTC');
+        $start = $reportDate->copy()->startOfDay()->setTimezone('America/Caracas')->setTimezone('UTC');
+        $end = $reportDate->copy()->endOfDay()->setTimezone('America/Caracas')->setTimezone('UTC');
 
         $creditsQuery = Credit::with(['client', 'installments', 'payments'])
             ->whereHas('payments', function ($query) use ($start, $end) {
@@ -1433,5 +1438,115 @@ class LiquidationService
             ];
         }
         return $result;
+    }
+
+    /**
+     * Devuelve el detalle de una liquidación con totalizadores y listados paginados de créditos nuevos, pagos, gastos e ingresos.
+     * @param int $liquidationId
+     * @param Request $request
+     * @return array
+     */
+    public function getLiquidationDetail($liquidationId, Request $request)
+    {
+        $liquidation = Liquidation::with(['seller', 'seller.user', 'seller.city.country'])->find($liquidationId);
+        if (!$liquidation) {
+            return [
+                'success' => false,
+                'message' => 'Liquidación no encontrada',
+                'status_code' => 404
+            ];
+        }
+
+        // Totalizadores
+        $previousLiquidation = Liquidation::where('seller_id', $liquidation->seller_id)
+            ->where('date', '<', $liquidation->date)
+            ->orderBy('date', 'desc')
+            ->first();
+        $cajaAnterior = $previousLiquidation ? $previousLiquidation->real_to_deliver : 0;
+        $cajaActual = $liquidation->real_to_deliver;
+        $ingresos = $liquidation->total_income;
+        $egresos = $liquidation->total_expenses;
+        $creditosNuevos = $liquidation->new_credits;
+        $baseEntregada = $liquidation->base_delivered;
+
+        // Paginación
+        $perPage = $request->get('per_page', 10);
+        $page = $request->get('page', 1);
+
+        // Créditos nuevos (de esta liquidación)
+        $creditosNuevosQuery = \App\Models\Credit::where('seller_id', $liquidation->seller_id)
+            ->whereNull('renewed_from_id')
+            ->whereNull('renewed_to_id')
+            ->whereNull('unification_reason')
+            ->whereBetween('created_at', [
+                Carbon::parse($liquidation->date, self::TIMEZONE)->startOfDay()->setTimezone('UTC'),
+                Carbon::parse($liquidation->date, self::TIMEZONE)->endOfDay()->setTimezone('UTC')
+            ]);
+        $creditosNuevosPaginados = $creditosNuevosQuery->paginate($perPage, ['*'], 'creditos_page', $page);
+
+        // Calcular la suma de la póliza de los créditos nuevos
+        $polizaTotal = (clone $creditosNuevosQuery)->get()->sum(function($c) {
+            return ($c->micro_insurance_percentage * $c->credit_value) / 100;
+        });
+
+        // Pagos (cobrados en esta liquidación)
+        $pagosQuery = \App\Models\Payment::join('credits', 'payments.credit_id', '=', 'credits.id')
+            ->where('credits.seller_id', $liquidation->seller_id)
+            ->whereBetween('payments.created_at', [
+                Carbon::parse($liquidation->date, self::TIMEZONE)->startOfDay()->setTimezone('UTC'),
+                Carbon::parse($liquidation->date, self::TIMEZONE)->endOfDay()->setTimezone('UTC')
+            ])
+            ->select('payments.*');
+        $pagosPaginados = $pagosQuery->paginate($perPage, ['*'], 'pagos_page', $page);
+
+        // Gastos (egresos de esta liquidación)
+        $gastosQuery = \App\Models\Expense::where('user_id', $liquidation->seller->user_id)
+            ->whereBetween('created_at', [
+                Carbon::parse($liquidation->date, self::TIMEZONE)->startOfDay()->setTimezone('UTC'),
+                Carbon::parse($liquidation->date, self::TIMEZONE)->endOfDay()->setTimezone('UTC')
+            ]);
+        $gastosPaginados = $gastosQuery->paginate($perPage, ['*'], 'gastos_page', $page);
+
+        // Ingresos de esta liquidación
+        $ingresosQuery = \App\Models\Income::where('user_id', $liquidation->seller->user_id)
+            ->whereBetween('created_at', [
+                Carbon::parse($liquidation->date, self::TIMEZONE)->startOfDay()->setTimezone('UTC'),
+                Carbon::parse($liquidation->date, self::TIMEZONE)->endOfDay()->setTimezone('UTC')
+            ]);
+        $ingresosPaginados = $ingresosQuery->paginate($perPage, ['*'], 'ingresos_page', $page);
+
+        return [
+            'success' => true,
+            'message' => 'Detalle de liquidación obtenido correctamente',
+            'totals' => [
+                'caja_anterior' => $cajaAnterior,
+                'caja_actual' => $cajaActual,
+                'ingresos' => $ingresos,
+                'egresos' => $egresos,
+                'creditos_nuevos' => $creditosNuevos,
+                'base_entregada' => $baseEntregada,
+                'collection_target' => $liquidation->collection_target,
+                'initial_cash' => $liquidation->initial_cash,
+                'total_collected' => $liquidation->total_collected,
+                'total_expenses' => $liquidation->total_expenses,
+                'total_income' => $liquidation->total_income,
+                'real_to_deliver' => $liquidation->real_to_deliver,
+                'shortage' => $liquidation->shortage,
+                'surplus' => $liquidation->surplus,
+                'cash_delivered' => $liquidation->cash_delivered,
+                'status' => $liquidation->status,
+                'end_date' => $liquidation->end_date,
+                'renewal_disbursed_total' => $liquidation->renewal_disbursed_total,
+                'total_pending_absorbed' => $liquidation->total_pending_absorbed,
+                'irrecoverable_credits_amount' => $liquidation->irrecoverable_credits_amount,
+                'created_at' => $liquidation->created_at,
+                'poliza_total' => $polizaTotal,
+            ],
+            'creditos_nuevos' => $creditosNuevosPaginados,
+            'pagos' => $pagosPaginados,
+            'gastos' => $gastosPaginados,
+            'ingresos_listado' => $ingresosPaginados,
+            'liquidacion' => $liquidation,
+        ];
     }
 }

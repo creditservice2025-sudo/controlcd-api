@@ -136,18 +136,24 @@
             </tr>
         </thead>
         <tbody>
-            @foreach ($report['report_data'] as $item)
+            @if(count($report['report_data']) === 0)
                 <tr>
-                    <td>{{ $item['no'] }}</td>
-                    <td class="text-left">{{ $item['client_name'] }}</td>
-                    <td>#00{{ $item['credit_id'] }}</td>
-                    <td>{{ $item['payment_frequency'] }}</td>
-                    <td class="text-right">$ {{ number_format($item['quota_amount'], 2) }}</td>
-                    <td class="text-right">$ {{ number_format($item['remaining_amount'], 2) }}</td>
-                    <td class="text-right">$ {{ number_format($item['paid_today'], 2) }}</td>
-                    <td>{{ $item['payment_time'] ?? 'N/A' }}</td>
+                    <td colspan="8" class="text-center">No hay pagos para la fecha.</td>
                 </tr>
-            @endforeach
+            @else
+                @foreach ($report['report_data'] as $item)
+                    <tr>
+                        <td>{{ $item['no'] }}</td>
+                        <td class="text-left">{{ $item['client_name'] }}</td>
+                        <td>#00{{ $item['credit_id'] }}</td>
+                        <td>{{ $item['payment_frequency'] }}</td>
+                        <td class="text-right">$ {{ number_format($item['quota_amount'], 2) }}</td>
+                        <td class="text-right">$ {{ number_format($item['remaining_amount'], 2) }}</td>
+                        <td class="text-right">$ {{ number_format($item['paid_today'], 2) }}</td>
+                        <td>{{ $item['payment_time'] ?? 'N/A' }}</td>
+                    </tr>
+                @endforeach
+            @endif
         </tbody>
         <tfoot>
             <tr>
@@ -158,26 +164,23 @@
         </tfoot>
     </table>
 
-    @if (count($report['new_credits'] ?? []) > 0)
-        @php
-            $total_new_credits_value = 0;
-            foreach ($report['new_credits'] ?? [] as $credit) {
-                $total_new_credits_value += $credit->credit_value;
-            }
-        @endphp
-
-        <h4 class="text-center">LISTADO DE CRÉDITOS NUEVOS DENTRO DEL COBRO</h4>
-        <table>
-            <thead>
+    <h4 class="text-center">LISTADO DE CRÉDITOS NUEVOS DENTRO DEL COBRO</h4>
+    <table>
+        <thead>
+            <tr>
+                <th>No.</th>
+                <th>Cliente</th>
+                <th>Crédito</th>
+                <th>F. Pago</th>
+                <th>V.C + U</th>
+            </tr>
+        </thead>
+        <tbody>
+            @if(count($report['new_credits'] ?? []) === 0)
                 <tr>
-                    <th>No.</th>
-                    <th>Cliente</th>
-                    <th>Crédito</th>
-                    <th>F. Pago</th>
-                    <th>V.C + U</th>
+                    <td colspan="5" class="text-center">No hay créditos nuevos para la fecha.</td>
                 </tr>
-            </thead>
-            <tbody>
+            @else
                 @foreach ($report['new_credits'] ?? [] as $index => $credit)
                     @php
                         $utilidad = $credit->credit_value * ($credit->total_interest / 100);
@@ -195,16 +198,15 @@
                         </td>
                     </tr>
                 @endforeach
-            </tbody>
-            <tfoot>
-                <tr>
-                    <th colspan="4">TOTAL CRÉDITOS NUEVOS:</th>
-                    <th class="text-right">$ {{ number_format($total_new_credits_value, 2) }}</th>
-                </tr>
-            </tfoot>
-        </table>
-    @endif
-
+            @endif
+        </tbody>
+        <tfoot>
+            <tr>
+                <th colspan="4">TOTAL CRÉDITOS NUEVOS:</th>
+                <th class="text-right">$ {{ number_format($total_new_credits_value ?? 0, 2) }}</th>
+            </tr>
+        </tfoot>
+    </table>
 
     @php
         $totalMicroinsuranceNewCredits = 0;
@@ -262,26 +264,23 @@
         </table>
     @endif
 
-    @if (isset($report['expenses']) && count($report['expenses'] ?? []) > 0)
-        @php
-            $total_expenses_value = 0;
-            foreach ($report['expenses'] ?? [] as $expense) {
-                $total_expenses_value += $expense->value;
-            }
-        @endphp
-
-        <h4 class="text-center">LISTADO DE GASTOS DENTRO DEL COBRO</h4>
-        <table>
-            <thead>
+    <h4 class="text-center">LISTADO DE GASTOS DENTRO DEL COBRO</h4>
+    <table>
+        <thead>
+            <tr>
+                <th>No.</th>
+                <th>Descripción</th>
+                <th>Categoría</th>
+                <th>Vr. Gasto</th>
+            </tr>
+        </thead>
+        <tbody>
+            @if(!isset($report['expenses']) || count($report['expenses'] ?? []) === 0)
                 <tr>
-                    <th>No.</th>
-                    <th>Descripción</th>
-                    <th>Categoría</th>
-                    <th>Vr. Gasto</th>
+                    <td colspan="4" class="text-center">No hay gastos para la fecha.</td>
                 </tr>
-            </thead>
-            <tbody>
-                @foreach ($expenses as $index => $expense)
+            @else
+                @foreach ($report['expenses'] ?? [] as $index => $expense)
                     <tr>
                         <td>{{ $index + 1 }}</td>
                         <td class="text-left">{{ $expense->description }}</td>
@@ -289,50 +288,47 @@
                         <td class="text-right">$ {{ number_format($expense->value, 2) }}</td>
                     </tr>
                 @endforeach
-            </tbody>
-            <tfoot>
-                <tr>
-                    <th colspan="3">TOTAL DE GASTOS</th>
-                    <th class="text-right">$ {{ number_format($total_expenses_value, 2) }}</th>
-                </tr>
-            </tfoot>
-        </table>
-    @endif
+            @endif
+        </tbody>
+        <tfoot>
+            <tr>
+                <th colspan="3">TOTAL DE GASTOS</th>
+                <th class="text-right">$ {{ number_format($total_expenses_value ?? 0, 2) }}</th>
+            </tr>
+        </tfoot>
+    </table>
 
-    @if (isset($report['incomes']) && count($report['incomes'] ?? []) > 0)
-        @php
-            $total_incomes_value = 0;
-            foreach ($report['incomes'] ?? [] as $income) {
-                $total_incomes_value += $income->value;
-            }
-        @endphp
-
-        <h4 class="text-center">LISTADO DE INGRESOS DENTRO DEL COBRO</h4>
-        <table>
-            <thead>
+    <h4 class="text-center">LISTADO DE INGRESOS DENTRO DEL COBRO</h4>
+    <table>
+        <thead>
+            <tr>
+                <th>No.</th>
+                <th>Descripción</th>
+                <th>Vr. Ingreso</th>
+            </tr>
+        </thead>
+        <tbody>
+            @if(!isset($report['incomes']) || count($report['incomes'] ?? []) === 0)
                 <tr>
-                    <th>No.</th>
-                    <th>Descripción</th>
-                    <th>Vr. Ingreso</th>
+                    <td colspan="3" class="text-center">No hay ingresos para la fecha.</td>
                 </tr>
-            </thead>
-            <tbody>
-                @foreach ($incomes as $index => $income)
+            @else
+                @foreach ($report['incomes'] ?? [] as $index => $income)
                     <tr>
                         <td>{{ $index + 1 }}</td>
                         <td class="text-left">{{ $income->description }}</td>
                         <td class="text-right">$ {{ number_format($income->value, 2) }}</td>
                     </tr>
                 @endforeach
-            </tbody>
-            <tfoot>
-                <tr>
-                    <th colspan="2">TOTAL DE INGRESOS</th>
-                    <th class="text-right">$ {{ number_format($total_incomes_value, 2) }}</th>
-                </tr>
-            </tfoot>
-        </table>
-    @endif
+            @endif
+        </tbody>
+        <tfoot>
+            <tr>
+                <th colspan="2">TOTAL DE INGRESOS</th>
+                <th class="text-right">$ {{ number_format($total_incomes_value ?? 0, 2) }}</th>
+            </tr>
+        </tfoot>
+    </table>
 
     <div class="footer">
         <table class="summary-table">
