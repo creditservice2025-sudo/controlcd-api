@@ -27,6 +27,7 @@ class Liquidation extends Model
         'cash_delivered',
         'path',
         'status',
+        'poliza',
         'end_date',
         'renewal_disbursed_total',
         'total_pending_absorbed',

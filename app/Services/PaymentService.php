@@ -620,6 +620,50 @@ class PaymentService
         ]);
     }
 
+    public function getAllPaymentsBySeller($sellerId, Request $request)
+    {
+        $seller = Seller::find($sellerId);
+        if (!$seller) {
+            return $this->successResponse([
+                'success' => false,
+                'message' => 'El vendedor no existe.',
+                'data' => null
+            ], 404);
+        }
+
+        $timezone = 'America/Lima';
+        $paymentsQuery = Payment::query();
+
+        if ($request->has('start_date') && $request->has('end_date')) {
+            $startDate = Carbon::parse($request->get('start_date'), $timezone)->startOfDay();
+            $endDate = Carbon::parse($request->get('end_date'), $timezone)->endOfDay();
+            $paymentsQuery->whereBetween('created_at', [$startDate, $endDate]);
+        } elseif ($request->has('date')) {
+            $filterDate = Carbon::parse($request->get('date'), $timezone)->toDateString();
+            $paymentsQuery->whereDate('created_at', $filterDate);
+        } else {
+            $filterDate = Carbon::now($timezone)->toDateString();
+            $paymentsQuery->whereDate('created_at', $filterDate);
+        }
+
+        if ($request->has('status') && in_array($request->status, ['Abonado', 'Pagado'])) {
+            $paymentsQuery->where('status', $request->status);
+        }
+
+        // Solo pagos de créditos del seller
+        $paymentsQuery->whereHas('credit', function ($q) use ($sellerId) {
+            $q->where('seller_id', $sellerId);
+        });
+
+        $payments = $paymentsQuery->with(['credit:id,client_id', 'credit.client:id,name,dni'])->orderBy('created_at', 'desc')->get();
+
+        return $this->successResponse([
+            'success' => true,
+            'message' => 'Pagos obtenidos correctamente',
+            'data' => $payments
+        ]);
+    }
+
     public function show($creditId, $paymentId)
     {
         try {

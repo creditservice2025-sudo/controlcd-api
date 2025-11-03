@@ -208,18 +208,19 @@ class SellerService
         }
     }
 
-    public function listActiveRoutes($hasLiquidation = null, $search = null, $countryId = null, $cityId = null, $sellerId = null, $companyId = null)
+    public function listActiveRoutes($hasLiquidation = null, $search = null, $countryId = null, $cityId = null, $sellerId = null, $companyId = null, $request = null)
     {
         try {
             $user = Auth::user();
             $company = $user->company;
-            $today = Carbon::now('America/Lima')->format('Y-m-d');
+            $timezone = $request->get('timezone', 'America/Lima');
+            $today = Carbon::now($timezone)->format('Y-m-d');
 
             $routes = Seller::with([
                 'user:id,name',
                 'user.sessionLogs' => function ($q) use ($today) {
                     $q->whereDate('login_at', $today)
-                      ->whereNull('logout_at');
+                        ->whereNull('logout_at');
                 },
                 'city:id,name,country_id',
                 'city.country:id,name'
@@ -292,7 +293,7 @@ class SellerService
 
             $data = $routesList->map(function ($route) use ($today) {
                 $liquidationToday = Liquidation::where('seller_id', $route->id)
-                    ->where(DB::raw('DATE(created_at)'), $today)
+                    ->where(DB::raw('DATE(date)'), $today)
                     ->first();
 
                 $liquidationOpen = null;
@@ -326,9 +327,9 @@ class SellerService
                         ->whereDate('created_at', $today)
                         ->orderByDesc('created_at')
                         ->first();
-
+                    $liquidationClosed = $liquidationToday->end_date ?? null;
                     if ($lastAudit) {
-                        $liquidationClosed = $lastAudit->created_at->format('Y-m-d H:i:s');
+
                         $liquidationAuditId = $lastAudit->id;
                         $closedBySellerToday = $lastAudit->action === 'updated' || $lastAudit->action === 'created';
                     }
@@ -348,7 +349,7 @@ class SellerService
                     'liquidation_audit_id'  => $liquidationAuditId,
                     'liquidation_status'    => $liquidationStatus,
                     'created_at'            => $route->user->sessionLogs[0]->created_at ?? null,
-                    'session_logs'          => $route->user && $route->user->sessionLogs ? $route->user->sessionLogs->map(function($log) {
+                    'session_logs'          => $route->user && $route->user->sessionLogs ? $route->user->sessionLogs->map(function ($log) {
                         return [
                             'id' => $log->id,
                             'login_at' => $log->login_at,

@@ -69,6 +69,16 @@ class PaymentController extends Controller
         }
     }
 
+    public function getSellerPayments(Request $request, int $sellerId)
+    {
+        try {
+            return $this->paymentService->getAllPaymentsBySeller($sellerId, $request);
+        } catch (Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->errorResponse('Error al obtener los créditos del vendedor: ' . $e->getMessage(), 500);
+        }
+    }
+
     public function show($creditId, $paymentId)
     {
         try {
@@ -103,7 +113,7 @@ class PaymentController extends Controller
     public function dailyPaymentTotals(Request $request)
     {
         $date = $request->get('date');
-        $timezone = 'America/Lima'; 
+        $timezone = $request->get('timezone', 'America/Lima'); 
 
         $start = Carbon::createFromFormat('Y-m-d', $date, $timezone)->startOfDay()->timezone('UTC');
         $end = Carbon::createFromFormat('Y-m-d', $date, $timezone)->endOfDay()->timezone('UTC');
@@ -167,6 +177,7 @@ class PaymentController extends Controller
         $expectedQuery = DB::table('installments')
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
             ->where('installments.due_date', $date)
+            ->whereNull('credits.deleted_at')
             ->select(DB::raw('COALESCE(SUM(installments.quota_amount), 0) as total'));
 
         if ($sellerId) {
@@ -252,11 +263,13 @@ class PaymentController extends Controller
         // 5. Gastos
         $expensesQuery = DB::table('expenses')
             ->select(DB::raw('COALESCE(SUM(value), 0) as total_expenses'))
+            ->whereNull('deleted_at')
             ->whereBetween('created_at', [$start, $end])
             ->where('status', 'Aprobado');
 
         $incomeQuery = DB::table('incomes')
             ->select(DB::raw('COALESCE(SUM(value), 0) as total_income'))
+            ->whereNull('deleted_at')
             ->whereBetween('created_at', [$start, $end]);
 
         if ($user->role_id == 5) {
@@ -301,6 +314,13 @@ class PaymentController extends Controller
 
         $paymentsList = $paymentsListQuery->get();
 
+        $totals['poliza'] = (float)DB::table('credits')
+            ->where('seller_id', $sellerId)
+            ->whereBetween('created_at', [$start, $end])
+            ->whereNull('deleted_at')
+            ->whereNull('unification_reason')
+            ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
+
         // 6. Cálculo de saldos (Reestructurado según requerimiento)
         $initialCash = 0;
         if ($sellerId) {
@@ -317,17 +337,18 @@ class PaymentController extends Controller
             ->where('credits.seller_id', $sellerId)
             ->where('credits.status', 'Cartera Irrecuperable')
             ->whereDate('credits.updated_at', $todayDate)
+            ->whereNull('credits.deleted_at')
             ->where('installments.status', 'Pendiente')
             ->sum('installments.quota_amount');
 
         $realToDeliver = $initialCash
-            + ($totals['total_income'] + $totals['collected_total'])
+            + ($totals['total_income'] + $totals['collected_total'] + $totals['poliza'])
             - ($totals['created_credits_value']
                 + $totals['total_expenses']
                 + $totals['total_renewal_disbursed']
                 + $irrecoverableCredits);
 
-        $cashCollection = ($totals['total_income'] + $totals['collected_total'])
+        $cashCollection = ($totals['total_income'] + $totals['collected_total'] + $totals['poliza']) 
             - ($totals['created_credits_value']
                 + $totals['total_expenses']
                 + $totals['total_renewal_disbursed']

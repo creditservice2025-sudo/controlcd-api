@@ -124,9 +124,14 @@ class LiquidationController extends Controller
             $total_renewal_disbursed += $netDisbursement;
         }
 
+        // === Calcular valor de póliza ===
+        $poliza = Credit::where('seller_id', $request->seller_id)
+            ->whereDate('created_at', $request->date)
+            ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
+
         // === Calcular real_to_deliver incluyendo los nuevos campos ===
         $realToDeliver = $request->initial_cash +
-            ($request->total_income + $request->total_collected) -
+            ($request->total_income + $request->total_collected + $poliza) -
             ($request->total_expenses + $request->new_credits + $irrecoverableCredits + $total_renewal_disbursed);
 
         $shortage = 0;
@@ -168,7 +173,8 @@ class LiquidationController extends Controller
             'cash_delivered' => $request->cash_delivered,
             'status' => 'pending',
             'irrecoverable_credits_amount' => $irrecoverableCredits,
-            'renewal_disbursed_total' => $total_renewal_disbursed
+            'renewal_disbursed_total' => $total_renewal_disbursed,
+            'poliza' => $poliza,
         ];
 
         if ($request->has('created_at')) {
@@ -332,10 +338,15 @@ class LiquidationController extends Controller
             $total_renewal_disbursed += $netDisbursement;
         }
 
+        // === Calcular valor de póliza ===
+        $poliza = \App\Models\Credit::where('seller_id', $sellerId)
+            ->whereDate('created_at', $date)
+            ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
+
         // === Calcular real_to_deliver incluyendo los nuevos campos ===
         $realToDeliver = $initial_cash +
             $base_delivered +
-            ($total_income + $total_collected) -
+            ($total_income + $total_collected + $poliza) -
             $total_expenses -
             $new_credits -
             $irrecoverableCredits -
@@ -378,7 +389,8 @@ class LiquidationController extends Controller
             'cash_delivered' => $cash_delivered,
             'status' => 'pending',
             'irrecoverable_credits_amount' => $irrecoverableCredits,
-            'renewal_disbursed_total' => $total_renewal_disbursed
+            'renewal_disbursed_total' => $total_renewal_disbursed,
+            'poliza' => $poliza,
         ]);
 
         $liquidation->refresh();
@@ -464,7 +476,7 @@ class LiquidationController extends Controller
 
     public function reopenRoute(ReopenRouteRequest $request)
     {
-        $result = $this->liquidationService->reopenRoute($request->seller_id, $request->date);
+        $result = $this->liquidationService->reopenRoute($request->seller_id, $request->date, $request);
         return response()->json($result);
     }
 
@@ -648,7 +660,7 @@ class LiquidationController extends Controller
             // Recalcula los montos de ese día con la lógica de tu store/update
             // Si tienes otros campos que se deben recalcular, ajústalo aquí
             $realToDeliver = $initial_cash +
-                ($liquidation->total_income + $liquidation->total_collected)
+                ($liquidation->total_income + $liquidation->total_collected + $liquidation->poliza) 
                 - ($liquidation->total_expenses + $liquidation->new_credits + $liquidation->irrecoverable_credits_amount + $liquidation->renewal_disbursed_total);
 
             $shortage = 0;
@@ -701,32 +713,32 @@ class LiquidationController extends Controller
         return false;
     }
 
-    public function getLiquidationData($sellerId, $date)
+    public function getLiquidationData($sellerId, $date, Request $request)
     {
         $user = Auth::user();
 
         // Zona horaria Venezuela
-        $timezone = 'America/Lima';
+        $timezone = $request->query('timezone', 'America/Lima');
         $start = Carbon::createFromFormat('Y-m-d', $date, $timezone)->startOfDay()->setTimezone('UTC');
         $end = Carbon::createFromFormat('Y-m-d', $date, $timezone)->endOfDay()->setTimezone('UTC');
         $todayDate = Carbon::now($timezone)->toDateString();
 
         // 1. Verificar si ya existe liquidación para esta fecha
         $existingLiquidation = Liquidation::where('seller_id', $sellerId)
-            ->whereBetween('created_at', [$start, $end])
+            ->whereBetween('date', [$start, $end])
             ->first();
-       /*  \Log::debug("liquidation existente: " . ($existingLiquidation ? 'sí' : 'no'));
-        \Log::debug("Verificando liquidación para vendedor $sellerId en fecha desde $start hasta $end"); */
+        \Log::debug("liquidation existente: " . ($existingLiquidation ? 'sí' : 'no'));
+        \Log::debug("Verificando liquidación para vendedor $sellerId en fecha desde $start hasta $end");
         if ($existingLiquidation) {
            /*  \Log::debug('Datos de la liquidación encontrada: ' . json_encode($existingLiquidation->toArray())); */
             $updatedLiquidation = Liquidation::where('seller_id', $sellerId)
-                ->whereBetween('created_at', [$start, $end])
+                ->whereBetween('date', [$start, $end])
                 ->first();
-            return $this->formatLiquidationResponse($updatedLiquidation, true);
+            return $this->formatLiquidationResponse($updatedLiquidation, true, $timezone);
         }
 
         // 2. Obtener datos del endpoint dailyPaymentTotals
-        $dailyTotals = $this->getDailyTotals($sellerId, $date, $user);
+        $dailyTotals = $this->getDailyTotals($sellerId, $date, $user, $timezone);
 
 
         // 3. Obtener última liquidación para saldo inicial
@@ -749,13 +761,13 @@ class LiquidationController extends Controller
         Log::info('Initial Cash: ' . $initialCash); */
         // 4. Calcular valor real a entregar
         $realToDeliver = $initialCash
-            + ($dailyTotals['total_income'] + $dailyTotals['collected_total'])
+            + ($dailyTotals['total_income'] + $dailyTotals['collected_total'] + $dailyTotals['poliza'])
             - ($dailyTotals['created_credits_value']
                 + $dailyTotals['total_renewal_disbursed']
                 + $dailyTotals['total_expenses']
                 + $irrecoverableCredits);
 
-        $cashCollection = ($dailyTotals['total_income'] + $dailyTotals['collected_total'])
+        $cashCollection = ($dailyTotals['total_income'] + $dailyTotals['collected_total'] + $dailyTotals['poliza'])
             - ($dailyTotals['created_credits_value']
                 + $dailyTotals['total_renewal_disbursed']
                 + $dailyTotals['total_expenses']
@@ -777,6 +789,7 @@ class LiquidationController extends Controller
             'cash' => $dailyTotals['cash'],
             'transfer' => $dailyTotals['transfer'],
             'expected_total' => $dailyTotals['expected_total'],
+            'poliza' => $dailyTotals['poliza'],
             'current_balance' => $dailyTotals['current_balance'],
             'total_clients' => $dailyTotals['total_clients'],
             'existing_liquidation' => null,
@@ -788,15 +801,16 @@ class LiquidationController extends Controller
         ];
     }
 
-    protected function getDailyTotals($sellerId, $date, $user)
+    protected function getDailyTotals($sellerId, $date, $user, $timezone = 'America/Lima')
     {
-        $timezone = 'America/Lima';
-
         $targetDate = Carbon::parse($date, $timezone);
         $formattedDate = $targetDate->format('Y-m-d');
 
         $startUTC = $targetDate->copy()->startOfDay()->timezone('UTC');
         $endUTC = $targetDate->copy()->endOfDay()->timezone('UTC');
+
+        \Log::info('[getDailyTotals] sellerId: ' . $sellerId . ', date: ' . $date . ', timezone: ' . $timezone);
+        \Log::info('[getDailyTotals] startUTC: ' . $startUTC . ', endUTC: ' . $endUTC);
 
         $query = DB::table('payments')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
@@ -822,6 +836,8 @@ class LiquidationController extends Controller
         $firstPaymentDate = $firstPaymentResult ? $firstPaymentResult->first_payment_date : null;
 
         $paymentResults = $query->get();
+
+        \Log::info('[getDailyTotals] paymentResults: ', $paymentResults->toArray());
 
         $totals = [
             'cash' => 0,
@@ -864,6 +880,8 @@ class LiquidationController extends Controller
         ), 0) as interest')
             ])
             ->first();
+
+        \Log::info('[getDailyTotals] credits: ', (array)$credits);
 
         /* Log::info('Créditos creados en ' . $targetDate->format('Y-m-d') . ':', [
             'query' => DB::table('credits')
@@ -936,6 +954,16 @@ class LiquidationController extends Controller
         $totals['total_renewal_disbursed'] = $total_renewal_disbursed;
         $totals['total_crossed_credits'] = $total_pending_absorbed;
 
+        // === Calcular valor de póliza ===
+        $totals['poliza'] = (float)DB::table('credits')
+            ->where('seller_id', $sellerId)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
+
+        \Log::info('[getDailyTotals] poliza: ', ['poliza' => $totals['poliza']]);
+
+        \Log::info('[getDailyTotals] totals before return: ', ['totals' => $totals]);
+
         return $totals;
     }
 
@@ -1002,7 +1030,7 @@ class LiquidationController extends Controller
     }
 
     // Método para formatear respuesta de liquidación existente
-    protected function formatLiquidationResponse($liquidation, $isExisting = false)
+    protected function formatLiquidationResponse($liquidation, $isExisting = false, $timezone = 'America/Lima')
     {
         $user = Auth::user();
         $firstPaymentDate = null;
@@ -1021,7 +1049,7 @@ class LiquidationController extends Controller
             }
         }
 
-        $dailyTotals = $this->getDailyTotals($liquidation->seller_id, $liquidation->date, $user);
+        $dailyTotals = $this->getDailyTotals($liquidation->seller_id, $liquidation->date, $user, $timezone);
 
         return [
             'collection_target' => $liquidation->collection_target,
@@ -1040,6 +1068,7 @@ class LiquidationController extends Controller
             'liquidation_start_date' => $firstPaymentDate,
             'total_crossed_credits' => $dailyTotals['total_crossed_credits'],
             'total_renewal_disbursed' => $dailyTotals['total_renewal_disbursed'],
+            'poliza' => $liquidation->poliza
 
         ];
     }
@@ -1070,16 +1099,16 @@ class LiquidationController extends Controller
             'surplus' => $liquidation->surplus,
             'cash_delivered' => $liquidation->cash_delivered,
             'status' => $liquidation->status,
-            'created_at' => $liquidation->created_at
+            'created_at' => $liquidation->created_at,
+            'poliza' => $liquidation->poliza
+            
         ];
     }
     public function getLiquidationHistory(LiquidationHistoryRequest $request)
     {
         $user = Auth::user();
         $sellerId = $request->seller_id;
-        if (!$this->checkAuthorization($user, $sellerId)) {
-            return response()->json(['error' => 'Unauthorized'], 403);
-        }
+        if (!$this->checkAuthorization($user, $sellerId))            return response()->json(['error' => 'Unauthorized'], 403);
         $result = $this->liquidationService->getLiquidationHistory($sellerId, $request->start_date, $request->end_date);
         return response()->json(['success' => true, 'data' => $result]);
     }

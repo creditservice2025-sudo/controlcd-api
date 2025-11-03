@@ -517,7 +517,7 @@ class LiquidationService
             // Solo recalculamos si la liquidación es del día actual (comparando con el campo 'date')
             if ($liquidationDate == $today) {  // Comparar con el campo 'date' de la liquidación
                 \Log::debug("Recalculando liquidación para el vendedor $sellerId en la fecha $date (hoy)");
-                $this->recalculateLiquidation($sellerId, $date);
+                $this->recalculateLiquidation($sellerId, $date, $timezone);
 
                 // Vuelve a obtener la liquidación actualizada
                 $updatedLiquidation = Liquidation::with('audits')->where('seller_id', $sellerId)
@@ -563,13 +563,20 @@ class LiquidationService
             ->where('installments.status', 'Pendiente')
             ->sum('installments.quota_amount');
 
+        $poliza =  (float)DB::table('credits')
+            ->where('seller_id', $sellerId)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereNull('deleted_at')
+            ->whereNull('unification_reason')
+            ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
+
         \Log::debug($dailyTotals['total_renewal_disbursed']);
 
         $realToDeliver = $initialCash
             + (
                 $dailyTotals['total_income']
                 + $dailyTotals['collected_total']
-                + $baseDelivered
+                + $baseDelivered + $poliza
             )
             - (
                 $dailyTotals['created_credits_value']
@@ -579,13 +586,16 @@ class LiquidationService
         $cashcollection = (
             $dailyTotals['total_income']
             + $dailyTotals['collected_total']
-            + $baseDelivered
+            + $baseDelivered + $poliza
         )
             - (
                 $dailyTotals['created_credits_value']
                 + $dailyTotals['total_expenses'] + $dailyTotals['total_renewal_disbursed'] + $irrecoverableCredits
             );
 
+        \Log::debug("cashcollection: " . $cashcollection);
+
+        \Log::debug("realToDeliver: " . $realToDeliver);
         // 5. Estructurar respuesta completa
         return [
             'collection_target' => $dailyTotals['daily_goal'],
@@ -613,9 +623,11 @@ class LiquidationService
         ];
     }
 
-    public function recalculateLiquidation($sellerId, $date)
+    public function recalculateLiquidation($sellerId, $date, $timezone = null)
     {
-        $timezone = 'America/Lima';
+        if (!$timezone) {
+            $timezone = 'America/Lima';
+        }
         $startUTC = Carbon::parse($date, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC   = Carbon::parse($date, $timezone)->endOfDay()->setTimezone('UTC');
 
@@ -646,24 +658,28 @@ class LiquidationService
         $totalExpenses = $userId
             ? Expense::where('user_id', $userId)
             ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereNull('deleted_at')
             ->sum('value')
             : 0;
 
         $totalIncome = $userId
             ? Income::where('user_id', $userId)
             ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereNull('deleted_at')
             ->sum('value')
             : 0;
 
         $newCredits = Credit::where('seller_id', $sellerId)
             ->whereNull('renewed_from_id')
             ->whereNull('renewed_to_id')
+            ->whereNull('deleted_at')
             ->whereNull('unification_reason')
             ->whereBetween('created_at', [$startUTC, $endUTC])
             ->sum('credit_value');
 
         $totalCollected = Payment::join('credits', 'payments.credit_id', '=', 'credits.id')
             ->where('credits.seller_id', $sellerId)
+            /* ->whereNull('payments.deleted_at') */
             ->whereBetween('payments.created_at', [$startUTC, $endUTC])
             ->sum('payments.amount');
 
@@ -676,6 +692,7 @@ class LiquidationService
         // === Detalle de renovaciones ===
         $renewalCredits = DB::table('credits')
             ->where('seller_id', $sellerId)
+            ->whereNull('deleted_at')
             ->whereDate('created_at', $date)
             ->whereNotNull('renewed_from_id')
             ->get();
@@ -708,6 +725,7 @@ class LiquidationService
         $irrecoverableCredits = DB::table('installments')
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
             ->where('credits.seller_id', $sellerId)
+            ->whereNull('credits.deleted_at')
             ->where('credits.status', 'Cartera Irrecuperable')
             ->whereBetween('credits.updated_at', [$startUTC, $endUTC])
             ->where('installments.status', 'Pendiente')
@@ -715,10 +733,16 @@ class LiquidationService
 
         \Log::debug("Créditos irrecuperables: $irrecoverableCredits");
 
+        $poliza = (float)DB::table('credits')
+            ->where('seller_id', $sellerId)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereNull('deleted_at')
+      /*       ->whereNull('unification_reason') */
+            ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
         // Cálculo del realToDeliver
         $realToDeliver = $liquidation->initial_cash
             + $liquidation->base_delivered
-            + ($totalIncome + $totalCollected)
+            + ($totalIncome + $totalCollected + $poliza)
             - ($totalExpenses
                 + $newCredits
                 + $total_renewal_disbursed
@@ -757,6 +781,7 @@ class LiquidationService
             $liquidation->real_to_deliver == $realToDeliver &&
             $liquidation->shortage == $shortage &&
             $liquidation->surplus == $surplus &&
+            $liquidation->poliza == $poliza &&
             $liquidation->renewal_disbursed_total == $total_renewal_disbursed &&
             $liquidation->total_pending_absorbed == $total_pending_absorbed
         );
@@ -787,6 +812,7 @@ class LiquidationService
             'real_to_deliver'          => $realToDeliver,
             'shortage'                 => $shortage,
             'surplus'                  => $surplus,
+            'poliza'                   => $poliza,
             'renewal_disbursed_total'  => $total_renewal_disbursed,
             'irrecoverable_credits_amount' => $irrecoverableCredits,
             'total_pending_absorbed'    => $total_pending_absorbed,
@@ -876,11 +902,13 @@ class LiquidationService
         // Obtener gastos
         $totals['total_expenses'] = (float)Expense::where('user_id', $userId)
             ->whereBetween('updated_at', [$startUTC, $endUTC])
+            ->whereNull('deleted_at')
             ->where('status', 'Aprobado')
             ->sum('value');
 
         $totals['total_income'] = (float)Income::where('user_id', $userId)
             ->whereBetween('updated_at', [$startUTC, $endUTC])
+            ->whereNull('deleted_at')
             ->sum('value');
 
         // Obtener total clientes
@@ -939,6 +967,14 @@ class LiquidationService
             ];
         }
 
+        $totals['poliza'] = (float)DB::table('credits')
+            ->where('seller_id', $sellerId)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereNull('deleted_at')
+         /*    ->whereNull('unification_reason') */
+            ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
+
+
         $totals['total_renewal_disbursed'] = $total_renewal_disbursed;
         $totals['total_crossed_credits'] = $total_pending_absorbed;;
         $totals['detalle_renovaciones'] = $detalles_renovaciones;
@@ -972,6 +1008,18 @@ class LiquidationService
 
         $dailyTotals = $this->getDailyTotals($liquidation->seller_id, $liquidation->date, $liquidation->user_id ?? null);
 
+        $cashCollection = (
+            $liquidation->total_income
+            + $liquidation->total_collected
+            + $liquidation->base_delivered
+            + $liquidation->poliza
+        )
+            - (
+                $liquidation->new_credits
+                + $liquidation->total_expenses
+                + $liquidation->renewal_disbursed_total
+                + $liquidation->irrecoverable_credits_amount
+            );
         \Log::debug('Liquidation object:', ['liquidation' => json_decode(json_encode($liquidation), true)]);
 
         return [
@@ -989,7 +1037,9 @@ class LiquidationService
             'existing_liquidation' => $isExisting ? $this->formatLiquidationDetails($liquidation) : null,
             'last_liquidation' => $this->getPreviousLiquidation($liquidation->seller_id, $liquidation->date),
             'is_new' => false,
+            'poliza' => $liquidation->poliza,
             'liquidation_start_date' => $firstPaymentDate,
+            'cash_collection' =>  $cashCollection,
             'total_pending_absorbed' => $liquidation->total_pending_absorbed,
             'total_crossed_credits' => $dailyTotals['total_crossed_credits'],
             'total_renewal_disbursed' => $dailyTotals['total_renewal_disbursed'],
@@ -1012,6 +1062,7 @@ class LiquidationService
             'new_credits' => $liquidation->new_credits,
             'base_delivered' => $liquidation->base_delivered,
             'shortage' => $liquidation->shortage,
+            'poliza' => $liquidation->poliza,
             'surplus' => $liquidation->surplus,
             'cash_delivered' => $liquidation->cash_delivered,
             'status' => $liquidation->status,
@@ -1209,16 +1260,20 @@ class LiquidationService
             ->get();
     }
 
-    public function reopenRoute($sellerId, $date)
+    public function reopenRoute($sellerId, $date, $request)
     {
-        $timezone = 'America/Lima';
+
+        $timezone = $request->input('timezone', 'America/Lima');
         $dateLocal = \Carbon\Carbon::parse($date, $timezone)->format('Y-m-d');
         $startUTC = \Carbon\Carbon::parse($dateLocal, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC   = \Carbon\Carbon::parse($dateLocal, $timezone)->endOfDay()->setTimezone('UTC');
 
+       
         $liquidation = \App\Models\Liquidation::where('seller_id', $sellerId)
-            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereDate('date', $dateLocal)
+            ->orderBy('id', 'desc')
             ->first();
+        \Log::debug("Reopening route - Liquidation found:", ['liquidation' => $liquidation]);
 
         if (!$liquidation) {
             return ['message' => 'No existe liquidación para ese vendedor y fecha', 'audits_deleted' => 0];
@@ -1227,11 +1282,15 @@ class LiquidationService
         $seller = \App\Models\Seller::find($liquidation->seller_id);
         $userId = $seller ? $seller->user_id : null;
 
+        \Log::debug("Reopening route - User ID:", ['userId' => $userId]);
+
         $deleted = \App\Models\LiquidationAudit::where('liquidation_id', $liquidation->id)
             ->where('user_id', $userId)
             ->whereIn('action', ['updated', 'created'])
             ->whereBetween('created_at', [$startUTC, $endUTC])
             ->delete();
+
+        \Log::debug("Reopening route - Audits deleted:", ['deleted' => $deleted]);
 
         return [
             'message' => 'Ruta reabierta correctamente',
@@ -1504,9 +1563,7 @@ class LiquidationService
         $creditosNuevosPaginados = $creditosNuevosQuery->paginate($perPage, ['*'], 'creditos_page', $page);
 
         // Calcular la suma de la póliza de los créditos nuevos
-        $polizaTotal = (clone $creditosNuevosQuery)->get()->sum(function($c) {
-            return ($c->micro_insurance_percentage * $c->credit_value) / 100;
-        });
+        $polizaTotal = (clone $creditosNuevosQuery)->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
 
         // Pagos (cobrados en esta liquidación)
         $pagosQuery = \App\Models\Payment::join('credits', 'payments.credit_id', '=', 'credits.id')

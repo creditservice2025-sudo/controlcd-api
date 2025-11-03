@@ -538,6 +538,7 @@ class DashboardService
                 $newCredits = Credit::where('seller_id', $seller->id)
                     ->whereBetween('created_at', [$startUTC, $endUTC])
                     ->whereNull('renewed_from_id')
+                    ->whereNull('deleted_at')
                     ->sum('credit_value');
                 $renewalCredits = Credit::where('seller_id', $seller->id)
                     ->whereBetween('created_at', [$startUTC, $endUTC])
@@ -675,7 +676,10 @@ class DashboardService
                 ->whereBetween('created_at', [$startUTC, $endUTC])->sum('value');
 
             $newCredits = (float) Credit::whereIn('seller_id', $sellerIds)
-                ->whereBetween('created_at', [$startUTC, $endUTC])->whereNull('renewed_from_id')->sum('credit_value');
+                ->whereBetween('created_at', [$startUTC, $endUTC])
+                ->whereNull('renewed_from_id')
+                ->whereNull('deleted_at')
+                ->sum('credit_value');
 
             // Renovaciones: compute net disbursement
             $renewalCredits = Credit::whereIn('seller_id', $sellerIds)
@@ -697,6 +701,7 @@ class DashboardService
             // daily policy
             $dailyPolicy = (float) Credit::whereIn('seller_id', $sellerIds)
                 ->whereBetween('created_at', [$startUTC, $endUTC])
+                ->whereNull('deleted_at')
                 ->get()
                 ->sum(fn($credit) => ($credit->credit_value * ($credit->micro_insurance_percentage ?? 0) / 100));
 
@@ -709,8 +714,8 @@ class DashboardService
                 ->where('installments.status', 'Pendiente')
                 ->sum('installments.quota_amount');
 
-            $currentCash = $initialCash + ($income + $cashPayments) - ($expenses + $newCredits + $total_renewal_disbursed + $irrecoverableCredits);
-            $cashDayBalance = ($income + $cashPayments) - ($expenses + $newCredits + $total_renewal_disbursed + $irrecoverableCredits);
+            $currentCash = $initialCash + ($income + $cashPayments + $dailyPolicy) - ($expenses + $newCredits + $total_renewal_disbursed + $irrecoverableCredits);
+            $cashDayBalance = ($income + $cashPayments + $dailyPolicy) - ($expenses + $newCredits + $total_renewal_disbursed + $irrecoverableCredits);
 
             return $this->successResponse([
                 'success' => true,

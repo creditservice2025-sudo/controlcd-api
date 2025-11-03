@@ -42,22 +42,12 @@ class ClientService
         try {
             $params = $request->validated();
 
-            // Si se recibe timezone, usarlo para la hora local en created_at
-            if (isset($params['timezone']) && !empty($params['timezone'])) {
-                $params['created_at'] = Carbon::now($params['timezone']);
-                $params['updated_at'] = Carbon::now($params['timezone']);
-                $userTimezone = $params['timezone'];
-                unset($params['timezone']); // Evitar error en fillable
-            } else {
-                $userTimezone = null;
-            }
-
             // Restricción por monto total de ventas nuevas en el día
             if (!empty($params['credit_value']) && (float)$params['credit_value'] > 0) {
                 $sellerConfig = \App\Models\SellerConfig::where('seller_id', $params['seller_id'])->first();
                 $limit = $sellerConfig ? floatval($sellerConfig->restrict_new_sales_amount ?? 0) : 0;
                 if ($limit > 0) {
-                    $today = \Carbon\Carbon::now('America/Lima')->toDateString();
+                    $today = \Carbon\Carbon::now('America/Caracas')->toDateString();
                     $newCreditsAmount = \App\Models\Credit::where('seller_id', $params['seller_id'])
                         ->whereDate('created_at', $today)
                         ->sum('credit_value');
@@ -99,8 +89,6 @@ class ClientService
                     'guarantor_id' => $guarantorId,
                     'seller_id' => $params['seller_id'] ?? null,
                     'routing_order' => $params['routing_order'] ?? null,
-                    'created_at' => $params['created_at'] ?? null,
-                    'updated_at' => $params['updated_at'] ?? null
                 ]);
 
                 // Optional initial credit creation
@@ -110,18 +98,7 @@ class ClientService
 
                 // images
                 if ($request->has('images')) {
-                    $images = $request->input('images');
-                    foreach ($images as $index => $imageData) {
-                        $imageFile = $request->file("images.{$index}.file");
-                        $imageType = $imageData['type'] ?? 'gallery';
-                        $path = Helper::uploadFile($imageFile, 'clients');
-                        $client->images()->create([
-                            'path' => $path,
-                            'type' => $imageType,
-                            'created_at' => $params['created_at'] ?? null,
-                            'updated_at' => $params['updated_at'] ?? null
-                        ]);
-                    }
+                    $this->storeClientImages($client, $request);
                 }
 
                 return $this->successResponse([
@@ -265,16 +242,6 @@ class ClientService
             }
 
             $params = $request->validated();
-
-            // Aplicar timezone si viene del front, igual que en create
-            if (isset($params['timezone']) && !empty($params['timezone'])) {
-                $params['updated_at'] = Carbon::now($params['timezone']);
-                if (!isset($params['created_at'])) {
-                    $params['created_at'] = $client->created_at;
-                }
-                unset($params['timezone']); // Evitar error en fillable
-            }
-
             $client->update($params);
 
             if ($request->has('images')) {
@@ -757,13 +724,13 @@ class ClientService
         }
     }
 
-    public function getAllClientsBySeller($sellerId, $search = '', $date = null, $timezone = null)
+    public function getAllClientsBySeller($sellerId, $search = '', $date = null)
     {
         try {
-            $tz = $timezone ?: self::TIMEZONE;
-            $filterDate = $date ? Carbon::parse($date, $tz) : Carbon::now($tz);
+            $filterDate = $date ? Carbon::parse($date, self::TIMEZONE) : Carbon::now(self::TIMEZONE);
             $startUTC = $filterDate->copy()->startOfDay()->timezone('UTC');
             $endUTC = $filterDate->copy()->endOfDay()->timezone('UTC');
+
 
             $clients = Client::query()
                 ->select('id', 'name', 'dni', 'address', 'seller_id', 'routing_order', 'geolocation', 'phone', 'capacity')
@@ -1687,7 +1654,7 @@ class ClientService
         return $debtorCredits;
     }
 
-    public function getLiquidationWithAllClients($sellerId, $date, $userId, $timezone = null)
+    public function getLiquidationWithAllClients($sellerId, $date, $userId)
     {
         try {
             $user = Auth::user();
@@ -1707,10 +1674,10 @@ class ClientService
             }
 
             // 1. Obtener datos de liquidación para la fecha
-            $liquidationData = $this->liquidationService->getLiquidationData($sellerId, $date, $userId, $timezone);
+            $liquidationData = $this->liquidationService->getLiquidationData($sellerId, $date, $userId);
 
             // 2. Obtener todos los clientes del vendedor con sus créditos filtrados por fecha
-            $clientsData = $this->getAllClientsBySellerAndDate($sellerId, $date, $timezone);
+            $clientsData = $this->getAllClientsBySellerAndDate($sellerId, $date);
             $allClients = $clientsData['clients'];
             $totalRecaudarHoy = $clientsData['total_recaudar_hoy'];
 
@@ -1736,10 +1703,9 @@ class ClientService
         }
     }
 
-    private function getAllClientsBySellerAndDate($sellerId, $date, $timezone = null)
+    private function getAllClientsBySellerAndDate($sellerId, $date)
     {
-        $tz = $timezone ?: self::TIMEZONE;
-        $referenceDate = Carbon::createFromFormat('Y-m-d', $date, $tz);
+        $referenceDate = Carbon::createFromFormat('Y-m-d', $date, self::TIMEZONE);
         $formattedDate = $referenceDate->format('Y-m-d');
 
         $excludeStatuses = ['Liquidado', 'Renovado', 'Unificado', 'Cartera Irrecuperable'];
@@ -1782,7 +1748,7 @@ class ClientService
 
                 $estadoEspecial = $credit->status;
                 if (in_array($credit->status, ['Liquidado', 'Renovado', 'Unificado'])) {
-                    $liquidationDate = \Carbon\Carbon::parse($credit->updated_at, $tz)->format('Y-m-d');
+                    $liquidationDate = \Carbon\Carbon::parse($credit->updated_at, self::TIMEZONE)->format('Y-m-d');
                     if ($liquidationDate == $formattedDate) {
                         $estadoEspecial = $credit->status . ' hoy';
                     }
@@ -2184,7 +2150,7 @@ class ClientService
             ')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
             ->join('clients', 'credits.client_id', '=', 'clients.id')
-            ->whereNull('payments.deleted_at')
+            /* ->whereNull('payments.deleted_at') */
             ->whereNull('credits.deleted_at')
             ->whereNull('clients.deleted_at')
             ->whereBetween('payments.created_at', [$startUTC, $endUTC])
@@ -2202,7 +2168,7 @@ class ClientService
             ->join('installments', 'payment_installments.installment_id', '=', 'installments.id')
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
             ->join('clients', 'credits.client_id', '=', 'clients.id')
-            ->whereNull('payments.deleted_at')
+            /* ->whereNull('payments.deleted_at') */
             ->whereNull('payment_installments.deleted_at')
             ->whereNull('installments.deleted_at')
             ->whereNull('credits.deleted_at')
@@ -2330,6 +2296,7 @@ class ClientService
             ->whereDate('installments.due_date', $date)
             ->whereNotExists(function ($query) use ($startUTC, $endUTC) {
                 $query->select(DB::raw(1))
+                    ->from('payments')
                     ->whereNull('payments.deleted_at')
                     ->where(function ($q) {
                         $q->whereColumn('payments.credit_id', 'credits.id')

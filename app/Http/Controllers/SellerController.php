@@ -51,7 +51,7 @@ class SellerController extends Controller
             $cityId = $request->get('city_id');
             $sellerId = $request->get('seller_id');
             $companyId = $request->get('company_id');
-            return $this->sellerService->listActiveRoutes($hasLiquidation, $search, $countryId, $cityId, $sellerId, $companyId);
+            return $this->sellerService->listActiveRoutes($hasLiquidation, $search, $countryId, $cityId, $sellerId, $companyId, $request);
         } catch (\Exception $e) {
             \Log::error('Error listing active routes: ' . $e->getMessage());
             return $this->errorResponse($e->getMessage(), 500);

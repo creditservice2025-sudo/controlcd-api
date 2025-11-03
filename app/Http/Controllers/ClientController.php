@@ -372,8 +372,8 @@ class ClientController extends Controller
                 return $this->errorResponse('La fecha seleccionada no puede ser mayor que la fecha actual.', 422);
             }
             $previousLiquidation = Liquidation::where('seller_id', $sellerId)
-                ->whereDate('created_at', '<', $inputDateLocal->format('Y-m-d'))
-                ->orderByDesc('created_at')
+                ->whereDate('date', '<', $inputDateLocal->format('Y-m-d'))
+                ->orderByDesc('date')
                 ->first();
             if ($previousLiquidation && $previousLiquidation->status !== 'approved') {
                 return $this->errorResponse('No puede consultar la liquidación porque la anterior no está aprobada.', 422);
