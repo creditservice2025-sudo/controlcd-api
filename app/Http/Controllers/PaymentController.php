@@ -373,4 +373,20 @@ class PaymentController extends Controller
             'data' => $totals
         ]);
     }
+
+    public function paymentsByDate(Request $request)
+    {
+        $date = $request->get('date');
+        $sellerId = $request->get('seller_id');
+        if (!$date) {
+            return response()->json(['success' => false, 'message' => 'Debe enviar la fecha.'], 400);
+        }
+        try {
+            $result = $this->paymentService->getPaymentsByDate($date, $sellerId);
+            return response()->json(['success' => true, 'data' => $result]);
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
 }

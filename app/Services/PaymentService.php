@@ -664,6 +664,56 @@ class PaymentService
         ]);
     }
 
+    public function getPaymentsByDate($date, $sellerId = null)
+    {
+        $query = Payment::with([
+            'credit:id,client_id,credit_value,status',
+            'credit.client:id,name,dni,address'
+        ])
+        ->whereDate('payment_date', $date);
+
+        Log::info($query->toSql());
+        Log::info($query->getBindings());
+
+        if ($sellerId) {
+            $query->whereHas('credit', function ($q) use ($sellerId) {
+                $q->where('seller_id', $sellerId);
+            });
+        }
+
+        Log::info($query->toSql());
+        Log::info($query->getBindings());
+
+        $payments = $query->get();
+
+        Log::info('PaymentsByDate results:', ['count' => $payments->count(), 'data' => $payments->toArray()]);
+
+        $result = $payments->map(function ($payment) {
+            return [
+                'payment_id' => $payment->id,
+                'amount' => $payment->amount,
+                'payment_date' => $payment->payment_date,
+                'latitude' => $payment->latitude,
+                'longitude' => $payment->longitude,
+                'payment_method' => $payment->payment_method,
+                'status' => $payment->status,
+                'client' => [
+                    'id' => $payment->credit->client->id ?? null,
+                    'name' => $payment->credit->client->name ?? null,
+                    'dni' => $payment->credit->client->dni ?? null,
+                    'address' => $payment->credit->client->address ?? null,
+                ],
+                'credit' => [
+                    'id' => $payment->credit->id ?? null,
+                    'credit_value' => $payment->credit->credit_value ?? null,
+                    'status' => $payment->credit->status ?? null,
+                ],
+            ];
+        });
+
+        return $result;
+    }
+
     public function show($creditId, $paymentId)
     {
         try {

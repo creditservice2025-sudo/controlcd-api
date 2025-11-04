@@ -226,6 +226,7 @@ Route::middleware('auth:api')->group(function () {
 
     //route payment
     Route::get('payments/daily-totals', [PaymentController::class, 'dailyPaymentTotals']);
+    Route::get('payments/by-date', [PaymentController::class, 'paymentsByDate']);
     Route::get('payments/{creditId}', [PaymentController::class, 'index']);
     Route::get('payments/today/{creditId}', [PaymentController::class, 'paymentsToday']);
     Route::post('payment/create', [PaymentController::class, 'create']);
@@ -234,7 +235,7 @@ Route::middleware('auth:api')->group(function () {
     Route::get('payments/seller/{sellerId}', [PaymentController::class, 'indexBySeller']);
     Route::get('payments/seller/{sellerId}/all', [PaymentController::class, 'getSellerPayments']);
     Route::get('payments/total/{creditId}', [PaymentController::class, 'getTotalWithoutInstallments']);
-
+  
 
     //reports
     Route::get('reports/daily-collection', [CreditController::class, 'dailyCollectionReport']);
