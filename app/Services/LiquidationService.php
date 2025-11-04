@@ -657,14 +657,14 @@ class LiquidationService
         // 2. Recalcula los totales actuales desde la BD
         $totalExpenses = $userId
             ? Expense::where('user_id', $userId)
-            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereDate('created_at', $date)
             ->whereNull('deleted_at')
             ->sum('value')
             : 0;
 
         $totalIncome = $userId
             ? Income::where('user_id', $userId)
-            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereDate('created_at', $date)
             ->whereNull('deleted_at')
             ->sum('value')
             : 0;
@@ -674,13 +674,13 @@ class LiquidationService
             ->whereNull('renewed_to_id')
             ->whereNull('deleted_at')
             ->whereNull('unification_reason')
-            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereDate('created_at', $date)
             ->sum('credit_value');
 
         $totalCollected = Payment::join('credits', 'payments.credit_id', '=', 'credits.id')
             ->where('credits.seller_id', $sellerId)
             /* ->whereNull('payments.deleted_at') */
-            ->whereBetween('payments.created_at', [$startUTC, $endUTC])
+            ->whereDate('payments.created_at', $date)
             ->sum('payments.amount');
 
         /*  \Log::debug("Nuevos valores calculados desde BD:");
@@ -727,7 +727,7 @@ class LiquidationService
             ->where('credits.seller_id', $sellerId)
             ->whereNull('credits.deleted_at')
             ->where('credits.status', 'Cartera Irrecuperable')
-            ->whereBetween('credits.updated_at', [$startUTC, $endUTC])
+            ->whereDate('credits.updated_at', $date)
             ->where('installments.status', 'Pendiente')
             ->sum('installments.quota_amount');
 
@@ -735,7 +735,7 @@ class LiquidationService
 
         $poliza = (float)DB::table('credits')
             ->where('seller_id', $sellerId)
-            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereDate('created_at', $date)
             ->whereNull('deleted_at')
       /*       ->whereNull('unification_reason') */
             ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
@@ -834,14 +834,14 @@ class LiquidationService
                 'payments.payment_method',
                 DB::raw('SUM(payments.amount) as total')
             )
-            ->whereBetween('payments.created_at', [$startUTC, $endUTC])
+            ->whereDate('payments.created_at', $date)
             ->where('credits.seller_id', $sellerId)
             ->groupBy('payments.payment_method');
 
         $firstPaymentQuery = DB::table('payments')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
             ->select(DB::raw('MIN(payments.created_at) as first_payment_date'))
-            ->whereBetween('payments.created_at', [$startUTC, $endUTC]);
+            ->whereDate('payments.created_at', $date);
 
         if ($sellerId) {
             $firstPaymentQuery->where('credits.seller_id', $sellerId);
@@ -874,13 +874,13 @@ class LiquidationService
         $totals['expected_total'] = (float)DB::table('installments')
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
             ->where('credits.seller_id', $sellerId)
-            ->whereBetween('installments.due_date', [$startUTC, $endUTC])
+            ->whereDate('installments.due_date', $date)
             ->sum('installments.quota_amount');
 
         // Obtener créditos creados
         $credits = DB::table('credits')
             ->where('seller_id', $sellerId)
-            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereDate('created_at', $date)
             ->whereNull('deleted_at')
             ->whereNull('renewed_from_id')
             ->whereNull('unification_reason')
@@ -901,13 +901,13 @@ class LiquidationService
 
         // Obtener gastos
         $totals['total_expenses'] = (float)Expense::where('user_id', $userId)
-            ->whereBetween('updated_at', [$startUTC, $endUTC])
+            ->whereDate('created_at', $date)
             ->whereNull('deleted_at')
             ->where('status', 'Aprobado')
             ->sum('value');
 
         $totals['total_income'] = (float)Income::where('user_id', $userId)
-            ->whereBetween('updated_at', [$startUTC, $endUTC])
+        ->whereDate('created_at', $date)
             ->whereNull('deleted_at')
             ->sum('value');
 
@@ -933,7 +933,7 @@ class LiquidationService
         // === Detalle de renovaciones ===
         $renewalCredits = DB::table('credits')
             ->where('seller_id', $sellerId)
-            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereDate('created_at', $date)
             ->whereNotNull('renewed_from_id')
             ->get();
 
@@ -969,7 +969,7 @@ class LiquidationService
 
         $totals['poliza'] = (float)DB::table('credits')
             ->where('seller_id', $sellerId)
-            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereDate('created_at', $date)
             ->whereNull('deleted_at')
          /*    ->whereNull('unification_reason') */
             ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));

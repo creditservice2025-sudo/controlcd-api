@@ -138,12 +138,12 @@ class PaymentController extends Controller
                 'payments.payment_method',
                 DB::raw('SUM(payments.amount) as total')
             )
-            ->whereBetween('payments.created_at', [$start, $end]);
+            ->whereDate('payments.created_at', $date);
 
         $firstPaymentQuery = DB::table('payments')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
             ->select(DB::raw('MIN(payments.created_at) as first_payment_date'))
-            ->whereBetween('payments.created_at', [$start, $end]);
+            ->whereDate('payments.created_at', $date);
 
         if ($sellerId) {
             $paymentQuery->where('credits.seller_id', $sellerId);
@@ -193,13 +193,13 @@ class PaymentController extends Controller
                 DB::raw('COALESCE(SUM(credit_value), 0) as total_credit_value'),
                 DB::raw('COALESCE(SUM(credit_value * (total_interest / 100)), 0) as total_interest_amount')
             )
-            ->whereBetween('created_at', [$start, $end])
+            ->whereDate('created_at', $date)
             ->whereNull('deleted_at')
             ->whereNull('unification_reason')
             ->whereNull('renewed_from_id');
 
         $renewalCreditsQuery = DB::table('credits')
-            ->whereBetween('created_at', [$start, $end])
+            ->whereDate('created_at', $date)
             ->whereNotNull('renewed_from_id');
 
 
@@ -264,13 +264,13 @@ class PaymentController extends Controller
         $expensesQuery = DB::table('expenses')
             ->select(DB::raw('COALESCE(SUM(value), 0) as total_expenses'))
             ->whereNull('deleted_at')
-            ->whereBetween('created_at', [$start, $end])
+            ->whereDate('created_at', $date)
             ->where('status', 'Aprobado');
 
         $incomeQuery = DB::table('incomes')
             ->select(DB::raw('COALESCE(SUM(value), 0) as total_income'))
             ->whereNull('deleted_at')
-            ->whereBetween('created_at', [$start, $end]);
+            ->whereDate('created_at', $date);
 
         if ($user->role_id == 5) {
             $expensesQuery->where('user_id', $user->id);
@@ -281,7 +281,7 @@ class PaymentController extends Controller
 
         // List all expenses for the date - CORREGIDO: usar created_at con rango UTC
         $expensesListQuery = DB::table('expenses')
-            ->whereBetween('created_at', [$start, $end])
+            ->whereDate('created_at', $date)
             ->where('status', 'Aprobado');
 
         if ($user->role_id == 5) {
@@ -294,7 +294,7 @@ class PaymentController extends Controller
 
         // List all incomes for the date - CORREGIDO: usar created_at con rango UTC
         $incomesListQuery = DB::table('incomes')
-            ->whereBetween('created_at', [$start, $end]);
+            ->whereDate('created_at', $date);
 
         if ($user->role_id == 5) {
             $incomesListQuery = $incomesListQuery->where('user_id', $user->id);
@@ -304,7 +304,7 @@ class PaymentController extends Controller
 
         // List all payments for the date - CORREGIDO: usar created_at con rango UTC
         $paymentsListQuery = DB::table('payments')
-            ->whereBetween('payments.created_at', [$start, $end]);  // Especificamos la tabla
+            ->whereDate('payments.created_at', $date);  // Especificamos la tabla
 
         if ($sellerId) {
             $paymentsListQuery = $paymentsListQuery
@@ -316,7 +316,7 @@ class PaymentController extends Controller
 
         $totals['poliza'] = (float)DB::table('credits')
             ->where('seller_id', $sellerId)
-            ->whereBetween('created_at', [$start, $end])
+            ->whereDate('created_at', $date)
             ->whereNull('deleted_at')
             ->whereNull('unification_reason')
             ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));

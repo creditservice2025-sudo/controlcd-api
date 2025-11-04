@@ -362,17 +362,22 @@ class ClientController extends Controller
             if (!in_array($timezone, \DateTimeZone::listIdentifiers())) {
                 $timezone = 'America/Lima';
             }
+
+            \Log::info($timezone);
             $seller = Seller::find($sellerId);
             if (!$seller) {
                 return $this->errorResponse('Vendedor no encontrado', 404);
             }
-            $todayLocal = \Carbon\Carbon::now($timezone)->startOfDay();
-            $inputDateLocal = \Carbon\Carbon::parse($date, $timezone)->startOfDay();
-            if ($inputDateLocal->gt($todayLocal)) {
+            $todayLocal = \Carbon\Carbon::now($timezone)->format('Y-m-d');
+            $inputDateLocal = \Carbon\Carbon::parse($date, $timezone)->format('Y-m-d');
+
+            \Log::info($inputDateLocal);
+            \Log::info($todayLocal);
+            if ($inputDateLocal > $todayLocal) {
                 return $this->errorResponse('La fecha seleccionada no puede ser mayor que la fecha actual.', 422);
             }
             $previousLiquidation = Liquidation::where('seller_id', $sellerId)
-                ->whereDate('date', '<', $inputDateLocal->format('Y-m-d'))
+                ->whereDate('date', '<', $inputDateLocal)
                 ->orderByDesc('date')
                 ->first();
             if ($previousLiquidation && $previousLiquidation->status !== 'approved') {

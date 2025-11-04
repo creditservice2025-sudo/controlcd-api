@@ -723,16 +723,19 @@ class LiquidationController extends Controller
         $end = Carbon::createFromFormat('Y-m-d', $date, $timezone)->endOfDay()->setTimezone('UTC');
         $todayDate = Carbon::now($timezone)->toDateString();
 
+        \Log::debug("Solicitud de datos de liquidación para vendedor $sellerId en fecha $date por usuario {$user->id} ({$user->role_id})");
+
         // 1. Verificar si ya existe liquidación para esta fecha
         $existingLiquidation = Liquidation::where('seller_id', $sellerId)
-            ->whereBetween('date', [$start, $end])
-            ->first();
-        \Log::debug("liquidation existente: " . ($existingLiquidation ? 'sí' : 'no'));
+    ->whereDate('date', $date)
+    ->first();
         \Log::debug("Verificando liquidación para vendedor $sellerId en fecha desde $start hasta $end");
         if ($existingLiquidation) {
+        \Log::debug("liquidation existente: " . ($existingLiquidation ? 'sí' : 'no'));
+
            /*  \Log::debug('Datos de la liquidación encontrada: ' . json_encode($existingLiquidation->toArray())); */
             $updatedLiquidation = Liquidation::where('seller_id', $sellerId)
-                ->whereBetween('date', [$start, $end])
+            ->whereDate('date', $date)
                 ->first();
             return $this->formatLiquidationResponse($updatedLiquidation, true, $timezone);
         }
@@ -743,7 +746,7 @@ class LiquidationController extends Controller
 
         // 3. Obtener última liquidación para saldo inicial
         $lastLiquidation = Liquidation::where('seller_id', $sellerId)
-            ->where('date', '<', $start)
+            ->where('date', '<', $date)
             ->orderBy('date', 'desc')
             ->first();
 
@@ -818,7 +821,7 @@ class LiquidationController extends Controller
                 'payments.payment_method',
                 DB::raw('SUM(payments.amount) as total')
             )
-            ->whereBetween('payments.created_at', [$startUTC, $endUTC])
+            ->whereDate('payments.created_at', $date)
             ->where('credits.seller_id', $sellerId)
             ->where('payments.status', 'Aprobado')
             ->groupBy('payments.payment_method');
@@ -826,7 +829,7 @@ class LiquidationController extends Controller
         $firstPaymentQuery = DB::table('payments')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
             ->select(DB::raw('MIN(payments.created_at) as first_payment_date'))
-            ->whereBetween('payments.created_at', [$startUTC, $endUTC]);
+            ->whereDate('payments.created_at', $date);
 
         if ($sellerId) {
             $firstPaymentQuery->where('credits.seller_id', $sellerId);
@@ -865,7 +868,7 @@ class LiquidationController extends Controller
 
         $credits = DB::table('credits')
             ->where('seller_id', $sellerId)
-            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereDate('created_at', $date)
             ->whereNull('renewed_from_id')
             ->whereNull('deleted_at')
             ->whereNull('unification_reason')
@@ -899,12 +902,12 @@ class LiquidationController extends Controller
         $totals['created_credits_interest'] = (float)$credits->interest;
 
         $totals['total_expenses'] = (float)Expense::where('user_id', $user->id)
-            ->whereBetween('updated_at', [$startUTC, $endUTC])
+            ->whereDate('created_at', $date)
             ->where('status', 'Aprobado')
             ->sum('value');
 
         $totals['total_income'] = (float)Income::where('user_id', $user->id)
-            ->whereBetween('updated_at', [$startUTC, $endUTC])
+        ->whereDate('created_at', $date)
             ->sum('value');
 
         $totals['total_clients'] = (int)DB::table('clients')
@@ -924,7 +927,7 @@ class LiquidationController extends Controller
 
         $renewalCredits = DB::table('credits')
             ->where('seller_id', $sellerId)
-            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereDate('created_at', $date)
             ->whereNotNull('renewed_from_id')
             ->get();
 
@@ -957,7 +960,7 @@ class LiquidationController extends Controller
         // === Calcular valor de póliza ===
         $totals['poliza'] = (float)DB::table('credits')
             ->where('seller_id', $sellerId)
-            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereDate('created_at', $date)
             ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
 
         \Log::info('[getDailyTotals] poliza: ', ['poliza' => $totals['poliza']]);

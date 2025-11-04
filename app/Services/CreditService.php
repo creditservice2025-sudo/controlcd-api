@@ -875,21 +875,24 @@ class CreditService
                 ->whereNull('renewed_from_id')
                 ->where('seller_id', $sellerId);
 
+            $timezone = $request->input('timezone', 'America/Lima');
+
+
             if ($request->has('start_date') && $request->has('end_date')) {
                 $startDate = $request->get('start_date');
                 $endDate = $request->get('end_date');
 
-                $start = Carbon::parse($startDate, self::TIMEZONE)->startOfDay()->timezone('UTC');
-                $end = Carbon::parse($endDate, self::TIMEZONE)->endOfDay()->timezone('UTC');
+                $start = Carbon::parse($startDate, $timezone)->startOfDay()->timezone('UTC');
+                $end = Carbon::parse($endDate, $timezone)->endOfDay()->timezone('UTC');
                 $creditsQuery->whereBetween('credits.created_at', [$start, $end]);
             } elseif ($request->has('date')) {
                 $filterDate = $request->get('date');
-                $start = Carbon::parse($filterDate, self::TIMEZONE)->startOfDay()->timezone('UTC');
-                $end = Carbon::parse($filterDate, self::TIMEZONE)->endOfDay()->timezone('UTC');
+                $start = Carbon::parse($filterDate, $timezone)->startOfDay()->timezone('UTC');
+                $end = Carbon::parse($filterDate, $timezone)->endOfDay()->timezone('UTC');
                 $creditsQuery->whereBetween('credits.created_at', [$start, $end]);
             } else {
-                $todayStart = Carbon::now(self::TIMEZONE)->startOfDay()->timezone('UTC');
-                $todayEnd = Carbon::now(self::TIMEZONE)->endOfDay()->timezone('UTC');
+                $todayStart = Carbon::now($timezone)->startOfDay()->timezone('UTC');
+                $todayEnd = Carbon::now($timezone)->endOfDay()->timezone('UTC');
                 $creditsQuery->whereBetween('credits.created_at', [$todayStart, $todayEnd]);
             }
 
@@ -1310,7 +1313,7 @@ class CreditService
             // Balance remaining after this installment (total credit - acumPaid)
             $balanceRemaining = max(0, round($totalCreditValue - $acumPaid, 2));
 
-          
+
             $installmentsData[] = [
                 'no' => $index + 1,
                 'due_date' => Carbon::parse($ins->due_date)->format('Y-m-d'),
