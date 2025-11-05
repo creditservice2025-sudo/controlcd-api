@@ -36,6 +36,7 @@ class Credit extends Model
         'unified_to_id',
         'is_advance_payment',
         'unification_reason',
+        'renewal_blocked',
 
 
     ];

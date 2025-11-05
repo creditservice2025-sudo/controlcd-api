@@ -146,7 +146,9 @@ Route::middleware('auth:api')->group(function () {
     Route::get('credits/client/{client}', [CreditController::class, 'getCredits']);
     Route::get('credits/seller/{sellerId}', [CreditController::class, 'getSellerCredits']);
     Route::get('/credits/seller/{sellerId}/by-date', [CreditController::class, 'getSellerCredits']);
-
+    Route::put('credit/{creditId}/update-schedule', [CreditController::class, 'updateSchedule']);
+    Route::put('credit/{creditId}/update-frequency', [CreditController::class, 'updateFrequency']);
+    Route::put('credit/{creditId}/renewal-blocked', [CreditController::class, 'setRenewalBlocked']);
     Route::post('credit/renew', [CreditController::class, 'renew']);
     Route::put('credit/{creditId}/toggle-status', [CreditController::class, 'toggleCreditStatus']);
     Route::post('credits/toggle-massively', [CreditController::class, 'toggleCreditsStatusMassively']);
@@ -235,7 +237,7 @@ Route::middleware('auth:api')->group(function () {
     Route::get('payments/seller/{sellerId}', [PaymentController::class, 'indexBySeller']);
     Route::get('payments/seller/{sellerId}/all', [PaymentController::class, 'getSellerPayments']);
     Route::get('payments/total/{creditId}', [PaymentController::class, 'getTotalWithoutInstallments']);
-  
+
 
     //reports
     Route::get('reports/daily-collection', [CreditController::class, 'dailyCollectionReport']);

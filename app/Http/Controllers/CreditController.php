@@ -61,6 +61,61 @@ class CreditController extends Controller
         }
     }
 
+       public function updateSchedule(Request $request, $creditId)
+    {
+        try {
+            $newDate = $request->input('first_quota_date');
+            $timezone = $request->input('timezone', null);
+
+            if (!$newDate) {
+                return $this->errorResponse('first_quota_date es requerido', 400);
+            }
+
+            return $this->creditService->updateCreditSchedule((int) $creditId, $newDate, $timezone);
+        } catch (\Exception $e) {
+            \Log::error("Error updateSchedule ({$creditId}): " . $e->getMessage());
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+     public function updateFrequency(Request $request, $creditId)
+    {
+        try {
+            $newFrequency = $request->input('frequency');
+            $newFirstDate = $request->input('first_quota_date', null);
+            $timezone = $request->input('timezone', null);
+
+            if (! $newFrequency) {
+                return $this->errorResponse('El campo frequency es requerido', 400);
+            }
+
+            $allowed = ['Diaria', 'Semanal', 'Quincenal', 'Mensual'];
+            if (! in_array($newFrequency, $allowed)) {
+                return $this->errorResponse('Frecuencia no válida', 400);
+            }
+
+            return $this->creditService->updateCreditFrequency((int) $creditId, $newFrequency, $newFirstDate, $timezone);
+        } catch (\Exception $e) {
+            \Log::error("Error updateFrequency ({$creditId}): " . $e->getMessage());
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+        public function setRenewalBlocked(Request $request, $creditId)
+    {
+        try {
+            if (! $request->has('blocked')) {
+                return $this->errorResponse('El campo blocked es requerido', 400);
+            }
+
+            $blocked = filter_var($request->input('blocked'), FILTER_VALIDATE_BOOLEAN);
+            return $this->creditService->setCreditRenewalBlocked((int) $creditId, $blocked);
+        } catch (\Exception $e) {
+            \Log::error("Error setRenewalBlocked ({$creditId}): " . $e->getMessage());
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
     public function delete($id)
     {
         try {

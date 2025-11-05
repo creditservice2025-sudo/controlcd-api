@@ -397,6 +397,212 @@ class CreditService
         }
     }
 
+        public function updateCreditSchedule(int $creditId, string $newFirstQuotaDate, $timezone = null)
+    {
+        try {
+            DB::beginTransaction();
+
+            $tz = $timezone ?: self::TIMEZONE;
+            $credit = Credit::with(['installments'])->findOrFail($creditId);
+
+            // Días excluidos del crédito
+            $excludedDayNames = json_decode($credit->excluded_days ?? '[]', true) ?? [];
+            $dayMap = [
+                'Domingo' => Carbon::SUNDAY,
+                'Lunes' => Carbon::MONDAY,
+                'Martes' => Carbon::TUESDAY,
+                'Miércoles' => Carbon::WEDNESDAY,
+                'Jueves' => Carbon::THURSDAY,
+                'Viernes' => Carbon::FRIDAY,
+                'Sábado' => Carbon::SATURDAY
+            ];
+            $excludedDayNumbers = [];
+            foreach ($excludedDayNames as $dayName) {
+                if (isset($dayMap[$dayName])) {
+                    $excludedDayNumbers[] = $dayMap[$dayName];
+                }
+            }
+
+            $adjustForExcludedDays = function (Carbon $date) use ($excludedDayNumbers) {
+                while (in_array($date->dayOfWeek, $excludedDayNumbers)) {
+                    $date->addDay();
+                }
+                return $date;
+            };
+
+            // Inicial fecha de la primera cuota en la zona del usuario
+            $dueDate = Carbon::parse($newFirstQuotaDate, $tz);
+            $dueDate = $adjustForExcludedDays($dueDate);
+
+            // Ordenar cuotas por número de cuota y actualizar due_date secuencialmente
+            $installments = $credit->installments->sortBy('quota_number');
+
+            foreach ($installments as $inst) {
+                $inst->due_date = $dueDate->format('Y-m-d');
+                $inst->save();
+
+                // Avanzar la fecha según la frecuencia del crédito
+                switch ($credit->payment_frequency) {
+                    case 'Diaria':
+                        $dueDate->addDay();
+                        break;
+                    case 'Semanal':
+                        $dueDate->addWeek();
+                        break;
+                    case 'Quincenal':
+                        $dueDate->addDays(15);
+                        break;
+                    case 'Mensual':
+                        $dueDate->addMonth();
+                        break;
+                    default:
+                        $dueDate->addMonth();
+                }
+
+                // Ajustar si cae en día excluido
+                $dueDate = $adjustForExcludedDays($dueDate);
+            }
+
+            // Actualizar primera cuota en el crédito (mantener zona UTC/como string)
+            $credit->first_quota_date = $newFirstQuotaDate;
+            $credit->save();
+
+            DB::commit();
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Fechas de cuotas actualizadas correctamente',
+                'data' => [
+                    'credit_id' => $credit->id,
+                    'first_quota_date' => $credit->first_quota_date,
+                    'installments_updated' => $installments->map(function($i){ return ['id'=>$i->id,'quota_number'=>$i->quota_number,'due_date'=>$i->due_date]; })
+                ]
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            \Log::error("Error updateCreditSchedule ({$creditId}): " . $e->getMessage());
+            return $this->errorResponse('Error al actualizar el calendario de cuotas: ' . $e->getMessage(), 500);
+        }
+    }
+
+        public function updateCreditFrequency(int $creditId, string $newFrequency, ?string $newFirstQuotaDate = null, $timezone = null)
+    {
+        try {
+            DB::beginTransaction();
+
+            $tz = $timezone ?: self::TIMEZONE;
+            $credit = Credit::with(['installments'])->findOrFail($creditId);
+
+            // Obtener días excluidos del crédito
+            $excludedDayNames = json_decode($credit->excluded_days ?? '[]', true) ?? [];
+            $dayMap = [
+                'Domingo' => Carbon::SUNDAY,
+                'Lunes' => Carbon::MONDAY,
+                'Martes' => Carbon::TUESDAY,
+                'Miércoles' => Carbon::WEDNESDAY,
+                'Jueves' => Carbon::THURSDAY,
+                'Viernes' => Carbon::FRIDAY,
+                'Sábado' => Carbon::SATURDAY
+            ];
+            $excludedDayNumbers = [];
+            foreach ($excludedDayNames as $dayName) {
+                if (isset($dayMap[$dayName])) {
+                    $excludedDayNumbers[] = $dayMap[$dayName];
+                }
+            }
+
+            $adjustForExcludedDays = function (Carbon $date) use ($excludedDayNumbers) {
+                while (in_array($date->dayOfWeek, $excludedDayNumbers)) {
+                    $date->addDay();
+                }
+                return $date;
+            };
+
+            // Fecha inicial: preferir la nueva si se envía, si no usar la existente del crédito
+            $baseDateStr = $newFirstQuotaDate ?? $credit->first_quota_date;
+            $dueDate = Carbon::parse($baseDateStr, $tz);
+            $dueDate = $adjustForExcludedDays($dueDate);
+
+            // Recalcular due_date para cada cuota según la nueva frecuencia
+            $installments = $credit->installments->sortBy('quota_number');
+
+            foreach ($installments as $inst) {
+                $inst->due_date = $dueDate->format('Y-m-d');
+                $inst->save();
+
+                // Avanzar la fecha según la nueva frecuencia
+                switch ($newFrequency) {
+                    case 'Diaria':
+                        $dueDate->addDay();
+                        break;
+                    case 'Semanal':
+                        $dueDate->addWeek();
+                        break;
+                    case 'Quincenal':
+                        $dueDate->addDays(15);
+                        break;
+                    case 'Mensual':
+                        $dueDate->addMonth();
+                        break;
+                    default:
+                        // si frecuencia no reconocida, usar mensual por defecto
+                        $dueDate->addMonth();
+                }
+
+                // Ajustar si cae en día excluido
+                $dueDate = $adjustForExcludedDays($dueDate);
+            }
+
+            // Guardar cambios en el crédito
+            $credit->payment_frequency = $newFrequency;
+            if ($newFirstQuotaDate) {
+                $credit->first_quota_date = $newFirstQuotaDate;
+            }
+            $credit->save();
+
+            DB::commit();
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Frecuencia y calendario de cuotas actualizados correctamente',
+                'data' => [
+                    'credit_id' => $credit->id,
+                    'payment_frequency' => $credit->payment_frequency,
+                    'first_quota_date' => $credit->first_quota_date,
+                    'installments_updated' => $installments->map(function ($i) {
+                        return ['id' => $i->id, 'quota_number' => $i->quota_number, 'due_date' => $i->due_date];
+                    })
+                ]
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            \Log::error("Error updateCreditFrequency ({$creditId}): " . $e->getMessage());
+            return $this->errorResponse('Error al actualizar la frecuencia del crédito: ' . $e->getMessage(), 500);
+        }
+    }
+
+     public function setCreditRenewalBlocked(int $creditId, bool $blocked = true)
+    {
+        try {
+            $credit = Credit::find($creditId);
+            if (!$credit) {
+                return $this->errorResponse('Crédito no encontrado', 404);
+            }
+
+            $credit->renewal_blocked = $blocked;
+            $credit->save();
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => $blocked ? 'Crédito bloqueado para renovación' : 'Crédito desbloqueado para renovación',
+                'data' => ['credit_id' => $credit->id, 'renewal_blocked' => (bool) $credit->renewal_blocked]
+            ]);
+        } catch (\Exception $e) {
+            \Log::error("Error setCreditRenewalBlocked ({$creditId}): " . $e->getMessage());
+            return $this->errorResponse('Error al actualizar bloqueo de renovación: ' . $e->getMessage(), 500);
+        }
+    }
+
     public function delete($creditId, $timezone = null)
     {
         try {
