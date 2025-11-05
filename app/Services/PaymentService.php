@@ -664,13 +664,13 @@ class PaymentService
         ]);
     }
 
-    public function getPaymentsByDate($date, $sellerId = null)
+    public function getPaymentsByDate($date, $sellerId = null, Request $request)
     {
         $query = Payment::with([
             'credit:id,client_id,credit_value,status',
             'credit.client:id,name,dni,address'
         ])
-        ->whereDate('payment_date', $date);
+        ->whereDate('created_at', $date);
 
         Log::info($query->toSql());
         Log::info($query->getBindings());
@@ -693,6 +693,7 @@ class PaymentService
                 'payment_id' => $payment->id,
                 'amount' => $payment->amount,
                 'payment_date' => $payment->payment_date,
+                'created_at' => $payment->created_at,
                 'latitude' => $payment->latitude,
                 'longitude' => $payment->longitude,
                 'payment_method' => $payment->payment_method,

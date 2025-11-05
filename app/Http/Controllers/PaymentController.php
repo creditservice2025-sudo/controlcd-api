@@ -382,7 +382,7 @@ class PaymentController extends Controller
             return response()->json(['success' => false, 'message' => 'Debe enviar la fecha.'], 400);
         }
         try {
-            $result = $this->paymentService->getPaymentsByDate($date, $sellerId);
+            $result = $this->paymentService->getPaymentsByDate($date, $sellerId, $request);
             return response()->json(['success' => true, 'data' => $result]);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
