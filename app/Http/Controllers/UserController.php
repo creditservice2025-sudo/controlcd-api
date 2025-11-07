@@ -101,4 +101,12 @@ class UserController extends Controller
             return $this->errorResponse($e->getMessage(), 500);
         }
     }
+      public function me(Request $request)
+    {
+        try {
+            return $this->userService->me();
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
 }

@@ -43,6 +43,5 @@ class RolePermissionSeeder extends Seeder
             ]);
         }
 
-        // Agrega aquí la lógica para otros roles según tu necesidad
     }
 }

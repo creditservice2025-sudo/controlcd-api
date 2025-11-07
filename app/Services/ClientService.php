@@ -163,7 +163,7 @@ class ClientService
             'status' => 'Vigente'
         ]);
 
-       
+
 
         $quotaAmount = (($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value) / max(1, $credit->number_installments);
         $this->generateInstallmentsForCredit($credit, (float)$quotaAmount);
@@ -383,7 +383,7 @@ class ClientService
             $company = $user->company;
 
             // Consultor (rol 7) y Supervisor (rol 11): obtener seller_ids asociados
-            if (in_array($user->role_id, [7, 11])) {
+            if (in_array($user->role_id, [6, 7, 11])) {
                 $sellerIds = \App\Models\UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
             }
 
@@ -429,6 +429,13 @@ class ClientService
                 case 5:
                     if ($seller) $clientsQuery->where('seller_id', $seller->id);
                     else $clientsQuery->whereRaw('0 = 1');
+                    break;
+                case 6:
+                    if (!empty($sellerIds)) {
+                        $clientsQuery->whereIn('seller_id', $sellerIds);
+                    } else {
+                        $clientsQuery->whereRaw('0 = 1');
+                    }
                     break;
                 case 7:
                 case 11:
@@ -652,7 +659,7 @@ class ClientService
     {
         try {
             $search = trim((string)$search);
-            Log::info('status: ' . $status);   
+            Log::info('status: ' . $status);
 
             $clientsQuery = Client::query()
                 ->select('id', 'name', 'dni', 'email', 'address', 'seller_id', 'routing_order', 'geolocation', 'phone', 'capacity')
@@ -1133,7 +1140,7 @@ class ClientService
                 'seller.city.country' => function ($q) {
                     $q->select('id', 'name');
                 },
-                
+
                 'guarantors' => function ($q) {
                     $q->select('guarantors.id as id', 'guarantors.name', 'guarantors.dni', 'guarantors.phone');
                 },
@@ -1141,10 +1148,10 @@ class ClientService
                     $q->select('id', 'client_id', 'path', 'type');
                 }
             ])
-            ->when(Auth::user()->role_id == 1 && $companyId, function ($q) use ($companyId) {
-                $q->whereHas('seller', fn($sq) => $sq->where('company_id', $companyId));
-            })
-            ->find($clientId);
+                ->when(Auth::user()->role_id == 1 && $companyId, function ($q) use ($companyId) {
+                    $q->whereHas('seller', fn($sq) => $sq->where('company_id', $companyId));
+                })
+                ->find($clientId);
 
             if (!$client) {
                 return [
@@ -1660,11 +1667,11 @@ class ClientService
             $user = Auth::user();
 
             // Verificar permisos del usuario
-            if (!in_array($user->role_id, [1, 2, 5])) {
+            /*    if (!in_array($user->role_id, [1, 2, 5])) {
                 return response()->json([
                     'error' => 'Unauthorized'
                 ], 403);
-            }
+            } */
 
             // Si es vendedor, verificar que solo acceda a sus datos
             if ($user->role_id == 5 && $user->seller->id != $sellerId) {
@@ -1683,7 +1690,9 @@ class ClientService
 
             // 3. Combinar los resultados
             $totalClients = count($allClients);
-            $uniqueClientCount = count(array_unique(array_map(function($item) { return $item['client_id']; }, $allClients)));
+            $uniqueClientCount = count(array_unique(array_map(function ($item) {
+                return $item['client_id'];
+            }, $allClients)));
             return [
                 'liquidation' => $liquidationData,
                 'clients' => $allClients,

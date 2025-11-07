@@ -65,7 +65,7 @@ class DashboardService
             return collect([$user->seller->id]);
         }
         // Consultor: solo los sellers asociados en UserRoute
-        if ($role === 11) {
+        if ($role !== 5 && $role !== 1 && $role !== 2) {
             return UserRoute::where('user_id', $user->id)->pluck('seller_id')->unique()->values();
         }
 
@@ -279,7 +279,7 @@ class DashboardService
                     $data['credits'] = $seller->credits()->count();
                 }
             // Consultor: solo los sellers asociados en UserRoute
-            } elseif ($role === 11) {
+            } else {
                 $sellerIds = UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
                 $data['routes'] = count($sellerIds);
                 $data['members'] = User::whereHas('seller', function ($query) use ($sellerIds) {
