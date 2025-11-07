@@ -60,6 +60,8 @@ Route::middleware('auth:api')->group(function () {
     Route::get('seller/{sellerId}/config', [SellerConfigController::class, 'show']);
     Route::put('seller/{sellerId}/config', [SellerConfigController::class, 'update']);
 
+    Route::get('me', [UserController::class, 'me']);
+    
     //route user
     Route::get('users', [UserController::class, 'index']);
     Route::get('users/select', [UserController::class, 'getUsersSelect']);

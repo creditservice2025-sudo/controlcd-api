@@ -15,7 +15,7 @@ use Illuminate\Support\Str;
 class User extends Authenticatable
 {
     /** @use HasFactory<\Database\Factories\UserFactory> */
-    use HasFactory, Notifiable, HasRoles, HasApiTokens, SoftDeletes ;
+    use HasFactory, Notifiable, HasRoles, HasApiTokens, SoftDeletes;
 
     /**
      * The attributes that are mass assignable.
@@ -70,8 +70,13 @@ class User extends Authenticatable
 
     public function routes()
     {
-        return $this->belongsToMany(Seller::class, 'users_routes');
+       return $this->belongsToMany(Seller::class, 'user_routes', 'user_id', 'seller_id');
     }
+    public function userRoutes()
+    {
+        return $this->hasMany(UserRoute::class);
+    }
+
 
     public function clients()
     {

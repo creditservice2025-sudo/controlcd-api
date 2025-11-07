@@ -114,7 +114,8 @@ class UserService
 
             $user->update($params);
 
-            if (isset($params['routes'])) {
+              if (array_key_exists('routes', $params)) {
+            if (is_array($params['routes']) && count($params['routes']) > 0) {
                 $pivotData = [];
                 if ($userTimezone) {
                     $now = \Carbon\Carbon::now($userTimezone);
@@ -125,7 +126,12 @@ class UserService
                 } else {
                     $user->routes()->sync($params['routes']);
                 }
+            } elseif (!empty($params['clear_routes'])) {
+                
+                $user->routes()->sync([]);
             }
+            
+        }
             DB::commit();
 
             return $this->successResponse([
@@ -179,6 +185,41 @@ class UserService
         }
     }
 
+public function me()
+{
+    /** @var \App\Models\User|null $user */
+    $user = Auth::user();
+
+    if (!$user || !($user instanceof \App\Models\User)) {
+        return $this->errorResponse('No autenticado', 401);
+    }
+
+    $roles = $user->getRoleNames(); 
+    $permissions = $user->getAllPermissions()->pluck('name'); 
+
+    if ($roles->isEmpty() && !empty($user->role_id)) {
+        $roleModel = \Spatie\Permission\Models\Role::find($user->role_id);
+        if ($roleModel) {
+            $roles = collect([$roleModel->name]);
+            $permissions = $roleModel->permissions()->pluck('name');
+        } else {
+            $roleFromTable = \DB::table('roles')->where('id', $user->role_id)->value('name');
+            if ($roleFromTable) {
+                $roles = collect([$roleFromTable]);
+                $permissions = collect();
+            }
+        }
+    }
+
+    return $this->successResponse([
+        'id' => $user->id,
+        'name' => $user->name,
+        'email' => $user->email,
+        'roles' => $roles,
+        'permissions' => $permissions,
+    ]);
+}
+
     public function getUsers(string $search, int $perpage, $companyId = null)
     {
         try {
@@ -205,7 +246,7 @@ class UserService
                     'users.status',
                     'roles.name as role_name'
                 )
-                ->with(['city', 'city.country'])
+                ->with(['city', 'city.country', 'userRoutes', 'userRoutes.seller'])
                 ->whereNull('users.deleted_at')
                 ->whereNotIn('users.role_id', $excludedRoleIds);
     

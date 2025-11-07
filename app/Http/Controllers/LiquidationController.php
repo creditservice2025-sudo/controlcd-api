@@ -63,7 +63,8 @@ class LiquidationController extends Controller
     {
         $user = Auth::user();
 
-        $timezone = 'America/Lima';
+
+        $timezone = $request->input('timezone', 'America/Lima');
         $todayDate = Carbon::now($timezone)->toDateString();
 
         // Verificar si ya existe liquidación para este día
@@ -177,8 +178,14 @@ class LiquidationController extends Controller
             'poliza' => $poliza,
         ];
 
+
         if ($request->has('created_at')) {
             $liquidationData['created_at'] = $request->created_at;
+        } else {
+            if ($request->filled('timezone')) {
+                $liquidationData['created_at'] = Carbon::now($timezone);
+                $liquidationData['updated_at'] = Carbon::now($timezone);
+            }
         }
 
         if ($request->has('path')) {
@@ -194,6 +201,7 @@ class LiquidationController extends Controller
             'user_id' => $user->id,
             'action' => 'created',
             'changes' => json_encode($liquidation->toArray()),
+            'created_at' => Carbon::now($timezone),
         ]);
 
         // Notificación de sobrante/faltante si está activo en SellerConfig
@@ -263,8 +271,8 @@ class LiquidationController extends Controller
     {
         $user = Auth::user();
 
-        $timezone = 'America/Lima';
-
+        $timezone = $request->input('timezone', 'America/Lima');
+        $now = Carbon::now($timezone);
         $liquidation = Liquidation::findOrFail($id);
 
         $date = $request->date ?? $liquidation->date;
@@ -391,6 +399,7 @@ class LiquidationController extends Controller
             'irrecoverable_credits_amount' => $irrecoverableCredits,
             'renewal_disbursed_total' => $total_renewal_disbursed,
             'poliza' => $poliza,
+            'updated_at' => $request->has('updated_at') ? Carbon::parse($request->updated_at, $timezone) : $now,
         ]);
 
         $liquidation->refresh();
@@ -660,7 +669,7 @@ class LiquidationController extends Controller
             // Recalcula los montos de ese día con la lógica de tu store/update
             // Si tienes otros campos que se deben recalcular, ajústalo aquí
             $realToDeliver = $initial_cash +
-                ($liquidation->total_income + $liquidation->total_collected + $liquidation->poliza) 
+                ($liquidation->total_income + $liquidation->total_collected + $liquidation->poliza)
                 - ($liquidation->total_expenses + $liquidation->new_credits + $liquidation->irrecoverable_credits_amount + $liquidation->renewal_disbursed_total);
 
             $shortage = 0;
@@ -727,15 +736,15 @@ class LiquidationController extends Controller
 
         // 1. Verificar si ya existe liquidación para esta fecha
         $existingLiquidation = Liquidation::where('seller_id', $sellerId)
-    ->whereDate('date', $date)
-    ->first();
+            ->whereDate('date', $date)
+            ->first();
         \Log::debug("Verificando liquidación para vendedor $sellerId en fecha desde $start hasta $end");
         if ($existingLiquidation) {
-        \Log::debug("liquidation existente: " . ($existingLiquidation ? 'sí' : 'no'));
+            \Log::debug("liquidation existente: " . ($existingLiquidation ? 'sí' : 'no'));
 
-           /*  \Log::debug('Datos de la liquidación encontrada: ' . json_encode($existingLiquidation->toArray())); */
+            /*  \Log::debug('Datos de la liquidación encontrada: ' . json_encode($existingLiquidation->toArray())); */
             $updatedLiquidation = Liquidation::where('seller_id', $sellerId)
-            ->whereDate('date', $date)
+                ->whereDate('date', $date)
                 ->first();
             return $this->formatLiquidationResponse($updatedLiquidation, true, $timezone);
         }
@@ -907,7 +916,7 @@ class LiquidationController extends Controller
             ->sum('value');
 
         $totals['total_income'] = (float)Income::where('user_id', $user->id)
-        ->whereDate('created_at', $date)
+            ->whereDate('created_at', $date)
             ->sum('value');
 
         $totals['total_clients'] = (int)DB::table('clients')
@@ -1104,7 +1113,7 @@ class LiquidationController extends Controller
             'status' => $liquidation->status,
             'created_at' => $liquidation->created_at,
             'poliza' => $liquidation->poliza
-            
+
         ];
     }
     public function getLiquidationHistory(LiquidationHistoryRequest $request)
