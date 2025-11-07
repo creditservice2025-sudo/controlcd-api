@@ -22,13 +22,13 @@ class CreateHistoricalLiquidation extends Command
         $timezone = 'America/Lima';
         $todayDate = Carbon::now($timezone)->toDateString();
 
-        $sellers = Seller::whereHas('config', function($q) {
+        $sellers = Seller::whereHas('config', function ($q) {
             $q->where('auto_closures_collectors', true);
         })->get();
         foreach ($sellers as $seller) {
             // FECHA DE INICIO: el menor entre la fecha de creación del seller y cualquier movimiento relevante
             $firstCreditDate = Credit::where('seller_id', $seller->id)->min('created_at');
-            $firstPaymentDate = Payment::whereHas('credit', function($q) use ($seller) {
+            $firstPaymentDate = Payment::whereHas('credit', function ($q) use ($seller) {
                 $q->where('seller_id', $seller->id);
             })->min('created_at');
             $firstExpenseDate = Expense::where('user_id', $seller->user_id)->min('created_at');
@@ -52,6 +52,13 @@ class CreateHistoricalLiquidation extends Command
             while ($datePointer->toDateString() <= $endDate) {
                 $currentDate = $datePointer->toDateString();
 
+
+                if (Carbon::parse($currentDate, $timezone)->isSunday()) {
+                    $datePointer->addDay();
+                    continue;
+                }
+
+
                 // Verifica si ya existe liquidación para este día
                 $exists = Liquidation::where('seller_id', $seller->id)
                     ->whereDate('date', $currentDate)
@@ -62,9 +69,9 @@ class CreateHistoricalLiquidation extends Command
                     continue;
                 }
 
-                $total_collected = Payment::whereHas('credit', function($q) use ($seller) {
-                        $q->where('seller_id', $seller->id);
-                    })
+                $total_collected = Payment::whereHas('credit', function ($q) use ($seller) {
+                    $q->where('seller_id', $seller->id);
+                })
                     ->whereDate('created_at', $currentDate)
                     ->sum('amount');
 
@@ -154,7 +161,7 @@ class CreateHistoricalLiquidation extends Command
                     'status' => 'historical',
                     'irrecoverable_credits_amount' => $irrecoverableCredits,
                     'renewal_disbursed_total' => $total_renewal_disbursed,
-                    'total_pending_absorbed' => $total_pending_absorbed, 
+                    'total_pending_absorbed' => $total_pending_absorbed,
                 ]);
 
                 $this->info("Liquidación histórica creada para vendedor {$seller->id} en {$currentDate} | total_pending_absorbed: {$total_pending_absorbed}");

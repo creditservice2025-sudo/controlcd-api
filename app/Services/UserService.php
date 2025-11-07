@@ -114,7 +114,8 @@ class UserService
 
             $user->update($params);
 
-            if (isset($params['routes'])) {
+              if (array_key_exists('routes', $params)) {
+            if (is_array($params['routes']) && count($params['routes']) > 0) {
                 $pivotData = [];
                 if ($userTimezone) {
                     $now = \Carbon\Carbon::now($userTimezone);
@@ -125,7 +126,12 @@ class UserService
                 } else {
                     $user->routes()->sync($params['routes']);
                 }
+            } elseif (!empty($params['clear_routes'])) {
+                
+                $user->routes()->sync([]);
             }
+            
+        }
             DB::commit();
 
             return $this->successResponse([
@@ -240,7 +246,7 @@ public function me()
                     'users.status',
                     'roles.name as role_name'
                 )
-                ->with(['city', 'city.country'])
+                ->with(['city', 'city.country', 'userRoutes', 'userRoutes.seller'])
                 ->whereNull('users.deleted_at')
                 ->whereNotIn('users.role_id', $excludedRoleIds);
     

@@ -504,7 +504,7 @@ class PaymentService
             ], 404);
         }
 
-        $timezone = 'America/Lima';
+          $timezone = $request->input('timezone', 'America/Lima');
 
         $page = (int)$request->input('page', 1);
         $perPage = (int)$request->input('perPage', 10);
