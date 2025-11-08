@@ -100,10 +100,10 @@ class PaymentController extends Controller
         }
     }
 
-    public function delete($paymentId)
+    public function delete($paymentId, Request $request)
     {
         try {
-            return $this->paymentService->delete($paymentId);
+            return $this->paymentService->delete($paymentId, $request);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             return $this->errorResponse($e->getMessage(), 500);
