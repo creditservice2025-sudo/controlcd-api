@@ -30,21 +30,22 @@ class PaymentService
     {
         try {
             DB::beginTransaction();
-        $params = $request->validated();
-        
-        // 1. Manejo de la Zona Horaria al inicio
-        if (isset($params['timezone']) && !empty($params['timezone'])) {
-            // Asigna la fecha y hora con la zona horaria del usuario a created_at y updated_at
-            $params['created_at'] = Carbon::now($params['timezone']);
-            $params['updated_at'] = Carbon::now($params['timezone']);
-            $userTimezone = $params['timezone'];
-            unset($params['timezone']); // Se elimina para que no se guarde como un campo del modelo
-        } else {
-            // Si no hay timezone, se usará el valor por defecto de Eloquent (o null si no está en fillable)
-            $params['created_at'] = null; // Lo establecemos a null explícitamente si no se proporciona
-            $params['updated_at'] = null;
-            $userTimezone = null;
-        }
+            $params = $request->validated();
+
+            $userTimezone = $request->get('timezone') ?: null;
+
+            if ($userTimezone) {
+                Log::info("User timezone provided: " . $userTimezone);
+                // Crear hora en la zona del usuario y convertir a UTC para guardar
+                $createdAtUtc = \Carbon\Carbon::now($userTimezone)->setTimezone('UTC');
+                $updatedAtUtc = $createdAtUtc;
+                $params['created_at'] = $createdAtUtc->toDateTimeString();
+                $params['updated_at'] = $updatedAtUtc->toDateTimeString();
+                unset($params['timezone']);
+            } else {
+                $params['created_at'] = null;
+                $params['updated_at'] = null;
+            }
 
             $credit = Credit::find($request->credit_id);
             $cacheKey = null;
@@ -89,8 +90,8 @@ class PaymentService
                         'payment_id' => $payment->id,
                         'installment_id' => $nextInstallment->id,
                         'applied_amount' => 0,
-                        'created_at' => $params['created_at'], 
-                    'updated_at' => $params['updated_at']
+                        'created_at' => $params['created_at'],
+                        'updated_at' => $params['updated_at']
                     ]);
                 }
 
