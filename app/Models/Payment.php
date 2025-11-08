@@ -23,6 +23,8 @@ class Payment extends Model
         'payment_reference',
         'latitude',
         'longitude',
+        'created_at',
+        'updated_at'
     ];
 
 
