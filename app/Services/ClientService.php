@@ -2162,6 +2162,7 @@ class ClientService
             /* ->whereNull('payments.deleted_at') */
             ->whereNull('credits.deleted_at')
             ->whereNull('clients.deleted_at')
+            ->whereNull('payments.deleted_at')
             ->whereBetween('payments.created_at', [$startUTC, $endUTC])
             ->whereIn('payments.status', ['Pagado', 'Abonado']);
 
@@ -2182,6 +2183,7 @@ class ClientService
             ->whereNull('installments.deleted_at')
             ->whereNull('credits.deleted_at')
             ->whereNull('clients.deleted_at')
+            ->whereNull('payments.deleted_at')
             ->whereBetween('payments.created_at', [$startUTC, $endUTC])
             ->where('payments.status', 'No Pagado');
 
@@ -2198,6 +2200,7 @@ class ClientService
             ->whereNull('payments.deleted_at')
             ->whereNull('credits.deleted_at')
             ->whereNull('clients.deleted_at')
+            ->whereNull('payments.deleted_at')
             ->whereBetween('payments.created_at', [$startUTC, $endUTC])
             ->where('payments.status', 'Abonado');
 
