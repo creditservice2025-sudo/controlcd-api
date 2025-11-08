@@ -29,7 +29,6 @@ class PaymentService
     public function create(PaymentRequest $request)
     {
         try {
-            DB::beginTransaction();
             $params = $request->validated();
 
             $userTimezone = $request->get('timezone') ?: null;
@@ -321,7 +320,6 @@ class PaymentService
                 'data' => $payment
             ]);
         } catch (\Exception $e) {
-            DB::rollBack();
             \Log::error($e->getMessage());
             return $this->errorResponse($e->getMessage(), 500);
         }
