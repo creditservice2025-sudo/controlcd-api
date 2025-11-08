@@ -1661,7 +1661,7 @@ class ClientService
         return $debtorCredits;
     }
 
-    public function getLiquidationWithAllClients($sellerId, $date, $userId)
+    public function getLiquidationWithAllClients($sellerId, $date, $userId, $timezone)
     {
         try {
             $user = Auth::user();
@@ -1681,7 +1681,7 @@ class ClientService
             }
 
             // 1. Obtener datos de liquidación para la fecha
-            $liquidationData = $this->liquidationService->getLiquidationData($sellerId, $date, $userId);
+            $liquidationData = $this->liquidationService->getLiquidationData($sellerId, $date, $userId, $timezone);
 
             // 2. Obtener todos los clientes del vendedor con sus créditos filtrados por fecha
             $clientsData = $this->getAllClientsBySellerAndDate($sellerId, $date);

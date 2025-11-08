@@ -69,11 +69,11 @@ class CreditService
             $sellerConfig = \App\Models\SellerConfig::where('seller_id', $params['seller_id'])->first();
             $limit = $sellerConfig ? floatval($sellerConfig->restrict_new_sales_amount ?? 0) : 0;
             if ($limit > 0) {
-                $today = Carbon::now('America/Lima')->toDateString();
+                $today = Carbon::now($userTimezone)->toDateString();
                 $newCreditsAmount = \App\Models\Credit::where('seller_id', $params['seller_id'])
                     ->whereDate('created_at', $today)
                     ->sum('credit_value');
-                $totalWithNew = $newCreditsAmount + floatval($params['credit_value']);
+                $totalWithNew = $newCreditsAmount + floatval(   $params['credit_value']);
                 if ($totalWithNew > $limit) {
                     return $this->errorResponse('No puedes crear el crédito. El monto total de ventas nuevas por el cobrador hoy supera el límite de $' . number_format($limit, 2), 403);
                 }

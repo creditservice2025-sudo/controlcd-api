@@ -55,10 +55,11 @@ class PaymentService
             }
 
             if ($request->amount == 0) {
-                $payment = Payment::create([
+
+                $paymentData = [
                     'credit_id' => $request->credit_id,
                     'payment_date' => $request->payment_date,
-                    'amount' => 0,
+                    'amount' => $request->amount,
                     'status' => 'No pagado',
                     'payment_method' => $request->payment_method,
                     'payment_reference' => $request->payment_reference ?: 'Registro de no pago',
@@ -66,7 +67,10 @@ class PaymentService
                     'longitude' => $request->longitude,
                     'created_at' => $params['created_at'] ?? null,
                     'updated_at' => $params['updated_at'] ?? null
-                ]);
+                ];
+
+                $payment = Payment::create($paymentData);
+
 
                 $nextInstallment = Installment::where('credit_id', $credit->id)
                     ->whereIn('status', ['Pendiente', 'Parcial', 'Atrasado'])
@@ -107,8 +111,7 @@ class PaymentService
             $pendingAmountNextInstallment = $nextInstallment->quota_amount - $nextInstallment->paid_amount;
             $isAbono = $request->amount < $pendingAmountNextInstallment;
 
-            // Crear registro de pago (estado inicial)
-            $payment = Payment::create([
+            $paymentData = [
                 'credit_id' => $request->credit_id,
                 'payment_date' => $request->payment_date,
                 'amount' => $request->amount,
@@ -119,7 +122,9 @@ class PaymentService
                 'longitude' => $request->longitude,
                 'created_at' => $params['created_at'] ?? null,
                 'updated_at' => $params['updated_at'] ?? null
-            ]);
+            ];
+
+            $payment = Payment::create($paymentData);
 
             if (!$isAbono) {
                 $remainingAmount = $request->amount;
@@ -784,7 +789,7 @@ class PaymentService
                 throw new \Exception('El pago no existe.');
             }
 
-             $timezone = $request->has('timezone') ? $request->get('timezone') : null;
+            $timezone = $request->has('timezone') ? $request->get('timezone') : null;
 
             $today = Carbon::now($timezone)->startOfDay();
             $paymentDate = Carbon::parse($payment->created_at)->setTimezone($timezone)->startOfDay();
