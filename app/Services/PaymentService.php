@@ -30,24 +30,26 @@ class PaymentService
     {
         try {
             DB::beginTransaction();
-            $params = $request->validated();
-            if (isset($params['timezone']) && !empty($params['timezone'])) {
-                $params['created_at'] = Carbon::now($params['timezone']);
-                $params['updated_at'] = Carbon::now($params['timezone']);
-                $userTimezone = $params['timezone'];
-                unset($params['timezone']);
-            } else {
-                $userTimezone = null;
-            }
+        $params = $request->validated();
+        
+        // 1. Manejo de la Zona Horaria al inicio
+        if (isset($params['timezone']) && !empty($params['timezone'])) {
+            // Asigna la fecha y hora con la zona horaria del usuario a created_at y updated_at
+            $params['created_at'] = Carbon::now($params['timezone']);
+            $params['updated_at'] = Carbon::now($params['timezone']);
+            $userTimezone = $params['timezone'];
+            unset($params['timezone']); // Se elimina para que no se guarde como un campo del modelo
+        } else {
+            // Si no hay timezone, se usará el valor por defecto de Eloquent (o null si no está en fillable)
+            $params['created_at'] = null; // Lo establecemos a null explícitamente si no se proporciona
+            $params['updated_at'] = null;
+            $userTimezone = null;
+        }
 
             $credit = Credit::find($request->credit_id);
             $cacheKey = null;
             $cachePaymentsKey = null;
             $user = Auth::user();
-
-            $timezone = $request->has('timezone') ? $request->get('timezone') : null;
-            $createdAt = $timezone ? Carbon::now($timezone) : null;
-            $updatedAt = $timezone ? Carbon::now($timezone) : null;
 
 
             if (!$credit) {
@@ -86,7 +88,9 @@ class PaymentService
                     PaymentInstallment::create([
                         'payment_id' => $payment->id,
                         'installment_id' => $nextInstallment->id,
-                        'applied_amount' => 0
+                        'applied_amount' => 0,
+                        'created_at' => $params['created_at'], 
+                    'updated_at' => $params['updated_at']
                     ]);
                 }
 
