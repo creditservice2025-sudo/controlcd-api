@@ -31,14 +31,29 @@ class PaymentService
         try {
             DB::beginTransaction();
             $params = $request->validated();
+            if (isset($params['timezone']) && !empty($params['timezone'])) {
+                $params['created_at'] = Carbon::now($params['timezone']);
+                $params['updated_at'] = Carbon::now($params['timezone']);
+                $userTimezone = $params['timezone'];
+                unset($params['timezone']);
+            } else {
+                $userTimezone = null;
+            }
+
             $credit = Credit::find($request->credit_id);
             $cacheKey = null;
             $cachePaymentsKey = null;
             $user = Auth::user();
 
             $timezone = $request->has('timezone') ? $request->get('timezone') : null;
+            Log::info('timezone: ' . $timezone);
             $createdAt = $timezone ? Carbon::now($timezone) : null;
+            Log::info('created_at: ' . $createdAt);
             $updatedAt = $timezone ? Carbon::now($timezone) : null;
+            Log::info('updated_at: ' . $updatedAt);
+
+            Log::info('Creating payment with params:', ['params' => $params]);
+            Log::info('Credit found:', ['credit_id' => $credit ? $credit->id : null]);
 
             if (!$credit) {
                 throw new \Exception('El crédito no existe.');
@@ -54,8 +69,8 @@ class PaymentService
                     'payment_reference' => $request->payment_reference ?: 'Registro de no pago',
                     'latitude' => $request->latitude,
                     'longitude' => $request->longitude,
-                    'created_at' => $createdAt,
-                    'updated_at' => $updatedAt
+                    'created_at' => $params['created_at'] ?? null,
+                    'updated_at' => $params['updated_at'] ?? null
                 ]);
 
                 $nextInstallment = Installment::where('credit_id', $credit->id)
@@ -107,8 +122,8 @@ class PaymentService
                 'payment_reference' => $request->payment_reference ?: '',
                 'latitude' => $request->latitude,
                 'longitude' => $request->longitude,
-                'created_at' => $createdAt,
-                'updated_at' => $updatedAt
+                'created_at' => $params['created_at'] ?? null,
+                'updated_at' => $params['updated_at'] ?? null
             ]);
 
             if (!$isAbono) {
@@ -288,8 +303,8 @@ class PaymentService
                     'payment_id' => $payment->id,
                     'user_id' => $user->id,
                     'path' => $imagePath,
-                    'created_at' => $createdAt,
-                    'updated_at' => $updatedAt
+                    'created_at' => $params['created_at'] ?? null,
+                    'updated_at' => $params['updated_at'] ?? null
                 ]);
             }
 
@@ -504,7 +519,7 @@ class PaymentService
             ], 404);
         }
 
-          $timezone = $request->input('timezone', 'America/Lima');
+        $timezone = $request->input('timezone', 'America/Lima');
 
         $page = (int)$request->input('page', 1);
         $perPage = (int)$request->input('perPage', 10);
@@ -670,7 +685,7 @@ class PaymentService
             'credit:id,client_id,credit_value,status',
             'credit.client:id,name,dni,address'
         ])
-        ->whereDate('created_at', $date);
+            ->whereDate('created_at', $date);
 
         Log::info($query->toSql());
         Log::info($query->getBindings());
