@@ -25,10 +25,6 @@ class Payment extends Model
         'longitude',
     ];
 
-    protected function serializeDate(\DateTimeInterface $date)
-{
-    return $date->format('Y-m-d H:i:s');
-}
 
     public function installment()
     {
