@@ -46,14 +46,9 @@ class PaymentService
             $user = Auth::user();
 
             $timezone = $request->has('timezone') ? $request->get('timezone') : null;
-            Log::info('timezone: ' . $timezone);
             $createdAt = $timezone ? Carbon::now($timezone) : null;
-            Log::info('created_at: ' . $createdAt);
             $updatedAt = $timezone ? Carbon::now($timezone) : null;
-            Log::info('updated_at: ' . $updatedAt);
 
-            Log::info('Creating payment with params:', ['params' => $params]);
-            Log::info('Credit found:', ['credit_id' => $credit ? $credit->id : null]);
 
             if (!$credit) {
                 throw new \Exception('El crédito no existe.');
