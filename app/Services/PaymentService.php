@@ -773,7 +773,7 @@ class PaymentService
         }
     }
 
-    public function delete($paymentId)
+    public function delete($paymentId, Request $request)
     {
         try {
             DB::beginTransaction();
@@ -784,8 +784,10 @@ class PaymentService
                 throw new \Exception('El pago no existe.');
             }
 
-            $today = Carbon::today();
-            $paymentDate = Carbon::parse($payment->created_at)->startOfDay();
+             $timezone = $request->has('timezone') ? $request->get('timezone') : null;
+
+            $today = Carbon::now($timezone)->startOfDay();
+            $paymentDate = Carbon::parse($payment->created_at)->setTimezone($timezone)->startOfDay();
 
             if (!$paymentDate->equalTo($today)) {
                 throw new \Exception('Solo se pueden eliminar pagos creados el día de hoy.');
