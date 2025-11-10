@@ -26,25 +26,30 @@ class PaymentService
 {
     use ApiResponse;
 
-    public function create(PaymentRequest $request)
+     public function create(PaymentRequest $request)
     {
         try {
             DB::beginTransaction();
             $params = $request->validated();
 
-            $userTimezone = $request->get('timezone') ?: null;
+            // LOG 1: Ver los parámetros validados, incluyendo el timezone si se envió.
+            \Log::info('Payment Create - Validated Request Params Received', $params); 
 
-            if ($userTimezone) {
-                Log::info("User timezone provided: " . $userTimezone);
-                // Crear hora en la zona del usuario y convertir a UTC para guardar
-                $createdAtUtc = \Carbon\Carbon::now($userTimezone)->setTimezone('UTC');
-                $updatedAtUtc = $createdAtUtc;
-                $params['created_at'] = $createdAtUtc->toDateTimeString();
-                $params['updated_at'] = $updatedAtUtc->toDateTimeString();
+            if (isset($params['timezone']) && !empty($params['timezone'])) {
+                $params['created_at'] = Carbon::now($params['timezone']);
+                $params['updated_at'] = Carbon::now($params['timezone']);
+                $userTimezone = $params['timezone'];
                 unset($params['timezone']);
+                // LOG 2: Confirmar la aplicación de la zona horaria y las fechas resultantes.
+                \Log::info('Timezone Applied Success. Timestamps:', [
+                    'timezone' => $userTimezone,
+                    'created_at' => $params['created_at']->toDateTimeString(),
+                    'updated_at' => $params['updated_at']->toDateTimeString()
+                ]);
             } else {
-                $params['created_at'] = null;
-                $params['updated_at'] = null;
+                $userTimezone = null;
+                // LOG 3: Si no hay timezone.
+                \Log::info('No Timezone Provided. Using default system/app timezone for timestamps.');
             }
 
             $credit = Credit::find($request->credit_id);
@@ -60,17 +65,20 @@ class PaymentService
             if ($request->amount == 0) {
 
                 $paymentData = [
-                    'credit_id' => $request->credit_id,
-                    'payment_date' => $request->payment_date,
-                    'amount' => $request->amount,
+                    'credit_id' => $params['credit_id'],
+                    'payment_date' => $params['payment_date'],
+                    'amount' => $params['amount'],
                     'status' => 'No pagado',
-                    'payment_method' => $request->payment_method,
-                    'payment_reference' => $request->payment_reference ?: 'Registro de no pago',
-                    'latitude' => $request->latitude,
-                    'longitude' => $request->longitude,
+                    'payment_method' => $params['payment_method'],
+                    'payment_reference' => $params['payment_reference'] ?: 'Registro de no pago',
+                    'latitude' => $params['latitude'],
+                    'longitude' => $params['longitude'],
                     'created_at' => $params['created_at'] ?? null,
                     'updated_at' => $params['updated_at'] ?? null
                 ];
+
+                // LOG 4: Data del registro de no pago antes de crear.
+                \Log::info('Creating "No Pago" record with data:', $paymentData);
 
                 $payment = Payment::create($paymentData);
 
@@ -96,6 +104,7 @@ class PaymentService
                 }
 
                 DB::commit();
+                \Log::info('Non-Payment (amount=0) record created successfully for Credit ID: ' . $credit->id); // LOG 5: Commit exitoso
 
                 return $this->successResponse([
                     'success' => true,
@@ -117,17 +126,20 @@ class PaymentService
             $isAbono = $request->amount < $pendingAmountNextInstallment;
 
             $paymentData = [
-                'credit_id' => $request->credit_id,
-                'payment_date' => $request->payment_date,
-                'amount' => $request->amount,
+                'credit_id' => $params['credit_id'],
+                'payment_date' => $params['payment_date'],
+                'amount' => $params['amount'],
                 'status' => $isAbono ? 'Abonado' : 'Pagado',
-                'payment_method' => $request->payment_method,
-                'payment_reference' => $request->payment_reference ?: '',
-                'latitude' => $request->latitude,
-                'longitude' => $request->longitude,
+                'payment_method' => $params['payment_method'],
+                'payment_reference' => $params['payment_reference'] ?: '',
+                'latitude' => $params['latitude'],
+                'longitude' => $params['longitude'],
                 'created_at' => $params['created_at'] ?? null,
                 'updated_at' => $params['updated_at'] ?? null
             ];
+
+            // LOG 6 (Existente): Data del pago antes de crear.
+            \Log::info('Creating standard payment with data:', $paymentData);
 
             $payment = Payment::create($paymentData);
 
@@ -240,7 +252,7 @@ class PaymentService
                         $remainingAccumulated -= $pendingAmount;
 
                         $amountToAssign = $pendingAmount;
-                        foreach ($pendingPayments as $pendingPayment) {
+                        foreach ($pendingPayments as &$pendingPayment) {
                             if ($amountToAssign <= 0) break;
 
                             $amountApplied = min($pendingPayment['amount'], $amountToAssign);
@@ -315,6 +327,9 @@ class PaymentService
 
             DB::commit();
 
+            // LOG 7: Commit exitoso para el flujo de pago estándar.
+            \Log::info('Standard Payment processed and committed successfully for Credit ID: ' . $credit->id); 
+
             return $this->successResponse([
                 'success' => true,
                 'message' => $isAbono ? 'Abono procesado correctamente' : 'Pago procesado correctamente',
@@ -322,7 +337,8 @@ class PaymentService
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
-            \Log::error($e->getMessage());
+            // LOG 8 (Existente): Log de error.
+            \Log::error('Error processing payment for Credit ID: ' . ($request->credit_id ?? 'N/A') . '. Message: ' . $e->getMessage(), ['exception' => $e]); 
             return $this->errorResponse($e->getMessage(), 500);
         }
     }

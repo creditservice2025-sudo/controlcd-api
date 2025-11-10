@@ -27,6 +27,15 @@ class Payment extends Model
         'updated_at'
     ];
 
+    /**
+     * @var array<string, string>
+     */
+    protected $casts = [
+        'payment_date' => 'datetime',
+        'created_at' => 'datetime',
+        'updated_at' => 'datetime',
+    ];
+
 
     public function installment()
     {
