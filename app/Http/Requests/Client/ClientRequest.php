@@ -47,6 +47,7 @@ class ClientRequest extends FormRequest
             'is_advance_payment' => 'nullable|boolean',
             'first_installment_date' => 'nullable|date',
             'timezone' => 'nullable|string',
+            'date' => 'nullable|date',
 
 
 
@@ -57,7 +58,7 @@ class ClientRequest extends FormRequest
             /* 'guarantors_ids' => 'array', */
             'images' => 'nullable|array',
             /*  'images.*.file' => 'nullable|file|mimes:jpg,jpeg,png|max:2048',  */
-              'images.*.type' => 'required|string|in:profile,money_in_hand,business,document'
+            'images.*.type' => 'required|string|in:profile,money_in_hand,business,document'
         ];
 
         if ($this->isMethod('get')) {
@@ -95,7 +96,7 @@ class ClientRequest extends FormRequest
             'dni.unique' => 'El DNI ya existe',
             'routing_order.required' => 'El orden de rutas es requerido',
             'routing_order.integer' => 'El orden de rutas debe ser un número entero',
-            'routing_order.min' => 'El orden de rutas debe ser mayor a 0',  
+            'routing_order.min' => 'El orden de rutas debe ser mayor a 0',
             'geolocation.required' => 'La geolocalización es requerida',
             'geolocation.latitude.required' => 'La latitud es requerida',
             'geolocation.latitude.numeric' => 'La latitud debe ser un número',

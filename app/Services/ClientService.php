@@ -1182,15 +1182,23 @@ class ClientService
         string $paymentStatus = '',
         string $orderBy = 'created_at',
         string $orderDirection = 'desc',
-        $companyId = null
+        $date = null,
+        $companyId = null,
+        $timezone = null
     ) {
         try {
             $user = Auth::user();
             $seller = $user->seller;
-            $timezone = self::TIMEZONE ?? 'America/Lima';
+            $timezone = $timezone ?: self::TIMEZONE;
 
-            // Use timezone-aware "today"
-            $todayLocal = Carbon::now($timezone)->toDateString();
+
+            $referenceDate = $date
+                ? Carbon::createFromFormat('Y-m-d', $date, $timezone)
+                : Carbon::now($timezone);
+
+            $todayLocal = $referenceDate->format('Y-m-d');
+            $startUTC = $referenceDate->copy()->startOfDay()->timezone('UTC');
+            $endUTC = $referenceDate->copy()->endOfDay()->timezone('UTC');
 
             // Subquery to compute payment priority per client (overdue -> pending -> normal)
             $paymentPrioritySubquery = DB::table('clients')
@@ -1201,35 +1209,37 @@ class ClientService
                 ->leftJoin('installments', function ($join) {
                     $join->on('credits.id', '=', 'installments.credit_id');
                 })
-                ->selectRaw('
-                    clients.id as client_id,
-                    MAX(CASE WHEN installments.due_date < CURDATE() THEN 1 ELSE 0 END) as has_overdue,
-                    MAX(CASE WHEN installments.due_date >= CURDATE() THEN 1 ELSE 0 END) as has_pending
-                ')
+                ->selectRaw("
+                clients.id as client_id,
+                MAX(CASE WHEN installments.due_date < '{$todayLocal}' THEN 1 ELSE 0 END) as has_overdue,
+                MAX(CASE WHEN installments.due_date >= '{$todayLocal}' THEN 1 ELSE 0 END) as has_pending
+            ")
                 ->groupBy('clients.id');
 
             // Base credits query
+
             $creditsQuery = Credit::query()
                 ->select('credits.*')
                 ->join('clients', 'clients.id', '=', 'credits.client_id')
-                // keep same payment_priority selection as before for ordering/priority
                 ->selectSub('
-                    CASE 
-                        WHEN payment_priority.has_overdue = 1 THEN 1
-                        WHEN payment_priority.has_pending = 1 THEN 2
-                        ELSE 3
-                    END', 'payment_priority')
+                CASE 
+                    WHEN payment_priority.has_overdue = 1 THEN 1
+                    WHEN payment_priority.has_pending = 1 THEN 2
+                    ELSE 3
+                END', 'payment_priority')
                 ->leftJoinSub($paymentPrioritySubquery, 'payment_priority', function ($join) {
                     $join->on('clients.id', '=', 'payment_priority.client_id');
                 })
-                // Eager load only required relationships and columns
+                // Eager load only required relationships and columns; payments constrained to the selected date
                 ->with([
                     'client.guarantors',
                     'client.images',
                     'client.seller',
                     'client.seller.city',
                     'installments',
-                    'payments',
+                    'payments' => function ($q) use ($startUTC, $endUTC) {
+                        $q->whereBetween('created_at', [$startUTC, $endUTC]);
+                    },
                     'payments.installments'
                 ])
                 ->where(function ($query) {
@@ -1258,20 +1268,20 @@ class ClientService
                 $creditsQuery->where('payment_frequency', $frequency);
             }
 
+
             if (!empty($paymentStatus)) {
-                $todayLocal = Carbon::now($timezone)->toDateString();
                 if ($paymentStatus === 'paid') {
-                    $creditsQuery->whereHas('payments', function ($query) use ($todayLocal) {
-                        $query->whereDate('created_at', $todayLocal)
+                    $creditsQuery->whereHas('payments', function ($query) use ($startUTC, $endUTC) {
+                        $query->whereBetween('created_at', [$startUTC, $endUTC])
                             ->whereIn('status', ['Pagado', 'Abonado']);
                     });
                 } elseif ($paymentStatus === 'unpaid') {
-                    $creditsQuery->whereDoesntHave('payments', function ($q) use ($todayLocal) {
-                        $q->whereDate('created_at', $todayLocal);
+                    $creditsQuery->whereDoesntHave('payments', function ($q) use ($startUTC, $endUTC) {
+                        $q->whereBetween('created_at', [$startUTC, $endUTC]);
                     });
                 } elseif ($paymentStatus === 'notpaid') {
-                    $creditsQuery->whereHas('payments', function ($query) use ($todayLocal) {
-                        $query->whereDate('created_at', $todayLocal)
+                    $creditsQuery->whereHas('payments', function ($query) use ($startUTC, $endUTC) {
+                        $query->whereBetween('created_at', [$startUTC, $endUTC])
                             ->where('status', 'No pagado');
                     });
                 }
@@ -1320,7 +1330,9 @@ class ClientService
 
             // Pre-aggregate payment summary (sum per credit_id and status) in single query
             $creditIds = $credits->pluck('id')->unique()->values()->all();
+
             $paymentSummaryRows = Payment::whereIn('credit_id', $creditIds)
+                ->whereBetween('created_at', [$startUTC, $endUTC])
                 ->select('credit_id', 'status', DB::raw('SUM(amount) as total_amount'))
                 ->groupBy('credit_id', 'status')
                 ->get();
@@ -1332,21 +1344,18 @@ class ClientService
             $nowLocal = Carbon::now($timezone);
 
             // Transform credits exactly preserving the output shape expected by the front
+
             $transformedItems = $credits->map(function ($credit) use ($paymentSummary, $nowLocal, $renewalQuota) {
-                // Attach aggregated payment totals as properties named by status (same behavior)
                 $summary = $paymentSummary->get($credit->id, collect());
                 foreach ($summary as $item) {
                     $credit->{$item->status} = $item->total_amount;
                 }
 
-                // Move installments to 'installment' key as original code did
                 $installments = $credit->installments ?? collect();
                 $credit->installment = $installments;
                 unset($credit->installments);
 
-                // Determine overdue installments using local timezone
                 $overdueInstallments = $installments->filter(function ($installment) use ($nowLocal) {
-                    // comparing as dates in local timezone
                     return $installment->due_date && Carbon::parse($installment->due_date, self::TIMEZONE)->lt($nowLocal->startOfDay()) && $installment->status !== 'Pagado';
                 });
 
@@ -1355,13 +1364,11 @@ class ClientService
                     return $installment->status !== 'Pagado';
                 })->count();
 
-                // Initialize extras
                 $credit->overdue_date = null;
                 $credit->days_overdue = null;
 
                 if ($overdueInstallments->count() > 0) {
                     $credit->credit_status = 'Overdue';
-                    // oldest overdue
                     $firstOverdue = $overdueInstallments->sortBy('due_date')->first();
                     if ($firstOverdue && $firstOverdue->due_date) {
                         $credit->overdue_date = $firstOverdue->due_date;
@@ -1375,7 +1382,6 @@ class ClientService
                     $credit->credit_status = 'Normal';
                 }
 
-                // Calcular el total de créditos activos/vigentes del cliente
                 $totalCreditsValue = $credit->client->credits
                     ->whereIn('status', ['Activo', 'Vigente'])
                     ->sum('credit_value');

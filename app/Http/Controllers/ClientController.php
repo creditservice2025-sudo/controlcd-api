@@ -30,7 +30,7 @@ class ClientController extends Controller
     {
         $this->clientService = $clientService;
 
-       /*  $this->middleware('permission:ver_clientes')->only('index');
+        /*  $this->middleware('permission:ver_clientes')->only('index');
         $this->middleware('permission:crear_clientes')->only('store');
         $this->middleware('permission:editar_clientes')->only('update');
         $this->middleware('permission:eliminar_clientes')->only('destroy'); */
@@ -299,7 +299,9 @@ class ClientController extends Controller
             $orderDirection = (string) $request->input('orderDirection', 'desc');
             $frequency = (string) $request->input('frequency', '');
             $paymentStatus = (string) $request->input('payment_status', '');
+            $date = (string) $request->input('date', '');
             $companyId = $request->input('company_id');
+            $timezone = $request->input('timezone', null);
 
             return $this->clientService->getForCollections(
                 $search,
@@ -310,7 +312,9 @@ class ClientController extends Controller
                 $paymentStatus,
                 $orderBy,
                 $orderDirection,
-                $companyId
+                $date,
+                $companyId,
+                $timezone
             );
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
