@@ -742,10 +742,13 @@ class LiquidationController extends Controller
         if ($existingLiquidation) {
             \Log::debug("liquidation existente: " . ($existingLiquidation ? 'sí' : 'no'));
 
+            $this->liquidationService->recalculateLiquidation($sellerId, $date, $timezone);
             /*  \Log::debug('Datos de la liquidación encontrada: ' . json_encode($existingLiquidation->toArray())); */
             $updatedLiquidation = Liquidation::where('seller_id', $sellerId)
                 ->whereDate('date', $date)
                 ->first();
+
+
             return $this->formatLiquidationResponse($updatedLiquidation, true, $timezone);
         }
 
@@ -912,7 +915,6 @@ class LiquidationController extends Controller
 
         $totals['total_expenses'] = (float)Expense::where('user_id', $user->id)
             ->whereBetween('created_at', [$startUTC, $endUTC])
-            ->where('status', 'Aprobado')
             ->sum('value');
 
         $totals['total_income'] = (float)Income::where('user_id', $user->id)
@@ -1064,6 +1066,18 @@ class LiquidationController extends Controller
 
         $dailyTotals = $this->getDailyTotals($liquidation->seller_id, $liquidation->date, $user, $timezone);
 
+        $cashCollection = (
+            $liquidation->total_income
+            + $liquidation->total_collected
+            + $liquidation->base_delivered
+            + $liquidation->poliza
+        )
+            - (
+                $liquidation->new_credits
+                + $liquidation->total_expenses
+                + $liquidation->renewal_disbursed_total
+                + $liquidation->irrecoverable_credits_amount
+            );
         return [
             'collection_target' => $liquidation->collection_target,
             'initial_cash' => $liquidation->initial_cash,
@@ -1079,6 +1093,7 @@ class LiquidationController extends Controller
             'last_liquidation' => $this->getPreviousLiquidation($liquidation->seller_id, $liquidation->date),
             'is_new' => false,
             'liquidation_start_date' => $firstPaymentDate,
+            'cash_collection' =>  $cashCollection,
             'total_crossed_credits' => $dailyTotals['total_crossed_credits'],
             'total_renewal_disbursed' => $dailyTotals['total_renewal_disbursed'],
             'poliza' => $liquidation->poliza
