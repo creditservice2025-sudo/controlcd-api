@@ -765,7 +765,7 @@ class LiquidationController extends Controller
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
             ->where('credits.seller_id', $sellerId)
             ->where('credits.status', 'Cartera Irrecuperable')
-            ->whereDate('credits.updated_at', $todayDate)
+            ->whereBetween('credits.updated_at', [$start, $end])
             ->where('installments.status', 'Pendiente')
             ->sum('installments.quota_amount');
 
@@ -830,15 +830,15 @@ class LiquidationController extends Controller
                 'payments.payment_method',
                 DB::raw('SUM(payments.amount) as total')
             )
-            ->whereDate('payments.created_at', $date)
+            ->whereBetween('payments.created_at', [$startUTC, $endUTC])
             ->where('credits.seller_id', $sellerId)
-            ->where('payments.status', 'Aprobado')
+            ->whereIn('payments.status', ['Pagado', 'Aprobado'])
             ->groupBy('payments.payment_method');
 
         $firstPaymentQuery = DB::table('payments')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
             ->select(DB::raw('MIN(payments.created_at) as first_payment_date'))
-            ->whereDate('payments.created_at', $date);
+            ->whereBetween('payments.created_at', [$startUTC, $endUTC]);
 
         if ($sellerId) {
             $firstPaymentQuery->where('credits.seller_id', $sellerId);
@@ -877,19 +877,19 @@ class LiquidationController extends Controller
 
         $credits = DB::table('credits')
             ->where('seller_id', $sellerId)
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
             ->whereNull('renewed_from_id')
             ->whereNull('deleted_at')
             ->whereNull('unification_reason')
             ->select([
                 DB::raw('COALESCE(SUM(credit_value), 0) as value'),
                 DB::raw('COALESCE(SUM(
-            CASE 
-                WHEN total_interest IS NOT NULL AND total_interest > 0 
-                THEN credit_value * (total_interest / 100)
-                ELSE 0
-            END
-        ), 0) as interest')
+                CASE 
+                    WHEN total_interest IS NOT NULL AND total_interest > 0 
+                    THEN credit_value * (total_interest / 100)
+                    ELSE 0
+                END
+            ), 0) as interest')
             ])
             ->first();
 
@@ -911,13 +911,14 @@ class LiquidationController extends Controller
         $totals['created_credits_interest'] = (float)$credits->interest;
 
         $totals['total_expenses'] = (float)Expense::where('user_id', $user->id)
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
             ->where('status', 'Aprobado')
             ->sum('value');
 
         $totals['total_income'] = (float)Income::where('user_id', $user->id)
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
             ->sum('value');
+
 
         $totals['total_clients'] = (int)DB::table('clients')
             ->whereExists(function ($query) use ($sellerId) {
@@ -936,7 +937,7 @@ class LiquidationController extends Controller
 
         $renewalCredits = DB::table('credits')
             ->where('seller_id', $sellerId)
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
             ->whereNotNull('renewed_from_id')
             ->get();
 
@@ -969,7 +970,7 @@ class LiquidationController extends Controller
         // === Calcular valor de póliza ===
         $totals['poliza'] = (float)DB::table('credits')
             ->where('seller_id', $sellerId)
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
             ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
 
         \Log::info('[getDailyTotals] poliza: ', ['poliza' => $totals['poliza']]);

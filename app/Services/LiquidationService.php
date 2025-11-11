@@ -328,9 +328,10 @@ class LiquidationService
             $query = Liquidation::with(['seller', 'seller.city.country', 'seller.user'])
                 ->where('seller_id', $sellerId);
 
+                $timezone = $request->get('timezone', 'America/Lima');
             if ($request->has('start_date') && $request->has('end_date')) {
-                $startDate = Carbon::parse($request->get('start_date'), 'America/Lima')->startOfDay()->setTimezone('UTC');
-                $endDate = Carbon::parse($request->get('end_date'), 'America/Lima')->endOfDay()->setTimezone('UTC');
+                $startDate = Carbon::parse($request->get('start_date'), $timezone)->startOfDay()->setTimezone('UTC');
+                $endDate = Carbon::parse($request->get('end_date'), $timezone)->endOfDay()->setTimezone('UTC');
                 $query->whereBetween('date', [$startDate, $endDate]);
             }
 
