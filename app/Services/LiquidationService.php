@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Client;
 use App\Models\Credit;
 use App\Models\Expense;
 use App\Models\Income;
@@ -328,7 +329,7 @@ class LiquidationService
             $query = Liquidation::with(['seller', 'seller.city.country', 'seller.user'])
                 ->where('seller_id', $sellerId);
 
-                $timezone = $request->get('timezone', 'America/Lima');
+            $timezone = $request->get('timezone', 'America/Lima');
             if ($request->has('start_date') && $request->has('end_date')) {
                 $startDate = Carbon::parse($request->get('start_date'), $timezone)->startOfDay()->setTimezone('UTC');
                 $endDate = Carbon::parse($request->get('end_date'), $timezone)->endOfDay()->setTimezone('UTC');
@@ -738,7 +739,7 @@ class LiquidationService
             ->where('seller_id', $sellerId)
             ->whereDate('created_at', $date)
             ->whereNull('deleted_at')
-      /*       ->whereNull('unification_reason') */
+            /*       ->whereNull('unification_reason') */
             ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
         // Cálculo del realToDeliver
         $realToDeliver = $liquidation->initial_cash
@@ -823,6 +824,144 @@ class LiquidationService
         \Log::debug("=== FIN recalculateLiquidation (con actualización) ==="); */
     }
 
+
+
+    public function getDailyMovements($sellerId, $date = null, $timezone = null)
+    {
+        try {
+            $tz = $timezone ?: self::TIMEZONE;
+            $dateLocal = $date ?: Carbon::now($tz)->toDateString();
+
+            $startUTC = Carbon::parse($dateLocal, $tz)->startOfDay()->setTimezone('UTC');
+            $endUTC   = Carbon::parse($dateLocal, $tz)->endOfDay()->setTimezone('UTC');
+
+            // Obtener user_id del seller (para gastos e ingresos)
+            $seller = Seller::find($sellerId);
+            $userId = $seller ? $seller->user_id : null;
+
+            $sellerName = $seller && $seller->user ? $seller->user->name : null;
+            // Movimientos: pagos (de créditos del vendedor) - todos los campos relevantes
+            $payments = Payment::join('credits', 'payments.credit_id', '=', 'credits.id')
+
+                ->where('credits.seller_id', $sellerId)
+                ->whereBetween('payments.created_at', [$startUTC, $endUTC])
+                ->select('payments.*', 'credits.client_id as client_id')
+                ->get()
+                ->map(function ($p) use ($sellerName) {
+                    $clientName = null;
+                    if (!empty($p->client_id)) {
+                        $c = Client::find($p->client_id);
+                        $clientName = $c ? $c->name : null;
+                    }
+                    return [
+                        'type' => 'payment',
+                        'id' => $p->id,
+                        'amount' => (float) $p->amount,
+                        'created_at' => (string) $p->created_at,
+                        'payment_method' => $p->payment_method ?? null,
+                        'client_id' => $p->client_id ?? null,
+                        'client_name' => $clientName,
+                        'seller_id' => $p->seller_id ?? null,
+                        'seller_name' => $sellerName,
+                        'note' => $p->note ?? null,
+                        'raw' => $p,
+                    ];
+                });
+
+            // Movimientos: gastos (expenses) del user vinculado al seller
+            $expenses = collect();
+            if ($userId) {
+                $expenses = Expense::where('user_id', $userId)
+                    ->whereBetween('created_at', [$startUTC, $endUTC])
+                    ->whereNull('deleted_at')
+                    ->get()
+                    ->map(function ($e) {
+                        return [
+                            'type' => 'expense',
+                            'id' => $e->id,
+                            'amount' => (float) $e->value,
+                            'created_at' => (string) $e->created_at,
+                            'category_id' => $e->category_id ?? null,
+                            'description' => $e->description ?? null,
+                            'raw' => $e,
+                        ];
+                    });
+            }
+
+            // Movimientos: ingresos (incomes) del user vinculado al seller
+            $incomes = collect();
+            if ($userId) {
+                $incomes = Income::where('user_id', $userId)
+                    ->whereBetween('created_at', [$startUTC, $endUTC])
+                    ->whereNull('deleted_at')
+                    ->get()
+                    ->map(function ($i) {
+                        return [
+                            'type' => 'income',
+                            'id' => $i->id,
+                            'amount' => (float) $i->value,
+                            'created_at' => (string) $i->created_at,
+                            'description' => $i->description ?? null,
+                            'raw' => $i,
+                        ];
+                    });
+            }
+
+            // Movimientos: créditos creados (new credits) en la fecha
+            $credits = Credit::where('seller_id', $sellerId)
+                ->whereNull('renewed_from_id')
+                ->whereNull('renewed_to_id')
+                ->whereNull('deleted_at')
+                ->whereBetween('created_at', [$startUTC, $endUTC])
+                ->get()
+                ->map(function ($c) use ($sellerName) {
+                    $clientName = null;
+                    if (!empty($c->client_id)) {
+                        $cl = Client::find($c->client_id);
+                        $clientName = $cl ? $cl->name : null;
+                    }
+                    return [
+                        'type' => 'credit',
+                        'id' => $c->id,
+                        'amount' => (float) $c->credit_value,
+                        'created_at' => (string) $c->created_at,
+                        'client_id' => $c->client_id ?? null,
+                        'client_name' => $clientName,
+                        'seller_name' => $sellerName,
+                        'interest_percent' => $c->total_interest ?? 0,
+                        'micro_insurance' => $c->micro_insurance_amount ?? 0,
+                        'raw' => $c,
+                    ];
+                });
+
+            // Combinar todas las colecciones y ordenar descendente por created_at
+            $all = $payments->concat($expenses)->concat($incomes)->concat($credits);
+
+            $sorted = $all->sortByDesc(function ($item) use ($tz) {
+                // asegurar parseo correcto incluso si created_at es string o Carbon
+                try {
+                    return Carbon::parse($item['created_at'])->setTimezone($tz)->timestamp;
+                } catch (\Throwable $e) {
+                    return 0;
+                }
+            })->values();
+
+            return [
+                'success' => true,
+                'date' => $dateLocal,
+                'timezone' => $tz,
+                'count' => $sorted->count(),
+                'data' => $sorted,
+            ];
+        } catch (\Exception $e) {
+            \Log::error("Error en getDailyMovements: " . $e->getMessage());
+            return [
+                'success' => false,
+                'message' => 'Error al obtener movimientos del día',
+                'error' => $e->getMessage(),
+            ];
+        }
+    }
     protected function getDailyTotals($sellerId, $date, $userId, $timezone = null)
     {
         $tz = $timezone ?: self::TIMEZONE;
@@ -908,7 +1047,7 @@ class LiquidationService
             ->sum('value');
 
         $totals['total_income'] = (float)Income::where('user_id', $userId)
-        ->whereDate('created_at', $date)
+            ->whereDate('created_at', $date)
             ->whereNull('deleted_at')
             ->sum('value');
 
@@ -972,7 +1111,7 @@ class LiquidationService
             ->where('seller_id', $sellerId)
             ->whereDate('created_at', $date)
             ->whereNull('deleted_at')
-         /*    ->whereNull('unification_reason') */
+            /*    ->whereNull('unification_reason') */
             ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
 
 
@@ -1269,7 +1408,7 @@ class LiquidationService
         $startUTC = \Carbon\Carbon::parse($dateLocal, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC   = \Carbon\Carbon::parse($dateLocal, $timezone)->endOfDay()->setTimezone('UTC');
 
-       
+
         $liquidation = \App\Models\Liquidation::where('seller_id', $sellerId)
             ->whereDate('date', $dateLocal)
             ->orderBy('id', 'desc')

@@ -61,7 +61,7 @@ Route::middleware('auth:api')->group(function () {
     Route::put('seller/{sellerId}/config', [SellerConfigController::class, 'update']);
 
     Route::get('me', [UserController::class, 'me']);
-    
+
     //route user
     Route::get('users', [UserController::class, 'index']);
     Route::get('users/select', [UserController::class, 'getUsersSelect']);
@@ -204,10 +204,11 @@ Route::middleware('auth:api')->group(function () {
 
         Route::get('download-report/{id}', [LiquidationController::class, 'downloadReport']);
         Route::get('first-approved-by-seller', [LiquidationController::class, 'getFirstApprovedLiquidationBySeller']);
-        Route::get('{id}/detail', [LiquidationController::class, 'getLiquidationDetail']); // <-- Nueva ruta para detalle de liquidación
+        Route::get('{id}/detail', [LiquidationController::class, 'getLiquidationDetail']);
         Route::prefix('seller/{sellerId}')->group(function () {
             Route::get('/', [LiquidationController::class, 'getBySeller']);
             Route::get('/stats', [LiquidationController::class, 'getSellerStats']);
+            Route::get('daily-movements', [LiquidationController::class, 'getDailyMovements']);
         });
 
         Route::get('/{sellerId}/{date}', [LiquidationController::class, 'getLiquidationData']);

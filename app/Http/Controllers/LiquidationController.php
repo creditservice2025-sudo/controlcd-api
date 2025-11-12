@@ -835,7 +835,7 @@ class LiquidationController extends Controller
             )
             ->whereBetween('payments.created_at', [$startUTC, $endUTC])
             ->where('credits.seller_id', $sellerId)
-            ->whereIn('payments.status', ['Pagado', 'Aprobado'])
+            ->whereIn('payments.status', ['Pagado', 'Aprobado', 'Abonado'])
             ->groupBy('payments.payment_method');
 
         $firstPaymentQuery = DB::table('payments')
@@ -1295,6 +1295,40 @@ class LiquidationController extends Controller
         $format = $request->get('format', 'pdf');
         $timezone = $request->get('timezone', 'America/Lima');
         return $this->liquidationService->downloadLiquidationReport($id, $format, $timezone);
+    }
+
+    
+    public function getDailyMovements(Request $request, $sellerId)
+    
+    {
+        try {
+            $date = $request->query('date', null);
+            $timezone = $request->query('timezone', 'America/Lima');
+
+            // autorización
+            $user = Auth::user();
+            if (!$this->checkAuthorization($user, $sellerId)) {
+                return response()->json(['error' => 'Unauthorized'], 403);
+            }
+
+            // delegar al servicio
+            $result = $this->liquidationService->getDailyMovements($sellerId, $date, $timezone);
+
+            return response()->json([
+                'success' => true,
+                'data' => $result['data'] ?? $result,
+                'date' => $result['date'] ?? $date,
+                'timezone' => $result['timezone'] ?? $timezone,
+                'count' => $result['count'] ?? (is_array($result['data'] ?? null) ? count($result['data']) : null)
+            ]);
+        } catch (\Exception $e) {
+            Log::error("Error en getDailyMovements controlador: " . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al obtener movimientos del día',
+                'error' => $e->getMessage()
+            ], 500);
+        }
     }
 
     /**
