@@ -1339,17 +1339,34 @@ class ClientService
 
             // Group the summary by credit_id for quick lookup
             $paymentSummary = $paymentSummaryRows->groupBy('credit_id');
+            $allPaymentsRows = Payment::whereIn('credit_id', $creditIds)
+                ->select('credit_id', 'id', 'credit_id', 'amount', 'payment_date', 'created_at', 'payment_method', 'status', 'latitude', 'longitude')
+                ->orderBy('created_at', 'asc')
+                ->get()
+                ->groupBy('credit_id');
 
             // Precompute "now" in local timezone once
             $nowLocal = Carbon::now($timezone);
 
             // Transform credits exactly preserving the output shape expected by the front
 
-            $transformedItems = $credits->map(function ($credit) use ($paymentSummary, $nowLocal, $renewalQuota) {
+            $transformedItems = $credits->map(function ($credit) use ($paymentSummary, $nowLocal, $renewalQuota, $allPaymentsRows) {
                 $summary = $paymentSummary->get($credit->id, collect());
                 foreach ($summary as $item) {
                     $credit->{$item->status} = $item->total_amount;
                 }
+
+
+                $credit->payments_total = collect();
+                if (isset($GLOBALS['allPaymentsRows'])) {
+                }
+                try {
+                } catch (\Throwable $e) {
+                }
+                if (isset($allPaymentsRows) && $allPaymentsRows instanceof \Illuminate\Support\Collection) {
+                    $credit->payments_total = $allPaymentsRows->get($credit->id, collect());
+                }
+
 
                 $installments = $credit->installments ?? collect();
                 $credit->installment = $installments;
