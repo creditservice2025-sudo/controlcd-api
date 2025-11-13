@@ -752,8 +752,21 @@ class LiquidationController extends Controller
             return $this->formatLiquidationResponse($updatedLiquidation, true, $timezone);
         }
 
+        if ($user && $user->role_id === 5) {
+            $userSeller = $user;
+        } else {
+            $userSeller = null;
+            $seller = Seller::find($sellerId);
+            if ($seller && $seller->user_id) {
+                $userSeller = User::find($seller->user_id);
+}
+            if (!$userSeller) {
+                $userSeller = $user;
+            }
+        }
+
         // 2. Obtener datos del endpoint dailyPaymentTotals
-        $dailyTotals = $this->getDailyTotals($sellerId, $date, $user, $timezone);
+        $dailyTotals = $this->getDailyTotals($sellerId, $date, $userSeller, $timezone);
 
 
         // 3. Obtener última liquidación para saldo inicial
