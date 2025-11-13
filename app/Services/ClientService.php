@@ -366,7 +366,7 @@ class ClientService
     }
 
 
-    public function index(
+     public function index(
         $search = '',
         $orderBy = 'created_at',
         $orderDirection = 'desc',
@@ -374,7 +374,9 @@ class ClientService
         $cityId = null,
         $sellerId = null,
         $status = null,
-        $companyId = null
+        $companyId = null,
+        $createdFrom = null,
+        $createdTo = null
     ) {
         try {
             $search = (string)$search;
@@ -382,14 +384,13 @@ class ClientService
             $seller = $user->seller;
             $company = $user->company;
 
-            // Consultor (rol 7) y Supervisor (rol 11): obtener seller_ids asociados
+            // Consultor (rol 7), Supervisor (11) y rol 6 pueden tener rutas asociadas
             if (in_array($user->role_id, [6, 7, 11])) {
                 $sellerIds = \App\Models\UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
             }
 
             $clientsQuery = Client::query()
-                ->select('id', 'name', 'dni', 'email', 'status', 'seller_id', 'geolocation', 'routing_order', 'capacity')
-                // eager load seller basic columns and seller.user for name
+                ->select('id', 'name', 'dni', 'email', 'status', 'seller_id', 'geolocation', 'routing_order', 'capacity', 'created_at')
                 ->with([
                     'seller' => function ($q) {
                         $q->select('id', 'user_id', 'city_id', 'company_id');
@@ -403,30 +404,30 @@ class ClientService
                     'seller.city.country' => function ($q) {
                         $q->select('id', 'name');
                     },
-                    // For credits we only retrieve minimal data + payments sum and pending installments count
+                    // Para créditos traemos lo mínimo necesario
                     'credits' => function ($q) {
                         $q->select('id', 'client_id', 'credit_value', 'number_installments', 'payment_frequency', 'status', 'total_interest')
                             ->withSum('payments', 'amount')
                             ->withCount(['installments as pending_installments_count' => function ($iq) {
                                 $iq->where('status', '<>', 'Pagado');
                             }])
-                            ->withMax('installments', 'due_date'); // final date approximation
+                            ->withMax('installments', 'due_date'); // aproximación a fecha final
                     },
                     'credits.installments' => function ($q) {
                         $q->select('id', 'credit_id', 'quota_number', 'due_date', 'quota_amount', 'status');
                     },
                 ]);
 
-            // Role scoping (unchanged behavior)
+            // Role scoping
             switch ($user->role_id) {
-                case 1:
+                case 1: // Admin - sin restricciones
                     break;
-                case 2:
+                case 2: // Company admin
                     if ($company) {
                         $clientsQuery->whereHas('seller', fn($q) => $q->where('company_id', $company->id));
                     }
                     break;
-                case 5:
+                case 5: // Seller user
                     if ($seller) $clientsQuery->where('seller_id', $seller->id);
                     else $clientsQuery->whereRaw('0 = 1');
                     break;
@@ -450,23 +451,27 @@ class ClientService
                     break;
             }
 
-            // Filtrar por company_id si el usuario es admin y el parámetro está presente
+            // Filtrar por company_id (si admin)
             if (Auth::user()->role_id == 1 && $companyId) {
                 $clientsQuery->whereHas('seller', fn($q) => $q->where('company_id', $companyId));
             }
 
+            // Búsqueda por nombre/dni/email
             if (!empty(trim($search))) {
-                $clientsQuery->where(fn($q) => $q->where('name', 'like', "%{$search}%")
-                    ->orWhere('dni', 'like', "%{$search}%")
-                    ->orWhere('email', 'like', "%{$search}%"));
+                $clientsQuery->where(fn($q) =>
+                    $q->where('name', 'like', "%{$search}%")
+                      ->orWhere('dni', 'like', "%{$search}%")
+                      ->orWhere('email', 'like', "%{$search}%")
+                );
             }
 
+            // Filtros de ubicación / vendedor
             if ($countryId) $clientsQuery->whereHas('seller.city.country', fn($q) => $q->where('id', $countryId));
             if ($cityId) $clientsQuery->whereHas('seller.city', fn($q) => $q->where('id', $cityId));
             if ($sellerId) $clientsQuery->where('seller_id', $sellerId);
             elseif ($user->role_id == 5 && $seller) $clientsQuery->where('seller_id', $seller->id);
 
-            // status filters (kept as original)
+            // Filtros por estado / créditos (mantengo tu lógica original)
             if ($status === 'Cartera Irrecuperable') {
                 $clientsQuery->whereHas('credits', fn($q) => $q->where('status', $status));
                 $clientsQuery->with(['credits' => fn($q) => $q->where('status', $status)]);
@@ -486,11 +491,37 @@ class ClientService
                 $clientsQuery->where('status', 'active');
             }
 
+            if ($createdFrom || $createdTo) {
+                try {
+                    $from = null;
+                    $to = null;
+
+                    if ($createdFrom) {
+                        $createdFromNorm = str_replace('/', '-', $createdFrom);
+                        $from = Carbon::parse($createdFromNorm)->startOfDay();
+                    }
+
+                    if ($createdTo) {
+                        $createdToNorm = str_replace('/', '-', $createdTo);
+                        $to = Carbon::parse($createdToNorm)->endOfDay();
+                    }
+
+                    if (!empty($from) && !empty($to)) {
+                        $clientsQuery->whereBetween('created_at', [$from, $to]);
+                    } elseif (!empty($from)) {
+                        $clientsQuery->where('created_at', '>=', $from);
+                    } elseif (!empty($to)) {
+                        $clientsQuery->where('created_at', '<=', $to);
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Created_from/created_to parse error: ' . $e->getMessage());
+                }
+            }
+
             $validOrderDirections = ['asc', 'desc'];
             $orderDirection = in_array(strtolower($orderDirection), $validOrderDirections) ? $orderDirection : 'desc';
             $clientsQuery->orderBy($orderBy, $orderDirection);
 
-            // Execute query
             $clients = $clientsQuery->get();
 
             // Agregar campo total_credits_value a cada cliente

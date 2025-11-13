@@ -759,7 +759,7 @@ class LiquidationController extends Controller
             $seller = Seller::find($sellerId);
             if ($seller && $seller->user_id) {
                 $userSeller = User::find($seller->user_id);
-}
+            }
             if (!$userSeller) {
                 $userSeller = $user;
             }
@@ -801,6 +801,15 @@ class LiquidationController extends Controller
                 + $dailyTotals['total_expenses']
                 + $irrecoverableCredits);
 
+        $cashCollectionLast = 0;
+        if ($lastLiquidation) {
+            $cashCollectionLast = ($lastLiquidation->total_income + $lastLiquidation->total_collected + $lastLiquidation->poliza)
+                - ($lastLiquidation->new_credits
+                    + $lastLiquidation->renewal_disbursed_total
+                    + $lastLiquidation->total_expenses
+                    + $lastLiquidation->irrecoverable_credits_amount);
+        }
+
         // 5. Estructurar respuesta completa
         return [
             'collection_target' => $dailyTotals['daily_goal'],
@@ -811,6 +820,7 @@ class LiquidationController extends Controller
             'total_expenses' => $dailyTotals['total_expenses'],
             'total_income' => $dailyTotals['total_income'],
             'new_credits' => $dailyTotals['created_credits_value'],
+            'cash_collection_last' => $cashCollectionLast,
             'real_to_deliver' => $realToDeliver,
             'date' => $date,
             'seller_id' => $sellerId,
@@ -1141,6 +1151,7 @@ class LiquidationController extends Controller
             'cash_delivered' => $liquidation->cash_delivered,
             'status' => $liquidation->status,
             'created_at' => $liquidation->created_at,
+            'end_date' => $liquidation->end_date,
             'poliza' => $liquidation->poliza
 
         ];
@@ -1310,9 +1321,9 @@ class LiquidationController extends Controller
         return $this->liquidationService->downloadLiquidationReport($id, $format, $timezone);
     }
 
-    
+
     public function getDailyMovements(Request $request, $sellerId)
-    
+
     {
         try {
             $date = $request->query('date', null);
