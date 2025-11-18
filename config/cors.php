@@ -15,11 +15,16 @@ return [
     |
     */
 
-    'paths' => ['*'],
+    'paths' => ['api/*', 'sanctum/csrf-cookie'],
 
     'allowed_methods' => ['*'],
 
-    'allowed_origins' => ['*'],
+    'allowed_origins' => [
+        'https://staging.control-cd.com',
+        'https://staging-api.control-cd.com',
+        'http://localhost:9000',
+        'http://localhost:8080',
+    ],
 
     'allowed_origins_patterns' => [],
 
