@@ -121,13 +121,18 @@ php artisan config:cache
 php artisan route:cache
 php artisan view:cache
 
-echo "→ Configurando permisos..."
-chown -R nginx:nginx storage bootstrap/cache
+echo "→ Configurando permisos (CRÍTICO para evitar errores 500)..."
+chown -R staging:staging storage bootstrap/cache
 chmod -R 775 storage bootstrap/cache
+chmod -R 664 storage/logs/*.log 2>/dev/null || true
+chmod 775 storage/logs
 
 echo "→ Configurando SELinux contexts..."
-chcon -R -t httpd_sys_rw_content_t storage
-chcon -R -t httpd_sys_rw_content_t bootstrap/cache
+chcon -R -t httpd_sys_rw_content_t storage 2>/dev/null || true
+chcon -R -t httpd_sys_rw_content_t bootstrap/cache 2>/dev/null || true
+
+echo "→ Reiniciando PHP-FPM..."
+systemctl restart ea-php83-php-fpm
 
 echo ""
 echo "✓ Post-deploy completado!"
@@ -139,7 +144,9 @@ ENDSSH
         echo "✓ Despliegue completado exitosamente!"
         echo -e "==================================${NC}"
         echo ""
-        echo "Verifica tu aplicación en: https://api.tudominio.com"
+        echo "Verifica tu aplicación en: https://staging-api.control-cd.com"
+        echo ""
+        echo -e "${YELLOW}Nota: Permisos corregidos automáticamente y PHP-FPM reiniciado${NC}"
     else
         echo ""
         echo -e "${RED}✗ Error en comandos post-deploy${NC}"
