@@ -97,36 +97,36 @@ class ClientController extends Controller
         }
     }
     public function index(ClientRequest $request)
-{
-    try {
-        $search = (string) $request->input('search', '');
-        $orderBy = $request->input('orderBy', 'created_at');
-        $orderDirection = $request->input('orderDirection', 'desc');
-        $countryId = $request->input('country_id');
-        $cityId = $request->input('city_id');
-        $sellerId = $request->input('seller_id');
-        $status = $request->input('status', null);
-        $companyId = $request->input('company_id');
+    {
+        try {
+            $search = (string) $request->input('search', '');
+            $orderBy = $request->input('orderBy', 'created_at');
+            $orderDirection = $request->input('orderDirection', 'desc');
+            $countryId = $request->input('country_id');
+            $cityId = $request->input('city_id');
+            $sellerId = $request->input('seller_id');
+            $status = $request->input('status', null);
+            $companyId = $request->input('company_id');
 
-        $createdFrom = $request->input('created_from'); 
-        $createdTo   = $request->input('created_to');   
+            $createdFrom = $request->input('created_from');
+            $createdTo   = $request->input('created_to');
 
-        return $this->clientService->index(
-            $search,
-            $orderBy,
-            $orderDirection,
-            $countryId,
-            $cityId,
-            $sellerId,
-            $status,
-            $companyId,
-            $createdFrom,
-            $createdTo
-        );
-    } catch (\Exception $e) {
-        return $this->errorResponse($e->getMessage(), 500);
+            return $this->clientService->index(
+                $search,
+                $orderBy,
+                $orderDirection,
+                $countryId,
+                $cityId,
+                $sellerId,
+                $status,
+                $companyId,
+                $createdFrom,
+                $createdTo
+            );
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
     }
-}
 
     public function indexWithCredits(ClientRequest $request)
     {
@@ -344,7 +344,8 @@ class ClientController extends Controller
             $paymentStatus = (string) $request->input('payment_status', ''); */
 
             return $this->clientService->getCollectionSummary(
-                $date
+                $date,
+                $request
             );
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
