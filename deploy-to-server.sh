@@ -117,6 +117,23 @@ php artisan cache:clear
 php artisan route:clear
 php artisan view:clear
 
+echo "→ Verificando configuración de Laravel..."
+# Generar APP_KEY si no existe
+if ! grep -q "APP_KEY=base64:" .env; then
+    echo "  → Generando APP_KEY..."
+    php artisan key:generate
+fi
+
+# Generar keys de Passport si no existen
+if [ ! -f storage/oauth-private.key ]; then
+    echo "  → Generando Passport keys..."
+    php artisan passport:keys --force
+    chown staging:staging storage/oauth-*.key
+    chmod 600 storage/oauth-private.key
+    chmod 644 storage/oauth-public.key
+fi
+
+echo "→ Cacheando configuraciones..."
 php artisan config:cache
 php artisan route:cache
 php artisan view:cache
