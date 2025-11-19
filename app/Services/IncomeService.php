@@ -23,8 +23,8 @@ class IncomeService
     {
         try {
             $validated = $request->validate([
-                'value' => 'required|numeric|min:0',
-                'description' => 'required|string',
+                'value' => 'nullable|numeric|min:0',
+                'description' => 'nullable|string',
                 'user_id' => 'nullable|numeric',
                 'image' => 'nullable|image|max:2048',
                 'created_at' => 'nullable|date',
@@ -80,24 +80,56 @@ class IncomeService
         }
     }
 
-    public function update(Request $request, $incomeId)
-    {
-        try {
-            $income = Income::find($incomeId);
-            if (!$income) {
-                return $this->errorNotFoundResponse('Ingreso no encontrado');
-            }
+   public function update(Request $request, $incomeId)
+{
+    try {
+        $income = Income::find($incomeId);
+        if (!$income) {
+            return $this->errorNotFoundResponse('Ingreso no encontrado');
+        }
 
-            // Obtener el vendedor asociado al usuario del ingreso
+        // Logging para depuración (opcional)
+        // Log::info('Income update request all', $request->all());
+        // Log::info('Income update files', $request->files->all());
+
+        // Reglas base
+        $rules = [
+            'value' => 'nullable|numeric|min:0',
+            'description' => 'nullable|string',
+            'timezone' => 'nullable|string',
+            'user_id' => 'nullable|numeric',
+            // 'image' solo si se sube archivo
+        ];
+
+        if ($request->hasFile('image')) {
+            $rules['image'] = 'image|max:2048';
+        }
+
+        // Opcional: allow remove_image flag (boolean)
+        $rules['remove_image'] = 'nullable|boolean';
+
+        $validated = $request->validate($rules);
+
+        // Buscar seller como antes (tu lógica)
+        $seller = null;
+        if ($income->user_id) {
             $seller = Seller::where('user_id', $income->user_id)->first();
+        }
 
-            if (!$seller) {
-                return $this->errorResponse('No se encontró el vendedor asociado a este ingreso', 422);
+        if (!$seller) {
+            $authUser = Auth::user();
+            if ($authUser) {
+                $seller = Seller::where('user_id', $authUser->id)->first();
             }
+        }
 
-            // Verificar si existe liquidación aprobada para la fecha del ingreso y este vendedor
+        if ($seller && $income->created_at) {
+            $incomeDate = $income->created_at instanceof Carbon
+                ? $income->created_at->toDateString()
+                : Carbon::parse($income->created_at)->toDateString();
+
             $liquidation = Liquidation::where('seller_id', $seller->id)
-                ->whereDate('date', $income->created_at->format('Y-m-d'))
+                ->whereDate('date', $incomeDate)
                 ->first();
 
             if ($liquidation) {
@@ -106,30 +138,99 @@ class IncomeService
                     422
                 );
             }
-
-            $validated = $request->validate([
-                'value' => 'required|numeric|min:0',
-                'description' => 'required|string',
-                'timezone' => 'nullable|string',
-            ]);
-
-            if (isset($validated['timezone']) && !empty($validated['timezone'])) {
-                $validated['updated_at'] = Carbon::now($validated['timezone']);
-                unset($validated['timezone']);
-            }
-
-            $income->update($validated);
-
-            return $this->successResponse([
-                'success' => true,
-                'message' => 'Ingreso actualizado con éxito',
-                'data' => $income
-            ]);
-        } catch (\Exception $e) {
-            Log::error($e->getMessage());
-            return $this->errorResponse('Error al actualizar el ingreso', 500);
         }
+
+        // Manejo timezone => set updated_at
+        if (isset($validated['timezone']) && !empty($validated['timezone'])) {
+            $validated['updated_at'] = Carbon::now($validated['timezone']);
+            unset($validated['timezone']);
+        }
+
+        // Preparar datos para update (solo los campos permitidos)
+        $updateData = [];
+        if (array_key_exists('value', $validated) && $validated['value'] !== null) {
+            $updateData['value'] = $validated['value'];
+        }
+        if (array_key_exists('description', $validated)) {
+            $updateData['description'] = $validated['description'];
+        }
+        if (array_key_exists('user_id', $validated) && $validated['user_id']) {
+            $updateData['user_id'] = $validated['user_id'];
+        }
+        if (array_key_exists('updated_at', $validated)) {
+            $updateData['updated_at'] = $validated['updated_at'];
+        }
+
+        // Actualizar income
+        if (!empty($updateData)) {
+            $income->update($updateData);
+        }
+
+        // === Manejo de imagen ===
+        // 1) Si viene archivo nuevo: subir, crear registro image y eliminar anterior
+        if ($request->hasFile('image')) {
+            $imageFile = $request->file('image');
+            $imagePath = Helper::uploadFile($imageFile, 'incomes'); // tu helper
+
+            // Buscar imagen previa (ajusta según relación: income->images())
+            $oldImage = IncomeImage::where('income_id', $income->id)->first();
+
+            // Crear nuevo registro
+            $newImage = IncomeImage::create([
+                'income_id' => $income->id,
+                'user_id' => $income->user_id ?? Auth::id(),
+                'path' => $imagePath,
+                'created_at' => $updateData['updated_at'] ?? now(),
+                'updated_at' => $updateData['updated_at'] ?? now(),
+            ]);
+
+            // Borrar archivo y registro anterior si existía
+            if ($oldImage) {
+                try {
+                    // Si tienes Helper::deleteFile
+                    if (function_exists('Helper') && method_exists(Helper::class, 'deleteFile')) {
+                        Helper::deleteFile($oldImage->path);
+                    } else {
+                        // fallback usando Storage (ajusta disco si lo necesitas)
+                        \Illuminate\Support\Facades\Storage::delete($oldImage->path);
+                    }
+                } catch (\Exception $ex) {
+                    Log::warning("No se pudo borrar archivo antiguo: " . $ex->getMessage());
+                }
+
+                // eliminar registro antiguo (si no quieres mantener histórico)
+                $oldImage->delete();
+            }
+        } else if (!empty($validated['remove_image']) && $validated['remove_image']) {
+            // 2) Si viene flag remove_image = true: borrar imagen existente y registro
+            $oldImage = IncomeImage::where('income_id', $income->id)->first();
+            if ($oldImage) {
+                try {
+                    if (function_exists('Helper') && method_exists(Helper::class, 'deleteFile')) {
+                        Helper::deleteFile($oldImage->path);
+                    } else {
+                        \Illuminate\Support\Facades\Storage::delete($oldImage->path);
+                    }
+                } catch (\Exception $ex) {
+                    Log::warning("No se pudo borrar archivo antiguo: " . $ex->getMessage());
+                }
+                $oldImage->delete();
+            }
+        }
+
+        // Refrescar modelo para devolver data actualizada
+        $income->refresh();
+
+        return $this->successResponse([
+            'success' => true,
+            'message' => 'Ingreso actualizado con éxito',
+            'data' => $income
+        ]);
+    } catch (\Exception $e) {
+        Log::error('Error actualizando ingreso: ' . $e->getMessage(), ['exception' => $e]);
+        return $this->errorResponse('Error al actualizar el ingreso', 500);
     }
+}
 
     public function delete($incomeId, Request $request = null)
     {
