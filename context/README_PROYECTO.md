@@ -87,10 +87,10 @@ Bienvenido a la documentación completa del proyecto ControCD. Esta guía te ayu
 
 # 2. Subir scripts al servidor
 cd /home/mario-d-az/git/ControCD-Backend
-scp -i ~/.ssh/id_rsa_mario_controlcd -r server-setup/ root@146.190.147.164:~/
+scp -i /home/mario-d-az/.ssh/id_rsa_mario_controlcd -r server-setup/ root@146.190.147.164:~/
 
 # 3. Conectar al servidor y ejecutar setup
-ssh -i ~/.ssh/id_rsa_mario_controlcd root@146.190.147.164
+ssh -i /home/mario-d-az/.ssh/id_rsa_mario_controlcd root@146.190.147.164
 cd ~/server-setup
 chmod +x *.sh
 ./01-install-dependencies.sh
@@ -188,6 +188,9 @@ cd /home/mario-d-az/git/ControCD-FrontEnd
 # Despliegue
 ./deploy-to-server.sh       # Desplegar backend completo
 
+# Crons (ejecutar en el servidor)
+./setup-cron.sh             # Configurar tareas programadas (crons)
+
 # Servidor (ejecutar en el servidor)
 cd ~/server-setup
 ./01-install-dependencies.sh  # Instalar PHP, MySQL, Nginx, etc.
@@ -232,6 +235,54 @@ npm run build               # Compilar para producción
 - **SSL**: Let's Encrypt (Certbot)
 - **Firewall**: firewalld
 - **SELinux**: Enabled
+
+---
+
+## ⏰ Tareas Programadas (Crons)
+
+### **Comandos Configurados**
+
+El proyecto tiene 3 comandos que se ejecutan automáticamente:
+
+1. **Notificación de Liquidaciones Pendientes** (`liquidation:notify-pending`)
+   - **Horario:** 21:52 (9:52 PM) diariamente
+   - **Función:** Notifica a administradores si vendedores no han generado su liquidación
+
+2. **Liquidación Automática Diaria** (`liquidation:auto-daily`)
+   - **Horario:** 23:55 (11:55 PM) diariamente
+   - **Función:** Genera liquidación diaria automática para todos los vendedores
+
+3. **Liquidación Histórica** (`liquidation:historical`)
+   - **Horario:** 23:55 (11:55 PM) diariamente
+   - **Función:** Genera liquidaciones históricas para vendedores con auto-cierre activado
+
+### **Configuración en el Servidor**
+
+```bash
+# Conectarse al servidor
+ssh -i /home/mario-d-az/.ssh/id_rsa_mario_controlcd root@146.190.147.164
+
+# Subir y ejecutar script de configuración
+cd /var/www/controlcd-api
+./setup-cron.sh
+```
+
+### **Verificación Manual**
+
+```bash
+# Ver comandos programados
+php artisan schedule:list
+
+# Probar comando individual
+php artisan liquidation:notify-pending
+php artisan liquidation:auto-daily
+php artisan liquidation:historical
+
+# Ver logs de ejecución
+tail -f storage/logs/laravel.log
+```
+
+**Documentación Completa:** Ver [CRON_CONFIGURATION.md](context/CRON_CONFIGURATION.md)
 
 ---
 
@@ -287,7 +338,7 @@ rm -rf dist/
 
 ### **Conectarse al Servidor**
 ```bash
-ssh -i ~/.ssh/id_rsa_mario_controlcd root@146.190.147.164
+ssh -i /home/mario-d-az/.ssh/id_rsa_mario_controlcd root@146.190.147.164
 ```
 
 ### **Ver Logs en Tiempo Real**

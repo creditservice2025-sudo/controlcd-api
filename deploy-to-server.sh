@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Script de despliegue del Backend a servidor de producción
+# Script de despliegue del Backend a servidor de Staging
 # ControCD Backend - Deploy Script
 #
 
@@ -21,7 +21,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 echo -e "${BLUE}=================================="
-echo "ControCD Backend - Deploy"
+echo "ControCD Backend - STAGING- Deploy"
 echo -e "==================================${NC}"
 echo ""
 
@@ -50,18 +50,36 @@ if [ "$CONFIRM" != "s" ]; then
     exit 0
 fi
 
-# Ejecutar rsync
+# Nota: El archivo .env NO se sube al servidor para preservar la configuración del servidor
 echo ""
-# Verificar que existe .env
-if [ ! -f "$LOCAL_PATH/.env" ]; then
-    echo -e "${YELLOW}⚠ No se encontró archivo .env${NC}"
-    echo "Se recomienda crear uno basado en .env.staging.example"
-    read -p "¿Deseas continuar sin .env? (s/n): " CONTINUE_NO_ENV
-    if [ "$CONTINUE_NO_ENV" != "s" ]; then
-        exit 0
-    fi
+echo -e "${YELLOW}Nota: El archivo .env del servidor NO será modificado${NC}"
+
+# Crear backup en el servidor
+echo ""
+echo -e "${YELLOW}Creando backup en el servidor...${NC}"
+
+BACKUP_DATE=$(date +%Y%m%d_%H%M%S)
+BACKUP_NAME="_backup_${BACKUP_DATE}"
+
+ssh -i "$SSH_KEY" $SERVER_USER@$SERVER_IP << ENDBACKUP
+if [ -d "$SERVER_PATH" ]; then
+    echo "→ Creando backup: $BACKUP_NAME"
+    cd /var/www
+    cp -r controlcd-api "$BACKUP_NAME"
+    echo "✓ Backup creado en: /var/www/$BACKUP_NAME"
+else
+    echo "⚠ El directorio $SERVER_PATH no existe, saltando backup"
+    exit 1
+fi
+ENDBACKUP
+
+if [ $? -eq 0 ]; then
+    echo -e "${GREEN}✓ Backup creado exitosamente en el servidor!${NC}"
+else
+    echo -e "${YELLOW}⚠ Error al crear backup (continuando con deploy)${NC}"
 fi
 
+echo ""
 echo -e "${YELLOW}Sincronizando archivos...${NC}"
 
 rsync -avzP --delete \
@@ -76,6 +94,9 @@ rsync -avzP --delete \
   --exclude='storage/framework/sessions/*' \
   --exclude='storage/framework/views/*' \
   --exclude='storage/app/public/*' \
+  --exclude='storage/oauth-*.key' \
+  --exclude='public/images' \
+  --exclude='.env' \
   --exclude='.env.example' \
   --exclude='.env.staging.example' \
   --exclude='.database-data/' \
@@ -105,44 +126,62 @@ if [ $? -eq 0 ]; then
     ssh -i "$SSH_KEY" $SERVER_USER@$SERVER_IP << 'ENDSSH'
 cd /var/www/controlcd-api
 
-echo "→ Instalando dependencias de Composer..."
-composer install --optimize-autoloader --no-dev --no-interaction
+echo "→ Arreglando ownership de git..."
+git config --global --add safe.directory /var/www/controlcd-api 2>/dev/null || true
+
+echo "→ Verificando e instalando extensiones PHP necesarias..."
+# Instalar extensiones PHP 8.3 requeridas si no están instaladas
+yum list installed ea-php83-php-fileinfo 2>/dev/null || yum install -y ea-php83-php-fileinfo
+yum list installed ea-php83-php-iconv 2>/dev/null || yum install -y ea-php83-php-iconv
+
+echo "→ Instalando dependencias de Composer con PHP 8.3..."
+export COMPOSER_ALLOW_SUPERUSER=1
+/opt/cpanel/ea-php83/root/usr/bin/php /usr/local/bin/composer install --optimize-autoloader --no-dev --no-interaction
 
 echo "→ Ejecutando migraciones..."
-php artisan migrate --force
+/opt/cpanel/ea-php83/root/usr/bin/php artisan migrate --force
 
-echo "→ Limpiando y cacheando configuraciones..."
-php artisan config:clear
-php artisan cache:clear
-php artisan route:clear
-php artisan view:clear
+echo "→ Limpiando cache..."
+/opt/cpanel/ea-php83/root/usr/bin/php artisan config:clear
+/opt/cpanel/ea-php83/root/usr/bin/php artisan cache:clear
+/opt/cpanel/ea-php83/root/usr/bin/php artisan route:clear
+/opt/cpanel/ea-php83/root/usr/bin/php artisan view:clear
 
 echo "→ Verificando configuración de Laravel..."
 # Generar APP_KEY si no existe
 if ! grep -q "APP_KEY=base64:" .env; then
     echo "  → Generando APP_KEY..."
-    php artisan key:generate
+    /opt/cpanel/ea-php83/root/usr/bin/php artisan key:generate
 fi
 
 # Generar keys de Passport si no existen
 if [ ! -f storage/oauth-private.key ]; then
     echo "  → Generando Passport keys..."
-    php artisan passport:keys --force
-    chown staging:staging storage/oauth-*.key
-    chmod 600 storage/oauth-private.key
-    chmod 644 storage/oauth-public.key
+    /opt/cpanel/ea-php83/root/usr/bin/php artisan passport:keys --force
 fi
 
-echo "→ Cacheando configuraciones..."
-php artisan config:cache
-php artisan route:cache
-php artisan view:cache
-
 echo "→ Configurando permisos (CRÍTICO para evitar errores 500)..."
+# Permisos generales de storage y cache
 chown -R staging:staging storage bootstrap/cache
 chmod -R 775 storage bootstrap/cache
 chmod -R 664 storage/logs/*.log 2>/dev/null || true
 chmod 775 storage/logs
+
+# IMPORTANTE: Corregir permisos de OAuth keys (siempre después de rsync)
+echo "  → Corrigiendo permisos de OAuth Passport keys..."
+if [ -f storage/oauth-private.key ]; then
+    chown staging:staging storage/oauth-private.key storage/oauth-public.key
+    chmod 600 storage/oauth-private.key
+    chmod 644 storage/oauth-public.key
+    echo "  ✓ OAuth keys: permisos corregidos"
+else
+    echo "  ⚠ OAuth keys no encontradas, ejecuta: php artisan passport:keys"
+fi
+
+echo "→ Cacheando configuraciones..."
+/opt/cpanel/ea-php83/root/usr/bin/php artisan config:cache
+/opt/cpanel/ea-php83/root/usr/bin/php artisan route:cache
+/opt/cpanel/ea-php83/root/usr/bin/php artisan view:cache
 
 echo "→ Configurando SELinux contexts..."
 chcon -R -t httpd_sys_rw_content_t storage 2>/dev/null || true

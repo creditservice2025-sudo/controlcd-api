@@ -56,7 +56,7 @@ cd /home/mario-d-az/git/ControCD-FrontEnd
 
 **Conectarse al servidor:**
 ```bash
-ssh -i ~/.ssh/id_rsa_mario_controlcd root@146.190.147.164
+ssh -i /home/mario-d-az/.ssh/id_rsa_mario_controlcd root@146.190.147.164
 cd /var/www/controlcd-api
 ```
 
@@ -206,7 +206,7 @@ Regenerar las keys **INVALIDA TODOS LOS TOKENS EXISTENTES**. Los usuarios deber√
 
 ### Comando
 ```bash
-ssh root@146.190.147.164
+ssh -i /home/mario-d-az/.ssh/id_rsa_mario_controlcd root@146.190.147.164
 cd /var/www/controlcd-api
 
 # Regenerar keys
@@ -233,7 +233,7 @@ systemctl restart ea-php83-php-fpm
 **Soluci√≥n:**
 1. Verificar que el cliente existe:
 ```bash
-ssh root@146.190.147.164
+ssh -i /home/mario-d-az/.ssh/id_rsa_mario_controlcd root@146.190.147.164
 cd /var/www/controlcd-api
 php artisan passport:client --list
 ```

@@ -395,7 +395,7 @@ rm -rf dist/
 ./deploy-to-server.sh
 
 # Ver logs en el servidor
-ssh -i ~/.ssh/id_rsa_mario_controlcd root@146.190.147.164
+ssh -i /home/mario-d-az/.ssh/id_rsa_mario_controlcd root@146.190.147.164
 tail -f /var/www/controlcd-api/storage/logs/laravel.log
 tail -f /var/log/nginx/controlcd-api-error.log
 
@@ -433,7 +433,7 @@ npm run dev
 
 ```bash
 # Conectarse
-ssh -i ~/.ssh/id_rsa_mario_controlcd root@146.190.147.164
+ssh -i /home/mario-d-az/.ssh/id_rsa_mario_controlcd root@146.190.147.164
 
 # Ver servicios
 sudo systemctl status nginx
