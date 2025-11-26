@@ -3,7 +3,7 @@
 ## 📋 Comandos de Liquidación
 
 ### **Comandos Automáticos (Cron)**
-
+ 
 El proyecto tiene **3 comandos cron** configurados en `app/Console/Kernel.php`:
 
 ### 1. **Liquidación Automática Diaria** (`liquidation:auto-daily`)
