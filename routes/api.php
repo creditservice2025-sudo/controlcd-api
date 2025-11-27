@@ -29,6 +29,9 @@ Route::post('login', [AuthController::class, 'login'])->middleware('throttle:6,1
 Route::post('forgot-password', [AuthController::class, 'forgotPassword'])->middleware('throttle:3,1');
 Route::post('reset-password', [AuthController::class, 'resetPassword'])->middleware('throttle:3,1');
 
+// Mobile Version Check (Public)
+Route::get('mobile/version-check', [\App\Http\Controllers\Api\MobileVersionController::class, 'check']);
+
 
 Route::middleware('auth:api')->group(function () {
 

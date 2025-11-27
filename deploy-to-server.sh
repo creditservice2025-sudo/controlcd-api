@@ -111,6 +111,9 @@ rsync -avzP --delete \
   --exclude='Thumbs.db' \
   --exclude='server-setup/' \
   --exclude='deploy-to-server.sh' \
+  --exclude='*.sh' \
+  --exclude='*.md' \
+  --exclude='*.sql' \
   --exclude='context/' \
   $LOCAL_PATH/ \
   $SERVER_USER@$SERVER_IP:$SERVER_PATH/
@@ -118,16 +121,35 @@ rsync -avzP --delete \
 if [ $? -eq 0 ]; then
     echo ""
     echo -e "${GREEN}✓ Archivos sincronizados exitosamente!${NC}"
-    
+
     # Ejecutar comandos post-deploy en el servidor
     echo ""
     echo -e "${YELLOW}Ejecutando comandos post-deploy en el servidor...${NC}"
-    
-    ssh -i "$SSH_KEY" $SERVER_USER@$SERVER_IP << 'ENDSSH'
+
+    # Preguntar si se desea sobrescribir .env (por seguridad)
+    echo ""
+    read -p "¿Deseas SOBRESCRIBIR el archivo .env en el servidor con .env.staging.example? (s/N): " OVERWRITE_ENV
+    OVERWRITE_ENV=${OVERWRITE_ENV:-n}
+
+    ssh -i "$SSH_KEY" $SERVER_USER@$SERVER_IP bash -s "$OVERWRITE_ENV" << 'ENDSSH'
+OVERWRITE_ENV=$1
+
 cd /var/www/controlcd-api
 
 echo "→ Arreglando ownership de git..."
 git config --global --add safe.directory /var/www/controlcd-api 2>/dev/null || true
+
+echo "→ Configurando archivo .env para staging..."
+if [[ "$OVERWRITE_ENV" == "s" || "$OVERWRITE_ENV" == "S" ]]; then
+    if [ -f .env.staging.example ]; then
+        cp .env.staging.example .env
+        echo "  ✓ .env SOBRESCRITO desde .env.staging.example"
+    else
+        echo "  ⚠ No se encontró .env.staging.example"
+    fi
+else
+    echo "  ℹ Saltando actualización de .env (conservando actual)"
+fi
 
 echo "→ Verificando e instalando extensiones PHP necesarias..."
 # Instalar extensiones PHP 8.3 requeridas si no están instaladas
