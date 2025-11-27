@@ -20,8 +20,13 @@ return [
     'allowed_methods' => ['*'],
 
     'allowed_origins' => [
+        // Producción
+        'https://control-cd.com',
+        'https://www.control-cd.com',
+        // Staging
         'https://staging.control-cd.com',
         'https://staging-api.control-cd.com',
+        // Local/Development
         'http://localhost:9000',
         'http://localhost:8080',
         'http://localhost',
