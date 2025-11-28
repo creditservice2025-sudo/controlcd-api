@@ -43,11 +43,11 @@ class ClientService
             $params = $request->validated();
 
             // Restricción por monto total de ventas nuevas en el día
-            if (!empty($params['credit_value']) && (float)$params['credit_value'] > 0) {
+            if (!empty($params['credit_value']) && (float) $params['credit_value'] > 0) {
                 $sellerConfig = \App\Models\SellerConfig::where('seller_id', $params['seller_id'])->first();
                 $limit = $sellerConfig ? floatval($sellerConfig->restrict_new_sales_amount ?? 0) : 0;
                 if ($limit > 0) {
-                    $today = \Carbon\Carbon::now('America/Caracas')->toDateString();
+                    $today = \Carbon\Carbon::now('America/Lima')->toDateString();
                     $newCreditsAmount = \App\Models\Credit::where('seller_id', $params['seller_id'])
                         ->whereDate('created_at', $today)
                         ->sum('credit_value');
@@ -92,7 +92,7 @@ class ClientService
                 ]);
 
                 // Optional initial credit creation
-                if (!empty($params['credit_value']) && (float)$params['credit_value'] > 0) {
+                if (!empty($params['credit_value']) && (float) $params['credit_value'] > 0) {
                     $this->createCreditForNewClient($client, $params, $guarantorId);
                 }
 
@@ -166,7 +166,7 @@ class ClientService
 
 
         $quotaAmount = (($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value) / max(1, $credit->number_installments);
-        $this->generateInstallmentsForCredit($credit, (float)$quotaAmount);
+        $this->generateInstallmentsForCredit($credit, (float) $quotaAmount);
 
         return $credit;
     }
@@ -187,7 +187,8 @@ class ClientService
 
         $excludedDayNumbers = [];
         foreach ($excludedDayNames as $day) {
-            if (isset($dayMap[$day])) $excludedDayNumbers[] = $dayMap[$day];
+            if (isset($dayMap[$day]))
+                $excludedDayNumbers[] = $dayMap[$day];
         }
 
         $adjust = function (Carbon $date) use ($excludedDayNumbers) {
@@ -293,8 +294,10 @@ class ClientService
 
             $type = $imageData['type'];
 
-            if ($type === 'profile') $profileCount++;
-            elseif ($type === 'gallery') $galleryCount++;
+            if ($type === 'profile')
+                $profileCount++;
+            elseif ($type === 'gallery')
+                $galleryCount++;
 
             if ($profileCount > self::MAX_PROFILE_IMAGES) {
                 return $this->errorResponse('Solo se permite una foto de perfil.', 400);
@@ -346,7 +349,8 @@ class ClientService
     {
         try {
             $client = Client::find($clientId);
-            if (!$client) return $this->errorNotFoundResponse('Cliente no encontrado');
+            if (!$client)
+                return $this->errorNotFoundResponse('Cliente no encontrado');
 
             if ($client->credits()->where('status', 'Vigente')->exists()) {
                 return $this->errorResponse(['No se puede eliminar el cliente con créditos vigentes'], 401);
@@ -379,7 +383,7 @@ class ClientService
         $createdTo = null
     ) {
         try {
-            $search = (string)$search;
+            $search = (string) $search;
             $user = Auth::user();
             $seller = $user->seller;
             $company = $user->company;
@@ -408,9 +412,11 @@ class ClientService
                     'credits' => function ($q) {
                         $q->select('id', 'client_id', 'credit_value', 'number_installments', 'payment_frequency', 'status', 'total_interest')
                             ->withSum('payments', 'amount')
-                            ->withCount(['installments as pending_installments_count' => function ($iq) {
-                                $iq->where('status', '<>', 'Pagado');
-                            }])
+                            ->withCount([
+                                'installments as pending_installments_count' => function ($iq) {
+                                    $iq->where('status', '<>', 'Pagado');
+                                }
+                            ])
                             ->withMax('installments', 'due_date'); // aproximación a fecha final
                     },
                     'credits.installments' => function ($q) {
@@ -428,8 +434,10 @@ class ClientService
                     }
                     break;
                 case 5: // Seller user
-                    if ($seller) $clientsQuery->where('seller_id', $seller->id);
-                    else $clientsQuery->whereRaw('0 = 1');
+                    if ($seller)
+                        $clientsQuery->where('seller_id', $seller->id);
+                    else
+                        $clientsQuery->whereRaw('0 = 1');
                     break;
                 case 6:
                     if (!empty($sellerIds)) {
@@ -467,10 +475,14 @@ class ClientService
             }
 
             // Filtros de ubicación / vendedor
-            if ($countryId) $clientsQuery->whereHas('seller.city.country', fn($q) => $q->where('id', $countryId));
-            if ($cityId) $clientsQuery->whereHas('seller.city', fn($q) => $q->where('id', $cityId));
-            if ($sellerId) $clientsQuery->where('seller_id', $sellerId);
-            elseif ($user->role_id == 5 && $seller) $clientsQuery->where('seller_id', $seller->id);
+            if ($countryId)
+                $clientsQuery->whereHas('seller.city.country', fn($q) => $q->where('id', $countryId));
+            if ($cityId)
+                $clientsQuery->whereHas('seller.city', fn($q) => $q->where('id', $cityId));
+            if ($sellerId)
+                $clientsQuery->where('seller_id', $sellerId);
+            elseif ($user->role_id == 5 && $seller)
+                $clientsQuery->where('seller_id', $seller->id);
 
             // Filtros por estado / créditos (mantengo tu lógica original)
             if ($status === 'Cartera Irrecuperable') {
@@ -557,7 +569,7 @@ class ClientService
         $companyId = null
     ) {
         try {
-            $search = (string)$search;
+            $search = (string) $search;
             $user = Auth::user();
             $seller = $user->seller;
 
@@ -575,11 +587,14 @@ class ClientService
                             $q->where('status', 'Vigente');
                         }
                         // load minimal payment fields only for local use (we will pre-aggregate payments separately)
-                        $q->with(['payments' => function ($pq) {
+                        $q->with([
+                            'payments' => function ($pq) {
                             $pq->select('id', 'credit_id', 'amount', 'payment_date', 'created_at', 'payment_method', 'status');
-                        }, 'installments' => function ($iq) {
+                        },
+                            'installments' => function ($iq) {
                             $iq->select('id', 'credit_id', 'quota_number', 'due_date', 'quota_amount', 'status');
-                        }]);
+                        }
+                        ]);
                     }
                 ])
                 ->select('clients.*');
@@ -592,10 +607,14 @@ class ClientService
                 });
             }
 
-            if ($countryId) $clientsQuery->whereHas('seller.city.country', fn($q) => $q->where('id', $countryId));
-            if ($cityId) $clientsQuery->whereHas('seller.city', fn($q) => $q->where('id', $cityId));
-            if ($sellerId) $clientsQuery->where('clients.seller_id', $sellerId);
-            elseif ($user->role_id == 5 && $seller) $clientsQuery->where('clients.seller_id', $seller->id);
+            if ($countryId)
+                $clientsQuery->whereHas('seller.city.country', fn($q) => $q->where('id', $countryId));
+            if ($cityId)
+                $clientsQuery->whereHas('seller.city', fn($q) => $q->where('id', $cityId));
+            if ($sellerId)
+                $clientsQuery->where('clients.seller_id', $sellerId);
+            elseif ($user->role_id == 5 && $seller)
+                $clientsQuery->where('clients.seller_id', $seller->id);
 
             if (Auth::user()->role_id == 1 && $companyId) {
                 $clientsQuery->whereHas('seller', fn($q) => $q->where('company_id', $companyId));
@@ -617,7 +636,7 @@ class ClientService
             foreach ($clients as $client) {
                 foreach ($client->credits as $credit) {
                     $totalAmount = ($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value;
-                    $paidAmount = (float)($paymentsByCredit[$credit->id] ?? 0.0);
+                    $paidAmount = (float) ($paymentsByCredit[$credit->id] ?? 0.0);
                     $remainingAmount = $totalAmount - $paidAmount;
 
                     // last payment info (from eager loaded payments collection)
@@ -676,21 +695,23 @@ class ClientService
 
     private function paymentsSumByCredit(array $creditIds): array
     {
-        if (empty($creditIds)) return [];
+        if (empty($creditIds))
+            return [];
         $rows = Payment::whereIn('credit_id', $creditIds)
             ->select('credit_id', DB::raw('SUM(amount) as total'))
             ->groupBy('credit_id')
             ->get();
 
         $result = [];
-        foreach ($rows as $r) $result[$r->credit_id] = (float)$r->total;
+        foreach ($rows as $r)
+            $result[$r->credit_id] = (float) $r->total;
         return $result;
     }
 
     public function getClientsBySeller($sellerId, $search = '', $companyId = null, $status = null)
     {
         try {
-            $search = trim((string)$search);
+            $search = trim((string) $search);
             Log::info('status: ' . $status);
 
             $clientsQuery = Client::query()
@@ -711,9 +732,11 @@ class ClientService
                     'credits' => function ($q) {
                         $q->select('id', 'client_id', 'credit_value', 'number_installments', 'payment_frequency', 'status', 'total_interest')
                             ->withSum('payments', 'amount')
-                            ->withCount(['installments as pending_installments_count' => function ($iq) {
-                                $iq->where('status', '<>', 'Pagado');
-                            }])
+                            ->withCount([
+                                'installments as pending_installments_count' => function ($iq) {
+                                    $iq->where('status', '<>', 'Pagado');
+                                }
+                            ])
                             ->withMax('installments', 'due_date');
                     },
                     'credits.installments' => function ($q) {
@@ -869,15 +892,15 @@ class ClientService
 
                         // Distancia: asegúrate de que client->coordinates sea un array con keys latitude/longitude
                         if (!empty($client->coordinates) && isset($client->coordinates['latitude'], $client->coordinates['longitude'])) {
-                            $clientLat = (float)$client->coordinates['latitude'];
-                            $clientLon = (float)$client->coordinates['longitude'];
+                            $clientLat = (float) $client->coordinates['latitude'];
+                            $clientLon = (float) $client->coordinates['longitude'];
 
                             if ($payment->latitude && $payment->longitude) {
                                 $distance = $this->calculateDistance(
                                     $clientLat,
                                     $clientLon,
-                                    (float)$payment->latitude,
-                                    (float)$payment->longitude
+                                    (float) $payment->latitude,
+                                    (float) $payment->longitude
                                 );
 
                                 if ($distance > 10) {
@@ -1153,9 +1176,11 @@ class ClientService
             $client = Client::with([
                 'credits' => function ($cq) {
                     $cq->select('id', 'client_id', 'credit_value', 'total_interest', 'number_installments', 'status', 'created_at', 'payment_frequency', 'renewal_blocked')
-                        ->with(['payments' => function ($pq) {
-                            $pq->select('id', 'credit_id', 'amount', 'payment_date', 'created_at', 'payment_method', 'status');
-                        }]);
+                        ->with([
+                            'payments' => function ($pq) {
+                                $pq->select('id', 'credit_id', 'amount', 'payment_date', 'created_at', 'payment_method', 'status');
+                            }
+                        ]);
                 },
                 'credits.payments.installments' => function ($q) {
                     $q->select('id', 'payment_id', 'installment_id', 'applied_amount');
@@ -1254,7 +1279,7 @@ class ClientService
                 ->select('credits.*')
                 ->join('clients', 'clients.id', '=', 'credits.client_id')
                 ->selectSub('
-                CASE 
+                CASE
                     WHEN payment_priority.has_overdue = 1 THEN 1
                     WHEN payment_priority.has_pending = 1 THEN 2
                     ELSE 3
@@ -1497,9 +1522,11 @@ class ClientService
                 },
                 'seller' => function ($query) {
                     $query->select('*')
-                        ->with(['user' => function ($userQuery) {
-                            $userQuery->select('id', 'name');
-                        }]);
+                        ->with([
+                            'user' => function ($userQuery) {
+                                $userQuery->select('id', 'name');
+                            }
+                        ]);
                 },
                 'seller.user' => function ($query) {
                     $query->select('id', 'name');
@@ -1658,7 +1685,7 @@ class ClientService
         }
 
         /*  \Log::info("Resultado cliente {$client->id}: Max días={$maxDaysDelayed}, Nivel={$delinquencyLevel}, Créditos morosos={$debtorCredits}");
- */
+         */
         return [
             'total_days_delayed' => $totalDaysDelayed,
             'max_days_delayed' => $maxDaysDelayed,
@@ -1782,9 +1809,9 @@ class ClientService
                     $query->whereNotIn('status', $excludeStatuses)
 
                         ->orWhere(function ($q2) use ($formattedDate) {
-                            $q2->whereIn('status', ['Liquidado', 'Renovado', 'Unificado'])
-                                ->whereDate('updated_at', $formattedDate);
-                        });
+                        $q2->whereIn('status', ['Liquidado', 'Renovado', 'Unificado'])
+                            ->whereDate('updated_at', $formattedDate);
+                    });
                 });
             },
 
@@ -2303,7 +2330,7 @@ class ClientService
                 COUNT(DISTINCT clients.id) as total_clients,
                 COUNT(DISTINCT CASE WHEN payments.id IS NOT NULL THEN clients.id END) as clients_served,
                 COUNT(DISTINCT CASE WHEN payments.status = "Abonado" THEN clients.id END) as pending_clients,
-                COUNT(DISTINCT CASE WHEN payments.id IS NOT NULL AND payments.status != "Pagado" 
+                COUNT(DISTINCT CASE WHEN payments.id IS NOT NULL AND payments.status != "Pagado"
                                     THEN clients.id END) as defaulted_clients
             ')
             ->join('credits', 'clients.id', '=', 'credits.client_id')
