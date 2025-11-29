@@ -665,6 +665,7 @@ class ClientService
                         'name' => $client->name,
                         'dni' => $client->dni,
                         'address' => $client->address,
+                        'created_at' => $client->created_at,
                         'credit' => [
                             'id' => $credit->id,
                             'credit_value' => $credit->credit_value,
@@ -715,7 +716,7 @@ class ClientService
             Log::info('status: ' . $status);
 
             $clientsQuery = Client::query()
-                ->select('id', 'name', 'dni', 'email', 'address', 'seller_id', 'routing_order', 'geolocation', 'phone', 'capacity')
+                ->select('id', 'name', 'dni', 'email', 'address', 'seller_id', 'routing_order', 'geolocation', 'phone', 'capacity', 'created_at')
                 ->with([
                     'seller' => function ($q) {
                         $q->select('id', 'user_id', 'city_id', 'company_id');
