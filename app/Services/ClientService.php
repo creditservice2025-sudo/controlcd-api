@@ -743,6 +743,7 @@ class ClientService
                     'credits.installments' => function ($q) {
                         $q->select('id', 'credit_id', 'quota_number', 'due_date', 'quota_amount', 'status');
                     },
+                    'images'
                 ])
                 ->where('seller_id', $sellerId)
                 ->when(Auth::user()->role_id == 1 && $companyId, function ($q) use ($companyId) {
