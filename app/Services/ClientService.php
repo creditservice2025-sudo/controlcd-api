@@ -1101,6 +1101,14 @@ class ClientService
                 $query->whereIn('seller_id', $sellerIds);
             }
 
+            // scope to company for role 2
+            if ($user->role_id == 2) {
+                $company = $user->company;
+                if ($company) {
+                    $query->whereHas('seller', fn($q) => $q->where('company_id', $company->id));
+                }
+            }
+
             if (Auth::user()->role_id == 1 && $companyId) {
                 $query->whereHas('seller', fn($q) => $q->where('company_id', $companyId));
             }
