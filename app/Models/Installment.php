@@ -17,6 +17,7 @@ class Installment extends Model
         'quota_number',
         'due_date',
         'quota_amount',
+        'paid_amount',
         'status'
     ];
 

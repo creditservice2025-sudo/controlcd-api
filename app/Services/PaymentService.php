@@ -213,22 +213,33 @@ class PaymentService
                     if ($remainingAmount <= 0)
                         break;
 
-                    $pendingAmount = $installment->quota_amount - $installment->paid_amount;
-                    // Skip if fully paid (shouldn't happen due to query, but safety)
-                    if ($pendingAmount <= 0.001)
+                    $quotaAmount = (float) $installment->quota_amount;
+                    $paidAmount = (float) $installment->paid_amount;
+                    $pendingAmount = $quotaAmount - $paidAmount;
+
+                    // Fix for "Zombie" installments (Paid but status not updated)
+                    if ($pendingAmount <= 0.001) {
+                        if ($installment->status !== 'Pagado') {
+                            $installment->status = 'Pagado';
+                            $installment->save();
+                        }
                         continue;
+                    }
 
                     $toApply = min($pendingAmount, $remainingAmount);
+                    $toApply = round($toApply, 2);
 
-                    $installment->paid_amount += $toApply;
+                    if ($toApply <= 0)
+                        continue;
+
+                    $installment->paid_amount = $paidAmount + $toApply;
 
                     // Update Status
-                    // Use a small epsilon for float comparison if needed, or just >=
-                    if ($installment->paid_amount >= ($installment->quota_amount - 0.001)) {
+                    if ($installment->paid_amount >= ($quotaAmount - 0.001)) {
                         $installment->status = 'Pagado';
-                        // Ensure we don't exceed quota amount visually if there's a tiny float error
-                        if ($installment->paid_amount > $installment->quota_amount) {
-                            $installment->paid_amount = $installment->quota_amount;
+                        // Ensure we don't exceed quota amount visually
+                        if ($installment->paid_amount > $quotaAmount) {
+                            $installment->paid_amount = $quotaAmount;
                         }
                     } else {
                         $installment->status = 'Parcial';
@@ -454,7 +465,7 @@ class PaymentService
                     'payment_images.path as image_path',
                     'payments.payment_date',
                     'payments.created_at',
-                    'payments.amount as total_payment',
+                    \DB::raw('MAX(payments.amount) as total_payment'),
                     'payments.payment_method',
                     'payments.payment_reference',
                     'payments.status',
@@ -471,7 +482,6 @@ class PaymentService
                     'credits.number_installments',
                     'credits.start_date',
                     'payments.payment_date',
-                    'payments.amount',
                     'payments.payment_method',
                     'payments.payment_reference',
                     'payments.status',
@@ -491,7 +501,7 @@ class PaymentService
             $count = $paymentsQuery->count();
             \Log::info("Payments found before paginate:", ['count' => $count]);
 
-            $payments = $paymentsQuery->paginate($perPage, ['*']);
+            $payments = $paymentsQuery->paginate($perPage);
 
             return $this->successResponse([
                 'success' => true,
