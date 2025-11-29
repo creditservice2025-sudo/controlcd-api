@@ -12,7 +12,7 @@ class CityRequest extends FormRequest
      */
     public function authorize(): bool
     {
-        return true; 
+        return true;
     }
 
     /**
@@ -29,13 +29,14 @@ class CityRequest extends FormRequest
                     return $query->where('country_id', $this->country_id);
                 })
             ],
-            'country_id' => 'required|exists:countries,id'
+            'country_id' => 'required|exists:countries,id',
+            'status' => 'nullable|string|in:ACTIVE,INACTIVE'
         ];
-    
+
         if ($this->isMethod('PUT') || $this->isMethod('PATCH')) {
             $rules['name'][3] = $rules['name'][3]->ignore($this->route('id'));
         }
-    
+
         return $rules;
     }
 

@@ -17,10 +17,10 @@ class CitiesController extends Controller
     public function __construct(CitiesService $citiesService)
     {
         $this->citiesService = $citiesService;
-     /*    $this->middleware('permission:ver_ciudades')->only('index');
-        $this->middleware('permission:crear_ciudades')->only('store');
-        $this->middleware('permission:editar_ciudades')->only('update');
-        $this->middleware('permission:eliminar_ciudades')->only('destroy'); */
+        /*    $this->middleware('permission:ver_ciudades')->only('index');
+           $this->middleware('permission:crear_ciudades')->only('store');
+           $this->middleware('permission:editar_ciudades')->only('update');
+           $this->middleware('permission:eliminar_ciudades')->only('destroy'); */
     }
 
     public function getCitiesSelect()
@@ -79,8 +79,7 @@ class CitiesController extends Controller
 
             return $this->citiesService->getCitiesByCountry(
                 $country_id,
-                $search,
-                $perPage
+                $request
             );
         } catch (Exception $e) {
             return $this->handlerException($e->getMessage());

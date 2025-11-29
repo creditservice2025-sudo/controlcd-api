@@ -18,7 +18,7 @@ class CitiesService
     public function getCitiesSelect()
     {
         try {
-            $routes = City::select('id', 'name')->get();
+            $routes = City::where('status', 'ACTIVE')->select('id', 'name')->get();
 
             return $this->successResponse([
                 'success' => true,
@@ -95,39 +95,46 @@ class CitiesService
         }
     }
 
-       protected function applyLocationFilters($query, Request $request)
-   {
-       // Filtra por country_id si viene
-       if ($request->filled('country_id')) {
-           $query->where('country_id', $request->query('country_id'));
-       }
+    protected function applyLocationFilters($query, Request $request)
+    {
+        // Filtra por country_id si viene
+        if ($request->filled('country_id')) {
+            $query->where('country_id', $request->query('country_id'));
+        }
 
-     
 
-       // Filtra por city_id
-       if ($request->filled('city_id')) {
-           $query->where('city_id', $request->query('city_id'));
-       }
 
-     
+        // Filtra por city_id
+        if ($request->filled('city_id')) {
+            $query->where('city_id', $request->query('city_id'));
+        }
 
-       // Filtra por seller_id explícito
-       if ($request->filled('seller_id')) {
-           $query->where('id', $request->query('seller_id'));
-       }
 
-       return $query;
-   }
 
-    public function getCitiesByCountry($country_id, $search = '')
+        // Filtra por seller_id explícito
+        if ($request->filled('seller_id')) {
+            $query->where('id', $request->query('seller_id'));
+        }
+
+        return $query;
+    }
+
+    public function getCitiesByCountry($country_id, Request $request)
     {
         try {
             $query = City::where('country_id', $country_id)
                 ->with('country')
                 ->orderBy('name');
 
-            if (!empty($search)) {
-                $query->where('name', 'LIKE', "%{$search}%");
+            if ($request->has('status')) {
+                $query->where('status', $request->query('status'));
+            }
+
+            if ($request->has('search')) {
+                $search = $request->query('search');
+                if (!empty($search)) {
+                    $query->where('name', 'LIKE', "%{$search}%");
+                }
             }
 
             return $this->successResponse($query->get());
@@ -136,77 +143,77 @@ class CitiesService
         }
     }
 
-   public function getSellersByCity($city_id = null, Request $request, $companyId = null)
-{
-    try {
-        $search = $request->query('search', '');
-        $user = Auth::user();
-        $seller = $user->seller ?? null;
-        $company = $user->company ?? null;
+    public function getSellersByCity($city_id = null, Request $request, $companyId = null)
+    {
+        try {
+            $search = $request->query('search', '');
+            $user = Auth::user();
+            $seller = $user->seller ?? null;
+            $company = $user->company ?? null;
 
-        $query = Seller::with('user');
+            $query = Seller::with('user');
 
-        if (!empty($city_id)) {
-            $query->where('city_id', $city_id);
-        }
-
-        \Log::info("Getting sellers for city_id: " . ($city_id ?? 'all') . ", companyId: " . ($companyId ?? 'none') . ", user role: " . $user->role_id);
-
-        // Aplicar filtro por companyId de ruta si viene
-        if ($companyId) {
-            $query->where('company_id', $companyId);
-        }
-
-        $role = $user->role_id;
-
-        if ($role === 1) {
-            $this->applyLocationFilters($query, $request);
-        } elseif ($role === 2) {
-            if (!$company) {
-                return response()->json([
-                    'success' => true,
-                    'data' => []
-                ]);
+            if (!empty($city_id)) {
+                $query->where('city_id', $city_id);
             }
-            if (!$companyId) {
-                $query->where('company_id', $company->id);
+
+            \Log::info("Getting sellers for city_id: " . ($city_id ?? 'all') . ", companyId: " . ($companyId ?? 'none') . ", user role: " . $user->role_id);
+
+            // Aplicar filtro por companyId de ruta si viene
+            if ($companyId) {
+                $query->where('company_id', $companyId);
             }
-            $this->applyLocationFilters($query, $request);
-        } elseif ($role === 5 || $role === 3) {
-            if ($seller) {
-                $query->where('id', $seller->id);
+
+            $role = $user->role_id;
+
+            if ($role === 1) {
+                $this->applyLocationFilters($query, $request);
+            } elseif ($role === 2) {
+                if (!$company) {
+                    return response()->json([
+                        'success' => true,
+                        'data' => []
+                    ]);
+                }
+                if (!$companyId) {
+                    $query->where('company_id', $company->id);
+                }
+                $this->applyLocationFilters($query, $request);
+            } elseif ($role === 5 || $role === 3) {
+                if ($seller) {
+                    $query->where('id', $seller->id);
+                } else {
+                    $query->whereRaw('0 = 1');
+                }
             } else {
-                $query->whereRaw('0 = 1');
+                // Consultor: solo sellers asociados en user_routes
+                $sellerIds = UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
+                if (empty($sellerIds)) {
+                    return response()->json([
+                        'success' => true,
+                        'data' => []
+                    ]);
+                }
+                $query->whereIn('id', $sellerIds);
+                $this->applyLocationFilters($query, $request);
             }
-        } else{
-            // Consultor: solo sellers asociados en user_routes
-            $sellerIds = UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
-            if (empty($sellerIds)) {
-                return response()->json([
-                    'success' => true,
-                    'data' => []
-                ]);
+
+            if (!empty($search)) {
+                $query->where('name', 'LIKE', "%{$search}%");
             }
-            $query->whereIn('id', $sellerIds);
-            $this->applyLocationFilters($query, $request);
-        }
 
-        if (!empty($search)) {
-            $query->where('name', 'LIKE', "%{$search}%");
+            return response()->json([
+                'success' => true,
+                'data' => $query->get()
+            ]);
+        } catch (\Exception $e) {
+            \Log::error("Error obteniendo vendedores: " . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error obteniendo vendedores: ' . $e->getMessage()
+            ], 500);
         }
-
-        return response()->json([
-            'success' => true,
-            'data' => $query->get()
-        ]);
-    } catch (\Exception $e) {
-        \Log::error("Error obteniendo vendedores: " . $e->getMessage());
-        return response()->json([
-            'success' => false,
-            'message' => 'Error obteniendo vendedores: ' . $e->getMessage()
-        ], 500);
     }
-}
 
     public function delete($id)
     {
