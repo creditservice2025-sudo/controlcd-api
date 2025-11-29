@@ -26,7 +26,7 @@ class PaymentService
 {
     use ApiResponse;
 
-  public function create(PaymentRequest $request)
+    public function create(PaymentRequest $request)
     {
         try {
             DB::beginTransaction();
@@ -53,64 +53,73 @@ class PaymentService
             }
 
             $credit = Credit::find($request->credit_id);
-            $cacheKey = null;
-            $cachePaymentsKey = null;
             $user = Auth::user();
 
             if (!$credit) {
                 throw new \Exception('El crédito no existe.');
             }
 
-            // ======= NEW: Prevent duplicate submissions within a 1-hour window =======
-            // Use a distributed lock to avoid race conditions from concurrent requests,
-            // and check the DB for any recent similar payment to reject duplicates.
-            $lockKey = "payment:create:credit:{$credit->id}:user:{$user->id}";
-            $lock = Cache::lock($lockKey, 10); // 10 seconds lock TTL while we do checks + create
+            // ======= IDEMPOTENCY CHECK =======
+            $idempotencyKey = $request->header('X-Idempotency-Key');
+            if ($idempotencyKey) {
+                $cacheKey = "payment_processed:{$idempotencyKey}";
+                if (Cache::has($cacheKey)) {
+                    DB::rollBack(); // No need for transaction here
+                    return $this->successResponse([
+                        'success' => true,
+                        'message' => 'Pago ya procesado anteriormente (Idempotencia).',
+                        'data' => Cache::get($cacheKey)
+                    ]);
+                }
+            }
 
-            if (! $lock->get()) {
-                // Someone else is processing a payment for the same credit+user right now.
+            // ======= LOCKING =======
+            // Increased TTL to 60 seconds to handle slow uploads
+            $lockKey = "payment:create:credit:{$credit->id}:user:{$user->id}";
+            $lock = Cache::lock($lockKey, 60);
+
+            if (!$lock->get()) {
                 throw new \Exception('Se está procesando otro pago para este crédito. Por favor espera unos segundos e intenta de nuevo.');
             }
 
             try {
-                // Define duplicate detection window (1 hour)
+                // Double check idempotency inside lock to be sure
+                if ($idempotencyKey && Cache::has("payment_processed:{$idempotencyKey}")) {
+                    return $this->successResponse([
+                        'success' => true,
+                        'message' => 'Pago ya procesado anteriormente (Idempotencia).',
+                        'data' => Cache::get("payment_processed:{$idempotencyKey}")
+                    ]);
+                }
+
+                // Duplicate check (Legacy/Fallback) - Keep it but it's less critical with Idempotency Key
                 $now = $userTimezone ? Carbon::now($userTimezone) : Carbon::now();
                 $windowStart = $now->copy()->subHour();
 
-                // Build query to detect a "similar" payment in the last hour.
-                // We consider same credit_id and same amount within the last hour as duplicate.
-                // Optionally also match payment_method and payment_date to be stricter.
-                $duplicateQuery = Payment::where('credit_id', $credit->id)
-                    ->where('amount', $request->amount)
-                    ->where('created_at', '>=', $windowStart);
+                // Only check if NO idempotency key provided, or as a safety net
+                if (!$idempotencyKey) {
+                    $duplicateQuery = Payment::where('credit_id', $credit->id)
+                        ->where('amount', $request->amount)
+                        ->where('created_at', '>=', $windowStart);
 
-                if ($request->filled('payment_method')) {
-                    $duplicateQuery->where('payment_method', $request->payment_method);
+                    if ($request->filled('payment_method')) {
+                        $duplicateQuery->where('payment_method', $request->payment_method);
+                    }
+
+                    $recentPayment = $duplicateQuery->first();
+
+                    if ($recentPayment) {
+                        Log::warning('Duplicate payment attempt blocked (Legacy Check)', [
+                            'credit_id' => $credit->id,
+                            'amount' => $request->amount,
+                            'recent_id' => $recentPayment->id
+                        ]);
+                        throw new \Exception('Pago duplicado detectado. Ya se registró un pago similar en la última hora.');
+                    }
                 }
-
-                if ($request->filled('payment_date')) {
-                    $duplicateQuery->where('payment_date', $request->payment_date);
-                }
-
-                $recentPayment = $duplicateQuery->first();
-
-                if ($recentPayment) {
-                    Log::warning('Duplicate payment attempt blocked', [
-                        'credit_id' => $credit->id,
-                        'user_id' => $user->id ?? null,
-                        'amount' => $request->amount,
-                        'found_payment_id' => $recentPayment->id,
-                        'recent_payment_created_at' => $recentPayment->created_at->toDateTimeString()
-                    ]);
-
-                    throw new \Exception('Pago duplicado detectado. Ya se registró un pago similar en la última hora.');
-                }
-
-                // From here on we hold the lock until finally block releases it.
-                // Continue with the original business logic.
 
                 if ($request->amount == 0) {
-
+                    // Logic for "No Pago" remains mostly the same but ensure it's robust
                     $paymentData = [
                         'credit_id' => $params['credit_id'],
                         'payment_date' => $params['payment_date'],
@@ -124,11 +133,10 @@ class PaymentService
                         'updated_at' => $params['updated_at'] ?? null
                     ];
 
-                    // LOG 4: Data del registro de no pago antes de crear.
-                    Log::info('Creating "No Pago" record with data:', $paymentData);
-
                     $payment = Payment::create($paymentData);
 
+                    // Link to next installment even if amount is 0, for tracking?
+                    // Existing logic did this, preserving it.
                     $nextInstallment = Installment::where('credit_id', $credit->id)
                         ->whereIn('status', ['Pendiente', 'Parcial', 'Atrasado'])
                         ->orderBy('due_date', 'asc')
@@ -144,15 +152,21 @@ class PaymentService
                         ]);
                     }
 
-                    DB::commit();
-                    Log::info('Non-Payment (amount=0) record created successfully for Credit ID: ' . $credit->id); // LOG 5: Commit exitoso
+                    // Save to Idempotency Cache
+                    if ($idempotencyKey) {
+                        Cache::put("payment_processed:{$idempotencyKey}", $payment, 86400); // 24h
+                    }
 
+                    DB::commit();
                     return $this->successResponse([
                         'success' => true,
                         'message' => 'Registro de no pago realizado',
                         'data' => $payment
                     ]);
                 }
+
+                // ======= UNIFIED PAYMENT LOGIC (Full & Partial) =======
+                // No more "if ($isAbono) use Cache". Always persist.
 
                 $nextInstallment = Installment::where('credit_id', $credit->id)
                     ->whereIn('status', ['Pendiente', 'Parcial', 'Atrasado'])
@@ -164,6 +178,12 @@ class PaymentService
                 }
 
                 $pendingAmountNextInstallment = $nextInstallment->quota_amount - $nextInstallment->paid_amount;
+                // Determine status based on if it covers the next installment fully
+                // Note: This status is for the PAYMENT record.
+                // If it pays at least the pending amount of the immediate next installment, we can call it 'Pagado' (or logic preference).
+                // However, usually 'Abonado' means partial payment of the TOTAL debt or partial of the installment?
+                // The original logic: $isAbono = $request->amount < $pendingAmountNextInstallment;
+                // We will keep this distinction for the Payment status label.
                 $isAbono = $request->amount < $pendingAmountNextInstallment;
 
                 $paymentData = [
@@ -179,182 +199,84 @@ class PaymentService
                     'updated_at' => $params['updated_at'] ?? null
                 ];
 
-                // LOG 6 (Existente): Data del pago antes de crear.
-                Log::info('Creating standard payment with data:', $paymentData);
-
                 $payment = Payment::create($paymentData);
 
-                if (!$isAbono) {
-                    $remainingAmount = $request->amount;
-                    $isPartialPayment = false;
+                // Apply payment to installments
+                $remainingAmount = $request->amount;
 
-                    $installments = Installment::where('credit_id', $credit->id)
-                        ->whereIn('status', ['Pendiente', 'Parcial', 'Atrasado'])
-                        ->orderBy('due_date')
-                        ->get();
+                $installments = Installment::where('credit_id', $credit->id)
+                    ->whereIn('status', ['Pendiente', 'Parcial', 'Atrasado'])
+                    ->orderBy('due_date')
+                    ->get();
 
-                    if ($installments->isEmpty()) {
-                        throw new \Exception('No hay cuotas pendientes para aplicar el pago.');
-                    }
+                foreach ($installments as $installment) {
+                    if ($remainingAmount <= 0)
+                        break;
 
-                    $pendingInstallments = $installments->filter(fn($i) => $i->status === 'Pendiente');
-                    $minPendingQuota = $pendingInstallments->min('quota_amount') ?? 0;
+                    $pendingAmount = $installment->quota_amount - $installment->paid_amount;
+                    // Skip if fully paid (shouldn't happen due to query, but safety)
+                    if ($pendingAmount <= 0.001)
+                        continue;
 
-                    if ($remainingAmount >= $minPendingQuota) {
-                        foreach ($pendingInstallments as $installment) {
-                            if ($remainingAmount <= 0) break;
+                    $toApply = min($pendingAmount, $remainingAmount);
 
-                            $pendingAmount = $installment->quota_amount - $installment->paid_amount;
-                            if ($pendingAmount <= 0) continue;
+                    $installment->paid_amount += $toApply;
 
-                            $toApply = min($pendingAmount, $remainingAmount);
-                            $installment->paid_amount += $toApply;
-
-                            $installment->status = $installment->paid_amount >= $installment->quota_amount ? 'Pagado' : 'Parcial';
-                            $installment->save();
-
-                            PaymentInstallment::create([
-                                'payment_id' => $payment->id,
-                                'installment_id' => $installment->id,
-                                'applied_amount' => $toApply
-                            ]);
-
-                            $remainingAmount -= $toApply;
+                    // Update Status
+                    // Use a small epsilon for float comparison if needed, or just >=
+                    if ($installment->paid_amount >= ($installment->quota_amount - 0.001)) {
+                        $installment->status = 'Pagado';
+                        // Ensure we don't exceed quota amount visually if there's a tiny float error
+                        if ($installment->paid_amount > $installment->quota_amount) {
+                            $installment->paid_amount = $installment->quota_amount;
                         }
-                    }
-
-                    if ($remainingAmount > 0) {
-                        $targetInstallment = $installments->firstWhere(fn($i) => in_array($i->status, ['Parcial', 'Pendiente']));
-                        if ($targetInstallment) {
-                            $pendingAmount = $targetInstallment->quota_amount - $targetInstallment->paid_amount;
-                            $toApply = min($pendingAmount, $remainingAmount);
-
-                            $targetInstallment->paid_amount += $toApply;
-                            $targetInstallment->status = $targetInstallment->paid_amount >= $targetInstallment->quota_amount ? 'Pagado' : 'Parcial';
-                            $targetInstallment->save();
-
-                            PaymentInstallment::create([
-                                'payment_id' => $payment->id,
-                                'installment_id' => $targetInstallment->id,
-                                'applied_amount' => $toApply
-                            ]);
-
-                            $remainingAmount -= $toApply;
-                            $isPartialPayment = true;
-                        }
-                    }
-
-                    if ($isPartialPayment) {
-                        $payment->status = 'Abonado';
-                        $payment->save();
-                    }
-
-                    $appliedAmount = $request->amount - $remainingAmount;
-                    $credit->remaining_amount -= $appliedAmount;
-                    if ($credit->remaining_amount < 0) {
-                        $credit->remaining_amount = 0;
-                    }
-                } else {
-                    $cacheKey = "credit:{$credit->id}:pending_payments";
-                    $cachePaymentsKey = "credit:{$credit->id}:pending_payments_list";
-
-                    $accumulated = Cache::get($cacheKey, 0);
-                    $accumulated = is_numeric($accumulated) ? $accumulated : 0;
-
-                    $pendingPayments = Cache::get($cachePaymentsKey, []);
-
-                    $pendingPayments[] = [
-                        'payment_id' => $payment->id,
-                        'amount' => $request->amount,
-                        'payment_date' => $request->payment_date
-                    ];
-
-                    $newAccumulated = $accumulated + $request->amount;
-                    $remainingAccumulated = $newAccumulated;
-                    $completedInstallmentId = null;
-
-                    $installments = Installment::where('credit_id', $credit->id)
-                        ->whereIn('status', ['Pendiente', 'Parcial', 'Atrasado'])
-                        ->orderBy('due_date', 'asc')
-                        ->get();
-
-                    $amountAppliedToInstallment = 0;
-                    foreach ($installments as $installment) {
-                        $pendingAmount = $installment->quota_amount - $installment->paid_amount;
-                        if ($pendingAmount <= 0) continue;
-
-                        if ($newAccumulated >= $pendingAmount) {
-                            $installment->paid_amount += $pendingAmount;
-                            $installment->status = 'Pagado';
-                            $installment->save();
-
-                            $completedInstallmentId = $installment->id;
-                            $amountAppliedToInstallment = $pendingAmount;
-                            $remainingAccumulated -= $pendingAmount;
-
-                            $amountToAssign = $pendingAmount;
-                            foreach ($pendingPayments as &$pendingPayment) {
-                                if ($amountToAssign <= 0) break;
-
-                                $amountApplied = min($pendingPayment['amount'], $amountToAssign);
-
-                                PaymentInstallment::create([
-                                    'payment_id' => $pendingPayment['payment_id'],
-                                    'installment_id' => $completedInstallmentId,
-                                    'applied_amount' => $amountApplied
-                                ]);
-
-                                if ($amountApplied == $pendingPayment['amount']) {
-                                    $p = Payment::find($pendingPayment['payment_id']);
-                                    $p->status = 'Abonado';
-                                    $p->save();
-                                } else {
-                                    $pendingPayment['amount'] -= $amountApplied;
-                                }
-
-                                $amountToAssign -= $amountApplied;
-                            }
-
-                            $pendingPayments = array_filter($pendingPayments, function ($p) {
-                                return $p['amount'] > 0;
-                            });
-
-                            break;
-                        }
-                    }
-
-                    if ($remainingAccumulated > 0) {
-                        Cache::put($cacheKey, $remainingAccumulated);
-                        Cache::put($cachePaymentsKey, $pendingPayments);
                     } else {
-                        Cache::forget($cacheKey);
-                        Cache::forget($cachePaymentsKey);
+                        $installment->status = 'Parcial';
                     }
 
-                    if ($amountAppliedToInstallment > 0) {
-                        $payment->status = $isAbono ? 'Abonado' : 'Pagado';
-                        $payment->save();
-                    }
+                    $installment->save();
 
-                    $credit->remaining_amount = max($credit->remaining_amount - $request->amount, 0);
+                    PaymentInstallment::create([
+                        'payment_id' => $payment->id,
+                        'installment_id' => $installment->id,
+                        'applied_amount' => $toApply,
+                        'created_at' => $params['created_at'] ?? null,
+                        'updated_at' => $params['updated_at'] ?? null
+                    ]);
+
+                    $remainingAmount -= $toApply;
                 }
 
+                // Update Credit Remaining Amount
+                // We subtract the TOTAL payment amount from the credit's remaining amount
+                // Logic: remaining_amount tracks total debt.
+                $credit->remaining_amount -= $request->amount;
+                if ($credit->remaining_amount < 0) {
+                    $credit->remaining_amount = 0;
+                }
 
-                $pendingInstallments = Installment::where('credit_id', $credit->id)
+                // Update Credit Status
+                $pendingInstallmentsExists = Installment::where('credit_id', $credit->id)
                     ->where('status', '<>', 'Pagado')
                     ->exists();
 
-                if (!$pendingInstallments) {
+                if (!$pendingInstallmentsExists && $credit->remaining_amount <= 0.001) {
                     $credit->status = 'Liquidado';
-                    Cache::forget($cacheKey);
                 } elseif ($request->payment_date > $credit->end_date) {
+                    // Only change to Vigente if it was something else?
+                    // Or logic: if not liquidado, check if overdue?
+                    // Original logic: if ($request->payment_date > $credit->end_date) $credit->status = 'Vigente';
+                    // Wait, if payment_date > end_date, it might be 'Vencido' (Overdue)?
+                    // 'Vigente' usually means 'Current/Active'.
+                    // Let's preserve original logic for status update to avoid side effects,
+                    // but 'Vigente' seems to be the default active status.
                     $credit->status = 'Vigente';
                 }
                 $credit->save();
 
+                // Handle Image Upload
                 if ($request->hasFile('image')) {
                     $imageFile = $request->file('image');
-
                     $imagePath = Helper::uploadFile($imageFile, 'payments');
 
                     PaymentImage::create([
@@ -366,28 +288,31 @@ class PaymentService
                     ]);
                 }
 
+                // Save to Idempotency Cache
+                if ($idempotencyKey) {
+                    Cache::put("payment_processed:{$idempotencyKey}", $payment, 86400); // 24h
+                }
+
                 DB::commit();
 
-                // LOG 7: Commit exitoso para el flujo de pago estándar.
-                Log::info('Standard Payment processed and committed successfully for Credit ID: ' . $credit->id);
+                Log::info('Payment processed successfully (Unified Flow) for Credit ID: ' . $credit->id);
 
                 return $this->successResponse([
                     'success' => true,
                     'message' => $isAbono ? 'Abono procesado correctamente' : 'Pago procesado correctamente',
                     'data' => $payment
                 ]);
+
             } finally {
-                // Always release the lock if we acquired it.
                 try {
                     $lock->release();
                 } catch (\Throwable $ex) {
-                    // if releasing the lock fails, log but do not break the flow.
                     Log::warning('Failed to release payment creation lock', ['lock_key' => $lockKey, 'error' => $ex->getMessage()]);
                 }
             }
+
         } catch (\Exception $e) {
             DB::rollBack();
-            // LOG 8 (Existente): Log de error.
             Log::error('Error processing payment for Credit ID: ' . ($request->credit_id ?? 'N/A') . '. Message: ' . $e->getMessage(), ['exception' => $e]);
             return $this->errorResponse($e->getMessage(), 500);
         }
@@ -432,14 +357,14 @@ class PaymentService
                     DB::raw('COALESCE(SUM(payment_installments.applied_amount), 0) as total_applied'),
                     DB::raw("
             CONCAT(
-                '[', 
+                '[',
                 GROUP_CONCAT(
                     JSON_OBJECT(
                         'quota_number', installments.quota_number,
                         'applied_amount', payment_installments.applied_amount
-                    ) 
+                    )
                     ORDER BY installments.quota_number
-                ), 
+                ),
                 ']'
             ) as installment_details_json
         "),
@@ -592,8 +517,8 @@ class PaymentService
 
         $timezone = $request->input('timezone', 'America/Lima');
 
-        $page = (int)$request->input('page', 1);
-        $perPage = (int)$request->input('perPage', 10);
+        $page = (int) $request->input('page', 1);
+        $perPage = (int) $request->input('perPage', 10);
 
         // 1. Filtra los pagos por fecha, estado y seller
         $paymentsFilterQuery = Payment::query();
