@@ -212,9 +212,12 @@ class DashboardService
             // ------------------------------------------------------------------
             if ($role === 1) {
                 // MIEMBROS: Usuarios filtrados por ubicación a través de su Vendedor (Seller)
-                $data['members'] = User::whereHas('seller', function ($query) use ($request) {
+                $data['members'] = User::whereHas('seller', function ($query) use ($request, $companyId) {
                     // Aplicamos filtros de ubicación al Vendedor asociado al Usuario
                     $this->applyLocationFilters($query, $request);
+                    if ($companyId) {
+                        $query->where('company_id', $companyId);
+                    }
                 })->count();
 
                 // RUTAS/VENDEDORES: Vendedores filtrados por su ubicación
@@ -278,7 +281,7 @@ class DashboardService
                     $data['clients'] = $seller->clients()->count();
                     $data['credits'] = $seller->credits()->count();
                 }
-            // Consultor: solo los sellers asociados en UserRoute
+                // Consultor: solo los sellers asociados en UserRoute
             } else {
                 $sellerIds = UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
                 $data['routes'] = count($sellerIds);
@@ -322,9 +325,9 @@ class DashboardService
             $user = Auth::user();
             $role = $user->role_id;
 
-            $timezone  = 'America/Lima';
-            $startUTC  = Carbon::now($timezone)->startOfDay()->timezone('UTC');
-            $endUTC    = Carbon::now($timezone)->endOfDay()->timezone('UTC');
+            $timezone = 'America/Lima';
+            $startUTC = Carbon::now($timezone)->startOfDay()->timezone('UTC');
+            $endUTC = Carbon::now($timezone)->endOfDay()->timezone('UTC');
             $todayDate = Carbon::now($timezone)->toDateString();
 
             $sellersQuery = Seller::with([
@@ -344,8 +347,10 @@ class DashboardService
             if ($role === 2 && !$user->company) {
                 return response()->json(['success' => true, 'data' => []]);
             }
-            if ($role === 2) $sellersQuery->where('company_id', $user->company->id);
-            if ($role === 5) $sellersQuery->where('user_id', $user->id);
+            if ($role === 2)
+                $sellersQuery->where('company_id', $user->company->id);
+            if ($role === 5)
+                $sellersQuery->where('user_id', $user->id);
             if ($role === 1 && $companyId) {
                 $sellersQuery->where('company_id', $companyId);
             }
@@ -397,12 +402,12 @@ class DashboardService
                     'name' => $seller->user ? $seller->user->name : 'No name',
                     'location' => $location,
                     'initial_portfolio' => ['T' => 0, 'C' => 0, 'U' => 0],
-                    'collected'         => ['T' => 0, 'C' => 0, 'U' => 0],
-                    'to_collect'        => ['T' => 0, 'C' => 0, 'U' => 0],
-                    'credits_today'     => ['T' => 0, 'C' => 0, 'U' => 0],
-                    'collected_today'   => ['T' => 0, 'C' => 0, 'U' => 0],
-                    'previous_cash'     => 0,
-                    'current_cash'      => 0,
+                    'collected' => ['T' => 0, 'C' => 0, 'U' => 0],
+                    'to_collect' => ['T' => 0, 'C' => 0, 'U' => 0],
+                    'credits_today' => ['T' => 0, 'C' => 0, 'U' => 0],
+                    'collected_today' => ['T' => 0, 'C' => 0, 'U' => 0],
+                    'previous_cash' => 0,
+                    'current_cash' => 0,
                     'utility_collected_today' => 0,
                 ];
 
@@ -412,9 +417,9 @@ class DashboardService
 
 
                 foreach ($creditsActivos as $credit) {
-                    $capitalInitial   = $credit->credit_value;
-                    $utilityInitial   = $credit->credit_value * $credit->total_interest / 100;
-                    $totalInitial     = $capitalInitial + $utilityInitial;
+                    $capitalInitial = $credit->credit_value;
+                    $utilityInitial = $credit->credit_value * $credit->total_interest / 100;
+                    $totalInitial = $capitalInitial + $utilityInitial;
 
                     $percentageCapital = $totalInitial > 0 ? $capitalInitial / $totalInitial : 0;
                     $percentageUtility = $totalInitial > 0 ? $utilityInitial / $totalInitial : 0;
@@ -429,11 +434,11 @@ class DashboardService
 
                     $capitalPendiente = $capitalInitial - $capitalPagado;
                     $utilityPendiente = $utilityInitial - $utilityPagado;
-                    $totalPendiente   = $capitalPendiente + $utilityPendiente;
+                    $totalPendiente = $capitalPendiente + $utilityPendiente;
 
                     $capitalPendiente = max(0, $capitalPendiente);
                     $utilityPendiente = max(0, $utilityPendiente);
-                    $totalPendiente   = max(0, $totalPendiente);
+                    $totalPendiente = max(0, $totalPendiente);
 
                     $sellerData['to_collect']['C'] += $capitalPendiente;
                     $sellerData['to_collect']['U'] += $utilityPendiente;
@@ -447,9 +452,9 @@ class DashboardService
                 foreach ($seller->credits as $credit) {
                     $isIrrecuperable = $credit->status === 'Cartera Irrecuperable';
 
-                    $capitalInitial   = $credit->credit_value;
-                    $utilityInitial   = $credit->credit_value * $credit->total_interest / 100;
-                    $totalInitial     = $capitalInitial + $utilityInitial;
+                    $capitalInitial = $credit->credit_value;
+                    $utilityInitial = $credit->credit_value * $credit->total_interest / 100;
+                    $totalInitial = $capitalInitial + $utilityInitial;
 
                     $percentageCapital = $totalInitial > 0 ? $capitalInitial / $totalInitial : 0;
                     $percentageUtility = $totalInitial > 0 ? $utilityInitial / $totalInitial : 0;
@@ -501,8 +506,8 @@ class DashboardService
                     $pendingAmount = 0;
                     if ($oldCredit) {
                         $oldCreditTotal = ($oldCredit->credit_value * $oldCredit->total_interest / 100) + $oldCredit->credit_value;
-                        $oldCreditPaid  = DB::table('payments')->where('credit_id', $oldCredit->id)->sum('amount');
-                        $pendingAmount  = $oldCreditTotal - $oldCreditPaid;
+                        $oldCreditPaid = DB::table('payments')->where('credit_id', $oldCredit->id)->sum('amount');
+                        $pendingAmount = $oldCreditTotal - $oldCreditPaid;
                         $total_pending_absorbed += $pendingAmount;
                     }
                     $netDisbursement = $renewCredit->credit_value - $pendingAmount;
@@ -550,8 +555,8 @@ class DashboardService
                     $pendingAmount = 0;
                     if ($oldCredit) {
                         $oldCreditTotal = ($oldCredit->credit_value * $oldCredit->total_interest / 100) + $oldCredit->credit_value;
-                        $oldCreditPaid  = Payment::where('credit_id', $oldCredit->id)->sum('amount');
-                        $pendingAmount  = $oldCreditTotal - $oldCreditPaid;
+                        $oldCreditPaid = Payment::where('credit_id', $oldCredit->id)->sum('amount');
+                        $pendingAmount = $oldCreditTotal - $oldCreditPaid;
                     }
                     $netDisbursement = $renewCredit->credit_value - $pendingAmount;
                     $total_renewal_disbursed += $netDisbursement;
@@ -563,7 +568,7 @@ class DashboardService
                     ->whereDate('credits.updated_at', $todayDate)
                     ->where('installments.status', 'Pendiente')
                     ->sum('installments.quota_amount');
-                $currentCash =  $initialCash + ($income + $cashPayments) - ($expenses + $newCredits + $total_renewal_disbursed + $irrecoverableCredits);
+                $currentCash = $initialCash + ($income + $cashPayments) - ($expenses + $newCredits + $total_renewal_disbursed + $irrecoverableCredits);
                 $sellerData['current_cash'] = (float) number_format($currentCash, 2, '.', '');
 
                 $result[] = $sellerData;
@@ -628,15 +633,18 @@ class DashboardService
             }
 
             if (empty($sellerIds)) {
-                return $this->successResponse(['success' => true, 'data' => [
-                    'totalBalance' => 0,
-                    'capital' => 0,
-                    'profit' => 0,
-                    'currentCash' => 0,
-                    'cashDayBalance' => 0,
-                    'income' => 0,
-                    'expenses' => 0
-                ]]);
+                return $this->successResponse([
+                    'success' => true,
+                    'data' => [
+                        'totalBalance' => 0,
+                        'capital' => 0,
+                        'profit' => 0,
+                        'currentCash' => 0,
+                        'cashDayBalance' => 0,
+                        'income' => 0,
+                        'expenses' => 0
+                    ]
+                ]);
             }
 
             $creditIds = $this->getCreditIdsForSellers(collect($sellerIds))->all();
@@ -665,7 +673,7 @@ class DashboardService
             $expenseTotal = (float) Expense::whereIn('user_id', $userIds)->sum('value');
 
             // initial cash: sum of last liquidation per seller (prior to today)
-            $initialCash = $this->getLastLiquidationsSum(is_array($sellerIds) ? $sellerIds : (method_exists($sellerIds, 'all') ? $sellerIds->all() : (array)$sellerIds), $today);
+            $initialCash = $this->getLastLiquidationsSum(is_array($sellerIds) ? $sellerIds : (method_exists($sellerIds, 'all') ? $sellerIds->all() : (array) $sellerIds), $today);
 
             // Flujos del día
             $cashPayments = (float) Payment::whereIn('credit_id', $creditIds)
@@ -961,7 +969,8 @@ class DashboardService
                 $grouped = [];
                 foreach ($incomes as $income) {
                     $date = $income->created_at->format('Y-m-d');
-                    if (!isset($grouped[$date])) $grouped[$date] = [];
+                    if (!isset($grouped[$date]))
+                        $grouped[$date] = [];
                     $grouped[$date][] = [
                         'value' => $income->value,
                         'user' => $income->user ? $income->user->name : 'Sin usuario',
@@ -995,7 +1004,8 @@ class DashboardService
                 $grouped = [];
                 foreach ($expenses as $expense) {
                     $date = $expense->created_at->format('Y-m-d');
-                    if (!isset($grouped[$date])) $grouped[$date] = [];
+                    if (!isset($grouped[$date]))
+                        $grouped[$date] = [];
                     $grouped[$date][] = [
                         'value' => $expense->value,
                         'user' => $expense->user ? $expense->user->name : 'Sin usuario',
@@ -1028,7 +1038,8 @@ class DashboardService
                 $grouped = [];
                 foreach ($payments as $payment) {
                     $date = $payment->created_at->format('Y-m-d');
-                    if (!isset($grouped[$date])) $grouped[$date] = [];
+                    if (!isset($grouped[$date]))
+                        $grouped[$date] = [];
                     $sellerName = $payment->credit && $payment->credit->seller && $payment->credit->seller->user
                         ? $payment->credit->seller->user->name
                         : 'Sin vendedor';
