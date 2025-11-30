@@ -572,11 +572,23 @@ class PaymentService
         $groupedPayments = collect();
 
         foreach ($credits as $credit) {
-            // Para la vista agrupada por cuotas, traer TODOS los pagos históricos del crédito
-            // No solo los del rango de fechas filtrado
-            $allCreditPayments = Payment::where('credit_id', $credit->id)
-                ->orderBy('created_at', 'desc')
-                ->get();
+            // Para la vista agrupada por cuotas, traer los pagos filtrados por fecha
+            $allCreditPaymentsQuery = Payment::where('credit_id', $credit->id)
+                ->orderBy('created_at', 'desc');
+
+            if ($request->has('start_date') && $request->has('end_date')) {
+                $startDate = Carbon::parse($request->get('start_date'), $timezone)->startOfDay();
+                $endDate = Carbon::parse($request->get('end_date'), $timezone)->endOfDay();
+                $allCreditPaymentsQuery->whereBetween('created_at', [$startDate, $endDate]);
+            } elseif ($request->has('date')) {
+                $filterDate = Carbon::parse($request->get('date'), $timezone)->toDateString();
+                $allCreditPaymentsQuery->whereDate('created_at', $filterDate);
+            } else {
+                $filterDate = Carbon::now($timezone)->toDateString();
+                $allCreditPaymentsQuery->whereDate('created_at', $filterDate);
+            }
+
+            $allCreditPayments = $allCreditPaymentsQuery->get();
 
             // Calcular el total pagado SOLO de los pagos filtrados (para el resumen)
             $filteredCreditPayments = $filteredPayments->where('credit_id', $credit->id);
