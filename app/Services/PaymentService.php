@@ -572,22 +572,28 @@ class PaymentService
         $groupedPayments = collect();
 
         foreach ($credits as $credit) {
-            // Solo los pagos filtrados para este crédito
-            $payments = $filteredPayments->where('credit_id', $credit->id)->values();
+            // Para la vista agrupada por cuotas, traer TODOS los pagos históricos del crédito
+            // No solo los del rango de fechas filtrado
+            $allCreditPayments = Payment::where('credit_id', $credit->id)
+                ->orderBy('created_at', 'desc')
+                ->get();
 
-            // Calcular el total pagado para este crédito en el rango filtrado
-            $total_paid = $payments->sum('amount');
+            // Calcular el total pagado SOLO de los pagos filtrados (para el resumen)
+            $filteredCreditPayments = $filteredPayments->where('credit_id', $credit->id);
+            $total_paid = $filteredCreditPayments->sum('amount');
 
-            // Obtener cuotas de pagos "Pagado"
-            $paymentIds = $payments->where('status', 'Pagado')->pluck('id');
+            // Obtener cuotas para TODOS los pagos históricos del crédito
+            $paymentIds = $allCreditPayments->pluck('id');
             $installmentsDetails = collect();
             if ($paymentIds->isNotEmpty()) {
                 $installmentsDetails = DB::table('payment_installments')
                     ->join('installments', 'payment_installments.installment_id', '=', 'installments.id')
                     ->whereIn('payment_installments.payment_id', $paymentIds)
                     ->select(
-                        'installments.*',
-                        'payment_installments.applied_amount',
+                        'installments.quota_number',
+                        'installments.due_date',
+                        'installments.quota_amount as installment_amount',
+                        'payment_installments.applied_amount as paid_amount',
                         'payment_installments.created_at',
                         'payment_installments.payment_id'
                     )
@@ -595,14 +601,9 @@ class PaymentService
                     ->groupBy('payment_id');
             }
 
-            $payments->transform(function ($payment) use ($installmentsDetails) {
-                if ($payment->status === 'Pagado') {
-                    $payment->installments_details = $installmentsDetails->get($payment->id, collect());
-                    $payment->total_applied = $payment->installments_details->sum('applied_amount');
-                } else {
-                    $payment->installments_details = collect();
-                    $payment->total_applied = 0;
-                }
+            $allCreditPayments->transform(function ($payment) use ($installmentsDetails) {
+                $payment->installments_details = $installmentsDetails->get($payment->id, collect())->values();
+                $payment->total_applied = $payment->installments_details->sum('paid_amount');
                 return $payment;
             });
 
@@ -617,8 +618,8 @@ class PaymentService
                 'total_amount' => $credit->total_amount,
                 'number_installments' => $credit->number_installments,
                 'start_date' => $credit->start_date,
-                'payments' => $payments,
-                'total_paid' => $total_paid, // <-- aquí se agrega el campo
+                'payments' => $allCreditPayments, // Todos los pagos históricos
+                'total_paid' => $total_paid, // Solo pagos del rango filtrado
             ]);
         }
 
