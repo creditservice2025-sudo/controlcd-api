@@ -60,6 +60,12 @@ class PaymentController extends Controller
     public function indexBySeller(Request $request, $sellerId)
     {
         try {
+            // Resolve UUID to ID if necessary
+            if (!is_numeric($sellerId)) {
+                $seller = \App\Models\Seller::where('uuid', $sellerId)->firstOrFail();
+                $sellerId = $seller->id;
+            }
+
             $perPage = $request->get('perPage', 10);
 
             return $this->paymentService->getPaymentsBySeller($sellerId, $request, $perPage);
@@ -69,11 +75,17 @@ class PaymentController extends Controller
         }
     }
 
-    public function getSellerPayments(Request $request, int $sellerId)
+    public function getSellerPayments(Request $request, $sellerId)
     {
         try {
+            // Resolve UUID to ID if necessary
+            if (!is_numeric($sellerId)) {
+                $seller = \App\Models\Seller::where('uuid', $sellerId)->firstOrFail();
+                $sellerId = $seller->id;
+            }
+
             return $this->paymentService->getAllPaymentsBySeller($sellerId, $request);
-        } catch (Exception $e) {
+        } catch (\Exception $e) {
             \Log::error($e->getMessage());
             return $this->errorResponse('Error al obtener los créditos del vendedor: ' . $e->getMessage(), 500);
         }
@@ -113,7 +125,7 @@ class PaymentController extends Controller
     public function dailyPaymentTotals(Request $request)
     {
         $date = $request->get('date');
-        $timezone = $request->get('timezone', 'America/Lima'); 
+        $timezone = $request->get('timezone', 'America/Lima');
 
         $start = Carbon::createFromFormat('Y-m-d', $date, $timezone)->startOfDay()->timezone('UTC');
         $end = Carbon::createFromFormat('Y-m-d', $date, $timezone)->endOfDay()->timezone('UTC');
@@ -164,7 +176,7 @@ class PaymentController extends Controller
         ];
 
         foreach ($paymentResults as $result) {
-            $amount = (float)$result->total;
+            $amount = (float) $result->total;
             if ($result->payment_method === 'Efectivo') {
                 $totals['cash'] = $amount;
             } elseif ($result->payment_method === 'Transferencia') {
@@ -185,7 +197,7 @@ class PaymentController extends Controller
         }
 
         $expectedResult = $expectedQuery->first();
-        $totals['expected_total'] = (float)$expectedResult->total;
+        $totals['expected_total'] = (float) $expectedResult->total;
 
         // 3. Créditos creados (Base Entregado = 0 según requerimiento)
         $createdCreditsQuery = DB::table('credits')
@@ -212,8 +224,8 @@ class PaymentController extends Controller
         $createdCreditsResult = $createdCreditsQuery->first();
 
 
-        $totals['created_credits_value'] = (float)$createdCreditsResult->total_credit_value;
-        $totals['created_credits_interest'] = (float)$createdCreditsResult->total_interest_amount;
+        $totals['created_credits_value'] = (float) $createdCreditsResult->total_credit_value;
+        $totals['created_credits_interest'] = (float) $createdCreditsResult->total_interest_amount;
 
         $total_renewal_disbursed = 0;
         $total_pending_absorbed = 0;
@@ -258,7 +270,7 @@ class PaymentController extends Controller
         }
 
         $clientsResult = $clientsQuery->first();
-        $totals['total_clients'] = (int)($clientsResult->total_clients ?? 0);
+        $totals['total_clients'] = (int) ($clientsResult->total_clients ?? 0);
 
         // 5. Gastos
         $expensesQuery = DB::table('expenses')
@@ -288,7 +300,7 @@ class PaymentController extends Controller
             $expensesListQuery = $expensesListQuery->where('user_id', $user->id);
         }
         $expensesList = $expensesListQuery->get();
-        $totals['total_expenses'] = (float)($expensesResult->total_expenses ?? 0);
+        $totals['total_expenses'] = (float) ($expensesResult->total_expenses ?? 0);
 
         $incomeResult = $incomeQuery->first();
 
@@ -300,7 +312,7 @@ class PaymentController extends Controller
             $incomesListQuery = $incomesListQuery->where('user_id', $user->id);
         }
         $incomesList = $incomesListQuery->get();
-        $totals['total_income'] = (float)($incomeResult->total_income ?? 0);
+        $totals['total_income'] = (float) ($incomeResult->total_income ?? 0);
 
         // List all payments for the date - CORREGIDO: usar created_at con rango UTC
         $paymentsListQuery = DB::table('payments')
@@ -314,7 +326,7 @@ class PaymentController extends Controller
 
         $paymentsList = $paymentsListQuery->get();
 
-        $totals['poliza'] = (float)DB::table('credits')
+        $totals['poliza'] = (float) DB::table('credits')
             ->where('seller_id', $sellerId)
             ->whereDate('created_at', $date)
             ->whereNull('deleted_at')
@@ -348,7 +360,7 @@ class PaymentController extends Controller
                 + $totals['total_renewal_disbursed']
                 + $irrecoverableCredits);
 
-        $cashCollection = ($totals['total_income'] + $totals['collected_total'] + $totals['poliza']) 
+        $cashCollection = ($totals['total_income'] + $totals['collected_total'] + $totals['poliza'])
             - ($totals['created_credits_value']
                 + $totals['total_expenses']
                 + $totals['total_renewal_disbursed']

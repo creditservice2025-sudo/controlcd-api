@@ -14,12 +14,23 @@ class Seller extends Model
     use HasFactory, Notifiable, SoftDeletes;
 
     protected $fillable = [
+        'uuid',
         'user_id',
         'city_id',
         'seller_id',
         'company_id',
         'status'
     ];
+
+    protected static function boot()
+    {
+        parent::boot();
+        static::creating(function ($model) {
+            if (empty($model->uuid)) {
+                $model->uuid = \Illuminate\Support\Str::uuid();
+            }
+        });
+    }
 
     public function userRoutes()
     {
