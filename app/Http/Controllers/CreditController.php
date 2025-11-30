@@ -18,10 +18,10 @@ class CreditController extends Controller
     public function __construct(CreditService $creditService)
     {
         $this->creditService = $creditService;
-       /*  $this->middleware('permission:ver_creditos')->only('index');
-        $this->middleware('permission:crear_creditos')->only('create');
-        $this->middleware('permission:editar_creditos')->only('update');
-        $this->middleware('permission:eliminar_creditos')->only('delete'); */
+        /*  $this->middleware('permission:ver_creditos')->only('index');
+         $this->middleware('permission:crear_creditos')->only('create');
+         $this->middleware('permission:editar_creditos')->only('update');
+         $this->middleware('permission:eliminar_creditos')->only('delete'); */
     }
 
     public function create(CreditRequest $request)
@@ -61,7 +61,7 @@ class CreditController extends Controller
         }
     }
 
-       public function updateSchedule(Request $request, $creditId)
+    public function updateSchedule(Request $request, $creditId)
     {
         try {
             $newDate = $request->input('first_quota_date');
@@ -78,19 +78,19 @@ class CreditController extends Controller
         }
     }
 
-     public function updateFrequency(Request $request, $creditId)
+    public function updateFrequency(Request $request, $creditId)
     {
         try {
             $newFrequency = $request->input('frequency');
             $newFirstDate = $request->input('first_quota_date', null);
             $timezone = $request->input('timezone', null);
 
-            if (! $newFrequency) {
+            if (!$newFrequency) {
                 return $this->errorResponse('El campo frequency es requerido', 400);
             }
 
             $allowed = ['Diaria', 'Semanal', 'Quincenal', 'Mensual'];
-            if (! in_array($newFrequency, $allowed)) {
+            if (!in_array($newFrequency, $allowed)) {
                 return $this->errorResponse('Frecuencia no válida', 400);
             }
 
@@ -101,10 +101,10 @@ class CreditController extends Controller
         }
     }
 
-        public function setRenewalBlocked(Request $request, $creditId)
+    public function setRenewalBlocked(Request $request, $creditId)
     {
         try {
-            if (! $request->has('blocked')) {
+            if (!$request->has('blocked')) {
                 return $this->errorResponse('El campo blocked es requerido', 400);
             }
 
@@ -128,7 +128,9 @@ class CreditController extends Controller
     public function index(CreditRequest $request)
     {
         try {
-            return $this->creditService->index($request);
+            $search = $request->input('search', '');
+            $perPage = $request->input('perPage', 10);
+            return $this->creditService->index($search, $perPage);
         } catch (Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
@@ -219,6 +221,13 @@ class CreditController extends Controller
     public function getCredits(Request $request, $clientId)
     {
         try {
+            if (!is_numeric($clientId)) {
+                $client = \App\Models\Client::where('uuid', $clientId)->first();
+                if (!$client) {
+                    return $this->errorResponse('Cliente no encontrado', 404);
+                }
+                $clientId = $client->id;
+            }
             $page = $request->get('page', 1);
             $perPage = $request->get('perPage', 10);
             $search = $request->get('search', null);

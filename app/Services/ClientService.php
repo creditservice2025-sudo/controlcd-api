@@ -394,7 +394,7 @@ class ClientService
             }
 
             $clientsQuery = Client::query()
-                ->select('id', 'name', 'dni', 'email', 'status', 'seller_id', 'geolocation', 'routing_order', 'capacity', 'created_at')
+                ->select('id', 'uuid', 'name', 'dni', 'email', 'status', 'seller_id', 'geolocation', 'routing_order', 'capacity', 'created_at')
                 ->with([
                     'seller' => function ($q) {
                         $q->select('id', 'user_id', 'city_id', 'company_id');
@@ -716,7 +716,7 @@ class ClientService
             Log::info('status: ' . $status);
 
             $clientsQuery = Client::query()
-                ->select('id', 'name', 'dni', 'email', 'address', 'seller_id', 'routing_order', 'geolocation', 'phone', 'capacity', 'created_at')
+                ->select('id', 'uuid', 'name', 'dni', 'email', 'address', 'seller_id', 'routing_order', 'geolocation', 'phone', 'capacity', 'created_at')
                 ->with([
                     'seller' => function ($q) {
                         $q->select('id', 'user_id', 'city_id', 'company_id');
@@ -788,16 +788,16 @@ class ClientService
         }
     }
 
-    public function getAllClientsBySeller($sellerId, $search = '', $date = null)
+    public function getAllClientsBySeller($sellerId, $search = '', $date = null, $timezone = null)
     {
         try {
-            $filterDate = $date ? Carbon::parse($date, self::TIMEZONE) : Carbon::now(self::TIMEZONE);
+            $filterDate = $date ? Carbon::parse($date, $timezone ?? self::TIMEZONE) : Carbon::now($timezone ?? self::TIMEZONE);
             $startUTC = $filterDate->copy()->startOfDay()->timezone('UTC');
             $endUTC = $filterDate->copy()->endOfDay()->timezone('UTC');
 
 
             $clients = Client::query()
-                ->select('id', 'name', 'dni', 'address', 'seller_id', 'routing_order', 'geolocation', 'phone', 'capacity')
+                ->select('id', 'uuid', 'name', 'dni', 'address', 'seller_id', 'routing_order', 'geolocation', 'phone', 'capacity')
                 ->with([
                     'guarantors' => function ($q) {
                         $q->select('guarantors.id as id', 'guarantors.name', 'guarantors.dni', 'guarantors.phone');
@@ -1869,8 +1869,6 @@ class ClientService
                     'credit_info' => $credit,
 
                     'installment' => $credit->installments,
-                    'client_code' => $client->id,
-                    'credit_info' => $credit,
 
 
                     'seller_name' => $client->seller->user->name ?? 'Sin vendedor',

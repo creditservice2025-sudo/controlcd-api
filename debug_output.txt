@@ -1,0 +1,26 @@
+Psy Shell v0.12.14 (PHP 8.3.6 — cli) by Justin Hileman
+New PHP manual is available (latest: 3.0.0). Update with `--update-manual`
+Exception: Method Illuminate\Http\Response::getData does not exist.
+#0 /home/mario-d-az/git/ControCD-Backend/debug_users.php(16): Illuminate\Http\Response->__call()
+#1 /home/mario-d-az/git/ControCD-Backend/vendor/psy/psysh/src/Shell.php(543): include_once('...')
+#2 /home/mario-d-az/git/ControCD-Backend/vendor/psy/psysh/src/Shell.php(558): Psy\Shell->Psy\{closure}()
+#3 /home/mario-d-az/git/ControCD-Backend/vendor/psy/psysh/src/Shell.php(453): Psy\Shell->loadIncludes()
+#4 /home/mario-d-az/git/ControCD-Backend/vendor/psy/psysh/src/Shell.php(425): Psy\Shell->doInteractiveRun()
+#5 /home/mario-d-az/git/ControCD-Backend/vendor/symfony/console/Application.php(195): Psy\Shell->doRun()
+#6 /home/mario-d-az/git/ControCD-Backend/vendor/psy/psysh/src/Shell.php(397): Symfony\Component\Console\Application->run()
+#7 /home/mario-d-az/git/ControCD-Backend/vendor/laravel/tinker/src/Console/TinkerCommand.php(85): Psy\Shell->run()
+#8 /home/mario-d-az/git/ControCD-Backend/vendor/laravel/framework/src/Illuminate/Container/BoundMethod.php(36): Laravel\Tinker\Console\TinkerCommand->handle()
+#9 /home/mario-d-az/git/ControCD-Backend/vendor/laravel/framework/src/Illuminate/Container/Util.php(43): Illuminate\Container\BoundMethod::Illuminate\Container\{closure}()
+#10 /home/mario-d-az/git/ControCD-Backend/vendor/laravel/framework/src/Illuminate/Container/BoundMethod.php(95): Illuminate\Container\Util::unwrapIfClosure()
+#11 /home/mario-d-az/git/ControCD-Backend/vendor/laravel/framework/src/Illuminate/Container/BoundMethod.php(35): Illuminate\Container\BoundMethod::callBoundMethod()
+#12 /home/mario-d-az/git/ControCD-Backend/vendor/laravel/framework/src/Illuminate/Container/Container.php(696): Illuminate\Container\BoundMethod::call()
+#13 /home/mario-d-az/git/ControCD-Backend/vendor/laravel/framework/src/Illuminate/Console/Command.php(213): Illuminate\Container\Container->call()
+#14 /home/mario-d-az/git/ControCD-Backend/vendor/symfony/console/Command/Command.php(318): Illuminate\Console\Command->execute()
+#15 /home/mario-d-az/git/ControCD-Backend/vendor/laravel/framework/src/Illuminate/Console/Command.php(182): Symfony\Component\Console\Command\Command->run()
+#16 /home/mario-d-az/git/ControCD-Backend/vendor/symfony/console/Application.php(1073): Illuminate\Console\Command->run()
+#17 /home/mario-d-az/git/ControCD-Backend/vendor/symfony/console/Application.php(356): Symfony\Component\Console\Application->doRunCommand()
+#18 /home/mario-d-az/git/ControCD-Backend/vendor/symfony/console/Application.php(195): Symfony\Component\Console\Application->doRun()
+#19 /home/mario-d-az/git/ControCD-Backend/vendor/laravel/framework/src/Illuminate/Foundation/Console/Kernel.php(198): Symfony\Component\Console\Application->run()
+#20 /home/mario-d-az/git/ControCD-Backend/vendor/laravel/framework/src/Illuminate/Foundation/Application.php(1235): Illuminate\Foundation\Console\Kernel->handle()
+#21 /home/mario-d-az/git/ControCD-Backend/artisan(13): Illuminate\Foundation\Application->handleCommand()
+#22 {main}

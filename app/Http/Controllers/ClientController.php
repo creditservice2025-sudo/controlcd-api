@@ -48,6 +48,13 @@ class ClientController extends Controller
     public function update(ClientRequest $request, $clientId)
     {
         try {
+            if (!is_numeric($clientId)) {
+                $client = Client::where('uuid', $clientId)->first();
+                if (!$client) {
+                    return $this->errorResponse('Cliente no encontrado', 404);
+                }
+                $clientId = $client->id;
+            }
             return $this->clientService->update($request, $clientId);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
@@ -91,6 +98,13 @@ class ClientController extends Controller
     public function delete($clientId)
     {
         try {
+            if (!is_numeric($clientId)) {
+                $client = Client::where('uuid', $clientId)->first();
+                if (!$client) {
+                    return $this->errorResponse('Cliente no encontrado', 404);
+                }
+                $clientId = $client->id;
+            }
             return $this->clientService->delete($clientId);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
@@ -109,7 +123,7 @@ class ClientController extends Controller
             $companyId = $request->input('company_id');
 
             $createdFrom = $request->input('created_from');
-            $createdTo   = $request->input('created_to');
+            $createdTo = $request->input('created_to');
 
             return $this->clientService->index(
                 $search,
@@ -269,6 +283,13 @@ class ClientController extends Controller
     public function show($clientId)
     {
         try {
+            if (!is_numeric($clientId)) {
+                $client = Client::where('uuid', $clientId)->first();
+                if (!$client) {
+                    return $this->errorResponse('Cliente no encontrado', 404);
+                }
+                $clientId = $client->id;
+            }
             return $this->clientService->show($clientId);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
@@ -278,6 +299,13 @@ class ClientController extends Controller
     public function getClientDetails(Request $request, $clientId)
     {
         try {
+            if (!is_numeric($clientId)) {
+                $client = Client::where('uuid', $clientId)->first();
+                if (!$client) {
+                    return $this->errorResponse('Cliente no encontrado', 404);
+                }
+                $clientId = $client->id;
+            }
             $companyId = $request->input('company_id');
             return $this->clientService->getClientDetails($clientId, $companyId);
         } catch (\Exception $e) {
@@ -417,6 +445,13 @@ class ClientController extends Controller
     public function toggleStatus(ToggleStatusRequest $request, $clientId)
     {
         try {
+            if (!is_numeric($clientId)) {
+                $client = Client::where('uuid', $clientId)->first();
+                if (!$client) {
+                    return $this->errorResponse('Cliente no encontrado', 404);
+                }
+                $clientId = $client->id;
+            }
             return $this->clientService->toggleStatus($clientId, $request->input('status'));
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
@@ -461,6 +496,13 @@ class ClientController extends Controller
         $request->validate([
             'capacity' => 'required|numeric|min:0'
         ]);
+        if (!is_numeric($id)) {
+            $client = Client::where('uuid', $id)->first();
+            if (!$client) {
+                return $this->errorResponse('Cliente no encontrado', 404);
+            }
+            $id = $client->id;
+        }
         $client = $this->clientService->updateCapacity($id, $request->input('capacity'));
         return response()->json([
             'success' => true,

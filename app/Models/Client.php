@@ -15,6 +15,7 @@ class Client extends Model
     use HasFactory, Notifiable, SoftDeletes;
 
     protected $fillable = [
+        'uuid',
         'name',
         'status',
         'dni',
@@ -36,6 +37,12 @@ class Client extends Model
     public static function boot()
     {
         parent::boot();
+
+        static::creating(function ($model) {
+            if (empty($model->uuid)) {
+                $model->uuid = (string) \Illuminate\Support\Str::uuid();
+            }
+        });
 
         static::saving(function ($client) {
             if ($client->isDirty('routing_order')) {
