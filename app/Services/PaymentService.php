@@ -830,7 +830,7 @@ class PaymentService
             $sellerId = $credit->client->seller_id;
 
             $liquidationExists = Liquidation::where('seller_id', $sellerId)
-                ->whereDate('date', $paymentDate)
+                ->whereDate('date', $paymentDate->format('Y-m-d'))
                 ->exists();
 
             if ($liquidationExists && Auth::user()->role_id !== 1) {

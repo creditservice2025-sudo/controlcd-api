@@ -380,7 +380,9 @@ class ClientService
         $status = null,
         $companyId = null,
         $createdFrom = null,
-        $createdTo = null
+        $createdTo = null,
+        $perPage = 50,
+        $page = 1
     ) {
         try {
             $search = (string) $search;
@@ -422,6 +424,7 @@ class ClientService
                     'credits.installments' => function ($q) {
                         $q->select('id', 'credit_id', 'quota_number', 'due_date', 'quota_amount', 'status');
                     },
+                    'images'
                 ]);
 
             // Role scoping
@@ -535,7 +538,9 @@ class ClientService
             $orderDirection = in_array(strtolower($orderDirection), $validOrderDirections) ? $orderDirection : 'desc';
             $clientsQuery->orderBy($orderBy, $orderDirection);
 
-            $clients = $clientsQuery->get();
+            // PAGINACIÓN
+            $paginator = $clientsQuery->paginate($perPage, ['*'], 'page', $page);
+            $clients = $paginator->getCollection();
 
             // Agregar campo total_credits_value a cada cliente
             $clients->transform(function ($client) {
@@ -546,10 +551,22 @@ class ClientService
                 return $client;
             });
 
+            // Reasignar la colección transformada al paginador (opcional, pero paginate devuelve LengthAwarePaginator)
+            // Para mantener la estructura de respuesta consistente con lo que espera el front (data: [...], meta: {...})
+            // O simplemente devolver la estructura custom
+
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Clientes encontrados',
-                'data' => $clients
+                'data' => $clients,
+                'pagination' => [
+                    'total' => $paginator->total(),
+                    'per_page' => $paginator->perPage(),
+                    'current_page' => $paginator->currentPage(),
+                    'last_page' => $paginator->lastPage(),
+                    'from' => $paginator->firstItem(),
+                    'to' => $paginator->lastItem()
+                ]
             ]);
         } catch (Throwable $e) {
             Log::error("Error en index clientes: {$e->getMessage()} | " . $e->getTraceAsString());

@@ -65,10 +65,10 @@ class ClientController extends Controller
     {
         DB::beginTransaction();
         try {
-            $clientIds = collect($request->clients)->pluck('id');
+            $clientIds = collect($request->input('clients'))->pluck('id');
             $clients = Client::whereIn('id', $clientIds)->get()->keyBy('id');
 
-            foreach ($request->clients as $clientData) {
+            foreach ($request->input('clients') as $clientData) {
                 $client = $clients[$clientData['id']];
 
                 if ($client->routing_order != $clientData['routing_order']) {
@@ -125,6 +125,9 @@ class ClientController extends Controller
             $createdFrom = $request->input('created_from');
             $createdTo = $request->input('created_to');
 
+            $perPage = (int) $request->input('per_page', 50);
+            $page = (int) $request->input('page', 1);
+
             return $this->clientService->index(
                 $search,
                 $orderBy,
@@ -135,7 +138,9 @@ class ClientController extends Controller
                 $status,
                 $companyId,
                 $createdFrom,
-                $createdTo
+                $createdTo,
+                $perPage,
+                $page
             );
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
