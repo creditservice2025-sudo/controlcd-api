@@ -253,14 +253,13 @@ class SellerService
             }
 
             if ($search) {
-                $searchTerm = Str::lower($search);
-                $routes->where(function ($query) use ($searchTerm) {
-                    $query->whereHas('user', function ($q) use ($searchTerm) {
-                        $q->whereRaw('LOWER(name) LIKE ?', ["%{$searchTerm}%"]);
-                    })->orWhereHas('city', function ($q) use ($searchTerm) {
-                        $q->whereRaw('LOWER(name) LIKE ?', ["%{$searchTerm}%"]);
-                    })->orWhereHas('city.country', function ($q) use ($searchTerm) {
-                        $q->whereRaw('LOWER(name) LIKE ?', ["%{$searchTerm}%"]);
+                $routes->where(function ($query) use ($search) {
+                    $query->whereHas('user', function ($q) use ($search) {
+                        $q->where('name', 'LIKE', "%{$search}%");
+                    })->orWhereHas('city', function ($q) use ($search) {
+                        $q->where('name', 'LIKE', "%{$search}%");
+                    })->orWhereHas('city.country', function ($q) use ($search) {
+                        $q->where('name', 'LIKE', "%{$search}%");
                     });
                 });
             }
@@ -593,14 +592,13 @@ class SellerService
 
             // Resto del código de búsqueda y paginación...
             if ($search) {
-                $searchTerm = Str::lower($search);
-                $routes->where(function ($query) use ($searchTerm) {
-                    $query->whereHas('user', function ($q) use ($searchTerm) {
-                        $q->whereRaw('LOWER(name) LIKE ?', ["%{$searchTerm}%"]);
-                    })->orWhereHas('city', function ($q) use ($searchTerm) {
-                        $q->whereRaw('LOWER(name) LIKE ?', ["%{$searchTerm}%"]);
-                    })->orWhereHas('city.country', function ($q) use ($searchTerm) {
-                        $q->whereRaw('LOWER(name) LIKE ?', ["%{$searchTerm}%"]);
+                $routes->where(function ($query) use ($search) {
+                    $query->whereHas('user', function ($q) use ($search) {
+                        $q->where('name', 'LIKE', "%{$search}%");
+                    })->orWhereHas('city', function ($q) use ($search) {
+                        $q->where('name', 'LIKE', "%{$search}%");
+                    })->orWhereHas('city.country', function ($q) use ($search) {
+                        $q->where('name', 'LIKE', "%{$search}%");
                     });
                 });
             }
