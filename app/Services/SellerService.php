@@ -14,6 +14,7 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Cache;
 use Log;
 use Illuminate\Support\Str;
 
@@ -505,131 +506,148 @@ class SellerService
     {
         try {
             $user = Auth::user();
-            $company = $user->company;
 
-            $routes = Seller::with([
-                'userRoutes.user',
-                'city.country',
-                'user',
-                'images',
-                'company'
-            ])
-                ->withCount([
-                    'credits as credits_count' => function ($query) {
-                        $query->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
-                            ->whereNull('deleted_at');
-                    }
-                ])
-                // Suma solo del capital
-                ->withSum([
-                    'credits as credits_value_sum' => function ($query) {
-                        $query->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
-                            ->whereNull('deleted_at');
-                    }
-                ], 'credit_value')
-                // Suma solo de la utilidad monetaria
-                ->addSelect([
-                    'credits_utility_sum' => DB::table('credits')
-                        ->selectRaw('COALESCE(SUM(credit_value * total_interest / 100), 0)')
-                        ->whereColumn('seller_id', 'sellers.id')
-                        ->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
-                        ->whereNull('deleted_at'),
-                    // Suma del capital + utilidad monetaria
-                    'credits_total_sum' => DB::table('credits')
-                        ->selectRaw('COALESCE(SUM(credit_value + credit_value * total_interest / 100), 0)')
-                        ->whereColumn('seller_id', 'sellers.id')
-                        ->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
-                        ->whereNull('deleted_at'),
-                    // Cartera recuperada
-                    'recovered_portfolio' => DB::table('payments')
-                        ->selectRaw('COALESCE(SUM(amount), 0)')
-                        ->whereIn('credit_id', function ($query) {
-                            $query->select('id')
-                                ->from('credits')
-                                ->whereColumn('seller_id', 'sellers.id')
-                                ->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
-                                ->whereNull('deleted_at');
-                        })
-                        ->whereNull('deleted_at'),
-                ])
-                ->whereNull('deleted_at')
-                ->orderBy('created_at', 'desc');
-
-            // Filtro para rol 11: solo sellers asociados en UserRoute
-            if ($user->role_id == 11) {
-                $sellerIds = UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
-                $routes->whereIn('id', $sellerIds);
-            }
-
-            switch ($user->role_id) {
-                case 1:
-                    if ($companyId) {
-                        $routes->where('company_id', $companyId);
-                    }
-                    break;
-
-                case 2:
-                    $routes->where('company_id', $company->id);
-                    break;
-
-                case 3:
-                    $routes->where('user_id', $user->id);
-                    break;
-
-                default:
-                    if ($user->role_id != 11) {
-                        return $this->successResponse([
-                            'data' => [],
-                            'pagination' => [
-                                'total' => 0,
-                                'current_page' => 1,
-                                'per_page' => $perPage,
-                                'last_page' => 1,
-                            ]
-                        ]);
-                    }
-            }
-
-            // Resto del código de búsqueda y paginación...
-            if ($search) {
-                $routes->where(function ($query) use ($search) {
-                    $query->whereHas('user', function ($q) use ($search) {
-                        $q->where('name', 'LIKE', "%{$search}%");
-                    })->orWhereHas('city', function ($q) use ($search) {
-                        $q->where('name', 'LIKE', "%{$search}%");
-                    })->orWhereHas('city.country', function ($q) use ($search) {
-                        $q->where('name', 'LIKE', "%{$search}%");
-                    });
-                });
-            }
-
-            if ($countryId) {
-                $routes->whereHas('city.country', function ($q) use ($countryId) {
-                    $q->where('id', $countryId);
-                });
-            }
-
-            // Filtro por ciudad
-            if ($cityId) {
-                $routes->where('city_id', $cityId);
-            }
-
-            $routesQuery = $routes->paginate(
+            // Generate unique cache key based on all parameters
+            $cacheKey = sprintf(
+                'sellers_list_u%s_p%s_pp%s_s%s_co%s_ci%s_comp%s_r%s',
+                $user->id,
+                $page,
                 $perPage,
-                ['id', 'uuid', 'user_id', 'city_id', 'company_id', 'status', 'created_at'],
-                'page',
-                $page
+                $search ?? 'null',
+                $countryId ?? 'null',
+                $cityId ?? 'null',
+                $companyId ?? 'null',
+                $user->role_id
             );
 
-            return $this->successResponse([
-                'data' => $routesQuery->items(),
-                'pagination' => [
-                    'total' => $routesQuery->total(),
-                    'current_page' => $routesQuery->currentPage(),
-                    'per_page' => $routesQuery->perPage(),
-                    'last_page' => $routesQuery->lastPage(),
-                ]
-            ]);
+            // Cache for 30 seconds
+            return Cache::remember($cacheKey, 30, function () use ($user, $page, $perPage, $search, $countryId, $cityId, $companyId) {
+                $company = $user->company;
+
+                $routes = Seller::with([
+                    'userRoutes.user',
+                    'city.country',
+                    'user',
+                    'images',
+                    'company'
+                ])
+                    ->withCount([
+                        'credits as credits_count' => function ($query) {
+                            $query->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
+                                ->whereNull('deleted_at');
+                        }
+                    ])
+                    // Suma solo del capital
+                    ->withSum([
+                        'credits as credits_value_sum' => function ($query) {
+                            $query->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
+                                ->whereNull('deleted_at');
+                        }
+                    ], 'credit_value')
+                    // Suma solo de la utilidad monetaria
+                    ->addSelect([
+                        'credits_utility_sum' => DB::table('credits')
+                            ->selectRaw('COALESCE(SUM(credit_value * total_interest / 100), 0)')
+                            ->whereColumn('seller_id', 'sellers.id')
+                            ->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
+                            ->whereNull('deleted_at'),
+                        // Suma del capital + utilidad monetaria
+                        'credits_total_sum' => DB::table('credits')
+                            ->selectRaw('COALESCE(SUM(credit_value + credit_value * total_interest / 100), 0)')
+                            ->whereColumn('seller_id', 'sellers.id')
+                            ->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
+                            ->whereNull('deleted_at'),
+                        // Cartera recuperada
+                        'recovered_portfolio' => DB::table('payments')
+                            ->selectRaw('COALESCE(SUM(amount), 0)')
+                            ->whereIn('credit_id', function ($query) {
+                                $query->select('id')
+                                    ->from('credits')
+                                    ->whereColumn('seller_id', 'sellers.id')
+                                    ->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
+                                    ->whereNull('deleted_at');
+                            })
+                            ->whereNull('deleted_at'),
+                    ])
+                    ->whereNull('deleted_at')
+                    ->orderBy('created_at', 'desc');
+
+                // Filtro para rol 11: solo sellers asociados en UserRoute
+                if ($user->role_id == 11) {
+                    $sellerIds = UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
+                    $routes->whereIn('id', $sellerIds);
+                }
+
+                switch ($user->role_id) {
+                    case 1:
+                        if ($companyId) {
+                            $routes->where('company_id', $companyId);
+                        }
+                        break;
+
+                    case 2:
+                        $routes->where('company_id', $company->id);
+                        break;
+
+                    case 3:
+                        $routes->where('user_id', $user->id);
+                        break;
+
+                    default:
+                        if ($user->role_id != 11) {
+                            return $this->successResponse([
+                                'data' => [],
+                                'pagination' => [
+                                    'total' => 0,
+                                    'current_page' => 1,
+                                    'per_page' => $perPage,
+                                    'last_page' => 1,
+                                ]
+                            ]);
+                        }
+                }
+
+                // Resto del código de búsqueda y paginación...
+                if ($search) {
+                    $routes->where(function ($query) use ($search) {
+                        $query->whereHas('user', function ($q) use ($search) {
+                            $q->where('name', 'LIKE', "%{$search}%");
+                        })->orWhereHas('city', function ($q) use ($search) {
+                            $q->where('name', 'LIKE', "%{$search}%");
+                        })->orWhereHas('city.country', function ($q) use ($search) {
+                            $q->where('name', 'LIKE', "%{$search}%");
+                        });
+                    });
+                }
+
+                if ($countryId) {
+                    $routes->whereHas('city.country', function ($q) use ($countryId) {
+                        $q->where('id', $countryId);
+                    });
+                }
+
+                // Filtro por ciudad
+                if ($cityId) {
+                    $routes->where('city_id', $cityId);
+                }
+
+                $routesQuery = $routes->paginate(
+                    $perPage,
+                    ['id', 'uuid', 'user_id', 'city_id', 'company_id', 'status', 'created_at'],
+                    'page',
+                    $page
+                );
+
+                return $this->successResponse([
+                    'data' => $routesQuery->items(),
+                    'pagination' => [
+                        'total' => $routesQuery->total(),
+                        'current_page' => $routesQuery->currentPage(),
+                        'per_page' => $routesQuery->perPage(),
+                        'last_page' => $routesQuery->lastPage(),
+                    ]
+                ]);
+            });
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             return $this->handlerException('Error al obtener las rutas');
