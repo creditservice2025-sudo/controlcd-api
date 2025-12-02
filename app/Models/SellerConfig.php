@@ -32,6 +32,16 @@ class SellerConfig extends Model
         'require_address_phone_alt',
         'auto_closures_collectors_alt',
         'require_approval_new_sales_alt',
+        'commission_system_active',
+        'commission_utility_recon_madrid',
+        'commission_total_collection',
+        'commission_regrouping',
+        'commission_paid_credits',
+        'monthly_fixed_salary',
+        'pension_discount',
+        'eps_discount',
+        'arl_discount',
+        'weekly_allowance',
     ];
 
     public function seller()

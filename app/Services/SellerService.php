@@ -106,6 +106,20 @@ class SellerService
                 ]);
             }
 
+            // Create default config
+            $seller->config()->create([
+                'commission_system_active' => $params['commission_system_active'] ?? false,
+                'commission_utility_recon_madrid' => $params['commission_utility_recon_madrid'] ?? null,
+                'commission_total_collection' => $params['commission_total_collection'] ?? null,
+                'commission_regrouping' => $params['commission_regrouping'] ?? null,
+                'commission_paid_credits' => $params['commission_paid_credits'] ?? null,
+                'monthly_fixed_salary' => $params['monthly_fixed_salary'] ?? null,
+                'pension_discount' => $params['pension_discount'] ?? null,
+                'eps_discount' => $params['eps_discount'] ?? null,
+                'arl_discount' => $params['arl_discount'] ?? null,
+                'weekly_allowance' => $params['weekly_allowance'] ?? null,
+            ]);
+
             DB::commit();
             return $this->successResponse([
                 'success' => true,
@@ -173,6 +187,23 @@ class SellerService
                     'updated_at' => $params['updated_at'] ?? null
                 ]);
             }
+
+            // Update or create config
+            $seller->config()->updateOrCreate(
+                ['seller_id' => $seller->id],
+                [
+                    'commission_system_active' => $params['commission_system_active'] ?? false,
+                    'commission_utility_recon_madrid' => $params['commission_utility_recon_madrid'] ?? null,
+                    'commission_total_collection' => $params['commission_total_collection'] ?? null,
+                    'commission_regrouping' => $params['commission_regrouping'] ?? null,
+                    'commission_paid_credits' => $params['commission_paid_credits'] ?? null,
+                    'monthly_fixed_salary' => $params['monthly_fixed_salary'] ?? null,
+                    'pension_discount' => $params['pension_discount'] ?? null,
+                    'eps_discount' => $params['eps_discount'] ?? null,
+                    'arl_discount' => $params['arl_discount'] ?? null,
+                    'weekly_allowance' => $params['weekly_allowance'] ?? null,
+                ]
+            );
 
             DB::commit();
 
@@ -529,7 +560,8 @@ class SellerService
                     'city.country',
                     'user',
                     'images',
-                    'company'
+                    'company',
+                    'config'
                 ])
                     ->withCount([
                         'credits as credits_count' => function ($query) {
