@@ -28,6 +28,7 @@ return [
         'https://staging-api.control-cd.com',
         // Local/Development
         'http://localhost:9000',
+        'http://localhost:9001',
         'http://localhost:9002',
         'http://localhost:8080',
         'http://localhost',
