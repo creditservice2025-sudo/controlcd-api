@@ -146,16 +146,24 @@ class PaymentController extends Controller
         // 1. Pagos del día (Total Cobrado)
         $paymentQuery = DB::table('payments')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
+            ->join('clients', 'credits.client_id', '=', 'clients.id')
             ->select(
                 'payments.payment_method',
                 DB::raw('SUM(payments.amount) as total')
             )
-            ->whereDate('payments.created_at', $date);
+            ->whereDate('payments.created_at', $date)
+            ->whereNull('payments.deleted_at')
+            ->whereNull('credits.deleted_at')
+            ->whereNull('clients.deleted_at');
 
         $firstPaymentQuery = DB::table('payments')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
+            ->join('clients', 'credits.client_id', '=', 'clients.id')
             ->select(DB::raw('MIN(payments.created_at) as first_payment_date'))
-            ->whereDate('payments.created_at', $date);
+            ->whereDate('payments.created_at', $date)
+            ->whereNull('payments.deleted_at')
+            ->whereNull('credits.deleted_at')
+            ->whereNull('clients.deleted_at');
 
         if ($sellerId) {
             $paymentQuery->where('credits.seller_id', $sellerId);
