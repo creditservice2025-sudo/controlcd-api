@@ -22,8 +22,10 @@ class ClientRequest extends FormRequest
     public function rules(): array
     {
         $rules = [
-            'name' => 'required|string',
+            'name' => 'required|string|max:255',
             'address' => 'required|string',
+            'gps_address' => 'nullable|string',
+            'gps_geolocalization' => 'nullable|array',
             'dni' => 'required|numeric|unique:clients',
             'geolocation' => 'required|array',
             'geolocation.latitude' => 'required|numeric',
@@ -70,8 +72,10 @@ class ClientRequest extends FormRequest
 
         if ($this->isMethod('put')) {
             $rules = [
-                'name' => 'nullable|string',
+                'name' => 'nullable|string|max:255',
                 'address' => 'nullable|string',
+                'gps_address' => 'nullable|string',
+                'gps_geolocalization' => 'nullable|array',
                 'dni' => 'nullable|numeric|unique:clients,dni,' . $this->route('id'),
                 'phone' => 'nullable|numeric',
                 'email' => 'nullable|email|unique:clients,email,' . $this->route('id'),

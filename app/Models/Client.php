@@ -19,6 +19,8 @@ class Client extends Model
         'status',
         'dni',
         'address',
+        'gps_address',
+        'gps_geolocalization',
         'geolocation',
         'phone',
         'email',
@@ -31,6 +33,7 @@ class Client extends Model
 
     protected $casts = [
         'geolocation' => 'array',
+        'gps_geolocalization' => 'array',
     ];
 
     public static function boot()

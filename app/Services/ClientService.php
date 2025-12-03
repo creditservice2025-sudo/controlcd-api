@@ -82,6 +82,8 @@ class ClientService
                     'name' => $params['name'],
                     'dni' => $params['dni'],
                     'address' => $params['address'] ?? null,
+                    'gps_address' => $params['gps_address'] ?? null,
+                    'gps_geolocalization' => $params['gps_geolocalization'] ?? null,
                     'geolocation' => $params['geolocation'] ?? null,
                     'phone' => $params['phone'] ?? null,
                     'email' => $params['email'] ?? null,
@@ -394,7 +396,7 @@ class ClientService
             }
 
             $clientsQuery = Client::query()
-                ->select('id', 'name', 'dni', 'email', 'status', 'seller_id', 'geolocation', 'routing_order', 'capacity', 'created_at')
+                ->select('id', 'name', 'dni', 'email', 'status', 'seller_id', 'geolocation', 'gps_geolocalization', 'gps_address', 'routing_order', 'capacity', 'created_at')
                 ->with([
                     'seller' => function ($q) {
                         $q->select('id', 'user_id', 'city_id', 'company_id');
@@ -715,7 +717,7 @@ class ClientService
             Log::info('status: ' . $status);
 
             $clientsQuery = Client::query()
-                ->select('id', 'name', 'dni', 'email', 'address', 'seller_id', 'routing_order', 'geolocation', 'phone', 'capacity')
+                ->select('id', 'name', 'dni', 'email', 'address', 'seller_id', 'routing_order', 'geolocation', 'gps_geolocalization', 'gps_address', 'phone', 'capacity')
                 ->with([
                     'seller' => function ($q) {
                         $q->select('id', 'user_id', 'city_id', 'company_id');
@@ -795,7 +797,7 @@ class ClientService
 
 
             $clients = Client::query()
-                ->select('id', 'name', 'dni', 'address', 'seller_id', 'routing_order', 'geolocation', 'phone', 'capacity')
+                ->select('id', 'name', 'dni', 'address', 'seller_id', 'routing_order', 'geolocation', 'gps_geolocalization', 'gps_address', 'phone', 'capacity')
                 ->with([
                     'guarantors' => function ($q) {
                         $q->select('guarantors.id as id', 'guarantors.name', 'guarantors.dni', 'guarantors.phone');
