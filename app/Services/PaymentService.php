@@ -201,8 +201,13 @@ class PaymentService
 
                 $payment = Payment::create($paymentData);
 
-                // Apply payment to installments
-                $remainingAmount = $request->amount;
+                // ======= NEW STACKING LOGIC (Priority + FIFO) =======
+
+                // 1. Initialize unapplied_amount for the NEW payment
+                $payment->unapplied_amount = $payment->amount;
+                $payment->save();
+
+                $remainingAmount = $request->amount; // Just for tracking, logic uses unapplied_amount
 
                 $installments = Installment::where('credit_id', $credit->id)
                     ->whereIn('status', ['Pendiente', 'Parcial', 'Atrasado'])
@@ -210,15 +215,14 @@ class PaymentService
                     ->get();
 
                 foreach ($installments as $installment) {
-                    if ($remainingAmount <= 0)
-                        break;
-
                     $quotaAmount = (float) $installment->quota_amount;
-                    $paidAmount = (float) $installment->paid_amount;
-                    $pendingAmount = $quotaAmount - $paidAmount;
+                    // We treat 'paid_amount' as 0 for logic purposes because we want to fully pay it or nothing
+                    // BUT, if there was legacy partial payment, we should respect it.
+                    // Let's assume we want to pay the *pending* part of the installment.
+                    $alreadyPaid = (float) $installment->paid_amount;
+                    $targetAmount = round($quotaAmount - $alreadyPaid, 2);
 
-                    // Fix for "Zombie" installments (Paid but status not updated)
-                    if ($pendingAmount <= 0.001) {
+                    if ($targetAmount <= 0.001) {
                         if ($installment->status !== 'Pagado') {
                             $installment->status = 'Pagado';
                             $installment->save();
@@ -226,36 +230,45 @@ class PaymentService
                         continue;
                     }
 
-                    $toApply = min($pendingAmount, $remainingAmount);
-                    $toApply = round($toApply, 2);
+                    // --- STEP 1: PRIORITY CHECK (Try to pay with NEW payment only) ---
+                    // Refresh payment to get latest unapplied_amount
+                    $payment->refresh();
 
-                    if ($toApply <= 0)
-                        continue;
-
-                    $installment->paid_amount = $paidAmount + $toApply;
-
-                    // Update Status
-                    if ($installment->paid_amount >= ($quotaAmount - 0.001)) {
-                        $installment->status = 'Pagado';
-                        // Ensure we don't exceed quota amount visually
-                        if ($installment->paid_amount > $quotaAmount) {
-                            $installment->paid_amount = $quotaAmount;
-                        }
-                    } else {
-                        $installment->status = 'Parcial';
+                    if ($payment->unapplied_amount >= $targetAmount) {
+                        // Apply directly from NEW payment
+                        $this->applyPaymentToInstallment($payment, $installment, $targetAmount);
+                        continue; // Done with this installment, move to next
                     }
 
-                    $installment->save();
+                    // --- STEP 2: STACK CHECK (Fallback to FIFO) ---
+                    // Calculate Total Available Surplus (All payments for this credit with unapplied > 0)
+                    $stackPayments = Payment::where('credit_id', $credit->id)
+                        ->where('unapplied_amount', '>', 0)
+                        ->orderBy('created_at', 'asc') // FIFO
+                        ->get();
 
-                    PaymentInstallment::create([
-                        'payment_id' => $payment->id,
-                        'installment_id' => $installment->id,
-                        'applied_amount' => $toApply,
-                        'created_at' => $params['created_at'] ?? null,
-                        'updated_at' => $params['updated_at'] ?? null
-                    ]);
+                    $totalStack = $stackPayments->sum('unapplied_amount');
 
-                    $remainingAmount -= $toApply;
+                    if ($totalStack >= $targetAmount) {
+                        // We have enough in the stack! Consume FIFO.
+                        $amountNeeded = $targetAmount;
+
+                        foreach ($stackPayments as $stackPayment) {
+                            if ($amountNeeded <= 0)
+                                break;
+
+                            $available = $stackPayment->unapplied_amount;
+                            $toTake = min($available, $amountNeeded);
+
+                            $this->applyPaymentToInstallment($stackPayment, $installment, $toTake);
+
+                            $amountNeeded -= $toTake;
+                        }
+                    } else {
+                        // Not enough money even with the stack. Stop distribution.
+                        // The money stays in unapplied_amount of the payments.
+                        break;
+                    }
                 }
 
                 // Update Credit Remaining Amount
@@ -830,7 +843,7 @@ class PaymentService
             $sellerId = $credit->client->seller_id;
 
             $liquidationExists = Liquidation::where('seller_id', $sellerId)
-                ->whereDate('date', $paymentDate->format('Y-m-d'))
+                ->whereDate('date', '=', $paymentDate->format('Y-m-d'))
                 ->exists();
 
             if ($liquidationExists && Auth::user()->role_id !== 1) {
@@ -976,5 +989,39 @@ class PaymentService
             \Log::error($e->getMessage());
             return $this->errorResponse($e->getMessage(), 500);
         }
+    }
+
+    private function applyPaymentToInstallment(Payment $payment, Installment $installment, float $amount)
+    {
+        // 1. Create PaymentInstallment record
+        PaymentInstallment::create([
+            'payment_id' => $payment->id,
+            'installment_id' => $installment->id,
+            'applied_amount' => $amount,
+            'created_at' => now(),
+            'updated_at' => now()
+        ]);
+
+        // 2. Update Installment
+        $installment->paid_amount += $amount;
+
+        // Check if fully paid (allowing for small float diffs)
+        if ($installment->quota_amount - $installment->paid_amount <= 0.001) {
+            $installment->status = 'Pagado';
+        } else {
+            // It remains 'Pendiente' (or 'Parcial' if we used that status, but user wants 'Pendiente')
+            // We ensure it's not 'Pagado' if it was somehow marked before
+            if ($installment->status === 'Pagado') {
+                $installment->status = 'Pendiente';
+            }
+        }
+        $installment->save();
+
+        // 3. Update Payment Unapplied Amount
+        $payment->unapplied_amount -= $amount;
+        if ($payment->unapplied_amount < 0) {
+            $payment->unapplied_amount = 0;
+        }
+        $payment->save();
     }
 }
