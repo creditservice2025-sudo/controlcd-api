@@ -1320,6 +1320,13 @@ class ClientService
                     'client.images',
                     'client.seller',
                     'client.seller.city',
+                    'client' => function ($q) {
+                        $q->withSum([
+                            'credits as total_credits_value' => function ($query) {
+                                $query->whereIn('status', ['Activo', 'Vigente']);
+                            }
+                        ], 'credit_value');
+                    },
                     'installments',
                     'payments' => function ($q) use ($startUTC, $endUTC) {
                         $q->whereBetween('created_at', [$startUTC, $endUTC]);
@@ -1483,10 +1490,7 @@ class ClientService
                     $credit->credit_status = 'Normal';
                 }
 
-                $totalCreditsValue = $credit->client->credits
-                    ->whereIn('status', ['Activo', 'Vigente'])
-                    ->sum('credit_value');
-                $credit->client->total_credits_value = $totalCreditsValue;
+                $credit->client->total_credits_value = $credit->client->total_credits_value ?? 0;
                 return $credit;
             });
 
