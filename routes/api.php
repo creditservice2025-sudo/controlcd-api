@@ -243,6 +243,7 @@ Route::middleware('auth:api')->group(function () {
     Route::get('payments/seller/{sellerId}', [PaymentController::class, 'indexBySeller']);
     Route::get('payments/seller/{sellerId}/all', [PaymentController::class, 'getSellerPayments']);
     Route::get('payments/total/{creditId}', [PaymentController::class, 'getTotalWithoutInstallments']);
+    Route::post('payment/reapply/{creditId}', [PaymentController::class, 'reapply']);
 
 
     //reports

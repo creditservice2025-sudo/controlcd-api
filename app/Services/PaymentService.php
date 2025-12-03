@@ -1024,4 +1024,121 @@ class PaymentService
         }
         $payment->save();
     }
+    public function reapplyPayments($creditId)
+    {
+        try {
+            DB::beginTransaction();
+
+            $credit = Credit::find($creditId);
+            if (!$credit) {
+                throw new \Exception('El crédito no existe.');
+            }
+
+            // 1. Get all payments with unapplied amount > 0 (FIFO)
+            $stackPayments = Payment::where('credit_id', $creditId)
+                ->where('unapplied_amount', '>', 0)
+                ->orderBy('created_at', 'asc')
+                ->get();
+
+            if ($stackPayments->isEmpty()) {
+                throw new \Exception('No hay abonos pendientes de aplicar.');
+            }
+
+            // 2. Get all pending installments
+            $installments = Installment::where('credit_id', $creditId)
+                ->whereIn('status', ['Pendiente', 'Parcial', 'Atrasado'])
+                ->orderBy('due_date', 'asc')
+                ->get();
+
+            if ($installments->isEmpty()) {
+                throw new \Exception('No hay cuotas pendientes.');
+            }
+
+            $appliedTotal = 0;
+
+            foreach ($installments as $installment) {
+                $quotaAmount = (float) $installment->quota_amount;
+                $alreadyPaid = (float) $installment->paid_amount;
+                $targetAmount = round($quotaAmount - $alreadyPaid, 2);
+
+                if ($targetAmount <= 0.001) {
+                    if ($installment->status !== 'Pagado') {
+                        $installment->status = 'Pagado';
+                        $installment->save();
+                    }
+                    continue;
+                }
+
+                // Check stack
+                $totalStack = $stackPayments->sum('unapplied_amount');
+
+                if ($totalStack >= $targetAmount) {
+                    $amountNeeded = $targetAmount;
+
+                    foreach ($stackPayments as $stackPayment) {
+                        if ($amountNeeded <= 0)
+                            break;
+
+                        // Refresh to get latest unapplied if modified in previous iteration?
+                        // No, we are iterating the collection. But we modify the objects.
+                        // Since we modify the object reference in the collection, it should be fine.
+
+                        if ($stackPayment->unapplied_amount <= 0)
+                            continue;
+
+                        $available = $stackPayment->unapplied_amount;
+                        $toTake = min($available, $amountNeeded);
+
+                        $this->applyPaymentToInstallment($stackPayment, $installment, $toTake);
+
+                        $amountNeeded -= $toTake;
+                        $appliedTotal += $toTake;
+                    }
+                } else {
+                    // Not enough to cover this installment fully?
+                    // We should still apply what we have!
+                    // The original logic stopped if not enough to cover fully?
+                    // "if ($totalStack >= $targetAmount)" -> YES, it stopped.
+                    // BUT for re-application, maybe we want to apply whatever is available?
+                    // Let's stick to the original logic: only apply if we can cover the installment fully OR if it's the last effort?
+                    // Actually, usually partial payments are allowed.
+                    // But the business rule seems to be: "Don't break a payment into tiny pieces unless it completes a quota".
+                    // However, if I have 50 and quota is 100, I should probably pay 50.
+                    // The original logic had: "if ($totalStack >= $targetAmount) ... else break".
+                    // This implies we ONLY pay if we can pay the FULL pending amount of the installment.
+                    // This might be why the user had issues!
+                    // If I have 3 payments of 10, and quota is 100. Total 30 < 100. It breaks.
+                    // So the money stays unapplied.
+
+                    // User request: "ya tengo todos los abonos con el monto completo para aplicarle a la cuota 3"
+                    // So likely they have enough now.
+                    // I will keep the logic consistent with the main create method for now.
+                    break;
+                }
+            }
+
+            // Update Credit Status
+            $pendingInstallmentsExists = Installment::where('credit_id', $credit->id)
+                ->where('status', '<>', 'Pagado')
+                ->exists();
+
+            if (!$pendingInstallmentsExists && $credit->remaining_amount <= 0.001) {
+                $credit->status = 'Liquidado';
+            }
+            $credit->save();
+
+            DB::commit();
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Abonos aplicados correctamente. Total aplicado: $' . number_format($appliedTotal, 2),
+                'data' => $credit
+            ]);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Error reapplying payments: ' . $e->getMessage());
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
 }

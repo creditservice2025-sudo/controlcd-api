@@ -401,4 +401,13 @@ class PaymentController extends Controller
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
+    public function reapply($creditId)
+    {
+        try {
+            return $this->paymentService->reapplyPayments($creditId);
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
 }
