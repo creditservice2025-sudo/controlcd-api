@@ -788,10 +788,11 @@ class ClientService
         }
     }
 
-    public function getAllClientsBySeller($sellerId, $search = '', $date = null)
+    public function getAllClientsBySeller($sellerId, $search = '', $date = null, $timezone = null)
     {
         try {
-            $filterDate = $date ? Carbon::parse($date, self::TIMEZONE) : Carbon::now(self::TIMEZONE);
+            $tz = $timezone ?? self::TIMEZONE;
+            $filterDate = $date ? Carbon::parse($date, $tz) : Carbon::now($tz);
             $startUTC = $filterDate->copy()->startOfDay()->timezone('UTC');
             $endUTC = $filterDate->copy()->endOfDay()->timezone('UTC');
 

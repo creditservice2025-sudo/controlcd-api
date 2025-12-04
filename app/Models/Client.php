@@ -93,6 +93,11 @@ class Client extends Model
         return $this->belongsTo(Guarantor::class);
     }
 
+    public function history()
+    {
+        return $this->hasMany(ClientHistory::class)->orderBy('created_at', 'desc');
+    }
+
     public function seller(): BelongsTo
     {
         return $this->belongsTo(Seller::class);
