@@ -67,40 +67,71 @@ class ClientService
 
             return DB::transaction(function () use ($params, $request) {
                 $guarantorId = null;
+
+                // Stage 1: Create guarantor if provided
                 if (!empty($params['guarantor_name'])) {
-                    $guarantor = Guarantor::create([
-                        'name' => $params['guarantor_name'],
-                        'dni' => $params['guarantor_dni'] ?? null,
-                        'address' => $params['guarantor_address'] ?? null,
-                        'phone' => $params['guarantor_phone'] ?? null,
-                        'email' => $params['guarantor_email'] ?? null,
+                    try {
+                        $guarantor = Guarantor::create([
+                            'name' => $params['guarantor_name'],
+                            'dni' => $params['guarantor_dni'] ?? null,
+                            'address' => $params['guarantor_address'] ?? null,
+                            'phone' => $params['guarantor_phone'] ?? null,
+                            'email' => $params['guarantor_email'] ?? null,
+                        ]);
+                        $guarantorId = $guarantor->id;
+                    } catch (\Exception $e) {
+                        Log::error("Error creating guarantor: {$e->getMessage()}");
+                        throw new \Exception("Error al crear el fiador: {$e->getMessage()}");
+                    }
+                }
+
+                // Stage 2: Create client
+                try {
+                    $client = Client::create([
+                        'name' => $params['name'],
+                        'dni' => $params['dni'],
+                        'address' => $params['address'] ?? null,
+                        'gps_address' => $params['gps_address'] ?? null,
+                        'gps_geolocalization' => $params['gps_geolocalization'] ?? null,
+                        'geolocation' => $params['geolocation'] ?? null,
+                        'phone' => $params['phone'] ?? null,
+                        'email' => $params['email'] ?? null,
+                        'company_name' => $params['company_name'] ?? null,
+                        'guarantor_id' => $guarantorId,
+                        'seller_id' => $params['seller_id'] ?? null,
+                        'routing_order' => $params['routing_order'] ?? null,
                     ]);
-                    $guarantorId = $guarantor->id;
+                } catch (\Illuminate\Database\QueryException $e) {
+                    // Check for duplicate DNI
+                    if ($e->getCode() == 23000) {
+                        throw new \Exception("El DNI {$params['dni']} ya está registrado en el sistema");
+                    }
+                    Log::error("Database error creating client: {$e->getMessage()}");
+                    throw new \Exception("Error al guardar los datos del cliente: {$e->getMessage()}");
+                } catch (\Exception $e) {
+                    Log::error("Error creating client: {$e->getMessage()}");
+                    throw new \Exception("Error al crear el cliente: {$e->getMessage()}");
                 }
 
-                $client = Client::create([
-                    'name' => $params['name'],
-                    'dni' => $params['dni'],
-                    'address' => $params['address'] ?? null,
-                    'gps_address' => $params['gps_address'] ?? null,
-                    'gps_geolocalization' => $params['gps_geolocalization'] ?? null,
-                    'geolocation' => $params['geolocation'] ?? null,
-                    'phone' => $params['phone'] ?? null,
-                    'email' => $params['email'] ?? null,
-                    'company_name' => $params['company_name'] ?? null,
-                    'guarantor_id' => $guarantorId,
-                    'seller_id' => $params['seller_id'] ?? null,
-                    'routing_order' => $params['routing_order'] ?? null,
-                ]);
-
-                // Optional initial credit creation
+                // Stage 3: Create initial credit if provided
                 if (!empty($params['credit_value']) && (float) $params['credit_value'] > 0) {
-                    $this->createCreditForNewClient($client, $params, $guarantorId);
+                    try {
+                        $this->createCreditForNewClient($client, $params, $guarantorId);
+                    } catch (\Exception $e) {
+                        Log::error("Error creating initial credit for client {$client->id}: {$e->getMessage()}");
+                        throw new \Exception("Cliente creado pero error al crear el crédito inicial: {$e->getMessage()}");
+                    }
                 }
 
-                // images
+                // Stage 4: Store images if provided
                 if ($request->has('images')) {
-                    $this->storeClientImages($client, $request);
+                    try {
+                        $this->storeClientImages($client, $request);
+                    } catch (\Exception $e) {
+                        // Images failed but client was created
+                        Log::error("Error storing images for client {$client->id}: {$e->getMessage()}");
+                        throw new \Exception("Cliente creado pero {$e->getMessage()}");
+                    }
                 }
 
                 return $this->successResponse([
@@ -109,9 +140,9 @@ class ClientService
                     'data' => $client->fresh(),
                 ]);
             }, 5);
-        } catch (Throwable $e) {
-            Log::error("Error al crear cliente: {$e->getMessage()} | " . $e->getTraceAsString());
-            return $this->errorResponse('Error al crear el cliente: ' . $e->getMessage(), 500);
+        } catch (\Exception $e) {
+            Log::error("Error in client creation process: {$e->getMessage()} | " . $e->getTraceAsString());
+            return $this->errorResponse($e->getMessage(), 500);
         }
     }
 
@@ -245,8 +276,25 @@ class ClientService
             }
 
             $params = $request->validated();
-            $client->update($params);
 
+            // Stage 1: Update client data
+            try {
+                $client->update($params);
+            } catch (\Illuminate\Database\QueryException $e) {
+                DB::rollBack();
+                // Check for duplicate DNI
+                if ($e->getCode() == 23000 && isset($params['dni'])) {
+                    return $this->errorResponse("El DNI {$params['dni']} ya está registrado en el sistema", 400);
+                }
+                Log::error("Database error updating client {$clientId}: {$e->getMessage()}");
+                return $this->errorResponse("Error al actualizar los datos del cliente: {$e->getMessage()}", 500);
+            } catch (\Exception $e) {
+                DB::rollBack();
+                Log::error("Error updating client {$clientId}: {$e->getMessage()}");
+                return $this->errorResponse("Error al actualizar el cliente: {$e->getMessage()}", 500);
+            }
+
+            // Stage 2: Update images if provided
             if ($request->has('images')) {
                 $validation = $this->validateImages($request);
                 if ($validation !== true) {
@@ -254,32 +302,55 @@ class ClientService
                     return $validation;
                 }
 
-                $images = $request->input('images');
-                foreach ($images as $index => $imageData) {
-                    $imageFile = $request->file("images.{$index}.file");
-                    $imageType = $imageData['type'] ?? 'gallery';
+                try {
+                    $images = $request->input('images');
+                    foreach ($images as $index => $imageData) {
+                        $imageFile = $request->file("images.{$index}.file");
+                        $imageType = $imageData['type'] ?? 'gallery';
 
-                    $existingImage = $client->images()->where('type', $imageType)->first();
-                    if ($existingImage) {
-                        Helper::deleteFile($existingImage->path);
-                        $existingImage->delete();
+                        if (!$imageFile) {
+                            throw new \Exception("No se encontró el archivo de imagen");
+                        }
+
+                        $friendlyName = $this->getImageTypeFriendlyName($imageType);
+
+                        $existingImage = $client->images()->where('type', $imageType)->first();
+                        if ($existingImage) {
+                            try {
+                                Helper::deleteFile($existingImage->path);
+                            } catch (\Exception $e) {
+                                Log::warning("No se pudo eliminar la imagen anterior: {$e->getMessage()}");
+                            }
+                            $existingImage->delete();
+                        }
+
+                        $path = Helper::uploadFile($imageFile, 'clients', $imageType);
+                        $client->images()->create(['path' => $path, 'type' => $imageType]);
                     }
-
-                    $path = Helper::uploadFile($imageFile, 'clients');
-                    $client->images()->create(['path' => $path, 'type' => $imageType]);
+                } catch (\Exception $e) {
+                    DB::rollBack();
+                    Log::error("Error updating images for client {$clientId}: {$e->getMessage()}");
+                    return $this->errorResponse("Cliente actualizado pero {$e->getMessage()}", 500);
                 }
             }
 
+            // Stage 3: Update guarantors if provided
             if ($request->has('guarantors_ids')) {
-                $client->guarantors()->sync($request->input('guarantors_ids'));
+                try {
+                    $client->guarantors()->sync($request->input('guarantors_ids'));
+                } catch (\Exception $e) {
+                    DB::rollBack();
+                    Log::error("Error updating guarantors for client {$clientId}: {$e->getMessage()}");
+                    return $this->errorResponse("Cliente actualizado pero error al actualizar los fiadores: {$e->getMessage()}", 500);
+                }
             }
 
             DB::commit();
             return $this->successResponse(['success' => true, 'message' => 'Cliente actualizado con éxito', 'data' => $client->fresh()]);
-        } catch (Throwable $e) {
+        } catch (\Exception $e) {
             DB::rollBack();
-            Log::error("Error al actualizar cliente {$clientId}: {$e->getMessage()} | " . $e->getTraceAsString());
-            return $this->errorResponse('Error al actualizar el cliente', 500);
+            Log::error("Error in client update process {$clientId}: {$e->getMessage()} | " . $e->getTraceAsString());
+            return $this->errorResponse($e->getMessage(), 500);
         }
     }
 
@@ -295,6 +366,7 @@ class ClientService
             }
 
             $type = $imageData['type'];
+            $friendlyName = $this->getImageTypeFriendlyName($type);
 
             if ($type === 'profile')
                 $profileCount++;
@@ -310,16 +382,17 @@ class ClientService
 
             $imageFile = $request->file("images.{$index}.file");
             if (!$imageFile) {
-                return $this->errorResponse("No se encontró la imagen {$index} en la solicitud.", 400);
+                return $this->errorResponse("No se encontró {$friendlyName} en la solicitud.", 400);
             }
 
             if ($imageFile->getSize() > self::MAX_IMAGE_SIZE_BYTES) {
-                return $this->errorResponse("La imagen {$index} excede 2MB", 400);
+                $sizeMB = round($imageFile->getSize() / 1048576, 2);
+                return $this->errorResponse("{$friendlyName} excede el tamaño máximo permitido de 2MB (tamaño actual: {$sizeMB}MB). Por favor, comprime la imagen e intenta nuevamente.", 400);
             }
 
             $allowed = ['profile', 'gallery', 'money_in_hand', 'business', 'document'];
             if (!in_array($type, $allowed, true)) {
-                return $this->errorResponse('Tipo de imagen inválido.', 400);
+                return $this->errorResponse('Tipo de imagen inválido. Los tipos permitidos son: foto de perfil, galería, dinero en mano, negocio, documento.', 400);
             }
         }
 
@@ -330,20 +403,59 @@ class ClientService
     {
         $images = $request->input('images', []);
         foreach ($images as $index => $imageData) {
-            $imageFile = $request->file("images.{$index}.file");
-            $imageType = $imageData['type'] ?? 'gallery';
+            try {
+                $imageFile = $request->file("images.{$index}.file");
+                $imageType = $imageData['type'] ?? 'gallery';
 
-            if ($imageType === 'profile') {
-                $existing = $client->images()->where('type', 'profile')->first();
-                if ($existing) {
-                    Helper::deleteFile($existing->path);
-                    $existing->delete();
+                // Validate file exists
+                if (!$imageFile) {
+                    throw new \Exception("No se encontró el archivo de imagen");
                 }
-            }
 
-            $path = Helper::uploadFile($imageFile, 'clients');
-            $client->images()->create(['path' => $path, 'type' => $imageType]);
+                // Get friendly name for error messages
+                $friendlyName = $this->getImageTypeFriendlyName($imageType);
+
+                if ($imageType === 'profile') {
+                    $existing = $client->images()->where('type', 'profile')->first();
+                    if ($existing) {
+                        try {
+                            Helper::deleteFile($existing->path);
+                        } catch (\Exception $e) {
+                            Log::warning("No se pudo eliminar la imagen anterior: {$e->getMessage()}");
+                        }
+                        $existing->delete();
+                    }
+                }
+
+                $path = Helper::uploadFile($imageFile, 'clients', $imageType);
+                $client->images()->create(['path' => $path, 'type' => $imageType]);
+
+            } catch (\Exception $e) {
+                $friendlyName = $this->getImageTypeFriendlyName($imageType ?? 'desconocida');
+                $errorMsg = "Error al guardar {$friendlyName}: {$e->getMessage()}";
+                Log::error($errorMsg, [
+                    'client_id' => $client->id,
+                    'image_index' => $index,
+                    'image_type' => $imageType ?? 'unknown',
+                ]);
+                throw new \Exception($errorMsg);
+            }
         }
+    }
+
+    /**
+     * Get friendly name for image type
+     */
+    private function getImageTypeFriendlyName(string $type): string
+    {
+        $names = [
+            'profile' => 'la foto de perfil',
+            'gallery' => 'la imagen de galería',
+            'money_in_hand' => 'la foto de dinero en mano',
+            'business' => 'la foto del negocio',
+            'document' => 'la foto del documento',
+        ];
+        return $names[$type] ?? "la imagen ({$type})";
     }
 
 
@@ -359,15 +471,42 @@ class ClientService
             }
 
             DB::transaction(function () use ($client) {
-                $client->guarantors()->detach();
-                $client->images()->each(fn($image) => $image->delete());
-                $client->delete();
+                // Stage 1: Detach guarantors
+                try {
+                    $client->guarantors()->detach();
+                } catch (\Exception $e) {
+                    Log::error("Error detaching guarantors for client {$client->id}: {$e->getMessage()}");
+                    throw new \Exception("Error al desvincular los fiadores del cliente");
+                }
+
+                // Stage 2: Delete images
+                try {
+                    $client->images()->each(function ($image) {
+                        try {
+                            Helper::deleteFile($image->path);
+                        } catch (\Exception $e) {
+                            Log::warning("No se pudo eliminar el archivo de imagen: {$e->getMessage()}");
+                        }
+                        $image->delete();
+                    });
+                } catch (\Exception $e) {
+                    Log::error("Error deleting images for client {$client->id}: {$e->getMessage()}");
+                    throw new \Exception("Error al eliminar las imágenes del cliente");
+                }
+
+                // Stage 3: Delete client
+                try {
+                    $client->delete();
+                } catch (\Exception $e) {
+                    Log::error("Error deleting client {$client->id}: {$e->getMessage()}");
+                    throw new \Exception("Error al eliminar el cliente de la base de datos");
+                }
             });
 
             return $this->successResponse(['success' => true, 'message' => "Cliente eliminado con éxito"]);
-        } catch (Throwable $e) {
-            Log::error("Error al eliminar cliente {$clientId}: {$e->getMessage()} | " . $e->getTraceAsString());
-            return $this->errorResponse('Error al eliminar el cliente', 500);
+        } catch (\Exception $e) {
+            Log::error("Error in client deletion process {$clientId}: {$e->getMessage()} | " . $e->getTraceAsString());
+            return $this->errorResponse($e->getMessage(), 500);
         }
     }
 
