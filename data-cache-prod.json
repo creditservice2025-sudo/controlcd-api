@@ -1,0 +1,157 @@
+[
+    {
+        "credit_id": 527,
+        "client_name": "WALTER PENA CORNEJO",
+        "client_dni": "46782497",
+        "accumulated_amount": 20,
+        "pending_payments": [
+            {
+                "payment_id": 2276,
+                "amount": "20",
+                "payment_date": "2025-12-03"
+            }
+        ],
+        "payment_count": 1,
+        "extracted_at": "2025-12-04 17:02:36"
+    },
+    {
+        "credit_id": 578,
+        "client_name": "LUIS FABIANO FIESTAS",
+        "client_dni": "75815452",
+        "accumulated_amount": 9,
+        "pending_payments": [
+            {
+                "payment_id": 2297,
+                "amount": "9",
+                "payment_date": "2025-12-03"
+            }
+        ],
+        "payment_count": 1,
+        "extracted_at": "2025-12-04 17:02:36"
+    },
+    {
+        "credit_id": 698,
+        "client_name": "Rosa Ruiz pomalca",
+        "client_dni": "16467884",
+        "accumulated_amount": 40,
+        "pending_payments": [
+            {
+                "payment_id": 2302,
+                "amount": "40",
+                "payment_date": "2025-12-03"
+            }
+        ],
+        "payment_count": 1,
+        "extracted_at": "2025-12-04 17:02:36"
+    },
+    {
+        "credit_id": 710,
+        "client_name": "LORENA STEFANY MELGAR",
+        "client_dni": "76625342",
+        "accumulated_amount": 4,
+        "pending_payments": [
+            {
+                "payment_id": 2301,
+                "amount": "4",
+                "payment_date": "2025-12-03"
+            }
+        ],
+        "payment_count": 1,
+        "extracted_at": "2025-12-04 17:02:36"
+    },
+    {
+        "credit_id": 825,
+        "client_name": "Vania Yenifer chanduvi",
+        "client_dni": "76265974",
+        "accumulated_amount": 70,
+        "pending_payments": [
+            {
+                "payment_id": 2237,
+                "amount": "40",
+                "payment_date": "2025-12-03"
+            },
+            {
+                "payment_id": 2344,
+                "amount": "30",
+                "payment_date": "2025-12-04"
+            }
+        ],
+        "payment_count": 2,
+        "extracted_at": "2025-12-04 17:02:36"
+    },
+    {
+        "credit_id": 826,
+        "client_name": "JUAN CORTEZ HURTADO",
+        "client_dni": "03895153",
+        "accumulated_amount": 40,
+        "pending_payments": [
+            {
+                "payment_id": 2317,
+                "amount": "40",
+                "payment_date": "2025-12-04"
+            }
+        ],
+        "payment_count": 1,
+        "extracted_at": "2025-12-04 17:02:36"
+    },
+    {
+        "credit_id": 835,
+        "client_name": "Margarita Ortiz Ruiz",
+        "client_dni": "47769379",
+        "accumulated_amount": 70,
+        "pending_payments": [
+            {
+                "payment_id": 2233,
+                "amount": "70",
+                "payment_date": "2025-12-03"
+            }
+        ],
+        "payment_count": 1,
+        "extracted_at": "2025-12-04 17:02:36"
+    },
+    {
+        "credit_id": 856,
+        "client_name": "Susana calle Chiroque",
+        "client_dni": "43099955",
+        "accumulated_amount": 20,
+        "pending_payments": [
+            {
+                "payment_id": 2243,
+                "amount": "20",
+                "payment_date": "2025-12-03"
+            }
+        ],
+        "payment_count": 1,
+        "extracted_at": "2025-12-04 17:02:36"
+    },
+    {
+        "credit_id": 918,
+        "client_name": "Angel Orlando Juarez",
+        "client_dni": "48493533",
+        "accumulated_amount": 40,
+        "pending_payments": [
+            {
+                "payment_id": 2371,
+                "amount": "40",
+                "payment_date": "2025-12-04"
+            }
+        ],
+        "payment_count": 1,
+        "extracted_at": "2025-12-04 17:02:36"
+    },
+    {
+        "credit_id": 1023,
+        "client_name": "Jessica angeles patapo",
+        "client_dni": "44798988",
+        "accumulated_amount": 5,
+        "pending_payments": [
+            {
+                "payment_id": 2358,
+                "amount": "5",
+                "payment_date": "2025-12-04"
+            }
+        ],
+        "payment_count": 1,
+        "extracted_at": "2025-12-04 17:02:36"
+    }
+]
