@@ -127,6 +127,7 @@ Route::middleware('auth:api')->group(function () {
         Route::put('/update/{id}', [ClientController::class, 'update']);
         Route::delete('/delete/{id}', [ClientController::class, 'delete']);
         Route::post('/{id}/capacity', [ClientController::class, 'updateCapacity']);
+        Route::get('/{id}/history', [ClientController::class, 'history']);
 
         // Orden de ruta
         Route::post('/update-order', [ClientController::class, 'updateOrder']);

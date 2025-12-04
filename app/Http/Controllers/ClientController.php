@@ -48,6 +48,7 @@ class ClientController extends Controller
     public function update(ClientRequest $request, $clientId)
     {
         try {
+            // Handle UUID if provided
             if (!is_numeric($clientId)) {
                 $client = Client::where('uuid', $clientId)->first();
                 if (!$client) {
@@ -55,7 +56,70 @@ class ClientController extends Controller
                 }
                 $clientId = $client->id;
             }
-            return $this->clientService->update($request, $clientId);
+
+            $client = Client::findOrFail($clientId);
+            $oldData = $client->toArray();
+
+            $response = $this->clientService->update($request, $clientId);
+
+            // Refresh the client to get updated data
+            $client->refresh();
+            $newData = $client->toArray();
+
+            $user = auth()->user();
+            $ipAddress = $request->ip();
+
+            $changesCount = 0;
+
+            foreach ($newData as $key => $value) {
+                if (!array_key_exists($key, $oldData)) {
+                    continue;
+                }
+
+                $oldValue = $oldData[$key];
+
+                // Skip timestamps, IDs, and array fields
+                if (in_array($key, ['updated_at', 'created_at', 'deleted_at', 'id', 'geolocation', 'gps_geolocalization'])) {
+                    continue;
+                }
+
+                // Normalize values for comparison (handle null, empty string, etc.)
+                $oldNormalized = $oldValue === null ? '' : (string) $oldValue;
+                $newNormalized = $value === null ? '' : (string) $value;
+
+                if ($oldNormalized !== $newNormalized) {
+                    \App\Models\ClientHistory::create([
+                        'client_id' => $client->id,
+                        'user_id' => $user ? $user->id : null,
+                        'field' => $key,
+                        'old_value' => $oldNormalized,
+                        'new_value' => $newNormalized,
+                        'ip_address' => $ipAddress,
+                    ]);
+                    $changesCount++;
+                }
+            }
+
+            \Log::info("Client {$client->id} updated. {$changesCount} changes logged.");
+
+            return $response;
+        } catch (\Exception $e) {
+            \Log::error('Error updating client: ' . $e->getMessage());
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+    public function history($clientId)
+    {
+        try {
+            $client = Client::findOrFail($clientId);
+            $history = $client->history()->with('user')->get();
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Historial obtenido exitosamente',
+                'data' => $history
+            ]);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }

@@ -20,6 +20,8 @@ class Client extends Model
         'status',
         'dni',
         'address',
+        'gps_address',
+        'gps_geolocalization',
         'geolocation',
         'phone',
         'email',
@@ -32,6 +34,7 @@ class Client extends Model
 
     protected $casts = [
         'geolocation' => 'array',
+        'gps_geolocalization' => 'array',
     ];
 
     public static function boot()
@@ -95,6 +98,11 @@ class Client extends Model
     public function guarantor(): BelongsTo
     {
         return $this->belongsTo(Guarantor::class);
+    }
+
+    public function history()
+    {
+        return $this->hasMany(ClientHistory::class)->orderBy('created_at', 'desc');
     }
 
     public function seller(): BelongsTo
