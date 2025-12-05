@@ -71,14 +71,20 @@ class ClientRequest extends FormRequest
         }
 
         if ($this->isMethod('put')) {
+            $clientId = $this->route('id');
+            if (!is_numeric($clientId)) {
+                $client = \App\Models\Client::where('uuid', $clientId)->first();
+                $clientId = $client ? $client->id : null;
+            }
+
             $rules = [
                 'name' => 'nullable|string|max:255',
                 'address' => 'nullable|string',
                 'gps_address' => 'nullable|string',
                 'gps_geolocalization' => 'nullable|array',
-                'dni' => 'nullable|numeric|unique:clients,dni,' . $this->route('id'),
+                'dni' => 'nullable|numeric|unique:clients,dni,' . $clientId,
                 'phone' => 'nullable|numeric',
-                'email' => 'nullable|email|unique:clients,email,' . $this->route('id'),
+                'email' => 'nullable|email|unique:clients,email,' . $clientId,
                 'geolocation' => 'nullable|array',
                 'geolocation.latitude' => 'nullable|numeric',
                 'geolocation.longitude' => 'nullable|numeric',

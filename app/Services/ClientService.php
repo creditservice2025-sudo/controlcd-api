@@ -20,6 +20,7 @@ use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Throwable;
+use App\Models\ClientHistory;
 
 class ClientService
 {
@@ -315,17 +316,38 @@ class ClientService
                         $friendlyName = $this->getImageTypeFriendlyName($imageType);
 
                         $existingImage = $client->images()->where('type', $imageType)->first();
+                        $oldPath = null;
+
                         if ($existingImage) {
-                            try {
-                                Helper::deleteFile($existingImage->path);
-                            } catch (\Exception $e) {
-                                Log::warning("No se pudo eliminar la imagen anterior: {$e->getMessage()}");
-                            }
+                            $oldPath = $existingImage->path;
+                            // Do NOT delete the physical file to keep history
+                            // Helper::deleteFile($existingImage->path);
                             $existingImage->delete();
                         }
 
                         $path = Helper::uploadFile($imageFile, 'clients', $imageType);
                         $client->images()->create(['path' => $path, 'type' => $imageType]);
+
+                        // Log history if there was a change
+                        if ($oldPath && $oldPath !== $path) {
+                            ClientHistory::create([
+                                'client_id' => $client->id,
+                                'user_id' => Auth::id(),
+                                'field' => 'image_' . $imageType,
+                                'old_value' => $oldPath,
+                                'new_value' => $path,
+                                'ip_address' => $request->ip(),
+                            ]);
+                        } elseif (!$oldPath) {
+                            ClientHistory::create([
+                                'client_id' => $client->id,
+                                'user_id' => Auth::id(),
+                                'field' => 'image_' . $imageType,
+                                'old_value' => null,
+                                'new_value' => $path,
+                                'ip_address' => $request->ip(),
+                            ]);
+                        }
                     }
                 } catch (\Exception $e) {
                     DB::rollBack();
@@ -535,7 +557,7 @@ class ClientService
             }
 
             $clientsQuery = Client::query()
-                ->select('id', 'uuid', 'name', 'dni', 'email', 'status', 'seller_id', 'geolocation', 'gps_geolocalization', 'gps_address', 'routing_order', 'capacity', 'created_at')
+                ->select('id', 'uuid', 'name', 'dni', 'email', 'phone', 'address', 'company_name', 'status', 'seller_id', 'geolocation', 'gps_geolocalization', 'gps_address', 'routing_order', 'capacity', 'created_at')
                 ->with([
                     'seller' => function ($q) {
                         $q->select('id', 'user_id', 'city_id', 'company_id');
@@ -563,6 +585,7 @@ class ClientService
                     'credits.installments' => function ($q) {
                         $q->select('id', 'credit_id', 'quota_number', 'due_date', 'quota_amount', 'status');
                     },
+                    'images'
                 ]);
 
             // Role scoping
@@ -736,7 +759,8 @@ class ClientService
                             $iq->select('id', 'credit_id', 'quota_number', 'due_date', 'quota_amount', 'status');
                         }
                         ]);
-                    }
+                    },
+                    'images'
                 ])
                 ->select('clients.*');
 
