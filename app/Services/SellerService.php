@@ -64,6 +64,7 @@ class SellerService
             $seller = Seller::create([
                 'user_id' => $user->id,
                 'city_id' => $params['city_id'],
+                'address' => $params['address'] ?? null,
                 'company_id' => $params['company_id'],
                 'status' => 'ACTIVE',
                 'routing_order' => $params['routing_order'] ?? null,
@@ -165,6 +166,7 @@ class SellerService
 
             $seller->update([
                 'city_id' => $params['city_id'],
+                'address' => $params['address'] ?? $seller->address,
                 'company_id' => $params['company_id'],
                 'routing_order' => $params['routing_order'] ?? $seller->routing_order,
                 'updated_at' => $params['updated_at'] ?? null

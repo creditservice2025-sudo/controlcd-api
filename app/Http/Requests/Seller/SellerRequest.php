@@ -36,6 +36,7 @@ class SellerRequest extends FormRequest
                 Rule::unique('users', 'dni')->ignore($userId)
             ],
             'city_id' => 'required|exists:cities,id',
+            'address' => 'nullable|string|max:200',
             'members' => 'nullable|array',
             'members.*' => 'exists:users,id',
             'commission_system_active' => 'nullable|boolean',

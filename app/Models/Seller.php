@@ -17,6 +17,7 @@ class Seller extends Model
         'uuid',
         'user_id',
         'city_id',
+        'address',
         'seller_id',
         'company_id',
         'status'
