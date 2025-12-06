@@ -241,7 +241,7 @@ ssh -i "$SSH_KEY" $SERVER_USER@$SERVER_IP << 'ENDMIGRATE'
 cd /var/www/controlcd-api
 
 echo "→ Ejecutando migración real..."
-php artisan payments:migrate-cached
+echo "yes" | php artisan payments:migrate-cached
 
 echo ""
 echo "✓ Migración completada!"

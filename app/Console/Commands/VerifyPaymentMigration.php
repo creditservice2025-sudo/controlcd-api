@@ -52,7 +52,7 @@ class VerifyPaymentMigration extends Command
             $this->error("  ✗ Found {$orphanedPayments->count()} orphaned payments");
 
             foreach ($orphanedPayments->take(10) as $payment) {
-                $this->line("    - Payment #{$payment->id}: ${$payment->amount} (Credit #{$payment->credit_id})");
+                $this->line("    - Payment #{$payment->id}: \${$payment->amount} (Credit #{$payment->credit_id})");
             }
 
             if ($orphanedPayments->count() > 10) {
