@@ -543,7 +543,9 @@ class ClientService
         $status = null,
         $companyId = null,
         $createdFrom = null,
-        $createdTo = null
+        $createdTo = null,
+        $perPage = 30,
+        $page = 1
     ) {
         try {
             $search = (string) $search;
@@ -699,10 +701,11 @@ class ClientService
             $orderDirection = in_array(strtolower($orderDirection), $validOrderDirections) ? $orderDirection : 'desc';
             $clientsQuery->orderBy($orderBy, $orderDirection);
 
-            $clients = $clientsQuery->get();
+            // Implementar paginación
+            $paginator = $clientsQuery->paginate($perPage, ['*'], 'page', $page);
 
             // Agregar campo total_credits_value a cada cliente
-            $clients->transform(function ($client) {
+            $paginator->getCollection()->transform(function ($client) {
                 $totalCreditsValue = $client->credits
                     ->whereIn('status', ['Activo', 'Vigente'])
                     ->sum('credit_value');
@@ -713,7 +716,15 @@ class ClientService
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Clientes encontrados',
-                'data' => $clients
+                'data' => $paginator->items(),
+                'pagination' => [
+                    'current_page' => $paginator->currentPage(),
+                    'per_page' => $paginator->perPage(),
+                    'total' => $paginator->total(),
+                    'last_page' => $paginator->lastPage(),
+                    'from' => $paginator->firstItem(),
+                    'to' => $paginator->lastItem(),
+                ]
             ]);
         } catch (Throwable $e) {
             Log::error("Error en index clientes: {$e->getMessage()} | " . $e->getTraceAsString());
