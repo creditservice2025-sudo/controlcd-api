@@ -114,24 +114,24 @@ class UserService
 
             $user->update($params);
 
-              if (array_key_exists('routes', $params)) {
-            if (is_array($params['routes']) && count($params['routes']) > 0) {
-                $pivotData = [];
-                if ($userTimezone) {
-                    $now = \Carbon\Carbon::now($userTimezone);
-                    foreach ($params['routes'] as $routeId) {
-                        $pivotData[$routeId] = ['updated_at' => $now];
+            if (array_key_exists('routes', $params)) {
+                if (is_array($params['routes']) && count($params['routes']) > 0) {
+                    $pivotData = [];
+                    if ($userTimezone) {
+                        $now = \Carbon\Carbon::now($userTimezone);
+                        foreach ($params['routes'] as $routeId) {
+                            $pivotData[$routeId] = ['updated_at' => $now];
+                        }
+                        $user->routes()->sync($pivotData);
+                    } else {
+                        $user->routes()->sync($params['routes']);
                     }
-                    $user->routes()->sync($pivotData);
-                } else {
-                    $user->routes()->sync($params['routes']);
+                } elseif (!empty($params['clear_routes'])) {
+
+                    $user->routes()->sync([]);
                 }
-            } elseif (!empty($params['clear_routes'])) {
-                
-                $user->routes()->sync([]);
+
             }
-            
-        }
             DB::commit();
 
             return $this->successResponse([
@@ -185,40 +185,54 @@ class UserService
         }
     }
 
-public function me()
-{
-    /** @var \App\Models\User|null $user */
-    $user = Auth::user();
+    public function me()
+    {
+        /** @var \App\Models\User|null $user */
+        $user = Auth::user();
 
-    if (!$user || !($user instanceof \App\Models\User)) {
-        return $this->errorResponse('No autenticado', 401);
-    }
-
-    $roles = $user->getRoleNames(); 
-    $permissions = $user->getAllPermissions()->pluck('name'); 
-
-    if ($roles->isEmpty() && !empty($user->role_id)) {
-        $roleModel = \Spatie\Permission\Models\Role::find($user->role_id);
-        if ($roleModel) {
-            $roles = collect([$roleModel->name]);
-            $permissions = $roleModel->permissions()->pluck('name');
-        } else {
-            $roleFromTable = \DB::table('roles')->where('id', $user->role_id)->value('name');
-            if ($roleFromTable) {
-                $roles = collect([$roleFromTable]);
-                $permissions = collect();
-            }
+        if (!$user || !($user instanceof \App\Models\User)) {
+            return $this->errorResponse('No autenticado', 401);
         }
-    }
 
-    return $this->successResponse([
-        'id' => $user->id,
-        'name' => $user->name,
-        'email' => $user->email,
-        'roles' => $roles,
-        'permissions' => $permissions,
-    ]);
-}
+        // Cache por 5 minutos para reducir queries repetidas
+        return \Cache::remember("user_me_{$user->id}", 300, function () use ($user) {
+            // Eager load roles y permisos en una sola query
+            $user->load(['roles', 'permissions']);
+
+            $roles = $user->getRoleNames();
+            $permissions = $user->getAllPermissions()->pluck('name');
+
+            // Fallback optimizado si no hay roles asignados
+            if ($roles->isEmpty() && !empty($user->role_id)) {
+                // Query optimizada con JOIN para obtener role y permisos en una sola consulta
+                $roleData = \DB::table('roles')
+                    ->leftJoin('role_has_permissions', 'roles.id', '=', 'role_has_permissions.role_id')
+                    ->leftJoin('permissions', 'role_has_permissions.permission_id', '=', 'permissions.id')
+                    ->where('roles.id', $user->role_id)
+                    ->select('roles.name as role_name', 'permissions.name as permission_name')
+                    ->get();
+
+                if ($roleData->isNotEmpty()) {
+                    $roles = collect([$roleData->first()->role_name]);
+                    $permissions = $roleData->pluck('permission_name')->filter()->unique();
+                } else {
+                    // Último fallback: solo buscar el nombre del rol
+                    $roleName = \DB::table('roles')->where('id', $user->role_id)->value('name');
+                    $roles = $roleName ? collect([$roleName]) : collect();
+                    $permissions = collect();
+                }
+            }
+
+            return $this->successResponse([
+                'id' => $user->id,
+                'name' => $user->name,
+                'email' => $user->email,
+                'role_id' => $user->role_id,
+                'roles' => $roles,
+                'permissions' => $permissions,
+            ]);
+        });
+    }
 
     public function getUsers(string $search, int $perpage, $companyId = null)
     {
@@ -227,9 +241,9 @@ public function me()
             $roleId = $user->role_id;
             $company = $user->company;
             $seller = $user->seller;
-    
+
             $excludedRoleIds = Role::whereIn('name', ['super-admin', 'cobrador', 'admin'])->pluck('id')->toArray();
-    
+
             $usersQuery = User::query()
                 ->leftJoin('roles', 'roles.id', '=', 'users.role_id')
                 ->select(
@@ -249,7 +263,7 @@ public function me()
                 ->with(['city', 'city.country', 'userRoutes', 'userRoutes.seller'])
                 ->whereNull('users.deleted_at')
                 ->whereNotIn('users.role_id', $excludedRoleIds);
-    
+
             // === FILTRO POR ROL ===
             switch ($roleId) {
                 case 1: // Admin: ve todos
@@ -264,13 +278,13 @@ public function me()
                     if ($company) {
                         // Trae IDs de vendedores de la empresa
                         $sellerIds = Seller::where('company_id', $company->id)->pluck('id')->toArray();
-    
+
                         // Trae IDs de usuarios asociados a esos vendedores vía users_routes
                         $userIds = UserRoute::whereIn('seller_id', $sellerIds)->pluck('user_id')->toArray();
-    
+
                         // Incluye también al usuario empresa autenticado
                         $userIds[] = $user->id;
-    
+
                         // Filtra por esos usuarios
                         $usersQuery->whereIn('users.id', $userIds);
                     }
@@ -279,7 +293,7 @@ public function me()
                     $usersQuery->whereRaw('0 = 1');
                     break;
             }
-    
+
             // Filtro de búsqueda
             if (!empty(trim($search))) {
                 $usersQuery->where(function ($query) use ($search) {
@@ -290,11 +304,11 @@ public function me()
                         ->orWhere('users.dni', 'like', '%' . $search . '%');
                 });
             }
-    
+
             $users = $usersQuery
                 ->orderByDesc('users.created_at')
                 ->paginate($perpage);
-    
+
             return $this->successResponse([
                 'success' => true,
                 'data' => $users
@@ -382,7 +396,7 @@ public function me()
     {
         try {
             $cobradorRoleId = Role::where('name', 'cobrador')->value('id');
-            
+
             if (empty($cobradorRoleId)) {
                 return response()->json([
                     'success' => false,

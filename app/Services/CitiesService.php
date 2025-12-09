@@ -123,7 +123,7 @@ class CitiesService
     {
         try {
             $query = City::where('country_id', $country_id)
-                ->with('country')
+                ->select('id', 'name', 'country_id', 'status')
                 ->orderBy('name');
 
             if ($request->has('status')) {
