@@ -479,37 +479,79 @@ class ClientController extends Controller
                 $timezone = 'America/Lima';
             }
 
-            \Log::info($timezone);
+            \Log::info("=== INICIO getLiquidationWithAllClients ===");
+            \Log::info("Seller ID: {$sellerId}, Date: {$date}, User ID: {$userId}, Timezone: {$timezone}");
+
             $seller = Seller::find($sellerId);
             if (!$seller) {
+                \Log::error("Vendedor no encontrado: {$sellerId}");
                 return $this->errorResponse('Vendedor no encontrado', 404);
             }
+
             $todayLocal = \Carbon\Carbon::now($timezone)->format('Y-m-d');
             $inputDateLocal = \Carbon\Carbon::parse($date, $timezone)->format('Y-m-d');
 
-            \Log::info($inputDateLocal);
-            \Log::info($todayLocal);
+            \Log::info("Fecha input (local): {$inputDateLocal}");
+            \Log::info("Fecha hoy (local): {$todayLocal}");
+
             if ($inputDateLocal > $todayLocal) {
+                \Log::warning("Fecha seleccionada es mayor que hoy");
                 return $this->errorResponse('La fecha seleccionada no puede ser mayor que la fecha actual.', 422);
             }
+
             $previousLiquidation = Liquidation::where('seller_id', $sellerId)
                 ->whereDate('date', '<', $inputDateLocal)
-                ->orderByDesc('date')
+                ->orderByDesc('id')
                 ->first();
+
+            \Log::info("Previous liquidation: " . ($previousLiquidation ? "ID {$previousLiquidation->id}, Date: {$previousLiquidation->date}, Status: {$previousLiquidation->status}" : "No encontrada"));
+
             if ($previousLiquidation && $previousLiquidation->status !== 'approved') {
+                \Log::warning("Liquidación anterior no está aprobada (Status: {$previousLiquidation->status})");
+
+                // Buscar la última liquidación aprobada por fecha
+                $lastLiquidation = Liquidation::where('seller_id', $sellerId)
+                    ->where('status', 'approved')
+                    ->orderByDesc('date')
+                    ->first();
+
+                \Log::info("Last approved liquidation found: " . ($lastLiquidation ? "ID: {$lastLiquidation->id}, Date: {$lastLiquidation->date}, Status: {$lastLiquidation->status}" : "No encontrada"));
+
+                if ($lastLiquidation) {
+                    \Log::info("Retornando sugerencia con fecha: {$lastLiquidation->date}");
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'No puede consultar la liquidación porque la anterior no está aprobada.',
+                        'last_liquidation_date' => $lastLiquidation->date,
+                        'suggestion' => true
+                    ], 422);
+                }
+
+                \Log::warning("No se encontró ninguna liquidación aprobada para sugerir");
                 return $this->errorResponse('No puede consultar la liquidación porque la anterior no está aprobada.', 422);
             }
 
+            \Log::info("Llamando a clientService->getLiquidationWithAllClients");
             $result = $this->clientService->getLiquidationWithAllClients($sellerId, $date, $userId, $timezone);
+
+            \Log::info("Resultado del servicio recibido");
+            \Log::debug("Result keys: " . json_encode(array_keys($result)));
+            \Log::debug("Has error: " . (isset($result['error']) ? 'YES' : 'NO'));
+            \Log::debug("Liquidation empty: " . (empty($result['liquidation']) ? 'YES' : 'NO'));
 
             // Si no se encontró liquidación, buscar la última disponible
             if (isset($result['error']) || empty($result['liquidation'])) {
+                \Log::warning("No se encontró liquidación en el resultado del servicio");
+
                 $lastLiquidation = Liquidation::where('seller_id', $sellerId)
                     ->whereDate('date', '<=', $todayLocal)
                     ->orderByDesc('date')
                     ->first();
 
+                \Log::info("Last liquidation (404 case): " . ($lastLiquidation ? "Date: {$lastLiquidation->date}" : "No encontrada"));
+
                 if ($lastLiquidation) {
+                    \Log::info("Retornando sugerencia 404 con fecha: {$lastLiquidation->date}");
                     return response()->json([
                         'success' => false,
                         'message' => 'No se encontró liquidación para la fecha seleccionada',
@@ -518,16 +560,19 @@ class ClientController extends Controller
                     ], 404);
                 }
 
+                \Log::error("No se encontró liquidación para este vendedor");
                 return $this->errorResponse('No se encontró liquidación para este vendedor', 404);
             }
 
+            \Log::info("Liquidación encontrada exitosamente");
             return response()->json([
                 'success' => true,
                 'message' => 'Clientes obtenidos exitosamente',
                 'data' => $result
             ]);
         } catch (\Exception $e) {
-            \Log::error($e->getMessage());
+            \Log::error("Exception en getLiquidationWithAllClients: " . $e->getMessage());
+            \Log::error("Stack trace: " . $e->getTraceAsString());
             return $this->errorResponse('Error al obtener los datos de liquidación y clientes', 500);
         }
     }
