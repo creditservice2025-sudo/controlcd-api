@@ -18,6 +18,8 @@ class Helper
     public static function uploadFile($file, $folder, $imageType = 'gallery', $skipCompression = false)
     {
         try {
+            $startTime = microtime(true);
+
             // Validate file exists
             if (!$file || !$file->isValid()) {
                 throw new \Exception('El archivo no es válido o está corrupto');
@@ -49,15 +51,32 @@ class Helper
                 throw new \Exception('El directorio de imágenes no tiene permisos de escritura. Contacta al administrador del sistema');
             }
 
-            // Compress image if not skipped and size > 500KB
+            $originalSize = $file->getSize();
+            \Log::info("Processing image upload", [
+                'type' => $imageType,
+                'original_size' => $originalSize,
+                'original_name' => $file->getClientOriginalName()
+            ]);
+
+            // Compress image if not skipped and size > 1MB
+            // Aumentamos el umbral porque las imágenes ya vienen comprimidas del frontend
             $fileToUpload = $file;
             $wasCompressed = false;
 
-            if (!$skipCompression && $file->getSize() > 512000) {
+            // Solo comprimir si:
+            // 1. No se solicitó skip
+            // 2. El archivo es mayor a 1MB (las del frontend ya están optimizadas)
+            // 3. No es JPEG (las del frontend ya son JPEG comprimidas)
+            $shouldCompress = !$skipCompression &&
+                $file->getSize() > 1048576 &&
+                !in_array($file->getMimeType(), ['image/jpeg', 'image/jpg']);
+
+            if ($shouldCompress) {
                 try {
-                    \Log::info('Attempting to compress image', [
+                    \Log::info('Attempting backend compression', [
                         'original_size' => $file->getSize(),
-                        'type' => $imageType
+                        'type' => $imageType,
+                        'mime' => $file->getMimeType()
                     ]);
 
                     $compressedPath = self::compressImage($file, $imageType);
@@ -75,18 +94,25 @@ class Helper
                     if ($compressedFile->getSize() < $file->getSize()) {
                         $fileToUpload = $compressedFile;
                         $wasCompressed = true;
-                        \Log::info('Using compressed image', [
+                        \Log::info('Using backend compressed image', [
                             'original_size' => $file->getSize(),
-                            'compressed_size' => $compressedFile->getSize()
+                            'compressed_size' => $compressedFile->getSize(),
+                            'reduction' => round((1 - $compressedFile->getSize() / $file->getSize()) * 100, 2) . '%'
                         ]);
                     } else {
-                        \Log::info('Compressed image not smaller, using original');
+                        \Log::info('Backend compression did not reduce size, using original');
                         @unlink($compressedPath); // Clean up temp file
                     }
 
                 } catch (\Exception $e) {
-                    \Log::warning('Image compression failed, using original: ' . $e->getMessage());
+                    \Log::warning('Backend compression failed, using original: ' . $e->getMessage());
                     // Continue with original file
+                }
+            } else {
+                if ($file->getSize() < 1048576) {
+                    \Log::info('Image already optimized (< 1MB), skipping backend compression');
+                } else if (in_array($file->getMimeType(), ['image/jpeg', 'image/jpg'])) {
+                    \Log::info('Image already JPEG (likely from frontend compression), skipping backend compression');
                 }
             }
 
@@ -115,6 +141,18 @@ class Helper
             if ($wasCompressed && isset($compressedPath) && file_exists($compressedPath)) {
                 @unlink($compressedPath);
             }
+
+            $duration = round((microtime(true) - $startTime) * 1000, 2);
+            $finalSize = filesize($fullPath);
+
+            \Log::info("Image upload completed", [
+                'type' => $imageType,
+                'original_size' => $originalSize,
+                'final_size' => $finalSize,
+                'reduction' => round((1 - $finalSize / $originalSize) * 100, 2) . '%',
+                'duration_ms' => $duration,
+                'backend_compressed' => $wasCompressed
+            ]);
 
             return "images/" . ($folder ? "{$folder}/" : "") . $fileName;
         } catch (\Exception $e) {

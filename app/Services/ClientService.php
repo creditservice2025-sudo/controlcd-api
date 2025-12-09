@@ -423,8 +423,20 @@ class ClientService
 
     private function storeClientImages(Client $client, Request $request): void
     {
+        $startTime = microtime(true);
         $images = $request->input('images', []);
+        $totalImages = count($images);
+
+        Log::info("Starting image upload for client {$client->id}", [
+            'client_id' => $client->id,
+            'total_images' => $totalImages
+        ]);
+
+        $successCount = 0;
+        $failedImages = [];
+
         foreach ($images as $index => $imageData) {
+            $imageStartTime = microtime(true);
             try {
                 $imageFile = $request->file("images.{$index}.file");
                 $imageType = $imageData['type'] ?? 'gallery';
@@ -436,6 +448,13 @@ class ClientService
 
                 // Get friendly name for error messages
                 $friendlyName = $this->getImageTypeFriendlyName($imageType);
+
+                Log::info("Processing image {$index}/{$totalImages}", [
+                    'client_id' => $client->id,
+                    'type' => $imageType,
+                    'size' => $imageFile->getSize(),
+                    'mime' => $imageFile->getMimeType()
+                ]);
 
                 if ($imageType === 'profile') {
                     $existing = $client->images()->where('type', 'profile')->first();
@@ -452,16 +471,55 @@ class ClientService
                 $path = Helper::uploadFile($imageFile, 'clients', $imageType);
                 $client->images()->create(['path' => $path, 'type' => $imageType]);
 
+                $imageDuration = round((microtime(true) - $imageStartTime) * 1000, 2);
+                Log::info("Image {$index}/{$totalImages} uploaded successfully", [
+                    'client_id' => $client->id,
+                    'type' => $imageType,
+                    'path' => $path,
+                    'duration_ms' => $imageDuration
+                ]);
+
+                $successCount++;
+
             } catch (\Exception $e) {
                 $friendlyName = $this->getImageTypeFriendlyName($imageType ?? 'desconocida');
                 $errorMsg = "Error al guardar {$friendlyName}: {$e->getMessage()}";
+
                 Log::error($errorMsg, [
                     'client_id' => $client->id,
                     'image_index' => $index,
                     'image_type' => $imageType ?? 'unknown',
+                    'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString()
                 ]);
+
+                $failedImages[] = [
+                    'index' => $index,
+                    'type' => $imageType ?? 'unknown',
+                    'error' => $e->getMessage()
+                ];
+
+                // Lanzar excepción para que falle la transacción
                 throw new \Exception($errorMsg);
             }
+        }
+
+        $totalDuration = round((microtime(true) - $startTime) * 1000, 2);
+
+        Log::info("Image upload completed for client {$client->id}", [
+            'client_id' => $client->id,
+            'total_images' => $totalImages,
+            'successful' => $successCount,
+            'failed' => count($failedImages),
+            'total_duration_ms' => $totalDuration,
+            'avg_duration_ms' => $totalImages > 0 ? round($totalDuration / $totalImages, 2) : 0
+        ]);
+
+        if (count($failedImages) > 0) {
+            Log::error("Some images failed to upload", [
+                'client_id' => $client->id,
+                'failed_images' => $failedImages
+            ]);
         }
     }
 
