@@ -151,7 +151,7 @@ class CitiesService
             $seller = $user->seller ?? null;
             $company = $user->company ?? null;
 
-            $query = Seller::with('user');
+            $query = Seller::with(['user', 'city:id,name']);
 
             if (!empty($city_id)) {
                 $query->where('city_id', $city_id);

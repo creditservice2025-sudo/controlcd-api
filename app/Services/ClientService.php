@@ -2004,6 +2004,17 @@ class ClientService
                 $query->orderBy('due_date', 'asc');
             },
 
+            // ✅ OPTIMIZACIÓN: Eager load payments para evitar N+1
+            'credits.payments' => function ($query) {
+                $query->orderBy('created_at', 'desc');
+            },
+
+            // ✅ OPTIMIZACIÓN: Eager load payment images
+            'credits.payments.image',
+
+            // ✅ OPTIMIZACIÓN: Eager load payment installments para getCreditInfoForDate
+            'credits.payments.installments.installment',
+
             'seller.user:id,name',
             'guarantors:id,name'
         ])
@@ -2040,14 +2051,7 @@ class ClientService
                     'client_id' => $client->id,
                     'credit_id' => $credit->id,
                     'client_name' => $client->name,
-                    'client_code' => $client->id,
-                    'credit_info' => $credit,
-
                     'installment' => $credit->installments,
-                    'client_code' => $client->id,
-                    'credit_info' => $credit,
-
-
                     'seller_name' => $client->seller->user->name ?? 'Sin vendedor',
                     'credit' => $creditInfo,
                     'delinquency_summary' => $delinquencyInfo,
