@@ -499,7 +499,28 @@ class ClientController extends Controller
             if ($previousLiquidation && $previousLiquidation->status !== 'approved') {
                 return $this->errorResponse('No puede consultar la liquidación porque la anterior no está aprobada.', 422);
             }
+
             $result = $this->clientService->getLiquidationWithAllClients($sellerId, $date, $userId, $timezone);
+
+            // Si no se encontró liquidación, buscar la última disponible
+            if (isset($result['error']) || empty($result['liquidation'])) {
+                $lastLiquidation = Liquidation::where('seller_id', $sellerId)
+                    ->whereDate('date', '<=', $todayLocal)
+                    ->orderByDesc('date')
+                    ->first();
+
+                if ($lastLiquidation) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'No se encontró liquidación para la fecha seleccionada',
+                        'last_liquidation_date' => $lastLiquidation->date,
+                        'suggestion' => true
+                    ], 404);
+                }
+
+                return $this->errorResponse('No se encontró liquidación para este vendedor', 404);
+            }
+
             return response()->json([
                 'success' => true,
                 'message' => 'Clientes obtenidos exitosamente',

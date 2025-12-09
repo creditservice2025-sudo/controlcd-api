@@ -97,9 +97,11 @@ class CitiesService
 
     protected function applyLocationFilters($query, Request $request)
     {
-        // Filtra por country_id si viene
+        // Filtra por country_id si viene (a través de la relación con cities)
         if ($request->filled('country_id')) {
-            $query->where('country_id', $request->query('country_id'));
+            $query->whereHas('city', function ($q) use ($request) {
+                $q->where('country_id', $request->query('country_id'));
+            });
         }
 
 
@@ -138,8 +140,8 @@ class CitiesService
             }
 
             return $this->successResponse($query->get());
-        } catch (Exception $e) {
-            throw new Exception("Error obteniendo ciudades: " . $e->getMessage());
+        } catch (\Exception $e) {
+            throw new \Exception("Error obteniendo ciudades: " . $e->getMessage());
         }
     }
 
