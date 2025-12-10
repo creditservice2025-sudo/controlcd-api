@@ -8,13 +8,18 @@ class Image extends Model
 {
 
     use SoftDeletes;
-    
+
     protected $fillable = [
         'path',
         'type',
-        'client_id'
+        'client_id',
+        'latitude',
+        'longitude',
+        'accuracy',
+        'address',
+        'location_timestamp'
     ];
-    
+
     public function client()
     {
         return $this->belongsTo(Client::class);

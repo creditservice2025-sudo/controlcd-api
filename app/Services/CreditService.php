@@ -73,7 +73,7 @@ class CreditService
                 $newCreditsAmount = \App\Models\Credit::where('seller_id', $params['seller_id'])
                     ->whereDate('created_at', $today)
                     ->sum('credit_value');
-                $totalWithNew = $newCreditsAmount + floatval(   $params['credit_value']);
+                $totalWithNew = $newCreditsAmount + floatval($params['credit_value']);
                 if ($totalWithNew > $limit) {
                     return $this->errorResponse('No puedes crear el crédito. El monto total de ventas nuevas por el cobrador hoy supera el límite de $' . number_format($limit, 2), 403);
                 }
@@ -199,19 +199,46 @@ class CreditService
 
             if ($request->has('images')) {
                 $images = $request->input('images');
+
                 foreach ($images as $index => $imageData) {
                     $imageFile = $request->file("images.{$index}.file");
 
                     $imagePath = Helper::uploadFile($imageFile, 'clients');
 
-                    $credit->client->images()->create([
+                    $imageRecord = [
                         'path' => $imagePath,
                         'type' => $imageData['type'],
                         'created_at' => $params['created_at'] ?? null,
                         'updated_at' => $params['updated_at'] ?? null
-                    ]);
+                    ];
+
+                    // Add GPS metadata if available
+                    if (isset($imageData['latitude'])) {
+                        $imageRecord['latitude'] = $imageData['latitude'];
+                    }
+                    if (isset($imageData['longitude'])) {
+                        $imageRecord['longitude'] = $imageData['longitude'];
+                    }
+                    if (isset($imageData['accuracy'])) {
+                        $imageRecord['accuracy'] = $imageData['accuracy'];
+                    }
+                    if (isset($imageData['address'])) {
+                        $imageRecord['address'] = $imageData['address'];
+                    }
+                    if (isset($imageData['location_timestamp'])) {
+                        try {
+                            $imageRecord['location_timestamp'] = \Carbon\Carbon::parse($imageData['location_timestamp'])->format('Y-m-d H:i:s');
+                        } catch (\Exception $e) {
+                            \Log::warning("Invalid location_timestamp format: " . $imageData['location_timestamp']);
+                            $imageRecord['location_timestamp'] = null;
+                        }
+                    }
+
+                    $credit->client->images()->create($imageRecord);
                 }
             }
+
+
 
             return $this->successResponse([
                 'success' => true,
@@ -245,7 +272,7 @@ class CreditService
                 $updatedAt = null;
             }
 
-            // 1. Buscar crédito anterior 
+            // 1. Buscar crédito anterior
             $oldCredit = Credit::findOrFail($request->old_credit_id);
             $pendingAmount = $oldCredit->pendingAmount();
 
@@ -273,16 +300,16 @@ class CreditService
             }
 
             $newCredit = Credit::create([
-                'client_id'        => $oldCredit->client_id,
-                'seller_id'        => $oldCredit->seller_id,
-                'credit_value'     => $request->new_credit_value,
-                'total_interest'   => $request->input('interest_rate', $oldCredit->total_interest),
+                'client_id' => $oldCredit->client_id,
+                'seller_id' => $oldCredit->seller_id,
+                'credit_value' => $request->new_credit_value,
+                'total_interest' => $request->input('interest_rate', $oldCredit->total_interest),
                 'number_installments' => $request->input('installment_count', $oldCredit->number_installments),
-                'payment_frequency'   => $request->input('payment_frequency', $oldCredit->payment_frequency),
-                'first_quota_date'    => $firstQuotaDate,
+                'payment_frequency' => $request->input('payment_frequency', $oldCredit->payment_frequency),
+                'first_quota_date' => $firstQuotaDate,
                 'previous_pending_amount' => $pendingAmount,
-                'renewed_from_id'     => $request->old_credit_id,
-                'status'           => 'Vigente',
+                'renewed_from_id' => $request->old_credit_id,
+                'status' => 'Vigente',
                 'created_at' => $createdAt,
                 'updated_at' => $updatedAt
             ]);
@@ -319,11 +346,11 @@ class CreditService
 
             for ($i = 1; $i <= $newCredit->number_installments; $i++) {
                 Installment::create([
-                    'credit_id'    => $newCredit->id,
+                    'credit_id' => $newCredit->id,
                     'quota_number' => $i,
-                    'due_date'     => $dueDate->format('Y-m-d'),
+                    'due_date' => $dueDate->format('Y-m-d'),
                     'quota_amount' => round($quotaAmount, 2),
-                    'status'       => 'Pendiente',
+                    'status' => 'Pendiente',
                     'created_at' => $createdAt,
                     'updated_at' => $updatedAt
                 ]);
@@ -383,12 +410,12 @@ class CreditService
 
             // 5. Retornar desglose
             return $this->successResponse([
-                'success'           => true,
+                'success' => true,
                 'monto_total_nuevo' => $request->new_credit_value,
-                'saldo_pagado'      => $pendingAmount,
-                'desembolso_neto'   => $netDisbursement,
-                'credit'            => $newCredit,
-                'old_credit'        => $oldCredit,
+                'saldo_pagado' => $pendingAmount,
+                'desembolso_neto' => $netDisbursement,
+                'credit' => $newCredit,
+                'old_credit' => $oldCredit,
             ]);
         } catch (\Exception $e) {
             \DB::rollBack();
@@ -397,7 +424,7 @@ class CreditService
         }
     }
 
-        public function updateCreditSchedule(int $creditId, string $newFirstQuotaDate, $timezone = null)
+    public function updateCreditSchedule(int $creditId, string $newFirstQuotaDate, $timezone = null)
     {
         try {
             DB::beginTransaction();
@@ -475,7 +502,9 @@ class CreditService
                 'data' => [
                     'credit_id' => $credit->id,
                     'first_quota_date' => $credit->first_quota_date,
-                    'installments_updated' => $installments->map(function($i){ return ['id'=>$i->id,'quota_number'=>$i->quota_number,'due_date'=>$i->due_date]; })
+                    'installments_updated' => $installments->map(function ($i) {
+                        return ['id' => $i->id, 'quota_number' => $i->quota_number, 'due_date' => $i->due_date];
+                    })
                 ]
             ]);
         } catch (\Exception $e) {
@@ -485,7 +514,7 @@ class CreditService
         }
     }
 
-        public function updateCreditFrequency(int $creditId, string $newFrequency, ?string $newFirstQuotaDate = null, $timezone = null)
+    public function updateCreditFrequency(int $creditId, string $newFrequency, ?string $newFirstQuotaDate = null, $timezone = null)
     {
         try {
             DB::beginTransaction();
@@ -581,7 +610,7 @@ class CreditService
         }
     }
 
-     public function setCreditRenewalBlocked(int $creditId, bool $blocked = true)
+    public function setCreditRenewalBlocked(int $creditId, bool $blocked = true)
     {
         try {
             $credit = Credit::find($creditId);
@@ -1479,7 +1508,8 @@ class CreditService
                     }
                 }
                 $otherQuota = $other->quota_amount ?? $quotaAmount;
-                if ($otherPaid >= $otherQuota) $paidInstallmentsCount++;
+                if ($otherPaid >= $otherQuota)
+                    $paidInstallmentsCount++;
             }
 
             // C.Pend: number of installments remaining with pending > 0
