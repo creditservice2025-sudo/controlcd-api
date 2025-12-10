@@ -1372,7 +1372,7 @@ class ClientService
                 'guarantors' => function ($q) {
                     $q->select('guarantors.id as id', 'guarantors.name', 'guarantors.dni', 'guarantors.phone');
                 },
-                'images:id,client_id,path,type',
+                'images:id,client_id,path,type,latitude,longitude,accuracy,address,location_timestamp',
                 'seller' => function ($q) {
                     $q->select('id', 'user_id', 'city_id');
                 },
