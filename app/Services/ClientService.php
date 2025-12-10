@@ -21,6 +21,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Throwable;
 use App\Models\ClientHistory;
+use App\Models\Image;
 
 class ClientService
 {
@@ -37,6 +38,13 @@ class ClientService
         $this->liquidationService = $liquidationService;
     }
 
+    public function getDeletedImages($clientId)
+    {
+        return Image::onlyTrashed()
+            ->where('client_id', $clientId)
+            ->orderBy('deleted_at', 'desc')
+            ->get();
+    }
 
     public function create(ClientRequest $request)
     {

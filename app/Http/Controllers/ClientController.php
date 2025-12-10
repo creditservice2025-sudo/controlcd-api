@@ -125,6 +125,29 @@ class ClientController extends Controller
         }
     }
 
+    public function getDeletedImages($clientId)
+    {
+        try {
+            if (!is_numeric($clientId)) {
+                $client = Client::where('uuid', $clientId)->first();
+                if (!$client) {
+                    return $this->errorResponse('Cliente no encontrado', 404);
+                }
+                $clientId = $client->id;
+            }
+
+            $images = $this->clientService->getDeletedImages($clientId);
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Imágenes eliminadas obtenidas exitosamente',
+                'data' => $images
+            ]);
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
     public function updateOrder(UpdateOrderRequest $request)
     {
         DB::beginTransaction();

@@ -105,7 +105,9 @@ Route::middleware('auth:api')->group(function () {
         Route::delete('/delete-inactive-without-credits', [ClientController::class, 'deleteInactiveClientsWithoutCredits']);
         Route::get('/inactive-without-credits', [ClientController::class, 'getInactiveClientsWithoutCreditsWithFilters']);
         Route::delete('/delete-by-ids', [ClientController::class, 'deleteClientsByIds']);
+        Route::delete('/delete-by-ids', [ClientController::class, 'deleteClientsByIds']);
         Route::get('/deleted-with-filters', [ClientController::class, 'getDeletedClientsWithFilters']);
+        Route::get('/{id}/deleted-images', [ClientController::class, 'getDeletedImages']);
 
         Route::put('/toggle-status/{clientId}', [ClientController::class, 'toggleStatus']);
 
