@@ -469,7 +469,32 @@ class ClientService
                 }
 
                 $path = Helper::uploadFile($imageFile, 'clients', $imageType);
-                $client->images()->create(['path' => $path, 'type' => $imageType]);
+
+                $imageRecord = ['path' => $path, 'type' => $imageType];
+
+                // Add GPS metadata if available
+                if (isset($imageData['latitude'])) {
+                    $imageRecord['latitude'] = $imageData['latitude'];
+                }
+                if (isset($imageData['longitude'])) {
+                    $imageRecord['longitude'] = $imageData['longitude'];
+                }
+                if (isset($imageData['accuracy'])) {
+                    $imageRecord['accuracy'] = $imageData['accuracy'];
+                }
+                if (isset($imageData['address'])) {
+                    $imageRecord['address'] = $imageData['address'];
+                }
+                if (isset($imageData['location_timestamp'])) {
+                    try {
+                        $imageRecord['location_timestamp'] = \Carbon\Carbon::parse($imageData['location_timestamp'])->format('Y-m-d H:i:s');
+                    } catch (\Exception $e) {
+                        \Log::warning("Invalid location_timestamp format in client creation: " . $imageData['location_timestamp']);
+                        $imageRecord['location_timestamp'] = null;
+                    }
+                }
+
+                $client->images()->create($imageRecord);
 
                 $imageDuration = round((microtime(true) - $imageStartTime) * 1000, 2);
                 Log::info("Image {$index}/{$totalImages} uploaded successfully", [
