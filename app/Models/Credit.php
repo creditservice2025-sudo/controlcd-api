@@ -14,6 +14,7 @@ class Credit extends Model
 
     protected $fillable = [
         'client_id',
+        'phone',
         'guarantor_id',
         'seller_id',
         'start_date',

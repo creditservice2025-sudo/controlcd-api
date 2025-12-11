@@ -81,6 +81,7 @@ class CreditService
 
             $creditData = [
                 'client_id' => $params['client_id'],
+                'phone' => $params['phone'] ?? null,
                 'seller_id' => $params['seller_id'],
                 'guarantor_id' => $params['guarantor_id'] ?? null,
                 'credit_value' => $params['credit_value'],
@@ -317,6 +318,7 @@ class CreditService
 
             $newCredit = Credit::create([
                 'client_id' => $oldCredit->client_id,
+                'phone' => $request->input('phone') ?? $oldCredit->client->phone ?? null,
                 'seller_id' => $oldCredit->seller_id,
                 'credit_value' => $request->new_credit_value,
                 'total_interest' => $request->input('interest_rate', $oldCredit->total_interest),
