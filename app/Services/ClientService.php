@@ -32,10 +32,12 @@ class ClientService
     private const MAX_GALLERY_IMAGES = 4;
     private const MAX_IMAGE_SIZE_BYTES = 2097152;
     private LiquidationService $liquidationService;
+    private GeolocationHistoryService $geolocationHistoryService;
 
-    public function __construct(LiquidationService $liquidationService)
+    public function __construct(LiquidationService $liquidationService, GeolocationHistoryService $geolocationHistoryService)
     {
         $this->liquidationService = $liquidationService;
+        $this->geolocationHistoryService = $geolocationHistoryService;
     }
 
     public function getDeletedImages($clientId)
@@ -106,10 +108,63 @@ class ClientService
                         'phone' => $params['phone'] ?? null,
                         'email' => $params['email'] ?? null,
                         'company_name' => $params['company_name'] ?? null,
-                        'guarantor_id' => $guarantorId,
                         'seller_id' => $params['seller_id'] ?? null,
                         'routing_order' => $params['routing_order'] ?? null,
                     ]);
+
+                    // Record Geolocation History
+                    if (!empty($params['gps_geolocalization']) || !empty($params['geolocation'])) {
+                        $coords = $params['gps_geolocalization'] ?? $params['geolocation'];
+                        // Assuming format "lat,lng" or similar if string, but let's check how it's passed.
+                        // Based on other code, it might be separate fields or a string.
+                        // Looking at migration for images, it uses lat/lng columns.
+                        // Client model has 'gps_geolocalization' and 'geolocation'.
+                        // Let's try to parse if it's a string "lat,lng" or use request lat/lng if available.
+                        // Actually, let's look at the request params in a moment.
+                        // For now, let's assume we can extract lat/lng from the request if they exist separately,
+                        // or parse the string.
+                        // However, the cleanest way is to check if request has latitude/longitude directly or parse the string.
+
+                        $lat = null;
+                        $lng = null;
+
+                        if (isset($params['latitude']) && isset($params['longitude'])) {
+                            $lat = $params['latitude'];
+                            $lng = $params['longitude'];
+                        } elseif (!empty($params['gps_geolocalization'])) {
+                            $geo = $params['gps_geolocalization'];
+                            if (is_array($geo)) {
+                                if (isset($geo['latitude']) && isset($geo['longitude'])) {
+                                    $lat = $geo['latitude'];
+                                    $lng = $geo['longitude'];
+                                } elseif (isset($geo['lat']) && isset($geo['lng'])) {
+                                    $lat = $geo['lat'];
+                                    $lng = $geo['lng'];
+                                } elseif (count($geo) >= 2 && isset($geo[0]) && isset($geo[1])) {
+                                    $lat = $geo[0];
+                                    $lng = $geo[1];
+                                }
+                            } else {
+                                $parts = explode(',', $geo);
+                                if (count($parts) >= 2) {
+                                    $lat = trim($parts[0]);
+                                    $lng = trim($parts[1]);
+                                }
+                            }
+                        }
+
+                        if ($lat && $lng) {
+                            $this->geolocationHistoryService->record(
+                                $client->id,
+                                $lat,
+                                $lng,
+                                'client_created',
+                                'Creación de cliente',
+                                $client->id,
+                                $params['gps_address'] ?? $params['address'] ?? null
+                            );
+                        }
+                    }
                 } catch (\Illuminate\Database\QueryException $e) {
                     // Check for duplicate DNI
                     if ($e->getCode() == 23000) {

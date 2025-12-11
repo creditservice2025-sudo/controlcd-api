@@ -108,6 +108,7 @@ Route::middleware('auth:api')->group(function () {
         Route::delete('/delete-by-ids', [ClientController::class, 'deleteClientsByIds']);
         Route::get('/deleted-with-filters', [ClientController::class, 'getDeletedClientsWithFilters']);
         Route::get('/{id}/deleted-images', [ClientController::class, 'getDeletedImages']);
+        Route::get('/{id}/geolocation-history', [ClientController::class, 'getGeolocationHistory']);
 
         Route::put('/toggle-status/{clientId}', [ClientController::class, 'toggleStatus']);
 

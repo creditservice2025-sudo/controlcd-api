@@ -348,6 +348,25 @@ class ClientController extends Controller
         }
     }
 
+
+
+    public function getGeolocationHistory($clientId)
+    {
+        try {
+            $history = \App\Models\ClientGeolocationHistory::where('client_id', $clientId)
+                ->orderBy('recorded_at', 'desc')
+                ->get();
+
+            return response()->json([
+                'success' => true,
+                'data' => $history
+            ]);
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
     public function totalClients()
     {
         try {

@@ -26,6 +26,13 @@ class PaymentService
 {
     use ApiResponse;
 
+    private GeolocationHistoryService $geolocationHistoryService;
+
+    public function __construct(GeolocationHistoryService $geolocationHistoryService)
+    {
+        $this->geolocationHistoryService = $geolocationHistoryService;
+    }
+
     public function create(PaymentRequest $request)
     {
         try {
@@ -321,11 +328,27 @@ class PaymentService
 
                 Log::info('Payment processed successfully (Unified Flow) for Credit ID: ' . $credit->id);
 
-                return $this->successResponse([
+                $response = $this->successResponse([
                     'success' => true,
                     'message' => $isAbono ? 'Abono procesado correctamente' : 'Pago procesado correctamente',
                     'data' => $payment
                 ]);
+
+                // Record Geolocation History
+                if (isset($params['latitude']) && isset($params['longitude'])) {
+                    $this->geolocationHistoryService->record(
+                        $credit->client_id,
+                        $params['latitude'],
+                        $params['longitude'],
+                        'payment_created',
+                        'Abono/Pago a crédito',
+                        $payment->id,
+                        null, // Address might not be in params, check if needed
+                        null  // Accuracy might not be in params
+                    );
+                }
+
+                return $response;
 
             } finally {
                 try {

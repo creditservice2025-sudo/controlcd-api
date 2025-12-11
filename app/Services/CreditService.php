@@ -240,7 +240,7 @@ class CreditService
 
 
 
-            return $this->successResponse([
+            $response = $this->successResponse([
                 'success' => true,
                 'message' => 'Crédito creado con éxito',
                 'data' => [
@@ -250,6 +250,22 @@ class CreditService
                     'total_installments' => $credit->number_installments
                 ]
             ]);
+
+            // Record Geolocation History
+            if ($request->has('latitude') && $request->has('longitude')) {
+                $this->geolocationHistoryService->record(
+                    $credit->client_id,
+                    $request->input('latitude'),
+                    $request->input('longitude'),
+                    'credit_created',
+                    'Creación de crédito',
+                    $credit->id,
+                    $request->input('address'),
+                    $request->input('accuracy')
+                );
+            }
+
+            return $response;
         } catch (\Exception $e) {
             \Log::error("Error al crear crédito: " . $e->getMessage());
             /* \Log::error($e->getTraceAsString()); */
@@ -728,6 +744,12 @@ class CreditService
         }
     }
 
+    private GeolocationHistoryService $geolocationHistoryService;
+
+    public function __construct(GeolocationHistoryService $geolocationHistoryService)
+    {
+        $this->geolocationHistoryService = $geolocationHistoryService;
+    }
     public function show($creditId)
     {
         try {
