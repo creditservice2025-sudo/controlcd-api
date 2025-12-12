@@ -201,6 +201,9 @@ class CreditService
             if ($request->has('images')) {
                 $images = $request->input('images');
 
+                // Generate description for images
+                $creditDescription = "Crédito ID: {$credit->id} - Valor: $" . number_format($credit->credit_value, 2) . " - Creado: " . ($credit->created_at ? $credit->created_at->format('Y-m-d H:i') : now()->format('Y-m-d H:i'));
+
                 foreach ($images as $index => $imageData) {
                     $imageFile = $request->file("images.{$index}.file");
 
@@ -209,6 +212,7 @@ class CreditService
                     $imageRecord = [
                         'path' => $imagePath,
                         'type' => $imageData['type'],
+                        'description' => $creditDescription,
                         'created_at' => $params['created_at'] ?? null,
                         'updated_at' => $params['updated_at'] ?? null
                     ];

@@ -12,6 +12,7 @@ class Image extends Model
     protected $fillable = [
         'path',
         'type',
+        'description',
         'client_id',
         'latitude',
         'longitude',

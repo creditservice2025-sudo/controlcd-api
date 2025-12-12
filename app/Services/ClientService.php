@@ -178,9 +178,10 @@ class ClientService
                 }
 
                 // Stage 3: Create initial credit if provided
+                $credit = null;
                 if (!empty($params['credit_value']) && (float) $params['credit_value'] > 0) {
                     try {
-                        $this->createCreditForNewClient($client, $params, $guarantorId);
+                        $credit = $this->createCreditForNewClient($client, $params, $guarantorId);
                     } catch (\Exception $e) {
                         Log::error("Error creating initial credit for client {$client->id}: {$e->getMessage()}");
                         throw new \Exception("Cliente creado pero error al crear el crédito inicial: {$e->getMessage()}");
@@ -190,7 +191,7 @@ class ClientService
                 // Stage 4: Store images if provided
                 if ($request->has('images')) {
                     try {
-                        $this->storeClientImages($client, $request);
+                        $this->storeClientImages($client, $request, $credit);
                     } catch (\Exception $e) {
                         // Images failed but client was created
                         Log::error("Error storing images for client {$client->id}: {$e->getMessage()}");
@@ -494,7 +495,7 @@ class ClientService
         return true;
     }
 
-    private function storeClientImages(Client $client, Request $request): void
+    private function storeClientImages(Client $client, Request $request, ?Credit $credit = null): void
     {
         $startTime = microtime(true);
         $images = $request->input('images', []);
@@ -507,6 +508,12 @@ class ClientService
 
         $successCount = 0;
         $failedImages = [];
+
+        // Generate description if credit was created
+        $creditDescription = null;
+        if ($credit) {
+            $creditDescription = "Crédito ID: {$credit->id} - Valor: $" . number_format($credit->credit_value, 2) . " - Creado: " . $credit->created_at->format('Y-m-d H:i');
+        }
 
         foreach ($images as $index => $imageData) {
             $imageStartTime = microtime(true);
@@ -544,6 +551,11 @@ class ClientService
                 $path = Helper::uploadFile($imageFile, 'clients', $imageType);
 
                 $imageRecord = ['path' => $path, 'type' => $imageType];
+
+                // Add credit description if available
+                if ($creditDescription) {
+                    $imageRecord['description'] = $creditDescription;
+                }
 
                 // Add GPS metadata if available
                 if (isset($imageData['latitude'])) {
