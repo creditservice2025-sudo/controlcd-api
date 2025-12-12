@@ -29,11 +29,12 @@ class CreditRequest extends FormRequest
             'installment_count' => 'nullable|numeric',
             'payment_frequency' => 'nullable|in:Diaria,Semanal,Quincenal,Mensual',
             'excluded_days' => 'nullable|array',
-            'micro_insurance_percentage' => 'nullable|numeric',
+            'micro_insurance_percentage' => 'required|numeric',
             'micro_insurance_amount' => 'nullable|numeric',
             'first_installment_date' => 'nullable|date',
             'is_advance_payment' => 'nullable|boolean',
             'timezone' => 'nullable|string',
+            'phone' => 'required|string|min:7',
         ];
 
         if ($this->isMethod('put') || $this->isMethod('get')) {
@@ -76,6 +77,10 @@ class CreditRequest extends FormRequest
             'total_interest.numeric' => 'El interés total debe ser un número',
             'number_installments.required' => 'El número de cuotas es requerido',
             'number_installments.integer' => 'El número de cuotas debe ser un número entero',
+            'phone.required' => 'El teléfono es obligatorio',
+            'phone.min' => 'El teléfono debe tener al menos 7 caracteres',
+            'micro_insurance_percentage.required' => 'El porcentaje de microseguro es obligatorio',
+            'micro_insurance_percentage.numeric' => 'El porcentaje de microseguro debe ser un número',
         ];
     }
 }

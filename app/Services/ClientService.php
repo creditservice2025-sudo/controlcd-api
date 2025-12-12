@@ -215,6 +215,16 @@ class ClientService
      */
     private function createCreditForNewClient(Client $client, array $params, ?int $guarantorId = null): Credit
     {
+        // Validate micro insurance percentage is required
+        if (
+            !isset($params['micro_insurance_percentage']) ||
+            $params['micro_insurance_percentage'] === null ||
+            $params['micro_insurance_percentage'] === '' ||
+            !is_numeric($params['micro_insurance_percentage'])
+        ) {
+            throw new \Exception('El porcentaje de microseguro es obligatorio al crear un crédito');
+        }
+
         $paymentFrequency = $params['payment_frequency'] ?? 'Mensual';
         $isAdvance = $params['is_advance_payment'] ?? false;
         $excludedDays = $params['excluded_days'] ?? [];

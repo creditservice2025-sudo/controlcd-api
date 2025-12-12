@@ -277,6 +277,19 @@ class CreditService
     public function renew(Request $request)
     {
         try {
+            // Validate required fields
+            $request->validate([
+                'old_credit_id' => 'required|exists:credits,id',
+                'new_credit_value' => 'required|numeric|min:1',
+                'phone' => 'required|string|min:7',
+                'micro_insurance_percentage' => 'required|numeric',
+            ], [
+                'phone.required' => 'El teléfono es obligatorio',
+                'phone.min' => 'El teléfono debe tener al menos 7 caracteres',
+                'micro_insurance_percentage.required' => 'El porcentaje de microseguro es obligatorio',
+                'micro_insurance_percentage.numeric' => 'El porcentaje de microseguro debe ser un número',
+            ]);
+
             DB::beginTransaction();
 
             $params = $request->all();
@@ -316,9 +329,13 @@ class CreditService
                 }
             }
 
+            // Calculate micro insurance amount
+            $microInsurancePercentage = $request->input('micro_insurance_percentage', 0);
+            $microInsuranceAmount = ($request->new_credit_value * $microInsurancePercentage) / 100;
+
             $newCredit = Credit::create([
                 'client_id' => $oldCredit->client_id,
-                'phone' => $request->input('phone') ?? $oldCredit->client->phone ?? null,
+                'phone' => $request->input('phone'),
                 'seller_id' => $oldCredit->seller_id,
                 'credit_value' => $request->new_credit_value,
                 'total_interest' => $request->input('interest_rate', $oldCredit->total_interest),
@@ -327,6 +344,9 @@ class CreditService
                 'first_quota_date' => $firstQuotaDate,
                 'previous_pending_amount' => $pendingAmount,
                 'renewed_from_id' => $request->old_credit_id,
+                'micro_insurance_percentage' => $microInsurancePercentage,
+                'micro_insurance_amount' => $microInsuranceAmount,
+                'excluded_days' => $request->input('excluded_days') ? json_encode($request->input('excluded_days')) : $oldCredit->excluded_days,
                 'status' => 'Vigente',
                 'created_at' => $createdAt,
                 'updated_at' => $updatedAt
