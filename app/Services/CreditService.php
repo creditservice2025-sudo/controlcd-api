@@ -1077,7 +1077,7 @@ class CreditService
     public function getSellerCreditsByDate(int $sellerId, Request $request, int $perpage)
     {
         try {
-            $creditsQuery = Credit::with(['client', 'installments', 'payments'])
+            $creditsQuery = Credit::with(['client.images', 'installments', 'payments'])
                 ->whereNull('renewed_from_id')
                 ->where('seller_id', $sellerId);
 
@@ -1104,13 +1104,93 @@ class CreditService
 
             $credits = $creditsQuery->get();
 
-            $credits = $credits->map(function ($credit) {
+            $clientIds = $credits->pluck('client_id')->unique()->values();
+
+            $allClientCredits = Credit::with(['installments', 'payments'])
+                ->whereIn('client_id', $clientIds)
+                ->orderBy('created_at', 'desc')
+                ->orderBy('id', 'desc')
+                ->get()
+                ->groupBy('client_id');
+
+            $getImagesBetween = function ($images, ?Carbon $start, ?Carbon $end) {
+                if (!$images) {
+                    return collect();
+                }
+
+                return $images
+                    ->filter(function ($img) use ($start, $end) {
+                        if (!$img->created_at) {
+                            return false;
+                        }
+
+                        $createdAt = $img->created_at instanceof Carbon
+                            ? $img->created_at
+                            : Carbon::parse($img->created_at);
+
+                        if ($start && $createdAt->lt($start)) {
+                            return false;
+                        }
+
+                        if ($end && $createdAt->gte($end)) {
+                            return false;
+                        }
+
+                        return true;
+                    })
+                    ->values();
+            };
+
+            $credits = $credits->map(function ($credit) use ($allClientCredits, $getImagesBetween) {
                 $startDate = $credit->start_date;
                 $lastInstallment = $credit->installments->sortByDesc('due_date')->first();
-                $endDate = $lastInstallment ? Carbon::parse($lastInstallment->due_date)->setTime(23, 59, 59)->format('Y-m-d H:i:s') : null;
+                $endDate = $lastInstallment
+                    ? Carbon::parse($lastInstallment->due_date)->setTime(23, 59, 59)->format('Y-m-d H:i:s')
+                    : null;
 
                 $credit->start_date = $startDate;
                 $credit->end_date = $endDate;
+
+                $clientCredits = $allClientCredits->get($credit->client_id, collect());
+                $currentIndex = $clientCredits->search(function ($c) use ($credit) {
+                    return $c->id === $credit->id;
+                });
+
+                $previousCredit = null;
+                if ($currentIndex !== false) {
+                    $previousCredit = $clientCredits->get($currentIndex + 1);
+                } else {
+                    $previousCredit = $clientCredits
+                        ->first(function ($c) use ($credit) {
+                            return $c->created_at < $credit->created_at;
+                        });
+                }
+
+                $credit->previous_credit = $previousCredit;
+
+                $clientImages = $credit->client && $credit->client->images
+                    ? $credit->client->images->sortBy('created_at')->values()
+                    : collect();
+
+                $nextNewerCredit = null;
+                if ($currentIndex !== false) {
+                    $nextNewerCredit = $currentIndex > 0 ? $clientCredits->get($currentIndex - 1) : null;
+                }
+
+                $currentStart = $credit->created_at ? Carbon::parse($credit->created_at) : null;
+                $currentEnd = $nextNewerCredit && $nextNewerCredit->created_at
+                    ? Carbon::parse($nextNewerCredit->created_at)
+                    : null;
+
+                $credit->images = $getImagesBetween($clientImages, $currentStart, $currentEnd);
+
+                if ($previousCredit && $previousCredit->created_at) {
+                    $prevStart = Carbon::parse($previousCredit->created_at);
+                    $prevEnd = $currentStart;
+                    $credit->previous_credit_images = $getImagesBetween($clientImages, $prevStart, $prevEnd);
+                } else {
+                    $credit->previous_credit_images = collect();
+                }
 
                 return $credit;
             });
