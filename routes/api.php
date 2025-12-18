@@ -244,6 +244,7 @@ Route::middleware('auth:api')->group(function () {
     Route::post('payment/create', [PaymentController::class, 'create']);
     Route::get('payment/{creditId}/{paymentId}', [PaymentController::class, 'show']);
     Route::delete('payment/delete/{paymentId}', [PaymentController::class, 'delete']);
+    Route::delete('payment-installment/delete/{paymentInstallmentId}', [PaymentController::class, 'deletePaymentInstallment']);
     Route::get('payments/seller/{sellerId}', [PaymentController::class, 'indexBySeller']);
     Route::get('payments/seller/{sellerId}/all', [PaymentController::class, 'getSellerPayments']);
     Route::get('payments/total/{creditId}', [PaymentController::class, 'getTotalWithoutInstallments']);

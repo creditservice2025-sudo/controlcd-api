@@ -37,26 +37,44 @@ class PaymentService
     {
         try {
             DB::beginTransaction();
+
+            $timezone = $request->has('timezone') ? $request->get('timezone') : config('app.timezone');
+            $nowUtc = Carbon::now($timezone)->utc();
             $params = $request->validated();
 
             // LOG 1: Ver los parámetros validados, incluyendo el timezone si se envió.
             Log::info('Payment Create - Validated Request Params Received', $params);
 
             if (isset($params['timezone']) && !empty($params['timezone'])) {
-                $params['created_at'] = Carbon::now($params['timezone']);
-                $params['updated_at'] = Carbon::now($params['timezone']);
                 $userTimezone = $params['timezone'];
                 unset($params['timezone']);
+                $localNow = Carbon::now($userTimezone);
+                $params['created_at'] = $localNow->copy()->utc();
+                $params['updated_at'] = $localNow->copy()->utc();
                 // LOG 2: Confirmar la aplicación de la zona horaria y las fechas resultantes.
                 Log::info('Timezone Applied Success. Timestamps:', [
                     'timezone' => $userTimezone,
-                    'created_at' => $params['created_at']->toDateTimeString(),
-                    'updated_at' => $params['updated_at']->toDateTimeString()
+                    'local_now' => $localNow->toDateTimeString(),
+                    'created_at_utc' => $params['created_at']->toDateTimeString(),
+                    'updated_at_utc' => $params['updated_at']->toDateTimeString()
                 ]);
             } else {
                 $userTimezone = null;
                 // LOG 3: Si no hay timezone.
                 Log::info('No Timezone Provided. Using default system/app timezone for timestamps.');
+            }
+
+            $clientCreatedAtRaw = isset($params['client_created_at']) && !empty($params['client_created_at'])
+                ? $params['client_created_at']
+                : null;
+            $clientTimezoneRaw = isset($params['client_timezone']) && !empty($params['client_timezone'])
+                ? $params['client_timezone']
+                : null;
+
+            if ($clientCreatedAtRaw) {
+                $clientInstantUtc = Carbon::parse($clientCreatedAtRaw)->utc();
+                $params['created_at'] = $clientInstantUtc;
+                $params['updated_at'] = $clientInstantUtc;
             }
 
             $credit = Credit::find($request->credit_id);
@@ -128,16 +146,18 @@ class PaymentService
                 if ($request->amount == 0) {
                     // Logic for "No Pago" remains mostly the same but ensure it's robust
                     $paymentData = [
-                        'credit_id' => $params['credit_id'],
-                        'payment_date' => $params['payment_date'],
-                        'amount' => $params['amount'],
+                        'credit_id' => $credit->id,
+                        'payment_date' => $request->payment_date,
+                        'amount' => $request->amount,
                         'status' => 'No pagado',
                         'payment_method' => $params['payment_method'],
                         'payment_reference' => $params['payment_reference'] ?: 'Registro de no pago',
                         'latitude' => $params['latitude'],
                         'longitude' => $params['longitude'],
-                        'created_at' => $params['created_at'] ?? null,
-                        'updated_at' => $params['updated_at'] ?? null
+                        'client_created_at' => $clientCreatedAtRaw,
+                        'client_timezone' => $clientTimezoneRaw,
+                        'created_at' => $params['created_at'] ?? $nowUtc,
+                        'updated_at' => $params['updated_at'] ?? $nowUtc
                     ];
 
                     $payment = Payment::create($paymentData);
@@ -154,8 +174,8 @@ class PaymentService
                             'payment_id' => $payment->id,
                             'installment_id' => $nextInstallment->id,
                             'applied_amount' => 0,
-                            'created_at' => $params['created_at'] ?? null,
-                            'updated_at' => $params['updated_at'] ?? null
+                            'created_at' => $params['created_at'] ?? $nowUtc,
+                            'updated_at' => $params['updated_at'] ?? $nowUtc
                         ]);
                     }
 
@@ -194,16 +214,18 @@ class PaymentService
                 $isAbono = $request->amount < $pendingAmountNextInstallment;
 
                 $paymentData = [
-                    'credit_id' => $params['credit_id'],
-                    'payment_date' => $params['payment_date'],
-                    'amount' => $params['amount'],
+                    'credit_id' => $credit->id,
+                    'payment_date' => $request->payment_date,
+                    'amount' => $request->amount,
                     'status' => $isAbono ? 'Abonado' : 'Pagado',
                     'payment_method' => $params['payment_method'],
                     'payment_reference' => $params['payment_reference'] ?: '',
                     'latitude' => $params['latitude'],
                     'longitude' => $params['longitude'],
-                    'created_at' => $params['created_at'] ?? null,
-                    'updated_at' => $params['updated_at'] ?? null
+                    'client_created_at' => $clientCreatedAtRaw,
+                    'client_timezone' => $clientTimezoneRaw,
+                    'created_at' => $params['created_at'] ?? $nowUtc,
+                    'updated_at' => $params['updated_at'] ?? $nowUtc
                 ];
 
                 $payment = Payment::create($paymentData);
@@ -314,8 +336,8 @@ class PaymentService
                         'payment_id' => $payment->id,
                         'user_id' => $user->id,
                         'path' => $imagePath,
-                        'created_at' => $params['created_at'] ?? null,
-                        'updated_at' => $params['updated_at'] ?? null
+                        'created_at' => $params['created_at'] ?? $nowUtc,
+                        'updated_at' => $params['updated_at'] ?? $nowUtc
                     ]);
                 }
 
@@ -365,6 +387,93 @@ class PaymentService
         }
     }
 
+    public function deletePaymentInstallment($paymentInstallmentId, Request $request)
+    {
+        try {
+            DB::beginTransaction();
+
+            $paymentInstallment = PaymentInstallment::with(['payment.credit.client', 'installment'])
+                ->find($paymentInstallmentId);
+
+            if (!$paymentInstallment) {
+                throw new \Exception('El movimiento no existe.');
+            }
+
+            $payment = $paymentInstallment->payment;
+            $installment = $paymentInstallment->installment;
+
+            if (!$payment || !$installment) {
+                throw new \Exception('No se pudo resolver el pago o la cuota asociada al movimiento.');
+            }
+
+            $timezone = $request->has('timezone') ? $request->get('timezone') : null;
+            $today = Carbon::now($timezone)->startOfDay();
+            $paymentDate = Carbon::parse($payment->created_at)->setTimezone($timezone)->startOfDay();
+
+            if (!$paymentDate->equalTo($today)) {
+                throw new \Exception('Solo se pueden eliminar movimientos de pagos creados el día de hoy.');
+            }
+
+            $credit = $payment->credit;
+            if (!$credit) {
+                throw new \Exception('El crédito asociado al pago no existe.');
+            }
+
+            $sellerId = $credit->client->seller_id;
+
+            $liquidationExists = Liquidation::where('seller_id', $sellerId)
+                ->whereDate('date', '=', $paymentDate->format('Y-m-d'))
+                ->exists();
+
+            if ($liquidationExists && Auth::user()->role_id !== 1) {
+                throw new \Exception('No se puede eliminar el movimiento. El vendedor ya tiene una liquidación registrada para el día de hoy.');
+            }
+
+            $laterPayments = Payment::where('credit_id', $payment->credit_id)
+                ->where('created_at', '>', $payment->created_at)
+                ->exists();
+
+            if ($laterPayments) {
+                throw new \Exception('No se puede eliminar este movimiento porque existen pagos posteriores en el mismo crédito. Debe eliminar primero los pagos más recientes.');
+            }
+
+            $appliedAmount = (float) $paymentInstallment->applied_amount;
+
+            // Revert installment amounts/status
+            $installment->paid_amount = max(0, (float) $installment->paid_amount - $appliedAmount);
+
+            if ($installment->paid_amount <= 0) {
+                $dueDate = Carbon::parse($installment->due_date);
+                $installment->status = $dueDate->isPast() ? 'Atrasado' : 'Pendiente';
+            } elseif ($installment->paid_amount < (float) $installment->quota_amount) {
+                $installment->status = 'Parcial';
+            } else {
+                $installment->status = 'Pagado';
+            }
+            $installment->save();
+
+            // Return money to payment's unapplied amount
+            $payment->unapplied_amount = (float) ($payment->unapplied_amount ?? 0) + $appliedAmount;
+            $payment->save();
+
+            // Soft delete movement with audit
+            $paymentInstallment->deleted_by = Auth::id();
+            $paymentInstallment->save();
+            $paymentInstallment->delete();
+
+            DB::commit();
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Movimiento eliminado correctamente',
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error("Error al eliminar el movimiento con ID {$paymentInstallmentId}: " . $e->getMessage());
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
 
 
     public function index($creditId, Request $request, $perPage)
@@ -376,8 +485,17 @@ class PaymentService
                 throw new \Exception('El crédito no existe.');
             }
 
-            $paymentsQuery = Payment::leftJoin('payment_installments', 'payments.id', '=', 'payment_installments.payment_id')
+            $paymentsQuery = Payment::leftJoin('payment_installments', function ($join) {
+                    $join->on('payments.id', '=', 'payment_installments.payment_id')
+                        ->whereNull('payment_installments.deleted_at');
+                })
                 ->leftJoin('installments', 'payment_installments.installment_id', '=', 'installments.id')
+                ->leftJoin('payment_installments as deleted_payment_installments', function ($join) {
+                    $join->on('payments.id', '=', 'deleted_payment_installments.payment_id')
+                        ->whereNotNull('deleted_payment_installments.deleted_at');
+                })
+                ->leftJoin('installments as deleted_installments', 'deleted_payment_installments.installment_id', '=', 'deleted_installments.id')
+                ->leftJoin('users as deleted_users', 'deleted_payment_installments.deleted_by', '=', 'deleted_users.id')
                 ->join('credits', 'payments.credit_id', '=', 'credits.id')
                 ->join('clients', 'credits.client_id', '=', 'clients.id')
                 ->leftJoin('payment_images', 'payments.id', '=', 'payment_images.payment_id')
@@ -402,18 +520,36 @@ class PaymentService
 
                     DB::raw('GROUP_CONCAT(installments.quota_number ORDER BY installments.quota_number) as quotas'),
                     DB::raw('COALESCE(SUM(payment_installments.applied_amount), 0) as total_applied'),
-                    DB::raw("
-            CONCAT(
+                    DB::raw("\n             CONCAT(
                 '[',
-                GROUP_CONCAT(
-                    JSON_OBJECT(
+                COALESCE(GROUP_CONCAT(DISTINCT JSON_OBJECT(
+                        'payment_installment_id', payment_installments.id,
                         'quota_number', installments.quota_number,
-                        'applied_amount', payment_installments.applied_amount
+                        'applied_amount', payment_installments.applied_amount,
+                        'applied_at', payment_installments.created_at,
+                        'installment_status', installments.status,
+                        'quota_amount', installments.quota_amount,
+                        'due_date', installments.due_date
                     )
                     ORDER BY installments.quota_number
-                ),
+                ), ''),
                 ']'
             ) as installment_details_json
+        "),
+
+                    DB::raw("\n             CONCAT(
+                '[',
+                COALESCE(GROUP_CONCAT(DISTINCT JSON_OBJECT(
+                        'payment_installment_id', deleted_payment_installments.id,
+                        'quota_number', deleted_installments.quota_number,
+                        'applied_amount', deleted_payment_installments.applied_amount,
+                        'deleted_at', deleted_payment_installments.deleted_at,
+                        'deleted_by', deleted_users.name
+                    )
+                    ORDER BY deleted_payment_installments.deleted_at DESC
+                ), ''),
+                ']'
+            ) as deleted_installment_details_json
         "),
 
                 )

@@ -23,6 +23,8 @@ class Payment extends Model
         'payment_reference',
         'latitude',
         'longitude',
+        'client_created_at',
+        'client_timezone',
         'created_at',
         'updated_at'
     ];
@@ -31,7 +33,9 @@ class Payment extends Model
      * @var array<string, string>
      */
     protected $casts = [
-        'payment_date' => 'datetime',
+        'payment_date' => 'date:Y-m-d',
+        'client_created_at' => 'string',
+        'client_timezone' => 'string',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
     ];

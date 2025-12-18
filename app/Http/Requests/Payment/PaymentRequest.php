@@ -32,6 +32,8 @@ class PaymentRequest extends FormRequest
             'latitude' => 'nullable',
             'longitude' => 'nullable',
             'timezone' => 'nullable|string',
+            'client_created_at' => 'nullable|date',
+            'client_timezone' => 'nullable|string',
         ];
 
         if ($this->isMethod('put')) {

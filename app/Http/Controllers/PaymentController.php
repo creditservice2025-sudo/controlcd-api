@@ -122,6 +122,16 @@ class PaymentController extends Controller
         }
     }
 
+    public function deletePaymentInstallment($paymentInstallmentId, Request $request)
+    {
+        try {
+            return $this->paymentService->deletePaymentInstallment($paymentInstallmentId, $request);
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
     public function dailyPaymentTotals(Request $request)
     {
         $date = $request->get('date');
