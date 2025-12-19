@@ -445,7 +445,7 @@ class ClientController extends Controller
     {
         try {
             $search = (string) $request->input('search', '');
-            $perpage = (int) $request->input('perpage', 10);
+            $perpage = (int) $request->input('per_page', $request->input('perpage', 10));
             $page = (int) $request->input('page', 1);
             $filter = (string) $request->input('filter', 'all');
             $orderBy = (string) $request->input('orderBy', 'created_at');

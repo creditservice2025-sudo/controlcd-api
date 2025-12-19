@@ -33,6 +33,15 @@ class PaymentService
         $this->geolocationHistoryService = $geolocationHistoryService;
     }
 
+    private function resolveBusinessTimezone(?string $paymentClientTimezone, Request $request): string
+    {
+        $tz = $paymentClientTimezone
+            ?: ($request->has('timezone') ? $request->get('timezone') : null)
+            ?: config('app.timezone');
+
+        return is_string($tz) && $tz !== '' ? $tz : config('app.timezone');
+    }
+
     public function create(PaymentRequest $request)
     {
         try {
@@ -75,6 +84,11 @@ class PaymentService
                 $clientInstantUtc = Carbon::parse($clientCreatedAtRaw)->utc();
                 $params['created_at'] = $clientInstantUtc;
                 $params['updated_at'] = $clientInstantUtc;
+
+                $effectiveClientTimezone = $clientTimezoneRaw ?: ($userTimezone ?: config('app.timezone'));
+                $params['payment_date'] = Carbon::parse($clientCreatedAtRaw)
+                    ->setTimezone($effectiveClientTimezone)
+                    ->toDateString();
             }
 
             $credit = Credit::find($request->credit_id);
@@ -147,7 +161,7 @@ class PaymentService
                     // Logic for "No Pago" remains mostly the same but ensure it's robust
                     $paymentData = [
                         'credit_id' => $credit->id,
-                        'payment_date' => $request->payment_date,
+                        'payment_date' => $params['payment_date'] ?? $request->payment_date,
                         'amount' => $request->amount,
                         'status' => 'No pagado',
                         'payment_method' => $params['payment_method'],
@@ -215,7 +229,7 @@ class PaymentService
 
                 $paymentData = [
                     'credit_id' => $credit->id,
-                    'payment_date' => $request->payment_date,
+                    'payment_date' => $params['payment_date'] ?? $request->payment_date,
                     'amount' => $request->amount,
                     'status' => $isAbono ? 'Abonado' : 'Pagado',
                     'payment_method' => $params['payment_method'],
@@ -406,11 +420,13 @@ class PaymentService
                 throw new \Exception('No se pudo resolver el pago o la cuota asociada al movimiento.');
             }
 
-            $timezone = $request->has('timezone') ? $request->get('timezone') : null;
-            $today = Carbon::now($timezone)->startOfDay();
-            $paymentDate = Carbon::parse($payment->created_at)->setTimezone($timezone)->startOfDay();
+            $timezone = $this->resolveBusinessTimezone($payment->client_timezone ?? null, $request);
+            $today = Carbon::now($timezone)->toDateString();
+            $paymentBusinessDate = $payment->payment_date
+                ? Carbon::parse($payment->payment_date)->toDateString()
+                : Carbon::parse($payment->created_at)->setTimezone($timezone)->toDateString();
 
-            if (!$paymentDate->equalTo($today)) {
+            if ($paymentBusinessDate !== $today) {
                 throw new \Exception('Solo se pueden eliminar movimientos de pagos creados el día de hoy.');
             }
 
@@ -422,7 +438,7 @@ class PaymentService
             $sellerId = $credit->client->seller_id;
 
             $liquidationExists = Liquidation::where('seller_id', $sellerId)
-                ->whereDate('date', '=', $paymentDate->format('Y-m-d'))
+                ->whereDate('date', '=', $paymentBusinessDate)
                 ->exists();
 
             if ($liquidationExists && Auth::user()->role_id !== 1) {
@@ -618,13 +634,16 @@ class PaymentService
                 throw new \Exception('El crédito no existe.');
             }
 
+            $timezone = $request->input('timezone', config('app.timezone'));
+            $today = Carbon::now($timezone)->toDateString();
+
             $paymentsQuery = Payment::leftJoin('payment_installments', 'payments.id', '=', 'payment_installments.payment_id')
                 ->leftJoin('installments', 'payment_installments.installment_id', '=', 'installments.id')
                 ->join('credits', 'payments.credit_id', '=', 'credits.id')
                 ->join('clients', 'credits.client_id', '=', 'clients.id')
                 ->leftJoin('payment_images', 'payments.id', '=', 'payment_images.payment_id')
                 ->where('credits.id', $creditId)
-                ->whereDate('payments.payment_date', \Carbon\Carbon::today())
+                ->whereDate('payments.payment_date', $today)
                 ->select(
                     'payments.id',
                     'clients.name as client_name',

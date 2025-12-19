@@ -844,7 +844,14 @@ class LiquidationService
             $payments = Payment::join('credits', 'payments.credit_id', '=', 'credits.id')
 
                 ->where('credits.seller_id', $sellerId)
-                ->whereBetween('payments.created_at', [$startUTC, $endUTC])
+                ->whereNull('payments.deleted_at')
+                ->where(function ($q) use ($dateLocal, $startUTC, $endUTC) {
+                    $q->where('payments.payment_date', $dateLocal)
+                        ->orWhere(function ($q2) use ($startUTC, $endUTC) {
+                            $q2->whereNull('payments.payment_date')
+                                ->whereBetween('payments.created_at', [$startUTC, $endUTC]);
+                        });
+                })
                 ->select('payments.*', 'credits.client_id as client_id')
                 ->get()
                 ->map(function ($p) use ($sellerName) {
@@ -974,21 +981,28 @@ class LiquidationService
                 'payments.payment_method',
                 DB::raw('SUM(payments.amount) as total')
             )
-            ->whereDate('payments.created_at', $date)
+            ->whereNull('payments.deleted_at')
+            ->where('payments.payment_date', $date)
             ->where('credits.seller_id', $sellerId)
             ->groupBy('payments.payment_method');
 
         $firstPaymentQuery = DB::table('payments')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
             ->select(DB::raw('MIN(payments.created_at) as first_payment_date'))
-            ->whereDate('payments.created_at', $date);
+            ->whereNull('payments.deleted_at')
+            ->where('payments.payment_date', $date);
 
         if ($sellerId) {
             $firstPaymentQuery->where('credits.seller_id', $sellerId);
         }
 
         $firstPaymentResult = $firstPaymentQuery->first();
-        $firstPaymentDate = $firstPaymentResult->first_payment_date;
+        $firstPaymentDate = null;
+        if ($firstPaymentResult && $firstPaymentResult->first_payment_date) {
+            $firstPaymentDate = Carbon::parse($firstPaymentResult->first_payment_date)
+                ->setTimezone($tz)
+                ->toDateTimeString();
+        }
 
         $paymentResults = $query->get();
 

@@ -161,7 +161,7 @@ class PaymentController extends Controller
                 'payments.payment_method',
                 DB::raw('SUM(payments.amount) as total')
             )
-            ->whereDate('payments.created_at', $date)
+            ->where('payments.payment_date', $date)
             ->whereNull('payments.deleted_at')
             ->whereNull('credits.deleted_at')
             ->whereNull('clients.deleted_at');
@@ -170,7 +170,7 @@ class PaymentController extends Controller
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
             ->join('clients', 'credits.client_id', '=', 'clients.id')
             ->select(DB::raw('MIN(payments.created_at) as first_payment_date'))
-            ->whereDate('payments.created_at', $date)
+            ->where('payments.payment_date', $date)
             ->whereNull('payments.deleted_at')
             ->whereNull('credits.deleted_at')
             ->whereNull('clients.deleted_at');
@@ -184,7 +184,12 @@ class PaymentController extends Controller
             ->get();
 
         $firstPaymentResult = $firstPaymentQuery->first();
-        $firstPaymentDate = $firstPaymentResult ? $firstPaymentResult->first_payment_date : null;
+        $firstPaymentDate = null;
+        if ($firstPaymentResult && $firstPaymentResult->first_payment_date) {
+            $firstPaymentDate = Carbon::parse($firstPaymentResult->first_payment_date)
+                ->setTimezone($timezone)
+                ->toDateTimeString();
+        }
 
         $totals = [
             'cash' => 0,

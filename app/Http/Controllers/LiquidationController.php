@@ -856,7 +856,8 @@ class LiquidationController extends Controller
                 'payments.payment_method',
                 DB::raw('SUM(payments.amount) as total')
             )
-            ->whereBetween('payments.created_at', [$startUTC, $endUTC])
+            ->whereNull('payments.deleted_at')
+            ->where('payments.payment_date', $formattedDate)
             ->where('credits.seller_id', $sellerId)
             ->whereIn('payments.status', ['Pagado', 'Aprobado', 'Abonado'])
             ->groupBy('payments.payment_method');
@@ -864,14 +865,20 @@ class LiquidationController extends Controller
         $firstPaymentQuery = DB::table('payments')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
             ->select(DB::raw('MIN(payments.created_at) as first_payment_date'))
-            ->whereBetween('payments.created_at', [$startUTC, $endUTC]);
+            ->whereNull('payments.deleted_at')
+            ->where('payments.payment_date', $formattedDate);
 
         if ($sellerId) {
             $firstPaymentQuery->where('credits.seller_id', $sellerId);
         }
 
         $firstPaymentResult = $firstPaymentQuery->first();
-        $firstPaymentDate = $firstPaymentResult ? $firstPaymentResult->first_payment_date : null;
+        $firstPaymentDate = null;
+        if ($firstPaymentResult && $firstPaymentResult->first_payment_date) {
+            $firstPaymentDate = Carbon::parse($firstPaymentResult->first_payment_date)
+                ->setTimezone($timezone)
+                ->toDateTimeString();
+        }
 
         $paymentResults = $query->get();
 

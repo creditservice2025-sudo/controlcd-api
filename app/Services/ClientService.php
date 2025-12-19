@@ -1719,11 +1719,20 @@ class ClientService
                 $creditsQuery->whereHas('client.seller', fn($q) => $q->where('company_id', $companyId));
             }
 
+            // Total distinct clients for the header (independent of pagination)
+            $clientsTotal = (clone $creditsQuery)->distinct('clients.id')->count('clients.id');
+
             // ordering (keep same as original)
             $creditsQuery->orderBy('clients.routing_order', 'asc');
 
-            // Execute query: get credits
-            $credits = $creditsQuery->get();
+            // Execute query: paginate credits (keep response compatible: return data array + meta)
+            $creditsPaginator = $creditsQuery->paginate(
+                $perpage,
+                ['credits.*'],
+                'page',
+                $page
+            );
+            $credits = $creditsPaginator->getCollection();
 
             // Obtener configuración del vendedor
             $config = \App\Models\SellerConfig::where('seller_id', $seller->id)->first();
@@ -1734,12 +1743,20 @@ class ClientService
                 return response()->json([
                     'success' => true,
                     'message' => 'Creditos encontrados',
-                    'data' => collect()
+                    'data' => collect(),
+                    'current_page' => $creditsPaginator->currentPage(),
+                    'last_page' => $creditsPaginator->lastPage(),
+                    'total' => $creditsPaginator->total(),
+                    'per_page' => $creditsPaginator->perPage(),
+                    'clients_total' => $clientsTotal,
                 ]);
             }
 
             // Pre-aggregate payment summary (sum per credit_id and status) in single query
             $creditIds = $credits->pluck('id')->unique()->values()->all();
+
+            // Historical paid sum per credit (all dates). Needed to compute correct pending balance.
+            $paymentsSumAllByCredit = $this->paymentsSumByCredit($creditIds);
 
             $paymentSummaryRows = Payment::whereIn('credit_id', $creditIds)
                 ->whereBetween('created_at', [$startUTC, $endUTC])
@@ -1749,9 +1766,22 @@ class ClientService
 
             // Group the summary by credit_id for quick lookup
             $paymentSummary = $paymentSummaryRows->groupBy('credit_id');
-            $allPaymentsRows = Payment::whereIn('credit_id', $creditIds)
-                ->select('credit_id', 'id', 'credit_id', 'amount', 'payment_date', 'created_at', 'payment_method', 'status', 'latitude', 'longitude')
-                ->orderBy('created_at', 'asc')
+            $paymentsTodayRows = Payment::whereIn('credit_id', $creditIds)
+                ->whereBetween('payments.created_at', [$startUTC, $endUTC])
+                ->leftJoin('payment_images', 'payments.id', '=', 'payment_images.payment_id')
+                ->select(
+                    'payments.credit_id',
+                    'payments.id',
+                    'payments.amount',
+                    'payments.payment_date',
+                    'payments.created_at',
+                    'payments.payment_method',
+                    'payments.status',
+                    'payments.latitude',
+                    'payments.longitude',
+                    'payment_images.path as image_path'
+                )
+                ->orderBy('payments.created_at', 'asc')
                 ->get()
                 ->groupBy('credit_id');
 
@@ -1760,22 +1790,18 @@ class ClientService
 
             // Transform credits exactly preserving the output shape expected by the front
 
-            $transformedItems = $credits->map(function ($credit) use ($paymentSummary, $nowLocal, $renewalQuota, $allPaymentsRows) {
+            $transformedItems = $credits->map(function ($credit) use ($paymentSummary, $nowLocal, $renewalQuota, $paymentsTodayRows, $paymentsSumAllByCredit) {
                 $summary = $paymentSummary->get($credit->id, collect());
                 foreach ($summary as $item) {
                     $credit->{$item->status} = $item->total_amount;
                 }
 
+                // Sum of all payments (historical) for this credit.
+                $credit->payments_sum_all = (float) ($paymentsSumAllByCredit[$credit->id] ?? 0);
 
-                $credit->payments_total = collect();
-                if (isset($GLOBALS['allPaymentsRows'])) {
-                }
-                try {
-                } catch (\Throwable $e) {
-                }
-                if (isset($allPaymentsRows) && $allPaymentsRows instanceof \Illuminate\Support\Collection) {
-                    $credit->payments_total = $allPaymentsRows->get($credit->id, collect());
-                }
+                // For performance: only include payments for the selected date ("pagos de hoy")
+                // The frontend uses payments_total to detect and manipulate today's payments.
+                $credit->payments_total = $paymentsTodayRows->get($credit->id, collect());
 
 
                 $installments = $credit->installments ?? collect();
@@ -1820,6 +1846,11 @@ class ClientService
                 'success' => true,
                 'message' => 'Creditos encontrados',
                 'data' => $transformedItems,
+                'current_page' => $creditsPaginator->currentPage(),
+                'last_page' => $creditsPaginator->lastPage(),
+                'total' => $creditsPaginator->total(),
+                'per_page' => $creditsPaginator->perPage(),
+                'clients_total' => $clientsTotal,
             ]);
         } catch (\Exception $e) {
             Log::error("Error en getForCollections: {$e->getMessage()} | " . $e->getTraceAsString());
