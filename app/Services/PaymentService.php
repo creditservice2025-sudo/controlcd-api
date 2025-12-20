@@ -47,49 +47,26 @@ class PaymentService
         try {
             DB::beginTransaction();
 
-            $timezone = $request->has('timezone') ? $request->get('timezone') : config('app.timezone');
-            $nowUtc = Carbon::now($timezone)->utc();
             $params = $request->validated();
 
-            // LOG 1: Ver los parámetros validados, incluyendo el timezone si se envió.
-            Log::info('Payment Create - Validated Request Params Received', $params);
+            // Obtener zona horaria del cliente (donde se realiza el pago)
+            $clientTimezone = $request->get('client_timezone', config('app.timezone'));
 
-            if (isset($params['timezone']) && !empty($params['timezone'])) {
-                $userTimezone = $params['timezone'];
-                unset($params['timezone']);
-                $localNow = Carbon::now($userTimezone);
-                $params['created_at'] = $localNow->copy()->utc();
-                $params['updated_at'] = $localNow->copy()->utc();
-                // LOG 2: Confirmar la aplicación de la zona horaria y las fechas resultantes.
-                Log::info('Timezone Applied Success. Timestamps:', [
-                    'timezone' => $userTimezone,
-                    'local_now' => $localNow->toDateTimeString(),
-                    'created_at_utc' => $params['created_at']->toDateTimeString(),
-                    'updated_at_utc' => $params['updated_at']->toDateTimeString()
-                ]);
-            } else {
-                $userTimezone = null;
-                // LOG 3: Si no hay timezone.
-                Log::info('No Timezone Provided. Using default system/app timezone for timestamps.');
-            }
+            // 1. TIMESTAMP TÉCNICO (auditoría del sistema)
+            $serverNow = Carbon::now('UTC');
 
-            $clientCreatedAtRaw = isset($params['client_created_at']) && !empty($params['client_created_at'])
-                ? $params['client_created_at']
-                : null;
-            $clientTimezoneRaw = isset($params['client_timezone']) && !empty($params['client_timezone'])
-                ? $params['client_timezone']
-                : null;
+            // 2. TIMESTAMP DE NEGOCIO (hora oficial del pago)
+            $businessNow = Carbon::now($clientTimezone);
+            $businessTimestampUtc = $businessNow->copy()->utc();
+            $businessDate = $businessNow->toDateString();
 
-            if ($clientCreatedAtRaw) {
-                $clientInstantUtc = Carbon::parse($clientCreatedAtRaw)->utc();
-                $params['created_at'] = $clientInstantUtc;
-                $params['updated_at'] = $clientInstantUtc;
-
-                $effectiveClientTimezone = $clientTimezoneRaw ?: ($userTimezone ?: config('app.timezone'));
-                $params['payment_date'] = Carbon::parse($clientCreatedAtRaw)
-                    ->setTimezone($effectiveClientTimezone)
-                    ->toDateString();
-            }
+            Log::info('Payment Create - Business Timestamps Generated', [
+                'client_timezone' => $clientTimezone,
+                'server_now_utc' => $serverNow->toDateTimeString(),
+                'business_now_local' => $businessNow->toDateTimeString(),
+                'business_timestamp_utc' => $businessTimestampUtc->toDateTimeString(),
+                'business_date' => $businessDate
+            ]);
 
             $credit = Credit::find($request->credit_id);
             $user = Auth::user();
@@ -161,17 +138,25 @@ class PaymentService
                     // Logic for "No Pago" remains mostly the same but ensure it's robust
                     $paymentData = [
                         'credit_id' => $credit->id,
-                        'payment_date' => $params['payment_date'] ?? $request->payment_date,
                         'amount' => $request->amount,
                         'status' => 'No pagado',
                         'payment_method' => $params['payment_method'],
                         'payment_reference' => $params['payment_reference'] ?: 'Registro de no pago',
                         'latitude' => $params['latitude'],
                         'longitude' => $params['longitude'],
-                        'client_created_at' => $clientCreatedAtRaw,
-                        'client_timezone' => $clientTimezoneRaw,
-                        'created_at' => $params['created_at'] ?? $nowUtc,
-                        'updated_at' => $params['updated_at'] ?? $nowUtc
+                        
+                        // TIMESTAMPS TÉCNICOS (auditoría)
+                        'created_at' => $serverNow,
+                        'updated_at' => $serverNow,
+                        
+                        // TIMESTAMPS DE NEGOCIO (operaciones)
+                        'business_timestamp' => $businessTimestampUtc,
+                        'business_date' => $businessDate,
+                        'business_timezone' => $clientTimezone,
+                        
+                        // COMPATIBILIDAD (mantener por ahora)
+                        'payment_date' => $businessDate,
+                        'client_timezone' => $clientTimezone,
                     ];
 
                     $payment = Payment::create($paymentData);
@@ -188,8 +173,8 @@ class PaymentService
                             'payment_id' => $payment->id,
                             'installment_id' => $nextInstallment->id,
                             'applied_amount' => 0,
-                            'created_at' => $params['created_at'] ?? $nowUtc,
-                            'updated_at' => $params['updated_at'] ?? $nowUtc
+                            'created_at' => $serverNow,
+                            'updated_at' => $serverNow
                         ]);
                     }
 
@@ -229,17 +214,25 @@ class PaymentService
 
                 $paymentData = [
                     'credit_id' => $credit->id,
-                    'payment_date' => $params['payment_date'] ?? $request->payment_date,
                     'amount' => $request->amount,
                     'status' => $isAbono ? 'Abonado' : 'Pagado',
                     'payment_method' => $params['payment_method'],
                     'payment_reference' => $params['payment_reference'] ?: '',
                     'latitude' => $params['latitude'],
                     'longitude' => $params['longitude'],
-                    'client_created_at' => $clientCreatedAtRaw,
-                    'client_timezone' => $clientTimezoneRaw,
-                    'created_at' => $params['created_at'] ?? $nowUtc,
-                    'updated_at' => $params['updated_at'] ?? $nowUtc
+                    
+                    // TIMESTAMPS TÉCNICOS (auditoría)
+                    'created_at' => $serverNow,
+                    'updated_at' => $serverNow,
+                    
+                    // TIMESTAMPS DE NEGOCIO (operaciones)
+                    'business_timestamp' => $businessTimestampUtc,
+                    'business_date' => $businessDate,
+                    'business_timezone' => $clientTimezone,
+                    
+                    // COMPATIBILIDAD (mantener por ahora)
+                    'payment_date' => $businessDate,
+                    'client_timezone' => $clientTimezone,
                 ];
 
                 $payment = Payment::create($paymentData);
@@ -420,11 +413,9 @@ class PaymentService
                 throw new \Exception('No se pudo resolver el pago o la cuota asociada al movimiento.');
             }
 
-            $timezone = $this->resolveBusinessTimezone($payment->client_timezone ?? null, $request);
+            $timezone = $payment->business_timezone ?? config('app.timezone');
             $today = Carbon::now($timezone)->toDateString();
-            $paymentBusinessDate = $payment->payment_date
-                ? Carbon::parse($payment->payment_date)->toDateString()
-                : Carbon::parse($payment->created_at)->setTimezone($timezone)->toDateString();
+            $paymentBusinessDate = $payment->business_date;
 
             if ($paymentBusinessDate !== $today) {
                 throw new \Exception('Solo se pueden eliminar movimientos de pagos creados el día de hoy.');
@@ -500,6 +491,9 @@ class PaymentService
             if (!$credit) {
                 throw new \Exception('El crédito no existe.');
             }
+
+            // Aumentar el límite de GROUP_CONCAT para evitar truncamiento del JSON
+            DB::statement('SET SESSION group_concat_max_len = 1000000');
 
             $paymentsQuery = Payment::leftJoin('payment_installments', function ($join) {
                     $join->on('payments.id', '=', 'payment_installments.payment_id')
@@ -724,15 +718,15 @@ class PaymentService
         $paymentsFilterQuery = Payment::query();
 
         if ($request->has('start_date') && $request->has('end_date')) {
-            $startDate = Carbon::parse($request->get('start_date'), $timezone)->startOfDay();
-            $endDate = Carbon::parse($request->get('end_date'), $timezone)->endOfDay();
-            $paymentsFilterQuery->whereBetween('created_at', [$startDate, $endDate]);
+            $startDate = Carbon::parse($request->get('start_date'), $timezone)->toDateString();
+            $endDate = Carbon::parse($request->get('end_date'), $timezone)->toDateString();
+            $paymentsFilterQuery->whereBetween('business_date', [$startDate, $endDate]);
         } elseif ($request->has('date')) {
             $filterDate = Carbon::parse($request->get('date'), $timezone)->toDateString();
-            $paymentsFilterQuery->whereDate('created_at', $filterDate);
+            $paymentsFilterQuery->where('business_date', $filterDate);
         } else {
             $filterDate = Carbon::now($timezone)->toDateString();
-            $paymentsFilterQuery->whereDate('created_at', $filterDate);
+            $paymentsFilterQuery->where('business_date', $filterDate);
         }
 
         if ($request->has('status') && in_array($request->status, ['Abonado', 'Pagado'])) {
@@ -767,15 +761,15 @@ class PaymentService
             ->orderBy('created_at', 'desc');
 
         if ($request->has('start_date') && $request->has('end_date')) {
-            $startDate = Carbon::parse($request->get('start_date'), $timezone)->startOfDay();
-            $endDate = Carbon::parse($request->get('end_date'), $timezone)->endOfDay();
-            $paymentsQuery->whereBetween('created_at', [$startDate, $endDate]);
+            $startDate = Carbon::parse($request->get('start_date'), $timezone)->toDateString();
+            $endDate = Carbon::parse($request->get('end_date'), $timezone)->toDateString();
+            $paymentsQuery->whereBetween('business_date', [$startDate, $endDate]);
         } elseif ($request->has('date')) {
             $filterDate = Carbon::parse($request->get('date'), $timezone)->toDateString();
-            $paymentsQuery->whereDate('created_at', $filterDate);
+            $paymentsQuery->where('business_date', $filterDate);
         } else {
             $filterDate = Carbon::now($timezone)->toDateString();
-            $paymentsQuery->whereDate('created_at', $filterDate);
+            $paymentsQuery->where('business_date', $filterDate);
         }
 
         if ($request->has('status') && in_array($request->status, ['Abonado', 'Pagado'])) {
@@ -868,15 +862,15 @@ class PaymentService
         $paymentsQuery = Payment::query();
 
         if ($request->has('start_date') && $request->has('end_date')) {
-            $startDate = Carbon::parse($request->get('start_date'), $timezone)->startOfDay();
-            $endDate = Carbon::parse($request->get('end_date'), $timezone)->endOfDay();
-            $paymentsQuery->whereBetween('created_at', [$startDate, $endDate]);
+            $startDate = Carbon::parse($request->get('start_date'), $timezone)->toDateString();
+            $endDate = Carbon::parse($request->get('end_date'), $timezone)->toDateString();
+            $paymentsQuery->whereBetween('business_date', [$startDate, $endDate]);
         } elseif ($request->has('date')) {
             $filterDate = Carbon::parse($request->get('date'), $timezone)->toDateString();
-            $paymentsQuery->whereDate('created_at', $filterDate);
+            $paymentsQuery->where('business_date', $filterDate);
         } else {
             $filterDate = Carbon::now($timezone)->toDateString();
-            $paymentsQuery->whereDate('created_at', $filterDate);
+            $paymentsQuery->where('business_date', $filterDate);
         }
 
         if ($request->has('status') && in_array($request->status, ['Abonado', 'Pagado'])) {

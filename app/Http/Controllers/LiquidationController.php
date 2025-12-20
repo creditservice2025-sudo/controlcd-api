@@ -1082,10 +1082,10 @@ class LiquidationController extends Controller
         if ($isExisting) {
             $firstPaymentQuery = DB::table('payments')
                 ->join('credits', 'payments.credit_id', '=', 'credits.id')
-                ->select('payments.payment_date', 'payments.created_at') // 👈 aquí
-                ->whereDate('payments.created_at', $liquidation->date)
+                ->select('payments.business_date', 'payments.business_timestamp')
+                ->where('payments.business_date', $liquidation->date)
                 ->where('credits.seller_id', $liquidation->seller_id)
-                ->orderBy('payments.created_at', 'asc')
+                ->orderBy('payments.business_timestamp', 'asc')
                 ->first();
 
 

@@ -339,7 +339,7 @@ class PaymentController extends Controller
 
         // List all payments for the date - CORREGIDO: usar created_at con rango UTC
         $paymentsListQuery = DB::table('payments')
-            ->whereDate('payments.created_at', $date);  // Especificamos la tabla
+            ->where('payments.business_date', $date);  // Especificamos la tabla
 
         if ($sellerId) {
             $paymentsListQuery = $paymentsListQuery

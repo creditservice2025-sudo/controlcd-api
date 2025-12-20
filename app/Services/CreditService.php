@@ -1255,13 +1255,10 @@ class CreditService
         }
 
 
-        $start = $reportDate->copy()->startOfDay()->timezone('UTC');
-        $end = $reportDate->copy()->endOfDay()->timezone('UTC');
-
-        // Obtener créditos con pagos en la fecha especificada
+        // Obtener créditos con pagos en la fecha especificada usando business_date
         $creditsQuery = Credit::with(['client', 'installments', 'payments'])
-            ->whereHas('payments', function ($query) use ($start, $end) {
-                $query->whereBetween('payments.created_at', [$start, $end]);
+            ->whereHas('payments', function ($query) use ($date) {
+                $query->where('payments.business_date', $date);
             });
 
 

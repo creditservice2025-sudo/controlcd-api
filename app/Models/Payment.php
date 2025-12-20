@@ -25,6 +25,9 @@ class Payment extends Model
         'longitude',
         'client_created_at',
         'client_timezone',
+        'business_timestamp',
+        'business_date',
+        'business_timezone',
         'created_at',
         'updated_at'
     ];
@@ -34,8 +37,11 @@ class Payment extends Model
      */
     protected $casts = [
         'payment_date' => 'date:Y-m-d',
+        'business_date' => 'date:Y-m-d',
+        'business_timestamp' => 'datetime',
         'client_created_at' => 'string',
         'client_timezone' => 'string',
+        'business_timezone' => 'string',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
     ];

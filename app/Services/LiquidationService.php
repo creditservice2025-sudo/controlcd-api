@@ -842,16 +842,9 @@ class LiquidationService
             $sellerName = $seller && $seller->user ? $seller->user->name : null;
             // Movimientos: pagos (de créditos del vendedor) - todos los campos relevantes
             $payments = Payment::join('credits', 'payments.credit_id', '=', 'credits.id')
-
                 ->where('credits.seller_id', $sellerId)
                 ->whereNull('payments.deleted_at')
-                ->where(function ($q) use ($dateLocal, $startUTC, $endUTC) {
-                    $q->where('payments.payment_date', $dateLocal)
-                        ->orWhere(function ($q2) use ($startUTC, $endUTC) {
-                            $q2->whereNull('payments.payment_date')
-                                ->whereBetween('payments.created_at', [$startUTC, $endUTC]);
-                        });
-                })
+                ->where('payments.business_date', $dateLocal)
                 ->select('payments.*', 'credits.client_id as client_id')
                 ->get()
                 ->map(function ($p) use ($sellerName) {
@@ -982,15 +975,15 @@ class LiquidationService
                 DB::raw('SUM(payments.amount) as total')
             )
             ->whereNull('payments.deleted_at')
-            ->where('payments.payment_date', $date)
+            ->where('payments.business_date', $date)
             ->where('credits.seller_id', $sellerId)
             ->groupBy('payments.payment_method');
 
         $firstPaymentQuery = DB::table('payments')
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
-            ->select(DB::raw('MIN(payments.created_at) as first_payment_date'))
+            ->select(DB::raw('MIN(payments.business_timestamp) as first_payment_date'))
             ->whereNull('payments.deleted_at')
-            ->where('payments.payment_date', $date);
+            ->where('payments.business_date', $date);
 
         if ($sellerId) {
             $firstPaymentQuery->where('credits.seller_id', $sellerId);
@@ -1521,8 +1514,8 @@ class LiquidationService
         $end = $reportDate->copy()->endOfDay()->setTimezone('America/Lima')->setTimezone('UTC');
 
         $creditsQuery = Credit::with(['client', 'installments', 'payments'])
-            ->whereHas('payments', function ($query) use ($start, $end) {
-                $query->whereBetween('payments.created_at', [$start, $end]);
+            ->whereHas('payments', function ($query) use ($dateOnly) {
+                $query->where('payments.business_date', $dateOnly);
             });
         if ($sellerId) {
             $creditsQuery->whereHas('client', function ($query) use ($sellerId) {

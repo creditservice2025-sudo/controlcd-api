@@ -1169,9 +1169,9 @@ class ClientService
                         $q->select('id', 'credit_id', 'quota_number', 'due_date', 'quota_amount', 'status', 'created_at');
                     },
                     // Solo los pagos del día para cada crédito (esto evita cargar todo el histórico)
-                    'credits.payments' => function ($q) use ($startUTC, $endUTC) {
-                        $q->select('id', 'credit_id', 'amount', 'payment_date', 'created_at', 'payment_method', 'latitude', 'longitude', 'status')
-                            ->whereBetween('created_at', [$startUTC, $endUTC]);
+                    'credits.payments' => function ($q) use ($todayLocal) {
+                        $q->select('id', 'credit_id', 'amount', 'payment_date', 'business_date', 'created_at', 'payment_method', 'latitude', 'longitude', 'status')
+                            ->where('business_date', $todayLocal);
                     },
                     // incluir payment_installments + installments.installment para obtener cuotas afectadas por cada pago
                     'credits.payments.installments' => function ($q) {
@@ -1647,16 +1647,18 @@ class ClientService
                     'client.seller',
                     'client.seller.city',
                     'installments',
-                    'payments' => function ($q) use ($startUTC, $endUTC) {
-                        $q->whereBetween('created_at', [$startUTC, $endUTC]);
+                    'payments' => function ($q) use ($todayLocal) {
+                        $q->where('business_date', $todayLocal);
                     },
                     'payments.installments'
                 ])
-                ->where(function ($query) {
+                ->where(function ($query) use ($todayLocal) {
                     $query->whereNotIn('credits.status', ['Liquidado', 'Unificado', 'Cartera Irrecuperable', 'Renovado'])
-                        ->orWhere(function ($q) {
+                        ->orWhere(function ($q) use ($todayLocal) {
                             $q->whereIn('credits.status', ['Liquidado', 'Renovado'])
-                                ->whereDate('credits.updated_at', now()->toDateString());
+                                ->whereHas('payments', function ($pq) use ($todayLocal) {
+                                    $pq->where('business_date', $todayLocal);
+                                });
                         });
                 })
                 ->where(function ($query) use ($todayLocal) {
@@ -1681,17 +1683,17 @@ class ClientService
 
             if (!empty($paymentStatus)) {
                 if ($paymentStatus === 'paid') {
-                    $creditsQuery->whereHas('payments', function ($query) use ($startUTC, $endUTC) {
-                        $query->whereBetween('created_at', [$startUTC, $endUTC])
+                    $creditsQuery->whereHas('payments', function ($query) use ($todayLocal) {
+                        $query->where('business_date', $todayLocal)
                             ->whereIn('status', ['Pagado', 'Abonado']);
                     });
                 } elseif ($paymentStatus === 'unpaid') {
-                    $creditsQuery->whereDoesntHave('payments', function ($q) use ($startUTC, $endUTC) {
-                        $q->whereBetween('created_at', [$startUTC, $endUTC]);
+                    $creditsQuery->whereDoesntHave('payments', function ($q) use ($todayLocal) {
+                        $q->where('business_date', $todayLocal);
                     });
                 } elseif ($paymentStatus === 'notpaid') {
-                    $creditsQuery->whereHas('payments', function ($query) use ($startUTC, $endUTC) {
-                        $query->whereBetween('created_at', [$startUTC, $endUTC])
+                    $creditsQuery->whereHas('payments', function ($query) use ($todayLocal) {
+                        $query->where('business_date', $todayLocal)
                             ->where('status', 'No pagado');
                     });
                 }
@@ -1759,7 +1761,7 @@ class ClientService
             $paymentsSumAllByCredit = $this->paymentsSumByCredit($creditIds);
 
             $paymentSummaryRows = Payment::whereIn('credit_id', $creditIds)
-                ->whereBetween('created_at', [$startUTC, $endUTC])
+                ->where('business_date', $todayLocal)
                 ->select('credit_id', 'status', DB::raw('SUM(amount) as total_amount'))
                 ->groupBy('credit_id', 'status')
                 ->get();
@@ -1767,7 +1769,7 @@ class ClientService
             // Group the summary by credit_id for quick lookup
             $paymentSummary = $paymentSummaryRows->groupBy('credit_id');
             $paymentsTodayRows = Payment::whereIn('credit_id', $creditIds)
-                ->whereBetween('payments.created_at', [$startUTC, $endUTC])
+                ->where('payments.business_date', $todayLocal)
                 ->leftJoin('payment_images', 'payments.id', '=', 'payment_images.payment_id')
                 ->select(
                     'payments.credit_id',
@@ -2275,11 +2277,10 @@ class ClientService
     private function getCreditInfoForDate($credit, $referenceDate)
     {
 
-        $startUTC = $referenceDate->copy()->startOfDay()->timezone('UTC');
-        $endUTC = $referenceDate->copy()->endOfDay()->timezone('UTC');
-        // PAGOS DEL DÍA
-        $todayPayments = $credit->payments->filter(function ($payment) use ($startUTC, $endUTC) {
-            return $payment->created_at >= $startUTC && $payment->created_at <= $endUTC;
+        // PAGOS DEL DÍA usando business_date
+        $referenceDateStr = $referenceDate->format('Y-m-d');
+        $todayPayments = $credit->payments->filter(function ($payment) use ($referenceDateStr) {
+            return $payment->business_date === $referenceDateStr;
         });
         $paidToday = $todayPayments->sum('amount');
 
@@ -2629,7 +2630,7 @@ class ClientService
             ->whereNull('credits.deleted_at')
             ->whereNull('clients.deleted_at')
             ->whereNull('payments.deleted_at')
-            ->whereDate('payments.created_at', $date)
+            ->where('payments.business_date', $date)
             ->when($sellerId, function ($q) use ($sellerId) {
                 $q->where('credits.seller_id', $sellerId);
             })
@@ -2653,7 +2654,7 @@ class ClientService
             ->whereNull('credits.deleted_at')
             ->whereNull('clients.deleted_at')
             ->whereNull('payments.deleted_at')
-            ->whereDate('payments.created_at', $date)
+            ->where('payments.business_date', $date)
             ->where('payments.status', 'No Pagado');
 
         if ($sellerId) {
@@ -2670,7 +2671,7 @@ class ClientService
             ->whereNull('credits.deleted_at')
             ->whereNull('clients.deleted_at')
             ->whereNull('payments.deleted_at')
-            ->whereDate('payments.created_at', $date)
+            ->where('payments.business_date', $date)
             ->where('payments.status', 'Abonado');
 
         if ($sellerId) {
@@ -2757,7 +2758,7 @@ class ClientService
             ->whereNull('payment_installments.deleted_at')
             ->whereNull('installments.deleted_at')
             ->whereNull('credits.deleted_at')
-            ->whereDate('payments.created_at', $date);
+            ->where('payments.business_date', $date);
 
 
         if ($sellerId) {
@@ -2791,7 +2792,7 @@ class ClientService
                                     ->whereColumn('payment_installments.payment_id', 'payments.id');
                             });
                     })
-                    ->whereDate('payments.created_at', $date);
+                    ->where('payments.business_date', $date);
             });
 
         if ($sellerId) {
@@ -2833,7 +2834,7 @@ class ClientService
             ->whereNull('installments.deleted_at')
             ->whereNull('payment_installments.deleted_at')
             ->whereNull('payments.deleted_at')
-            ->whereDate('payments.created_at', $date)
+            ->where('payments.business_date', $date)
             ->where(function ($query) {
                 $query->where('payments.status', '!=', 'Pagado')
                     ->where('payments.status', '!=', 'Abonado');
