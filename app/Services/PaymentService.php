@@ -109,7 +109,7 @@ class PaymentService
                 }
 
                 // Duplicate check (Legacy/Fallback) - Keep it but it's less critical with Idempotency Key
-                $now = $userTimezone ? Carbon::now($userTimezone) : Carbon::now();
+                $now = $clientTimezone ? Carbon::now($clientTimezone) : Carbon::now();
                 $windowStart = $now->copy()->subHour();
 
                 // Only check if NO idempotency key provided, or as a safety net
@@ -138,10 +138,11 @@ class PaymentService
                     // Logic for "No Pago" remains mostly the same but ensure it's robust
                     $paymentData = [
                         'credit_id' => $credit->id,
+                        'user_id' => $user->id,
                         'amount' => $request->amount,
                         'status' => 'No pagado',
-                        'payment_method' => $params['payment_method'],
-                        'payment_reference' => $params['payment_reference'] ?: 'Registro de no pago',
+                        'payment_method' => $params['payment_method'] ?: null,
+                        'payment_reference' => $params['payment_reference'] ?: 'No pagó',
                         'latitude' => $params['latitude'],
                         'longitude' => $params['longitude'],
                         
@@ -214,6 +215,7 @@ class PaymentService
 
                 $paymentData = [
                     'credit_id' => $credit->id,
+                    'user_id' => $user->id,
                     'amount' => $request->amount,
                     'status' => $isAbono ? 'Abonado' : 'Pagado',
                     'payment_method' => $params['payment_method'],
