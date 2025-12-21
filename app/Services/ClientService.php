@@ -96,7 +96,16 @@ class ClientService
                     }
                 }
 
-                // Stage 2: Create client
+                // Stage 2: Validate DNI is unique per seller (allows same DNI in different sellers)
+                $existingClient = Client::where('dni', $params['dni'])
+                    ->where('seller_id', $params['seller_id'])
+                    ->first();
+
+                if ($existingClient) {
+                    throw new \Exception("El DNI {$params['dni']} ya está registrado en esta ruta");
+                }
+
+                // Stage 3: Create client
                 try {
                     $client = Client::create([
                         'name' => $params['name'],
@@ -166,9 +175,9 @@ class ClientService
                         }
                     }
                 } catch (\Illuminate\Database\QueryException $e) {
-                    // Check for duplicate DNI
+                    // Fallback check for any unique constraint violation
                     if ($e->getCode() == 23000) {
-                        throw new \Exception("El DNI {$params['dni']} ya está registrado en el sistema");
+                        throw new \Exception("El DNI {$params['dni']} ya está registrado en esta ruta");
                     }
                     Log::error("Database error creating client: {$e->getMessage()}");
                     throw new \Exception("Error al guardar los datos del cliente: {$e->getMessage()}");
@@ -352,14 +361,28 @@ class ClientService
 
             $params = $request->validated();
 
+            // Validate DNI uniqueness per seller if DNI is being changed
+            if (isset($params['dni']) && $params['dni'] !== $client->dni) {
+                $sellerId = $params['seller_id'] ?? $client->seller_id;
+                $existingClient = Client::where('dni', $params['dni'])
+                    ->where('seller_id', $sellerId)
+                    ->where('id', '!=', $clientId)
+                    ->first();
+
+                if ($existingClient) {
+                    DB::rollBack();
+                    return $this->errorResponse("El DNI {$params['dni']} ya está registrado en esta ruta", 400);
+                }
+            }
+
             // Stage 1: Update client data
             try {
                 $client->update($params);
             } catch (\Illuminate\Database\QueryException $e) {
                 DB::rollBack();
-                // Check for duplicate DNI
+                // Fallback check for any unique constraint violation
                 if ($e->getCode() == 23000 && isset($params['dni'])) {
-                    return $this->errorResponse("El DNI {$params['dni']} ya está registrado en el sistema", 400);
+                    return $this->errorResponse("El DNI {$params['dni']} ya está registrado en esta ruta", 400);
                 }
                 Log::error("Database error updating client {$clientId}: {$e->getMessage()}");
                 return $this->errorResponse("Error al actualizar los datos del cliente: {$e->getMessage()}", 500);
