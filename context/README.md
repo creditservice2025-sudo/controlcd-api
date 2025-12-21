@@ -4,19 +4,29 @@ Esta carpeta contiene **documentación técnica y guías** que NO deben ser desp
 
 ## 📁 Contenido
 
-- `GUIA_PRODUCCION_PASO_A_PASO.md` - Guía completa para desplegar en producción
-- `DEPLOYMENT.md` - Documentación general de despliegue
-- `FIX_CORS.md` - Solución de problemas de CORS
-- `SETUP_COMPLETO.md` - Documentación de configuración completa
-- Otros documentos de referencia y troubleshooting
+### Arquitectura
+
+-   **`ARQUITECTURA_BACKEND.md`** - Documentación completa de la arquitectura
+    -   Modelos de datos y relaciones
+    -   Servicios de la capa de negocio
+    -   Endpoints API principales
+    -   Patrones de diseño
+
+### Deployment
+
+-   `GUIA_PRODUCCION_PASO_A_PASO.md` - Guía completa para desplegar en producción
+-   `DEPLOYMENT.md` - Documentación general de despliegue
+-   `FIX_CORS.md` - Solución de problemas de CORS
+-   `SETUP_COMPLETO.md` - Documentación de configuración completa
+-   Otros documentos de referencia y troubleshooting
 
 ## ⚙️ Configuración
 
 Esta carpeta está **excluida automáticamente** del despliegue mediante:
 
-- ✅ Script `deploy-to-server.sh` (línea con `--exclude='context/'`)
-- ✅ Mantiene el repositorio Git limpio y organizado
-- ✅ Solo se usa localmente para consulta y desarrollo
+-   ✅ Script `deploy-to-server.sh` (línea con `--exclude='context/'`)
+-   ✅ Mantiene el repositorio Git limpio y organizado
+-   ✅ Solo se usa localmente para consulta y desarrollo
 
 ## 📌 Propósito
 
@@ -33,4 +43,4 @@ Esta carpeta existe para:
 
 ---
 
-**Última actualización:** Noviembre 2025
+**Última actualización:** Diciembre 2025
