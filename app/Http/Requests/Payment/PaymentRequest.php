@@ -25,7 +25,7 @@ class PaymentRequest extends FormRequest
             'installment_id' => 'nullable|exists:installments,id',
             'amount' => 'required|numeric|min:0',
             'payment_date' => 'required|date',
-            'payment_method' => 'required|string',
+            'payment_method' => 'nullable|string',
             'status' => 'required|string|in:Abonado,Pagado,No Pagado,Devuelto,Aplicado',
             'payment_reference' => 'nullable|string',
             'credit_id' => 'required|exists:credits,id',
@@ -35,6 +35,11 @@ class PaymentRequest extends FormRequest
             'client_created_at' => 'nullable|date',
             'client_timezone' => 'nullable|string',
         ];
+
+        // Si el monto es mayor a 0, requerir payment_method
+        if ($this->input('amount') > 0) {
+            $rules['payment_method'] = 'required|string';
+        }
 
         if ($this->isMethod('put')) {
             $rules['installment_id'] = 'nullable|exists:installments,id';
