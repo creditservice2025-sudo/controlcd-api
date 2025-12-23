@@ -252,9 +252,13 @@ class SellerService
 
             $routes = Seller::with([
                 'user:id,name',
+                // FILTRO ORIGINAL: Solo sesiones activas (sin logout)
+                // 'user.sessionLogs' => function ($q) use ($today) {
+                //     $q->whereDate('login_at', $today)
+                //         ->whereNull('logout_at');
+                // },
                 'user.sessionLogs' => function ($q) use ($today) {
-                    $q->whereDate('login_at', $today)
-                        ->whereNull('logout_at');
+                    $q->whereDate('login_at', $today);
                 },
                 'city:id,name,country_id',
                 'city.country:id,name'
@@ -311,9 +315,14 @@ class SellerService
                 $routes->where('user_id', $sellerId);
             }
 
+            // FILTRO ORIGINAL: Solo rutas con sesiones activas (sin logout)
+            // $routesList = $routes->whereHas('user.sessionLogs', function ($q) use ($today) {
+            //     $q->whereDate('login_at', $today)
+            //         ->whereNull('logout_at');
+            // })->get([
+
             $routesList = $routes->whereHas('user.sessionLogs', function ($q) use ($today) {
-                $q->whereDate('login_at', $today)
-                    ->whereNull('logout_at');
+                $q->whereDate('login_at', $today);
             })->get([
                         'id',
                         'user_id',
