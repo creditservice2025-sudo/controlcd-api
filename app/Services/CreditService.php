@@ -779,15 +779,66 @@ class CreditService
     public function show($creditId)
     {
         try {
-            $credit = Credit::with(['client', 'guarantor', 'route'])->find($creditId);
+            $credit = Credit::with(['client', 'guarantor', 'seller', 'installments', 'payments'])->find($creditId);
 
             if (!$credit) {
                 return $this->errorResponse('El crédito no existe.', 404);
             }
 
+            // Calcular estadísticas de cuotas
+            $installments = $credit->installments ?? collect();
+            $paidInstallments = $installments->where('status', 'Pagado');
+            $pendingInstallments = $installments->where('status', '!=', 'Pagado');
+            $today = now()->format('Y-m-d');
+            $overdueInstallments = $pendingInstallments->filter(function ($inst) use ($today) {
+                return $inst->due_date < $today;
+            });
+
+            // Calcular cuotas adelantadas (pagadas antes de su fecha de vencimiento)
+            $advancedInstallments = $paidInstallments->filter(function ($inst) {
+                if (!$inst->paid_at)
+                    return false;
+                $paidDate = \Carbon\Carbon::parse($inst->paid_at)->format('Y-m-d');
+                return $paidDate < $inst->due_date;
+            });
+
+            // Contar abonos (pagos parciales)
+            $partialPaymentsCount = $credit->payments->where('status', 'Abonado')->count();
+
+            // Calcular montos
+            $totalPaid = $credit->payments->sum('amount') ?? 0;
+            $totalInterest = ($credit->credit_value * $credit->total_interest) / 100;
+            $totalAmount = $credit->credit_value + $totalInterest;
+            $installmentAmount = $credit->number_installments > 0
+                ? $totalAmount / $credit->number_installments
+                : 0;
+
+            // Calcular cuotas pagadas vs abonadas
+            $totalPartial = $paidInstallments->sum('paid_amount') ?? 0;
+
+            // Fecha de última cuota (fecha límite)
+            $lastInstallment = $installments->sortByDesc('due_date')->first();
+            $endDate = $lastInstallment ? $lastInstallment->due_date : null;
+
+            // Agregar información adicional al crédito
+            $creditData = $credit->toArray();
+            $creditData['end_date'] = $endDate;
+            $creditData['installment_amount'] = round($installmentAmount, 2);
+            $creditData['total_paid'] = round($totalPaid, 2);
+            $creditData['total_partial'] = round($totalPartial, 2);
+            // Calcular pendiente por pagar (Total a pagar - Total pagado)
+            $remainingAmount = $totalAmount - $totalPaid;
+            $creditData['remaining_amount'] = round(max($remainingAmount, 0), 2);
+            $creditData['paid_installments_count'] = $paidInstallments->count();
+            // Cuotas pendientes = solo las futuras (no incluye las atrasadas)
+            $creditData['pending_installments_count'] = $pendingInstallments->count() - $overdueInstallments->count();
+            $creditData['overdue_installments_count'] = $overdueInstallments->count();
+            $creditData['advanced_installments_count'] = $advancedInstallments->count();
+            $creditData['partial_payments_count'] = $partialPaymentsCount;
+
             return $this->successResponse([
                 'success' => true,
-                'data' => $credit
+                'data' => $creditData
             ]);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
