@@ -145,16 +145,16 @@ class PaymentService
                         'payment_reference' => $params['payment_reference'] ?: 'No pagó',
                         'latitude' => $params['latitude'],
                         'longitude' => $params['longitude'],
-                        
+
                         // TIMESTAMPS TÉCNICOS (auditoría)
                         'created_at' => $serverNow,
                         'updated_at' => $serverNow,
-                        
+
                         // TIMESTAMPS DE NEGOCIO (operaciones)
                         'business_timestamp' => $businessTimestampUtc,
                         'business_date' => $businessDate,
                         'business_timezone' => $clientTimezone,
-                        
+
                         // COMPATIBILIDAD (mantener por ahora)
                         'payment_date' => $businessDate,
                         'client_timezone' => $clientTimezone,
@@ -222,16 +222,16 @@ class PaymentService
                     'payment_reference' => $params['payment_reference'] ?: '',
                     'latitude' => $params['latitude'],
                     'longitude' => $params['longitude'],
-                    
+
                     // TIMESTAMPS TÉCNICOS (auditoría)
                     'created_at' => $serverNow,
                     'updated_at' => $serverNow,
-                    
+
                     // TIMESTAMPS DE NEGOCIO (operaciones)
                     'business_timestamp' => $businessTimestampUtc,
                     'business_date' => $businessDate,
                     'business_timezone' => $clientTimezone,
-                    
+
                     // COMPATIBILIDAD (mantener por ahora)
                     'payment_date' => $businessDate,
                     'client_timezone' => $clientTimezone,
@@ -345,8 +345,8 @@ class PaymentService
                         'payment_id' => $payment->id,
                         'user_id' => $user->id,
                         'path' => $imagePath,
-                        'created_at' => $params['created_at'] ?? $nowUtc,
-                        'updated_at' => $params['updated_at'] ?? $nowUtc
+                        'created_at' => $params['created_at'] ?? $serverNow,
+                        'updated_at' => $params['updated_at'] ?? $serverNow
                     ]);
                 }
 
@@ -498,9 +498,9 @@ class PaymentService
             DB::statement('SET SESSION group_concat_max_len = 1000000');
 
             $paymentsQuery = Payment::leftJoin('payment_installments', function ($join) {
-                    $join->on('payments.id', '=', 'payment_installments.payment_id')
-                        ->whereNull('payment_installments.deleted_at');
-                })
+                $join->on('payments.id', '=', 'payment_installments.payment_id')
+                    ->whereNull('payment_installments.deleted_at');
+            })
                 ->leftJoin('installments', 'payment_installments.installment_id', '=', 'installments.id')
                 ->leftJoin('payment_installments as deleted_payment_installments', function ($join) {
                     $join->on('payments.id', '=', 'deleted_payment_installments.payment_id')
