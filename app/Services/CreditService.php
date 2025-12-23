@@ -806,15 +806,14 @@ class CreditService
             $partialPaymentsCount = $credit->payments->where('status', 'Abonado')->count();
 
             // Calcular montos
-            $totalPaid = $credit->payments->sum('amount') ?? 0;
+            $totalPaid = $credit->payments->where('status', 'Pagado')->sum('amount') ?? 0;
+            $totalPartial = $credit->payments->where('status', 'Abonado')->sum('amount') ?? 0;
+
             $totalInterest = ($credit->credit_value * $credit->total_interest) / 100;
             $totalAmount = $credit->credit_value + $totalInterest;
             $installmentAmount = $credit->number_installments > 0
                 ? $totalAmount / $credit->number_installments
                 : 0;
-
-            // Calcular cuotas pagadas vs abonadas
-            $totalPartial = $paidInstallments->sum('paid_amount') ?? 0;
 
             // Fecha de última cuota (fecha límite)
             $lastInstallment = $installments->sortByDesc('due_date')->first();
@@ -826,8 +825,8 @@ class CreditService
             $creditData['installment_amount'] = round($installmentAmount, 2);
             $creditData['total_paid'] = round($totalPaid, 2);
             $creditData['total_partial'] = round($totalPartial, 2);
-            // Calcular pendiente por pagar (Total a pagar - Total pagado)
-            $remainingAmount = $totalAmount - $totalPaid;
+            // Calcular pendiente por pagar (Total a pagar - Total pagado - Total abonado)
+            $remainingAmount = $totalAmount - $totalPaid - $totalPartial;
             $creditData['remaining_amount'] = round(max($remainingAmount, 0), 2);
             $creditData['paid_installments_count'] = $paidInstallments->count();
             // Cuotas pendientes = solo las futuras (no incluye las atrasadas)
