@@ -1693,7 +1693,7 @@ class ClientService
                             $q->whereDate('credits.first_quota_date', '<', $todayLocal);
                         })
                         ->orWhere(function ($q) use ($todayLocal) {
-                            $q->whereDate('credits.created_at', '<', $todayLocal)
+                            $q->whereDate('credits.created_at', '<=', $todayLocal)
                                 ->whereDate('credits.first_quota_date', '>', $todayLocal);
                         });
                 });
