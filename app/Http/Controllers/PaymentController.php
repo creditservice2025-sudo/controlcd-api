@@ -161,7 +161,7 @@ class PaymentController extends Controller
                 'payments.payment_method',
                 DB::raw('SUM(payments.amount) as total')
             )
-            ->where('payments.payment_date', $date)
+            ->where('payments.business_date', $date)
             ->whereNull('payments.deleted_at')
             ->whereNull('credits.deleted_at')
             ->whereNull('clients.deleted_at');
@@ -170,7 +170,7 @@ class PaymentController extends Controller
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
             ->join('clients', 'credits.client_id', '=', 'clients.id')
             ->select(DB::raw('MIN(payments.created_at) as first_payment_date'))
-            ->where('payments.payment_date', $date)
+            ->where('payments.business_date', $date)
             ->whereNull('payments.deleted_at')
             ->whereNull('credits.deleted_at')
             ->whereNull('clients.deleted_at');

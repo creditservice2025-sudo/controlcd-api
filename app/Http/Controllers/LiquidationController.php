@@ -858,7 +858,7 @@ class LiquidationController extends Controller
                 DB::raw('SUM(payments.amount) as total')
             )
             ->whereNull('payments.deleted_at')
-            ->where('payments.payment_date', $formattedDate)
+            ->where('payments.business_date', $formattedDate)
             ->where('credits.seller_id', $sellerId)
             ->whereIn('payments.status', ['Pagado', 'Aprobado', 'Abonado'])
             ->groupBy('payments.payment_method');
@@ -867,7 +867,7 @@ class LiquidationController extends Controller
             ->join('credits', 'payments.credit_id', '=', 'credits.id')
             ->select(DB::raw('MIN(payments.created_at) as first_payment_date'))
             ->whereNull('payments.deleted_at')
-            ->where('payments.payment_date', $formattedDate);
+            ->where('payments.business_date', $formattedDate);
 
         if ($sellerId) {
             $firstPaymentQuery->where('credits.seller_id', $sellerId);
