@@ -1006,9 +1006,9 @@ class PaymentService
             $timezone = $request->has('timezone') ? $request->get('timezone') : null;
 
             $today = Carbon::now($timezone)->startOfDay();
-            $paymentDate = Carbon::parse($payment->created_at)->setTimezone($timezone)->startOfDay();
+            $paymentDate = Carbon::parse($payment->business_date);
 
-            if (!$paymentDate->equalTo($today)) {
+            if ($paymentDate->format('Y-m-d') !== $today->format('Y-m-d')) {
                 throw new \Exception('Solo se pueden eliminar pagos creados el día de hoy.');
             }
 
