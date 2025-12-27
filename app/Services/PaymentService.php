@@ -1026,7 +1026,7 @@ class PaymentService
 
             // Validación adicional: Verificar si hay pagos posteriores que dependan de este
             $laterPayments = Payment::where('credit_id', $payment->credit_id)
-                ->where('created_at', '>', $payment->created_at)
+                ->where('business_date', '>', $payment->business_date)
                 ->exists();
 
             if ($laterPayments) {
