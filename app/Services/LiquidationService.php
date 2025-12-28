@@ -38,6 +38,17 @@ class LiquidationService
         }
         $validated = $this->validateData($data);
 
+        // Validar si la fecha es permitida (domingo o feriado)
+        $seller = Seller::with('city.country')->find($validated['seller_id']);
+        $countryId = $seller?->city?->country_id;
+        $allowedCheck = $this->checkIfDateIsAllowed($validated['date'], $countryId);
+
+        if (!$allowedCheck['allowed']) {
+            throw ValidationException::withMessages([
+                'date' => [$allowedCheck['reason']]
+            ]);
+        }
+
         return DB::transaction(function () use ($validated) {
             $this->calculateFields($validated);
             $liquidation = Liquidation::create($validated);
@@ -503,6 +514,13 @@ class LiquidationService
     public function getLiquidationData($sellerId, $date, $userId, $timezone = null)
     {
         $tz = $timezone ?: self::TIMEZONE;
+
+        // Obtener el país del vendedor para la validación de feriados
+        $seller = Seller::with('city.country')->find($sellerId);
+        $countryId = $seller?->city?->country_id;
+        
+        $allowedCheck = $this->checkIfDateIsAllowed($date, $countryId);
+
         $startUTC = Carbon::parse($date, $tz)->startOfDay()->setTimezone('UTC');
         $endUTC   = Carbon::parse($date, $tz)->endOfDay()->setTimezone('UTC');
 
@@ -622,6 +640,9 @@ class LiquidationService
             'liquidation_start_date' => $dailyTotals['liquidation_start_date'],
             'total_crossed_credits' => $dailyTotals['total_crossed_credits'],
             'total_renewal_disbursed' => $dailyTotals['total_renewal_disbursed'],
+            'allowed' => $allowedCheck['allowed'],
+            'not_allowed_reason' => $allowedCheck['reason'] ?? null,
+            'last_liquidation_date' => $this->getLastLiquidationDate($sellerId),
         ];
     }
 
@@ -1194,7 +1215,9 @@ class LiquidationService
                 return in_array(optional($audit->user)->role_id, [5]);
             })->values(),
             'end_date' => $liquidation->end_date,
-
+            'allowed' => true, // Si ya existe, se asume permitido o ya procesado
+            'not_allowed_reason' => null,
+            'last_liquidation_date' => $this->getLastLiquidationDate($liquidation->seller_id),
         ];
     }
     protected function formatLiquidationDetails($liquidation)
@@ -1777,5 +1800,54 @@ class LiquidationService
             'ingresos_listado' => $ingresosPaginados,
             'liquidacion' => $liquidation,
         ];
+    }
+
+    /**
+     * Verifica si una fecha es domingo o feriado para un país.
+     *
+     * @param string $date
+     * @param int $countryId
+     * @return array
+     */
+    public function checkIfDateIsAllowed($date, $countryId)
+    {
+        $carbonDate = Carbon::parse($date);
+        
+        // 1. Verificar si es domingo
+        if ($carbonDate->isSunday()) {
+            return [
+                'allowed' => false,
+                'reason' => 'No se permiten liquidaciones los días domingo.'
+            ];
+        }
+
+        // 2. Verificar si es feriado
+        $holiday = \App\Models\Holiday::where('country_id', $countryId)
+            ->whereDate('date', $date)
+            ->first();
+
+        if ($holiday) {
+            return [
+                'allowed' => false,
+                'reason' => "No se permiten liquidaciones en días feriados: {$holiday->description}."
+            ];
+        }
+
+        return ['allowed' => true];
+    }
+
+    /**
+     * Obtiene la fecha de la última liquidación de un vendedor.
+     *
+     * @param int $sellerId
+     * @return string|null
+     */
+    public function getLastLiquidationDate($sellerId)
+    {
+        $lastLiquidation = Liquidation::where('seller_id', $sellerId)
+            ->orderBy('date', 'desc')
+            ->first();
+
+        return $lastLiquidation ? $lastLiquidation->date : null;
     }
 }

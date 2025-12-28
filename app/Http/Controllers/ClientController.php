@@ -542,6 +542,14 @@ class ClientController extends Controller
                 return $this->errorResponse('No puede consultar la liquidación porque la anterior no está aprobada.', 422);
             }
             $result = $this->clientService->getLiquidationWithAllClients($sellerId, $date, $userId, $timezone);
+
+            // Verificar si la fecha es permitida (domingos y feriados)
+            $liquidationService = new \App\Services\LiquidationService();
+            $allowedCheck = $liquidationService->checkIfDateIsAllowed($date, $seller->country_id);
+
+            $result['allowed'] = $allowedCheck['allowed'];
+            $result['not_allowed_reason'] = $allowedCheck['reason'];
+
             return response()->json([
                 'success' => true,
                 'message' => 'Clientes obtenidos exitosamente',

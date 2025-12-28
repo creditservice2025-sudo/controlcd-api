@@ -91,6 +91,9 @@ Route::middleware('auth:api')->group(function () {
         Route::post('/countries', [CountriesController::class, 'store']);
         Route::put('/countries/{id}', [CountriesController::class, 'update']);
 
+        // Feriados
+        Route::apiResource('holidays', \App\Http\Controllers\Api\HolidayController::class);
+
         //route roles
         Route::apiResource('roles', RoleController::class);
         Route::post('/roles/{role}/permisos', [RolePermissionController::class, 'assignPermissions']);
