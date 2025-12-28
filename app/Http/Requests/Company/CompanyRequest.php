@@ -39,7 +39,9 @@ class CompanyRequest extends FormRequest
                 'max:255',
                 Rule::unique('users', 'email')->ignore($userId)
             ],
-            'password' => $companyId ? 'nullable|string|min:6' : 'required|string|min:6',
+            'password' => $companyId 
+                ? 'nullable|string|min:8|regex:/[A-Z]/|regex:/[0-9]/|regex:/[@$!%*?&]/' 
+                : 'required|string|min:8|regex:/[A-Z]/|regex:/[0-9]/|regex:/[@$!%*?&]/|confirmed',
             
             'code' => [
                 'required',
@@ -59,6 +61,12 @@ class CompanyRequest extends FormRequest
             'company_email' => 'nullable|email|max:255',
             'logo' => 'nullable|image|mimes:jpeg,png,jpg,gif,svg|max:2048',
             'timezone' => 'nullable|string',
+            
+            // Campos de plan
+            'plan_id' => 'nullable|exists:plans,id',
+            'plan_type' => 'nullable|in:free,full',
+            'plan_start_date' => 'nullable|date',
+            'plan_end_date' => 'nullable|date|after_or_equal:plan_start_date',
         ];
     }
 
@@ -78,7 +86,9 @@ class CompanyRequest extends FormRequest
             'code.unique' => 'El código ya se encuentra registrado',
             'ruc.unique' => 'El RUC ya se encuentra registrado',
             'dni.unique' => 'El Documento ya se encuentra registrado',
-            'password.min' => 'La contraseña debe tener al menos 6 caracteres',
+            'password.min' => 'La contraseña debe tener al menos 8 caracteres',
+            'password.regex' => 'La contraseña debe incluir mayúsculas, números y caracteres especiales (@$!%*?&)',
+            'password.confirmed' => 'Las contraseñas no coinciden',
             'logo.mimes' => 'El archivo debe ser una imagen',
             'logo.max' => 'El archivo debe ser menor a 2MB',
             'logo.image' => 'El archivo debe ser una imagen',
@@ -88,6 +98,8 @@ class CompanyRequest extends FormRequest
             'password.required' => 'La contraseña es requerida',
             'dni.required' => 'El Documento es requerido',
             'code.required' => 'El código es requerido',
+            'plan_type.in' => 'El tipo de plan debe ser free o full',
+            'plan_end_date.after_or_equal' => 'La fecha de fin debe ser posterior a la fecha de inicio',
         ];
     }
 }

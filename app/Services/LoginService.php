@@ -83,13 +83,16 @@ class LoginService
                 ]);
             }
 
-            $timezone = request()->has('timezone') ? request()->get('timezone') : null;
-            $loginAt = $timezone ? Carbon::now($timezone) : now();
+            $loginAt = now();
             SessionLog::create([
-                'user_id'    => $user->id,
-                'login_at'   => $loginAt,
-                'ip'         => request()->ip(),
-                'user_agent' => request()->header('User-Agent'),
+                'user_id'     => $user->id,
+                'login_at'    => $loginAt,
+                'ip'          => request()->ip(),
+                'user_agent'  => request()->header('User-Agent'),
+                'app_version' => request()->get('app_version'),
+                'device_info' => request()->get('device_info'),
+                'latitude'    => request()->get('latitude'),
+                'longitude'   => request()->get('longitude'),
             ]);
 
             return $this->successResponse([
@@ -116,8 +119,7 @@ class LoginService
                 throw new \Exception('Invalid user instance');
             }
 
-            $timezone = request()->has('timezone') ? request()->get('timezone') : null;
-            $logoutAt = $timezone ? Carbon::now($timezone) : now();
+            $logoutAt = now();
             SessionLog::where('user_id', $user->id)
                 ->whereNull('logout_at')
                 ->latest()

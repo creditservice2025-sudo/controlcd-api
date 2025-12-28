@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 class City extends Model
 {
     use SoftDeletes;
-    protected $fillable = ['name', 'country_id', 'status'];
+    protected $fillable = ['name', 'country_id', 'status', 'company_id'];
 
     public function country()
     {

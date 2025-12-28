@@ -19,6 +19,7 @@ return Application::configure(basePath: dirname(__DIR__))
 
         $middleware->alias([
             'verified' => \App\Http\Middleware\EnsureEmailIsVerified::class,
+            'company.status' => \App\Http\Middleware\CheckCompanyStatus::class,
         ]);
 
         $middleware->validateCsrfTokens(except: [
@@ -30,6 +31,7 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withExceptions(function (Exceptions $exceptions) {
     })
     ->withSchedule(function (Schedule $schedule) {
+        $schedule->command('company:check-expiration')->daily();
         $schedule->command('liquidation:auto-daily')->dailyAt('23:55');
         $schedule->command('liquidation:historical')->dailyAt('23:55');
         $schedule->command('liquidation:notify-pending')->dailyAt('21:52');

@@ -12,6 +12,10 @@ class SessionLog extends Model
         'logout_at',
         'ip',
         'user_agent',
+        'app_version',
+        'device_info',
+        'latitude',
+        'longitude',
     ];
 
     public function user()

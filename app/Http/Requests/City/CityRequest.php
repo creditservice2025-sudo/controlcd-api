@@ -26,10 +26,12 @@ class CityRequest extends FormRequest
                 'string',
                 'max:255',
                 Rule::unique('cities')->where(function ($query) {
-                    return $query->where('country_id', $this->country_id);
+                    return $query->where('country_id', $this->country_id)
+                                 ->where('company_id', $this->company_id);
                 })
             ],
             'country_id' => 'required|exists:countries,id',
+            'company_id' => 'nullable|exists:companies,id',
             'status' => 'nullable|string|in:ACTIVE,INACTIVE'
         ];
 

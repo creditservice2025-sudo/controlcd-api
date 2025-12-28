@@ -18,7 +18,23 @@ class CitiesService
     public function getCitiesSelect()
     {
         try {
-            $routes = City::where('status', 'ACTIVE')->select('id', 'name')->get();
+            $user = Auth::user();
+            $companyId = $user->company->id ?? null;
+            if (!$companyId && $user->seller) {
+                $companyId = $user->seller->company_id;
+            }
+
+            $routes = City::where('status', 'ACTIVE')
+                ->when($user->role_id != 1, function ($q) use ($companyId) {
+                    $q->where(function ($sq) use ($companyId) {
+                        $sq->whereNull('company_id');
+                        if ($companyId) {
+                            $sq->orWhere('company_id', $companyId);
+                        }
+                    });
+                })
+                ->select('id', 'name')
+                ->get();
 
             return $this->successResponse([
                 'success' => true,
@@ -33,7 +49,21 @@ class CitiesService
     public function getCities(string $search, int $perPage)
     {
         try {
-            $query = City::with('country');
+            $user = Auth::user();
+            $companyId = $user->company->id ?? null;
+            if (!$companyId && $user->seller) {
+                $companyId = $user->seller->company_id;
+            }
+
+            $query = City::with('country')
+                ->when($user->role_id != 1, function ($q) use ($companyId) {
+                    $q->where(function ($sq) use ($companyId) {
+                        $sq->whereNull('company_id');
+                        if ($companyId) {
+                            $sq->orWhere('company_id', $companyId);
+                        }
+                    });
+                });
 
             if (!empty($search)) {
                 $query->where('name', 'like', "%{$search}%");
@@ -122,7 +152,23 @@ class CitiesService
     public function getCitiesByCountry($country_id, Request $request)
     {
         try {
+            $user = Auth::user();
+            $companyId = $user->company->id ?? null;
+
+            // Si es vendedor, buscar el company_id de su vendedor
+            if (!$companyId && $user->seller) {
+                $companyId = $user->seller->company_id;
+            }
+
             $query = City::where('country_id', $country_id)
+                ->when($user->role_id != 1, function ($q) use ($companyId) {
+                    $q->where(function ($sq) use ($companyId) {
+                        $sq->whereNull('company_id');
+                        if ($companyId) {
+                            $sq->orWhere('company_id', $companyId);
+                        }
+                    });
+                })
                 ->with('country')
                 ->orderBy('name');
 

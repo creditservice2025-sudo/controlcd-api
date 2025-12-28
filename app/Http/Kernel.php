@@ -41,9 +41,7 @@ class Kernel extends HttpKernel
     protected $routeMiddleware = [
         'auth' => \App\Http\Middleware\Authenticate::class,
         'throttle' => \Illuminate\Routing\Middleware\ThrottleRequests::class,
-      /*   'permission' => \Spatie\Permission\Middlewares\PermissionMiddleware::class,
-        'role' => \Spatie\Permission\Middlewares\RoleMiddleware::class,
-        'permission_or' => \Spatie\Permission\Middlewares\PermissionOrMiddleware::class,
-        'role_or' => \Spatie\Permission\Middlewares\RoleOrMiddleware::class, */
+        'role_or_permission' => \Spatie\Permission\Middlewares\RoleOrPermissionMiddleware::class,
+        'company.status' => \App\Http\Middleware\CheckCompanyStatus::class,
     ];
 }

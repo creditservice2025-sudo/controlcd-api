@@ -140,6 +140,40 @@ class SellerLiquidationsDetailExport implements FromCollection, WithHeadings, Wi
                     'fill' => ['fillType' => 'solid', 'startColor' => ['rgb' => '2563EB']],
                     'alignment' => ['horizontal' => 'center', 'vertical' => 'center'],
                 ]);
+
+                // Agregar fila de totales al final
+                $totalRow = $highestRow + 1;
+                $sheet->setCellValue('A' . $totalRow, 'TOTALES');
+                $sheet->setCellValue('B' . $totalRow, '');
+                
+                // Fórmulas de suma para cada columna numérica
+                $sheet->setCellValue('C' . $totalRow, '=SUM(C3:C' . $highestRow . ')');
+                $sheet->setCellValue('D' . $totalRow, '=SUM(D3:D' . $highestRow . ')');
+                $sheet->setCellValue('E' . $totalRow, '=SUM(E3:E' . $highestRow . ')');
+                $sheet->setCellValue('F' . $totalRow, '=SUM(F3:F' . $highestRow . ')');
+                $sheet->setCellValue('G' . $totalRow, '=SUM(G3:G' . $highestRow . ')');
+                $sheet->setCellValue('H' . $totalRow, '=SUM(H3:H' . $highestRow . ')');
+                $sheet->setCellValue('I' . $totalRow, '=SUM(I3:I' . $highestRow . ')');
+                $sheet->setCellValue('J' . $totalRow, '=SUM(J3:J' . $highestRow . ')');
+                $sheet->setCellValue('K' . $totalRow, '=SUM(K3:K' . $highestRow . ')');
+                $sheet->setCellValue('L' . $totalRow, '=SUM(L3:L' . $highestRow . ')');
+
+                // Estilo para la fila de totales
+                $sheet->getStyle('A' . $totalRow . ':' . $highestColumn . $totalRow)->applyFromArray([
+                    'font' => ['bold' => true, 'color' => ['rgb' => 'FFFFFF']],
+                    'fill' => ['fillType' => 'solid', 'startColor' => ['rgb' => '1E40AF']],
+                    'alignment' => ['horizontal' => 'center', 'vertical' => 'center'],
+                ]);
+
+                $sheet->getStyle('C' . $totalRow . ':L' . $totalRow)
+                      ->getNumberFormat()
+                      ->setFormatCode('#,##0.00');
+
+                $sheet->getRowDimension($totalRow)->setRowHeight(25);
+
+                // Bordes para la fila de totales
+                $sheet->getStyle('A' . $totalRow . ':' . $highestColumn . $totalRow)
+                      ->getBorders()->getAllBorders()->setBorderStyle(\PhpOffice\PhpSpreadsheet\Style\Border::BORDER_THIN);
             }
         ];
     }

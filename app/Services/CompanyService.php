@@ -106,6 +106,19 @@ class CompanyService
                 $logoPath = Helper::uploadFile($request->file('logo'), 'companies/logos');
             }
 
+            $planId = $params['plan_id'] ?? null;
+            $planStartDate = null;
+            $planEndDate = null;
+            $status = 'active';
+
+            if ($planId) {
+                $plan = \App\Models\Plan::find($planId);
+                if ($plan) {
+                    $planStartDate = now();
+                    $planEndDate = now()->addDays($plan->duration_days);
+                }
+            }
+
             $company = Company::create([
                 'user_id' => $user->id,
                 'code' => $params['code'],
@@ -114,6 +127,10 @@ class CompanyService
                 'phone' => $params['company_phone'] ?? '',
                 'email' => $params['company_email'],
                 'logo_path' => $logoPath,
+                'plan_id' => $planId,
+                'status' => $status,
+                'plan_start_date' => $planStartDate,
+                'plan_end_date' => $planEndDate,
                 'created_at' => $params['created_at'] ?? null,
                 'updated_at' => $params['updated_at'] ?? null
             ]);
@@ -171,7 +188,7 @@ class CompanyService
                 $params['logo_path'] = $logoPath;
             }
 
-            $company->update([
+            $updateData = [
                 'code' => $params['code'],
                 'ruc' => $params['ruc'],
                 'name' => $params['company_name'],
@@ -179,7 +196,19 @@ class CompanyService
                 'email' => $params['company_email'],
                 'logo_path' => $params['logo_path'] ?? $company->logo_path,
                 'updated_at' => $params['updated_at'] ?? null
-            ]);
+            ];
+
+            if (isset($params['plan_id']) && $params['plan_id'] != $company->plan_id) {
+                $plan = \App\Models\Plan::find($params['plan_id']);
+                if ($plan) {
+                    $updateData['plan_id'] = $plan->id;
+                    $updateData['plan_start_date'] = now();
+                    $updateData['plan_end_date'] = now()->addDays($plan->duration_days);
+                    $updateData['status'] = 'active';
+                }
+            }
+
+            $company->update($updateData);
 
             DB::commit();
 

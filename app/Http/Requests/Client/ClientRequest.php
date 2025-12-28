@@ -71,20 +71,31 @@ class ClientRequest extends FormRequest
         }
 
         if ($this->isMethod('put')) {
-            $clientId = $this->route('id');
-            if (!is_numeric($clientId)) {
+            $clientId = $this->route('id') ?? $this->route('clientId');
+            
+            // Si es UUID, buscar el ID numérico
+            if ($clientId && !is_numeric($clientId)) {
                 $client = \App\Models\Client::where('uuid', $clientId)->first();
                 $clientId = $client ? $client->id : null;
             }
+            
+            // Si aún no tenemos ID, intentar obtenerlo del request body
+            if (!$clientId && $this->has('id')) {
+                $clientId = $this->input('id');
+            }
+
+            // Construir regla de unicidad excluyendo el cliente actual
+            $dniRule = $clientId ? 'nullable|numeric|unique:clients,dni,' . $clientId : 'nullable|numeric|unique:clients,dni';
+            $emailRule = $clientId ? 'nullable|email|unique:clients,email,' . $clientId : 'nullable|email|unique:clients,email';
 
             $rules = [
                 'name' => 'nullable|string|max:255',
                 'address' => 'nullable|string',
                 'gps_address' => 'nullable|string',
                 'gps_geolocalization' => 'nullable|array',
-                'dni' => 'nullable|numeric|unique:clients,dni,' . $clientId,
+                'dni' => $dniRule,
                 'phone' => 'nullable|numeric',
-                'email' => 'nullable|email|unique:clients,email,' . $clientId,
+                'email' => $emailRule,
                 'geolocation' => 'nullable|array',
                 'geolocation.latitude' => 'nullable|numeric',
                 'geolocation.longitude' => 'nullable|numeric',

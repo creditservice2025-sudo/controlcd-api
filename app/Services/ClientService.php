@@ -1075,6 +1075,23 @@ class ClientService
         return $result;
     }
 
+    private function paymentsSumByCreditUpToDate(array $creditIds, string $date): array
+    {
+        if (empty($creditIds))
+            return [];
+        $rows = Payment::whereIn('credit_id', $creditIds)
+            ->where('business_date', '<=', $date)
+            ->whereIn('status', ['Pagado', 'Abonado'])
+            ->select('credit_id', DB::raw('SUM(amount) as total'))
+            ->groupBy('credit_id')
+            ->get();
+
+        $result = [];
+        foreach ($rows as $r)
+            $result[$r->credit_id] = (float) $r->total;
+        return $result;
+    }
+
     public function getClientsBySeller($sellerId, $search = '', $companyId = null, $status = null)
     {
         try {
@@ -1695,6 +1712,10 @@ class ClientService
                         ->orWhere(function ($q) use ($todayLocal) {
                             $q->whereDate('credits.created_at', '<', $todayLocal)
                                 ->whereDate('credits.first_quota_date', '>', $todayLocal);
+                        })
+                        ->orWhere(function ($q) use ($todayLocal) {
+                            // Incluir créditos creados en el día seleccionado
+                            $q->whereDate('credits.created_at', $todayLocal);
                         });
                 });
 
@@ -1780,8 +1801,8 @@ class ClientService
             // Pre-aggregate payment summary (sum per credit_id and status) in single query
             $creditIds = $credits->pluck('id')->unique()->values()->all();
 
-            // Historical paid sum per credit (all dates). Needed to compute correct pending balance.
-            $paymentsSumAllByCredit = $this->paymentsSumByCredit($creditIds);
+            // Historical paid sum per credit up to selected date. Needed to compute correct pending balance.
+            $paymentsSumAllByCredit = $this->paymentsSumByCreditUpToDate($creditIds, $todayLocal);
 
             $paymentSummaryRows = Payment::whereIn('credit_id', $creditIds)
                 ->where('business_date', $todayLocal)
@@ -1815,7 +1836,7 @@ class ClientService
 
             // Transform credits exactly preserving the output shape expected by the front
 
-            $transformedItems = $credits->map(function ($credit) use ($paymentSummary, $nowLocal, $renewalQuota, $paymentsTodayRows, $paymentsSumAllByCredit) {
+            $transformedItems = $credits->map(function ($credit) use ($paymentSummary, $nowLocal, $renewalQuota, $paymentsTodayRows, $paymentsSumAllByCredit, $todayLocal) {
                 $summary = $paymentSummary->get($credit->id, collect());
                 foreach ($summary as $item) {
                     $credit->{$item->status} = $item->total_amount;
@@ -1823,6 +1844,24 @@ class ClientService
 
                 // Sum of all payments (historical) for this credit.
                 $credit->payments_sum_all = (float) ($paymentsSumAllByCredit[$credit->id] ?? 0);
+                
+                // Calculate historical status: determine if credit was liquidated on or before the selected date
+                $paymentsUpToDate = Payment::where('credit_id', $credit->id)
+                    ->where('business_date', '<=', $todayLocal)
+                    ->whereIn('status', ['Pagado', 'Abonado'])
+                    ->sum('amount');
+                
+                $totalCreditWithInterest = $credit->credit_value + $credit->interest_value;
+                $wasLiquidatedByDate = $paymentsUpToDate >= $totalCreditWithInterest;
+                
+                // Override status with historical status if viewing past dates
+                if ($wasLiquidatedByDate && in_array($credit->status, ['Liquidado', 'Renovado'])) {
+                    // Credit is currently liquidated/renovated, check if it was already liquidated on selected date
+                    $credit->status = 'Liquidado';
+                } elseif (!$wasLiquidatedByDate && in_array($credit->status, ['Liquidado', 'Renovado'])) {
+                    // Credit is currently liquidated but wasn't on the selected date
+                    $credit->status = 'Activo';
+                }
 
                 // For performance: only include payments for the selected date ("pagos de hoy")
                 // The frontend uses payments_total to detect and manipulate today's payments.
@@ -1838,9 +1877,31 @@ class ClientService
                 });
 
                 $totalInstallments = $installments->count();
-                $remainingInstallments = $installments->filter(function ($installment) {
-                    return $installment->status !== 'Pagado';
-                })->count();
+                
+                // Calculate historical remaining installments based on amount paid up to selected date
+                // Use same calculation as frontend: credit_value + (credit_value * total_interest / 100)
+                $creditValue = (float) $credit->credit_value;
+                $totalInterestPercent = (float) ($credit->total_interest ?? 0);
+                $interestAmount = ($creditValue * $totalInterestPercent) / 100;
+                $totalCreditWithInterest = $creditValue + $interestAmount;
+                
+                $paidAmountUpToDate = (float) ($paymentsSumAllByCredit[$credit->id] ?? 0);
+                
+                // Calculate remaining based on pending balance
+                $pendingBalance = max(0, $totalCreditWithInterest - $paidAmountUpToDate);
+                $quotaAmount = $totalInstallments > 0 ? ($totalCreditWithInterest / $totalInstallments) : 0;
+                
+                if ($quotaAmount > 0 && $pendingBalance > 0) {
+                    // Calculate remaining installments based on pending balance
+                    $remainingInstallments = (int) ceil($pendingBalance / $quotaAmount);
+                    $remainingInstallments = max(0, min($remainingInstallments, $totalInstallments));
+                } else {
+                    // If no pending balance, no remaining installments
+                    $remainingInstallments = 0;
+                }
+                
+                // Expose remaining installments to frontend
+                $credit->remaining_installments = $remainingInstallments;
 
                 $credit->overdue_date = null;
                 $credit->days_overdue = null;

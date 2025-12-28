@@ -345,8 +345,8 @@ class PaymentService
                         'payment_id' => $payment->id,
                         'user_id' => $user->id,
                         'path' => $imagePath,
-                        'created_at' => $params['created_at'] ?? $nowUtc,
-                        'updated_at' => $params['updated_at'] ?? $nowUtc
+                        'created_at' => $params['created_at'] ?? $serverNow,
+                        'updated_at' => $params['updated_at'] ?? $serverNow
                     ]);
                 }
 

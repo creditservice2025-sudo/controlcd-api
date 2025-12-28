@@ -61,9 +61,20 @@ class SellerService
                 'updated_at' => $params['updated_at'] ?? null
             ]);
 
+            $cityId = $params['city_id'];
+            if (isset($params['new_city_name']) && !empty($params['new_city_name'])) {
+                $city = \App\Models\City::create([
+                    'name' => $params['new_city_name'],
+                    'country_id' => $params['country_id'],
+                    'company_id' => $params['company_id'],
+                    'status' => 'ACTIVE'
+                ]);
+                $cityId = $city->id;
+            }
+
             $seller = Seller::create([
                 'user_id' => $user->id,
-                'city_id' => $params['city_id'],
+                'city_id' => $cityId,
                 'address' => $params['address'] ?? null,
                 'company_id' => $params['company_id'],
                 'status' => 'ACTIVE',
@@ -164,8 +175,19 @@ class SellerService
                 'updated_at' => $params['updated_at'] ?? null
             ]);
 
+            $cityId = $params['city_id'];
+            if (isset($params['new_city_name']) && !empty($params['new_city_name'])) {
+                $city = \App\Models\City::create([
+                    'name' => $params['new_city_name'],
+                    'country_id' => $params['country_id'],
+                    'company_id' => $params['company_id'],
+                    'status' => 'ACTIVE'
+                ]);
+                $cityId = $city->id;
+            }
+
             $seller->update([
-                'city_id' => $params['city_id'],
+                'city_id' => $cityId,
                 'address' => $params['address'] ?? $seller->address,
                 'company_id' => $params['company_id'],
                 'routing_order' => $params['routing_order'] ?? $seller->routing_order,
@@ -248,18 +270,23 @@ class SellerService
             $user = Auth::user();
             $company = $user->company;
             $timezone = $request->get('timezone', 'America/Lima');
-            $today = Carbon::now($timezone)->format('Y-m-d');
+            $now = Carbon::now($timezone);
+            $today = $now->format('Y-m-d');
+            $startOfDay = $now->copy()->startOfDay()->setTimezone('UTC')->toDateTimeString();
+            $endOfDay = $now->copy()->endOfDay()->setTimezone('UTC')->toDateTimeString();
 
-            $routes = Seller::with([
-                'user:id,name',
-                'user.sessionLogs' => function ($q) use ($today) {
-                    $q->whereDate('login_at', $today)
-                        ->whereNull('logout_at');
-                },
-                'city:id,name,country_id',
-                'city.country:id,name'
-            ])
-                ->whereNull('deleted_at')
+            $routes = Seller::whereHas('user.sessionLogs', function ($q) use ($startOfDay, $endOfDay) {
+                $q->whereBetween('login_at', [$startOfDay, $endOfDay]);
+            })
+                ->with([
+                    'user:id,name',
+                    'user.sessionLogs' => function ($q) use ($startOfDay, $endOfDay) {
+                        $q->whereBetween('login_at', [$startOfDay, $endOfDay])
+                            ->orderBy('login_at', 'desc');
+                    },
+                    'city:id,name,country_id',
+                    'city.country:id,name'
+                ])
                 ->orderBy('created_at', 'desc');
 
             // Filtro para rol 11: solo sellers asociados en UserRoute
@@ -275,9 +302,20 @@ class SellerService
                     }
                     break;
                 case 2:
-                    $routes->where('company_id', $company->id);
+                    if ($company) {
+                        $routes->where('company_id', $company->id);
+                    } else {
+                        // Si no hay empresa, intentar buscar por el seller asociado si existe
+                        $seller = $user->seller;
+                        if ($seller) {
+                            $routes->where('company_id', $seller->company_id);
+                        } else {
+                            return $this->successResponse(['data' => []]);
+                        }
+                    }
                     break;
                 case 3:
+                case 5:
                     $routes->where('user_id', $user->id);
                     break;
                 default:
@@ -311,19 +349,16 @@ class SellerService
                 $routes->where('user_id', $sellerId);
             }
 
-            $routesList = $routes->whereHas('user.sessionLogs', function ($q) use ($today) {
-                $q->whereDate('login_at', $today)
-                    ->whereNull('logout_at');
-            })->get([
-                        'id',
-                        'user_id',
-                        'city_id',
-                        'company_id',
-                        'status',
-                        'created_at'
-                    ]);
+            $routesList = $routes->get([
+                'id',
+                'user_id',
+                'city_id',
+                'company_id',
+                'status',
+                'created_at'
+            ]);
 
-            $data = $routesList->map(function ($route) use ($today) {
+            $data = $routesList->map(function ($route) use ($today, $timezone) {
                 $liquidationToday = Liquidation::where('seller_id', $route->id)
                     ->where(DB::raw('DATE(date)'), $today)
                     ->first();
@@ -334,35 +369,26 @@ class SellerService
                 $closedBySellerToday = false;
                 $liquidationStatus = null;
 
-                // Buscar el primer pago del día para este vendedor
-                $firstPayment = $route->credits()
-                    ->whereHas('payments', function ($q) use ($today) {
-                        $q->whereDate('created_at', $today);
-                    })
-                    ->with([
-                        'payments' => function ($q) use ($today) {
-                            $q->whereDate('created_at', $today)->orderBy('created_at', 'asc');
-                        }
-                    ])
-                    ->get()
-                    ->pluck('payments')
-                    ->flatten()
-                    ->sortBy('created_at')
-                    ->first();
+                // Obtener el último log de sesión de hoy
+                $lastSession = $route->user?->sessionLogs->first();
 
                 if ($liquidationToday) {
                     $liquidationStatus = $liquidationToday->status;
-                    $liquidationOpen = $liquidationToday->date;
+                    $liquidationOpen = $liquidationToday->created_at;
 
                     $lastAudit = $liquidationToday->audits()
                         ->where('user_id', $route->user_id)
                         ->whereDate('created_at', $today)
+                        ->whereIn('action', ['updated', 'created'])
                         ->orderByDesc('created_at')
                         ->first();
-                    $liquidationClosed = $liquidationToday->end_date ?? null;
+                    
+                    // Priorizar la hora de la auditoría del vendedor (cierre real)
+                    $liquidationClosed = $lastAudit ? $lastAudit->created_at : ($liquidationToday->end_date ?? null);
+                    
                     if ($lastAudit) {
                         $liquidationAuditId = $lastAudit->id;
-                        $closedBySellerToday = $lastAudit->action === 'updated' || $lastAudit->action === 'created';
+                        $closedBySellerToday = true;
                     }
                 }
 
@@ -391,8 +417,6 @@ class SellerService
                     }
                 }
 
-                \Log::info($route->toArray());
-
                 return [
                     'route_id' => $route->id,
                     'country' => $route->city->country->name ?? null,
@@ -400,17 +424,24 @@ class SellerService
                     'seller_name' => $route->user->name ?? null,
                     'status' => $route->status,
                     'closed_today' => $closedBySellerToday,
-                    'liquidation_open' => $liquidationOpen,
-                    'liquidation_closed' => $liquidationClosed,
+                    'liquidation_open' => $liquidationOpen ? Carbon::parse($liquidationOpen)->setTimezone($timezone)->toDateTimeString() : null,
+                    'liquidation_closed' => $liquidationClosed ? Carbon::parse($liquidationClosed)->setTimezone($timezone)->toDateTimeString() : null,
                     'liquidation_audit_id' => $liquidationAuditId,
                     'liquidation_status' => $liquidationStatus,
                     'is_open' => $isOpen,
-                    'created_at' => $route->user->sessionLogs[0]->created_at ?? null,
-                    'session_logs' => $route->user && $route->user->sessionLogs ? $route->user->sessionLogs->map(function ($log) {
+                    'created_at' => $lastSession?->login_at ? Carbon::parse($lastSession->login_at)->setTimezone($timezone)->toDateTimeString() : null,
+                    'app_version' => $lastSession?->app_version ?? null,
+                    'device_info' => $lastSession?->device_info ?? null,
+                    'is_liquidation_in_progress' => $liquidationToday && !$closedBySellerToday,
+                    'session_logs' => $route->user && $route->user->sessionLogs ? $route->user->sessionLogs->map(function ($log) use ($timezone) {
                         return [
                             'id' => $log->id,
-                            'login_at' => $log->login_at,
-                            'logout_at' => $log->logout_at,
+                            'login_at' => $log->login_at ? Carbon::parse($log->login_at)->setTimezone($timezone)->toDateTimeString() : null,
+                            'logout_at' => $log->logout_at ? Carbon::parse($log->logout_at)->setTimezone($timezone)->toDateTimeString() : null,
+                            'app_version' => $log->app_version,
+                            'device_info' => $log->device_info,
+                            'latitude' => $log->latitude,
+                            'longitude' => $log->longitude,
                         ];
                     }) : [],
                 ];
