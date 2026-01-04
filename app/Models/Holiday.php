@@ -16,8 +16,19 @@ class Holiday extends Model
         'description',
     ];
 
+    protected $casts = [
+        'country_id' => 'integer',
+    ];
+
     public function country()
     {
         return $this->belongsTo(Country::class);
+    }
+
+    public function companiesWorking()
+    {
+        return $this->belongsToMany(Company::class, 'company_holiday_seller')
+                    ->withPivot('seller_id')
+                    ->withTimestamps();
     }
 }

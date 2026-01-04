@@ -7,23 +7,37 @@ use Exception;
 
 trait ApiResponse
 {
-    public function successResponse($data, $code = Response::HTTP_OK)
+    public function successResponse($data, $message = null, $code = Response::HTTP_OK)
     {
-        return response($data, $code)->header('Content-Type', 'application/json');
+        // Asegurar que el código sea un entero
+        $code = (int) $code;
+        
+        // Si hay un mensaje, envolver los datos en un objeto con mensaje
+        if ($message !== null) {
+            return response()->json([
+                'data' => $data,
+                'message' => $message
+            ], $code);
+        }
+        
+        return response()->json($data, $code);
     }
 
     public function successCreatedResponse($data)
     {
-        return $this->successResponse($data, Response::HTTP_CREATED);
+        return $this->successResponse($data, null, Response::HTTP_CREATED);
     }
 
     public function errorResponse($message, $code)
     {
+        // Asegurar que el código sea un entero
+        $code = (int) $code;
         return response()->json(['message' => $message, 'code' => $code], $code);
     }
 
     public function errorMessage($message, $code)
     {
+        $code = (int) $code;
         return response($message, $code)->header('Content-Type', 'application/json');
     }
 

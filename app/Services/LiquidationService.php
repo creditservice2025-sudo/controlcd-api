@@ -41,7 +41,7 @@ class LiquidationService
         // Validar si la fecha es permitida (domingo o feriado)
         $seller = Seller::with('city.country')->find($validated['seller_id']);
         $countryId = $seller?->city?->country_id;
-        $allowedCheck = $this->checkIfDateIsAllowed($validated['date'], $countryId);
+        $allowedCheck = $this->checkIfDateIsAllowed($validated['date'], $countryId, $seller?->company_id);
 
         if (!$allowedCheck['allowed']) {
             throw ValidationException::withMessages([
@@ -197,12 +197,18 @@ class LiquidationService
             $previousUnapproved = Liquidation::where('seller_id', $liquidation->seller_id)
                 ->where('date', '<', $liquidation->date)
                 ->where('status', '!=', 'approved')
-                ->orderBy('date', 'asc')
-                ->first();
+                ->orderBy('date', 'desc')
+                ->get();
 
-            if ($previousUnapproved) {
+            // Filtrar para ver si hay algún día obligatorio pendiente
+            $pendingMandatory = $previousUnapproved->filter(function($liq) use ($liquidation) {
+                $seller = Seller::with('city.country')->find($liq->seller_id);
+                return $this->isMandatoryDate($liq->date, $seller?->city?->country_id, $seller?->company_id, $liq->seller_id);
+            })->first();
+
+            if ($pendingMandatory) {
                 return $this->errorResponse(
-                    "Para aprobar esta liquidación debes cerrar primero la liquidación pendiente del día {$previousUnapproved->date}.",
+                    "Para aprobar esta liquidación debes cerrar primero la liquidación pendiente del día {$pendingMandatory->date}.",
                     422
                 );
             }
@@ -253,12 +259,18 @@ class LiquidationService
                     ->where('date', '<', $liquidation->date)
                     ->where('status', '!=', 'approved')
                     ->whereNotIn('id', $ids)
-                    ->orderBy('date', 'asc')
-                    ->first();
+                    ->orderBy('date', 'desc')
+                    ->get();
 
-                if ($previousUnapproved) {
+                // Filtrar para ver si hay algún día obligatorio pendiente que no esté en la selección
+                $pendingMandatory = $previousUnapproved->filter(function($liq) {
+                    $seller = Seller::with('city.country')->find($liq->seller_id);
+                    return $this->isMandatoryDate($liq->date, $seller?->city?->country_id, $seller?->company_id, $liq->seller_id);
+                })->first();
+
+                if ($pendingMandatory) {
                     return $this->errorResponse(
-                        "Para aprobar la liquidación del día {$liquidation->date} debes aprobar primero la liquidación pendiente del día {$previousUnapproved->date}.",
+                        "Para aprobar la liquidación del día {$liquidation->date} debes aprobar primero la liquidación pendiente del día {$pendingMandatory->date}.",
                         422
                     );
                 }
@@ -519,7 +531,7 @@ class LiquidationService
         $seller = Seller::with('city.country')->find($sellerId);
         $countryId = $seller?->city?->country_id;
         
-        $allowedCheck = $this->checkIfDateIsAllowed($date, $countryId);
+        $allowedCheck = $this->checkIfDateIsAllowed($date, $countryId, $seller?->company_id);
 
         $startUTC = Carbon::parse($date, $tz)->startOfDay()->setTimezone('UTC');
         $endUTC   = Carbon::parse($date, $tz)->endOfDay()->setTimezone('UTC');
@@ -1208,6 +1220,7 @@ class LiquidationService
             'poliza' => $liquidation->poliza,
             'liquidation_start_date' => $firstPaymentDate,
             'cash_collection' =>  $cashCollection,
+            'allowed' => true,
             'total_pending_absorbed' => $liquidation->total_pending_absorbed,
             'total_crossed_credits' => $dailyTotals['total_crossed_credits'],
             'total_renewal_disbursed' => $dailyTotals['total_renewal_disbursed'],
@@ -1532,7 +1545,7 @@ class LiquidationService
     public function generateDailyReportByLiquidation($date, $sellerId, $user, $timezone = 'America/Lima')
     {
         $dateOnly = substr($date, 0, 10);
-        $reportDate = Carbon::createFromFormat('Y-m-d', $dateOnly, $timezone);
+        $reportDate = \Carbon\Carbon::parse($dateOnly, $timezone);
         $start = $reportDate->copy()->startOfDay()->setTimezone('America/Lima')->setTimezone('UTC');
         $end = $reportDate->copy()->endOfDay()->setTimezone('America/Lima')->setTimezone('UTC');
 
@@ -1809,31 +1822,102 @@ class LiquidationService
      * @param int $countryId
      * @return array
      */
-    public function checkIfDateIsAllowed($date, $countryId)
+    public function checkIfDateIsAllowed($date, $countryId, $companyId = null)
     {
         $carbonDate = Carbon::parse($date);
         
         // 1. Verificar si es domingo
         if ($carbonDate->isSunday()) {
-            return [
-                'allowed' => false,
-                'reason' => 'No se permiten liquidaciones los días domingo.'
-            ];
+            $worksOnSundays = false;
+            if ($companyId) {
+                $company = \App\Models\Company::find($companyId);
+                $worksOnSundays = $company?->works_on_sundays ?? false;
+            }
+
+            if (!$worksOnSundays) {
+                return [
+                    'allowed' => true, // Cambiado a true para permitir liquidaciones opcionales
+                    'reason' => 'Día domingo (Opcional).'
+                ];
+            }
         }
 
         // 2. Verificar si es feriado
-        $holiday = \App\Models\Holiday::where('country_id', $countryId)
+        $holiday = \App\Models\Holiday::where(function($q) use ($countryId) {
+                $q->where('country_id', $countryId)
+                  ->orWhereNull('country_id');
+            })
             ->whereDate('date', $date)
             ->first();
 
         if ($holiday) {
             return [
-                'allowed' => false,
-                'reason' => "No se permiten liquidaciones en días feriados: {$holiday->description}."
+                'allowed' => true, // Cambiado a true para permitir liquidaciones opcionales
+                'reason' => "Día feriado: {$holiday->description} (Opcional)."
             ];
         }
 
-        return ['allowed' => true];
+        return [
+            'allowed' => true,
+            'reason' => null
+        ];
+    }
+
+    /**
+     * Determina si una fecha requiere liquidación obligatoria.
+     * 
+     * @param string $date
+     * @param int|null $countryId
+     * @param int|null $companyId
+     * @return bool
+     */
+    public function isMandatoryDate($date, $countryId, $companyId = null, $sellerId = null)
+    {
+        $carbonDate = Carbon::parse($date);
+
+        // 1. Verificar si es domingo
+        if ($carbonDate->isSunday()) {
+            $worksOnSundays = false;
+            if ($companyId) {
+                $company = \App\Models\Company::find($companyId);
+                $worksOnSundays = $company?->works_on_sundays ?? false;
+            }
+            return $worksOnSundays;
+        }
+
+        // 2. Verificar si es feriado
+        $holiday = \App\Models\Holiday::where(function($q) use ($countryId) {
+                $q->where('country_id', $countryId)
+                ->orWhereNull('country_id');
+            })
+            ->whereDate('date', $date)
+            ->first();
+
+        if ($holiday) {
+            // Regla para feriados:
+            // A. Ver si hay configuración granular para este vendedor específico
+            if ($companyId && $sellerId) {
+                $granularAssignment = \App\Models\CompanyHolidaySeller::where('company_id', $companyId)
+                    ->where('holiday_id', $holiday->id)
+                    ->where('seller_id', $sellerId)
+                    ->exists();
+                
+                if ($granularAssignment) {
+                    return true; // Es obligatorio porque está asignado específicamente
+                }
+            }
+
+            // B. Si no hay granular, ver la configuración general de la empresa
+            if ($companyId) {
+                $company = \App\Models\Company::find($companyId);
+                return $company?->works_on_holidays ?? false;
+            }
+
+            return false;
+        }
+
+        // Si no es domingo ni feriado, es un día laboral normal (obligatorio)
+        return true;
     }
 
     /**

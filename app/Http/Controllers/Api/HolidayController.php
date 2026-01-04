@@ -16,7 +16,10 @@ class HolidayController extends Controller
         $query = Holiday::with('country');
 
         if ($request->has('country_id')) {
-            $query->where('country_id', $request->country_id);
+            $query->where(function($q) use ($request) {
+                $q->where('country_id', $request->country_id)
+                  ->orWhereNull('country_id');
+            });
         }
 
         $holidays = $query->orderBy('date', 'desc')->get();
@@ -27,7 +30,7 @@ class HolidayController extends Controller
     public function store(Request $request)
     {
         $validated = $request->validate([
-            'country_id' => 'required|exists:countries,id',
+            'country_id' => 'nullable|exists:countries,id',
             'date' => 'required|date',
             'description' => 'nullable|string|max:255',
         ]);
@@ -45,7 +48,7 @@ class HolidayController extends Controller
     public function update(Request $request, Holiday $holiday)
     {
         $validated = $request->validate([
-            'country_id' => 'required|exists:countries,id',
+            'country_id' => 'nullable|exists:countries,id',
             'date' => 'required|date',
             'description' => 'nullable|string|max:255',
         ]);

@@ -522,7 +522,7 @@ class ClientController extends Controller
             }
 
             \Log::info($timezone);
-            $seller = Seller::find($sellerId);
+            $seller = Seller::with('city')->find($sellerId);
             if (!$seller) {
                 return $this->errorResponse('Vendedor no encontrado', 404);
             }
@@ -531,21 +531,32 @@ class ClientController extends Controller
 
             \Log::info($inputDateLocal);
             \Log::info($todayLocal);
+
             if ($inputDateLocal > $todayLocal) {
                 return $this->errorResponse('La fecha seleccionada no puede ser mayor que la fecha actual.', 422);
             }
-            $previousLiquidation = Liquidation::where('seller_id', $sellerId)
+
+            $previousUnapproved = Liquidation::where('seller_id', $sellerId)
                 ->whereDate('date', '<', $inputDateLocal)
+                ->where('status', '!=', 'approved')
                 ->orderByDesc('date')
-                ->first();
-            if ($previousLiquidation && $previousLiquidation->status !== 'approved') {
-                return $this->errorResponse('No puede consultar la liquidación porque la anterior no está aprobada.', 422);
+                ->get();
+            
+            $liquidationService = new \App\Services\LiquidationService();
+            $countryId = $seller->city ? $seller->city->country_id : null;
+
+            $pendingMandatory = $previousUnapproved->filter(function($liq) use ($liquidationService, $countryId, $seller) {
+                return $liquidationService->isMandatoryDate($liq->date, $countryId, $seller->company_id, $seller->id);
+            })->first();
+
+            if ($pendingMandatory) {
+                return $this->errorResponse('Debe liquidar las liquidaciones pendientes para poder ver la liquidación en actual.', 422);
             }
+
             $result = $this->clientService->getLiquidationWithAllClients($sellerId, $date, $userId, $timezone);
 
             // Verificar si la fecha es permitida (domingos y feriados)
-            $liquidationService = new \App\Services\LiquidationService();
-            $allowedCheck = $liquidationService->checkIfDateIsAllowed($date, $seller->country_id);
+            $allowedCheck = $liquidationService->checkIfDateIsAllowed($date, $countryId, $seller->company_id);
 
             $result['allowed'] = $allowedCheck['allowed'];
             $result['not_allowed_reason'] = $allowedCheck['reason'];

@@ -1236,7 +1236,7 @@ class CreditService
         $sellerId = $user && $user->seller ? $user->seller->id : null;
         $maxDate = Carbon::now(self::TIMEZONE);
         $minDate = Carbon::now(self::TIMEZONE)->subDays(7);
-        $reportDate = Carbon::createFromFormat('Y-m-d', $date, self::TIMEZONE);
+        $reportDate = \Carbon\Carbon::parse($date, self::TIMEZONE);
 
         if ($reportDate->lt($minDate) || $reportDate->gt($maxDate)) {
             return $this->errorResponse('Solo se pueden consultar fechas dentro de los últimos 7 días', 422);

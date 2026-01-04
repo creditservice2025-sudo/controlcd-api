@@ -30,6 +30,8 @@ class Company extends Model
         'whatsapp_verified',
         'last_verification_code',
         'verification_code_expires_at',
+        'works_on_sundays',
+        'works_on_holidays',
     ];
 
     protected $casts = [
@@ -37,6 +39,8 @@ class Company extends Model
         'plan_start_date' => 'date',
         'plan_end_date' => 'date',
         'verification_code_expires_at' => 'datetime',
+        'works_on_sundays' => 'boolean',
+        'works_on_holidays' => 'boolean',
     ];
 
     public function plan()
@@ -57,5 +61,17 @@ class Company extends Model
     public function credits()
     {
         return $this->hasManyThrough(Credit::class, Seller::class);
+    }
+
+    public function holidaysWorked()
+    {
+        return $this->belongsToMany(Holiday::class, 'company_holiday_seller')
+                    ->withPivot('seller_id')
+                    ->withTimestamps();
+    }
+
+    public function holidaySellerAssignments()
+    {
+        return $this->hasMany(CompanyHolidaySeller::class);
     }
 }

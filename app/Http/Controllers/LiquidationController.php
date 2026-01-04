@@ -732,6 +732,11 @@ class LiquidationController extends Controller
         $end = Carbon::createFromFormat('Y-m-d', $date, $timezone)->endOfDay()->setTimezone('UTC');
         $todayDate = Carbon::now($timezone)->toDateString();
 
+        // Obtener el país del vendedor para la validación de feriados
+        $seller = Seller::with('city.country')->find($sellerId);
+        $countryId = $seller?->city?->country_id;
+        $allowedCheck = $this->liquidationService->checkIfDateIsAllowed($date, $countryId, $seller?->company_id);
+
         \Log::debug("Solicitud de datos de liquidación para vendedor $sellerId en fecha $date por usuario {$user->id} ({$user->role_id})");
 
         // 1. Verificar si ya existe liquidación para esta fecha
@@ -836,6 +841,9 @@ class LiquidationController extends Controller
             'liquidation_start_date' => $dailyTotals['liquidation_start_date'],
             'total_crossed_credits' => $dailyTotals['total_crossed_credits'] ?? 0,
             'total_renewal_disbursed' => $dailyTotals['total_renewal_disbursed'] ?? 0,
+            'allowed' => $allowedCheck['allowed'],
+            'not_allowed_reason' => $allowedCheck['reason'] ?? null,
+            'last_liquidation_date' => $this->liquidationService->getLastLiquidationDate($sellerId, $date),
         ];
     }
 
@@ -1082,7 +1090,7 @@ class LiquidationController extends Controller
         if ($isExisting) {
             $firstPaymentQuery = DB::table('payments')
                 ->join('credits', 'payments.credit_id', '=', 'credits.id')
-                ->select('payments.business_date', 'payments.business_timestamp')
+                ->select('payments.business_date', 'payments.business_timestamp', 'payments.created_at')
                 ->where('payments.business_date', $liquidation->date)
                 ->where('credits.seller_id', $liquidation->seller_id)
                 ->orderBy('payments.business_timestamp', 'asc')
@@ -1126,8 +1134,9 @@ class LiquidationController extends Controller
             'cash_collection' =>  $cashCollection,
             'total_crossed_credits' => $dailyTotals['total_crossed_credits'],
             'total_renewal_disbursed' => $dailyTotals['total_renewal_disbursed'],
-            'poliza' => $liquidation->poliza
-
+            'poliza' => $liquidation->poliza,
+            'allowed' => true,
+            'last_liquidation_date' => $this->liquidationService->getLastLiquidationDate($liquidation->seller_id, $liquidation->date),
         ];
     }
 
@@ -1384,5 +1393,72 @@ class LiquidationController extends Controller
     {
         $response = $this->liquidationService->getLiquidationDetail($id, $request);
         return response()->json($response);
+    }
+
+    public function getSellersStatusToday(Request $request)
+    {
+        try {
+            $dateInput = $request->input('date');
+            $date = \Carbon\Carbon::now('America/Lima')->toDateString();
+            
+            if ($dateInput && is_string($dateInput) && strlen($dateInput) >= 10) {
+                try {
+                    // Si viene como YYYY-MM-DD o YYYY/MM/DD o DD/MM/YYYY etc.
+                    $date = \Carbon\Carbon::parse($dateInput)->toDateString();
+                } catch (\Exception $e) {
+                    // Fallback to today
+                }
+            }
+
+            $cityId = $request->input('city_id');
+
+            $query = \App\Models\Seller::with(['user', 'city'])
+                ->where('status', 'active')
+                ->whereHas('liquidations', function($q) use ($date) {
+                    $q->whereDate('date', $date);
+                });
+
+            if ($cityId) {
+                $query->where('city_id', $cityId);
+            }
+
+            $sellers = $query->get();
+
+            $sellersStatus = $sellers->map(function ($seller) use ($date) {
+                try {
+                    $liquidation = \App\Models\Liquidation::where('seller_id', $seller->id)
+                        ->whereDate('date', $date)
+                        ->first();
+
+                    return [
+                        'id' => $seller->id,
+                        'name' => $seller->user ? $seller->user->name : 'Desconocido',
+                        'city' => $seller->city ? $seller->city->name : 'N/A',
+                        'liquidation_status' => $liquidation ? $liquidation->status : 'pending',
+                        'liquidation_id' => $liquidation ? $liquidation->id : null,
+                    ];
+                } catch (\Exception $e) {
+                    return [
+                        'id' => $seller->id,
+                        'name' => $seller->user ? $seller->user->name : 'Error',
+                        'city' => 'Error',
+                        'liquidation_status' => 'error',
+                        'liquidation_id' => null,
+                        'error' => $e->getMessage()
+                    ];
+                }
+            });
+
+            return response()->json([
+                'success' => true,
+                'data' => $sellersStatus
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al obtener el estado de los vendedores',
+                'error' => $e->getMessage()
+            ], 500);
+        }
     }
 }

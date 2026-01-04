@@ -24,7 +24,7 @@ class CompanyService
         string $orderDirection = 'desc'
     ) {
         try {
-            $companies = Company::with('user')
+            $companies = Company::with(['user.city', 'holidaySellerAssignments.holiday', 'holidaySellerAssignments.seller.user'])
                 ->withCount(['sellers'])
                 ->withSum('credits as total_credits_value', 'credit_value')
                 ->with(['credits' => function ($query) {
@@ -131,6 +131,7 @@ class CompanyService
                 'status' => $status,
                 'plan_start_date' => $planStartDate,
                 'plan_end_date' => $planEndDate,
+                'works_on_sundays' => $params['works_on_sundays'] ?? false,
                 'created_at' => $params['created_at'] ?? null,
                 'updated_at' => $params['updated_at'] ?? null
             ]);
@@ -195,6 +196,7 @@ class CompanyService
                 'phone' => $params['company_phone'] ?? $company->phone,
                 'email' => $params['company_email'],
                 'logo_path' => $params['logo_path'] ?? $company->logo_path,
+                'works_on_sundays' => $params['works_on_sundays'] ?? $company->works_on_sundays,
                 'updated_at' => $params['updated_at'] ?? null
             ];
 

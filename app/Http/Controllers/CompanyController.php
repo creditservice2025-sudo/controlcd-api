@@ -211,4 +211,34 @@ class CompanyController extends Controller
             return $this->errorResponse($e->getMessage(), 500);
         }
     }
+
+    public function updateWorkConfig(Request $request, $companyId)
+    {
+        try {
+            $request->validate([
+                'works_on_sundays' => 'nullable|boolean',
+                'works_on_holidays' => 'nullable|boolean'
+            ]);
+
+            $company = Company::findOrFail($companyId);
+            
+            if ($request->has('works_on_sundays')) {
+                $company->works_on_sundays = $request->input('works_on_sundays');
+            }
+            
+            if ($request->has('works_on_holidays')) {
+                $company->works_on_holidays = $request->input('works_on_holidays');
+            }
+
+            $company->save();
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Configuración de trabajo actualizada',
+                'data' => $company
+            ]);
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
 }

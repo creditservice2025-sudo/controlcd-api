@@ -2266,7 +2266,7 @@ class ClientService
 
     private function getAllClientsBySellerAndDate($sellerId, $date)
     {
-        $referenceDate = Carbon::createFromFormat('Y-m-d', $date, self::TIMEZONE);
+        $referenceDate = \Carbon\Carbon::parse($date, self::TIMEZONE);
         $formattedDate = $referenceDate->format('Y-m-d');
 
         $excludeStatuses = ['Liquidado', 'Renovado', 'Unificado', 'Cartera Irrecuperable'];
@@ -2672,10 +2672,10 @@ class ClientService
 
         $timezone = $request && $request->has('timezone') ? $request->get('timezone') : null;
         $startUTC = $date
-            ? Carbon::createFromFormat('Y-m-d', $date, $timezone)->startOfDay()->timezone('UTC')
+            ? \Carbon\Carbon::parse($date, $timezone)->startOfDay()->timezone('UTC')
             : Carbon::now($timezone)->startOfDay()->timezone('UTC');
         $endUTC = $date
-            ? Carbon::createFromFormat('Y-m-d', $date, $timezone)->endOfDay()->timezone('UTC')
+            ? \Carbon\Carbon::parse($date, $timezone)->endOfDay()->timezone('UTC')
             : Carbon::now($timezone)->endOfDay()->timezone('UTC');
 
         // 1. TOTAL ESPERADO (considerando soft deletes)

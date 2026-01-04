@@ -67,6 +67,8 @@ class CompanyRequest extends FormRequest
             'plan_type' => 'nullable|in:free,full',
             'plan_start_date' => 'nullable|date',
             'plan_end_date' => 'nullable|date|after_or_equal:plan_start_date',
+            'works_on_sundays' => 'nullable|boolean',
+            'works_on_holidays' => 'nullable|boolean',
         ];
     }
 

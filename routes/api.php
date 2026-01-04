@@ -23,6 +23,7 @@ use App\Http\Controllers\CountriesController;
 use App\Http\Controllers\IncomeController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\ReportExportController;
+use App\Http\Controllers\CompanyHolidayController;
 
 // Auth routes
 Route::post('login', [AuthController::class, 'login'])->middleware('throttle:6,1');
@@ -224,6 +225,7 @@ Route::middleware('auth:api')->group(function () {
             });
 
             Route::get('/{sellerId}/{date}', [LiquidationController::class, 'getLiquidationData']);
+            Route::get('/status/today', [LiquidationController::class, 'getSellersStatusToday']);
         });
 
         //route installment
@@ -266,6 +268,13 @@ Route::middleware('auth:api')->group(function () {
         Route::post('/validate-ruc', [CompanyController::class, 'validateCompanyRuc']);
         Route::post('/send-verification-code', [CompanyController::class, 'sendVerificationCode']);
         Route::post('/verify-code', [CompanyController::class, 'verifyCode']);
+        Route::patch('/{companyId}/work-config', [CompanyController::class, 'updateWorkConfig']);
+        
+        // Rutas para configuración de feriados por empresa
+        Route::get('/{companyId}/holidays', [CompanyHolidayController::class, 'index']);
+        Route::post('/{companyId}/holidays', [CompanyHolidayController::class, 'store']);
+        Route::delete('/{companyId}/holidays', [CompanyHolidayController::class, 'destroy']);
+        Route::get('/{companyId}/holidays/{holidayId}/sellers', [CompanyHolidayController::class, 'getSellersForHoliday']);
     });
 
     Route::apiResource('plans', PlanController::class);
