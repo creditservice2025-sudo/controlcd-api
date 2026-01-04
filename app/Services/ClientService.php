@@ -1481,7 +1481,7 @@ class ClientService
                 $query->whereHas('seller', fn($q) => $q->where('company_id', $companyId));
             }
 
-            $clients = $query->orderBy('name', 'asc')->limit(100)->get();
+            $clients = $query->orderBy('name', 'asc')->get();
 
             if ($clients->isEmpty()) {
                 return $this->errorNotFoundResponse('No se encontraron clientes');
