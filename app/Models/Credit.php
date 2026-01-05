@@ -35,12 +35,13 @@ class Credit extends Model
         'micro_insurance_amount',
         'created_at',
         'updated_at',
-        'unified_to_id',
         'is_advance_payment',
         'unification_reason',
         'renewal_blocked',
-
-
+        'has_been_modified',
+        'modification_count',
+        'last_modified_at',
+        'last_modified_by',
     ];
 
     public function client()

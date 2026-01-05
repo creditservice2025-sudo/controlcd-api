@@ -157,6 +157,10 @@ Route::middleware('auth:api')->group(function () {
     Route::get('/credits/seller/{sellerId}/by-date', [CreditController::class, 'getSellerCredits']);
     Route::put('credit/{creditId}/update-schedule', [CreditController::class, 'updateSchedule']);
     Route::put('credit/{creditId}/update-frequency', [CreditController::class, 'updateFrequency']);
+    Route::post('credit/{creditId}/simulate-schedule', [CreditController::class, 'simulateSchedule']);
+    Route::post('credit/{creditId}/simulate-frequency', [CreditController::class, 'simulateFrequency']);
+    Route::get('credit/{creditId}/modifications', [CreditController::class, 'getModifications']);
+    Route::put('credit/{creditId}/toggle-renewal-block', [CreditController::class, 'setRenewalBlocked']);
     Route::put('credit/{creditId}/renewal-blocked', [CreditController::class, 'setRenewalBlocked']);
     Route::post('credit/renew', [CreditController::class, 'renew']);
     Route::put('credit/{creditId}/toggle-status', [CreditController::class, 'toggleCreditStatus']);

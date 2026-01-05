@@ -20,6 +20,7 @@ use App\Models\Seller;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use App\Models\CreditModification;
 use Barryvdh\DomPDF\Facade\Pdf;
 
 class CreditService
@@ -466,8 +467,129 @@ class CreditService
         }
     }
 
-    public function updateCreditSchedule(int $creditId, string $newFirstQuotaDate, $timezone = null)
+    public function updateCreditSchedule(int $creditId, string $newFirstQuotaDate, $timezone = null, $notes = null, $newStartDate = null)
     {
+        try {
+            DB::beginTransaction();
+
+            $tz = $timezone ?: self::TIMEZONE;
+            $credit = Credit::with(['installments'])->findOrFail($creditId);
+
+            if ($newStartDate) {
+                $credit->start_date = $newStartDate;
+            }
+
+            // Días excluidos del crédito
+            $excludedDayNames = json_decode($credit->excluded_days ?? '[]', true) ?? [];
+            $dayMap = [
+                'Domingo' => Carbon::SUNDAY,
+                'Lunes' => Carbon::MONDAY,
+                'Martes' => Carbon::TUESDAY,
+                'Miércoles' => Carbon::WEDNESDAY,
+                'Jueves' => Carbon::THURSDAY,
+                'Viernes' => Carbon::FRIDAY,
+                'Sábado' => Carbon::SATURDAY
+            ];
+            $excludedDayNumbers = [];
+            foreach ($excludedDayNames as $dayName) {
+                if (isset($dayMap[$dayName])) {
+                    $excludedDayNumbers[] = $dayMap[$dayName];
+                }
+            }
+
+            $adjustForExcludedDays = function (Carbon $date) use ($excludedDayNumbers) {
+                while (in_array($date->dayOfWeek, $excludedDayNumbers)) {
+                    $date->addDay();
+                }
+                return $date;
+            };
+
+            // Inicial fecha de la primera cuota en la zona del usuario
+            $dueDate = Carbon::parse($newFirstQuotaDate, $tz);
+            $dueDate = $adjustForExcludedDays($dueDate);
+
+            $oldValue = [
+                'first_quota_date' => $credit->first_quota_date,
+            ];
+
+            // Ordenar cuotas por número de cuota y actualizar due_date secuencialmente
+            $installments = $credit->installments->sortBy('quota_number');
+            $affectedInstallments = [];
+
+            foreach ($installments as $inst) {
+                // Proteger pagadas
+                if (in_array(strtolower($inst->status), ['pagado', 'paid', 'pagada'])) {
+                    continue;
+                }
+
+                $inst->due_date = $dueDate->format('Y-m-d');
+                $inst->save();
+                
+                $affectedInstallments[] = $inst->id;
+
+                // Avanzar la fecha según la frecuencia del crédito
+                switch ($credit->payment_frequency) {
+                    case 'Diaria': $dueDate->addDay(); break;
+                    case 'Semanal': $dueDate->addWeek(); break;
+                    case 'Quincenal': $dueDate->addDays(15); break;
+                    case 'Mensual': $dueDate->addMonth(); break;
+                    default: $dueDate->addMonth();
+                }
+
+                // Ajustar si cae en día excluido
+                $dueDate = $adjustForExcludedDays($dueDate);
+            }
+
+            // Actualizar primera cuota en el crédito
+            $credit->first_quota_date = $newFirstQuotaDate;
+            $credit->has_been_modified = true;
+            $credit->modification_count = ($credit->modification_count ?? 0) + 1;
+            $credit->last_modified_at = now();
+            $credit->last_modified_by = Auth::id() ?? 1;
+            $credit->save();
+
+            // Registrar Auditoría
+            CreditModification::create([
+                'credit_id' => $credit->id,
+                'user_id' => Auth::id() ?? 1,
+                'modification_type' => 'initial_date',
+                'old_value' => $oldValue,
+                'new_value' => ['first_quota_date' => $newFirstQuotaDate, 'start_date' => $newStartDate],
+                'affected_installments' => $affectedInstallments,
+                'notes' => $notes ?: 'Cambio de fecha inicial de cuotas'
+            ]);
+
+            DB::commit();
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Fechas de cuotas actualizadas correctamente',
+                'data' => [
+                    'credit_id' => $credit->id,
+                    'first_quota_date' => $credit->first_quota_date,
+                    'installments_updated' => $installments->map(function ($i) {
+                        return ['id' => $i->id, 'quota_number' => $i->quota_number, 'due_date' => $i->due_date];
+                    })
+                ]
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            \Log::error("Error updateCreditSchedule ({$creditId}): " . $e->getMessage());
+            return $this->errorResponse('Error al actualizar el calendario de cuotas: ' . $e->getMessage(), 500);
+        }
+    }
+
+    public function updateCreditFrequency(
+        int $creditId, 
+        string $newFrequency, 
+        ?string $newFirstQuotaDate = null, 
+        ?int $newInstallments = null,
+        ?float $newInterestRate = null,
+        ?float $newInsurancePercentage = null,
+        $timezone = null,
+        $notes = null,
+        $newStartDate = null
+    ) {
         try {
             DB::beginTransaction();
 
@@ -499,150 +621,130 @@ class CreditService
                 return $date;
             };
 
-            // Inicial fecha de la primera cuota en la zona del usuario
-            $dueDate = Carbon::parse($newFirstQuotaDate, $tz);
-            $dueDate = $adjustForExcludedDays($dueDate);
+            $oldTotalInstallments = $credit->number_installments;
+            $newNumInstallments = $newInstallments ?? $credit->number_installments;
+            $interestRate = $newInterestRate ?? $credit->total_interest;
+            $insurancePercentage = $newInsurancePercentage ?? $credit->micro_insurance_percentage ?? 0;
 
-            // Ordenar cuotas por número de cuota y actualizar due_date secuencialmente
-            $installments = $credit->installments->sortBy('quota_number');
+            // 1. Identificar cuotas pagadas
+            $currentInstallments = $credit->installments->sortBy('quota_number');
+            $paidInstallments = $currentInstallments->filter(function($i) {
+                return in_array(strtolower($i->status), ['pagado', 'paid', 'pagada']);
+            });
+            
+            $paidCount = $paidInstallments->count();
+            $paidAmountSum = $paidInstallments->sum('quota_amount');
 
-            foreach ($installments as $inst) {
-                $inst->due_date = $dueDate->format('Y-m-d');
-                $inst->save();
-
-                // Avanzar la fecha según la frecuencia del crédito
-                switch ($credit->payment_frequency) {
-                    case 'Diaria':
-                        $dueDate->addDay();
-                        break;
-                    case 'Semanal':
-                        $dueDate->addWeek();
-                        break;
-                    case 'Quincenal':
-                        $dueDate->addDays(15);
-                        break;
-                    case 'Mensual':
-                        $dueDate->addMonth();
-                        break;
-                    default:
-                        $dueDate->addMonth();
-                }
-
-                // Ajustar si cae en día excluido
-                $dueDate = $adjustForExcludedDays($dueDate);
+            if ($newNumInstallments < $paidCount) {
+                throw new \Exception("El nuevo número de cuotas ($newNumInstallments) no puede ser menor a las ya pagadas ($paidCount).");
             }
 
-            // Actualizar primera cuota en el crédito (mantener zona UTC/como string)
-            $credit->first_quota_date = $newFirstQuotaDate;
-            $credit->save();
+            // 2. Recalcular montos financieros
+            $creditValue = (float)$credit->credit_value;
+            // El costo total para las cuotas solo incluye Capital + Interés
+            $newTotalCost = $creditValue * (1 + ($interestRate / 100));
+            $remainingCost = $newTotalCost - $paidAmountSum;
+            $pendingCount = $newNumInstallments - $paidCount;
+            $newQuotaAmount = $pendingCount > 0 ? round($remainingCost / $pendingCount, 2) : 0;
 
-            DB::commit();
-
-            return $this->successResponse([
-                'success' => true,
-                'message' => 'Fechas de cuotas actualizadas correctamente',
-                'data' => [
-                    'credit_id' => $credit->id,
-                    'first_quota_date' => $credit->first_quota_date,
-                    'installments_updated' => $installments->map(function ($i) {
-                        return ['id' => $i->id, 'quota_number' => $i->quota_number, 'due_date' => $i->due_date];
-                    })
-                ]
-            ]);
-        } catch (\Exception $e) {
-            DB::rollBack();
-            \Log::error("Error updateCreditSchedule ({$creditId}): " . $e->getMessage());
-            return $this->errorResponse('Error al actualizar el calendario de cuotas: ' . $e->getMessage(), 500);
-        }
-    }
-
-    public function updateCreditFrequency(int $creditId, string $newFrequency, ?string $newFirstQuotaDate = null, $timezone = null)
-    {
-        try {
-            DB::beginTransaction();
-
-            $tz = $timezone ?: self::TIMEZONE;
-            $credit = Credit::with(['installments'])->findOrFail($creditId);
-
-            // Obtener días excluidos del crédito
-            $excludedDayNames = json_decode($credit->excluded_days ?? '[]', true) ?? [];
-            $dayMap = [
-                'Domingo' => Carbon::SUNDAY,
-                'Lunes' => Carbon::MONDAY,
-                'Martes' => Carbon::TUESDAY,
-                'Miércoles' => Carbon::WEDNESDAY,
-                'Jueves' => Carbon::THURSDAY,
-                'Viernes' => Carbon::FRIDAY,
-                'Sábado' => Carbon::SATURDAY
-            ];
-            $excludedDayNumbers = [];
-            foreach ($excludedDayNames as $dayName) {
-                if (isset($dayMap[$dayName])) {
-                    $excludedDayNumbers[] = $dayMap[$dayName];
-                }
+            // 3. Determinar fecha de inicio para las pendientes
+            $baseDateStr = $newFirstQuotaDate;
+            if (!$baseDateStr) {
+                $firstPending = $currentInstallments->whereNotIn('status', ['Pagado', 'Paid', 'Pagada'])->first();
+                $baseDateStr = $firstPending ? $firstPending->due_date : $credit->first_quota_date;
             }
-
-            $adjustForExcludedDays = function (Carbon $date) use ($excludedDayNumbers) {
-                while (in_array($date->dayOfWeek, $excludedDayNumbers)) {
-                    $date->addDay();
-                }
-                return $date;
-            };
-
-            // Fecha inicial: preferir la nueva si se envía, si no usar la existente del crédito
-            $baseDateStr = $newFirstQuotaDate ?? $credit->first_quota_date;
             $dueDate = Carbon::parse($baseDateStr, $tz);
             $dueDate = $adjustForExcludedDays($dueDate);
 
-            // Recalcular due_date para cada cuota según la nueva frecuencia
-            $installments = $credit->installments->sortBy('quota_number');
+            $oldValue = [
+                'payment_frequency' => $credit->payment_frequency,
+                'number_installments' => $credit->number_installments,
+                'total_interest' => $credit->total_interest,
+                'micro_insurance_percentage' => $credit->micro_insurance_percentage,
+                'quota_amount' => $currentInstallments->whereNotIn('status', ['Pagado', 'Paid', 'Pagada'])->first()?->quota_amount
+            ];
 
-            foreach ($installments as $inst) {
-                $inst->due_date = $dueDate->format('Y-m-d');
-                $inst->save();
+            // 4. Actualizar/Eliminar/Crear cuotas
+            $affectedInstallments = [];
 
-                // Avanzar la fecha según la nueva frecuencia
+            // Eliminar excedentes si el número de cuotas disminuyó
+            if ($newNumInstallments < $oldTotalInstallments) {
+                Installment::where('credit_id', $credit->id)
+                    ->where('quota_number', '>', $newNumInstallments)
+                    ->whereNotIn('status', ['Pagado', 'Paid', 'Pagada'])
+                    ->delete();
+            }
+
+            for ($i = $paidCount + 1; $i <= $newNumInstallments; $i++) {
+                $inst = Installment::updateOrCreate(
+                    ['credit_id' => $credit->id, 'quota_number' => $i],
+                    [
+                        'due_date' => $dueDate->format('Y-m-d'),
+                        'quota_amount' => $newQuotaAmount,
+                        'status' => 'Pendiente'
+                    ]
+                );
+                
+                $affectedInstallments[] = $inst->id;
+                
+                // Si ya existía y estaba atrasada, podrías querer mantener su estado, 
+                // pero usualmente una reprogramación resetea a Pendiente.
+                
+                // Avanzar fecha
                 switch ($newFrequency) {
-                    case 'Diaria':
-                        $dueDate->addDay();
-                        break;
-                    case 'Semanal':
-                        $dueDate->addWeek();
-                        break;
-                    case 'Quincenal':
-                        $dueDate->addDays(15);
-                        break;
-                    case 'Mensual':
-                        $dueDate->addMonth();
-                        break;
-                    default:
-                        // si frecuencia no reconocida, usar mensual por defecto
-                        $dueDate->addMonth();
+                    case 'Diaria': $dueDate->addDay(); break;
+                    case 'Semanal': $dueDate->addWeek(); break;
+                    case 'Quincenal': $dueDate->addDays(15); break;
+                    case 'Mensual': $dueDate->addMonth(); break;
+                    default: $dueDate->addMonth();
                 }
-
-                // Ajustar si cae en día excluido
                 $dueDate = $adjustForExcludedDays($dueDate);
             }
 
-            // Guardar cambios en el crédito
+            // 5. Actualizar cabecera del crédito
             $credit->payment_frequency = $newFrequency;
-            if ($newFirstQuotaDate) {
-                $credit->first_quota_date = $newFirstQuotaDate;
-            }
+            if ($newFirstQuotaDate) $credit->first_quota_date = $newFirstQuotaDate;
+            $credit->number_installments = $newNumInstallments;
+            $credit->total_interest = $interestRate;
+            $credit->micro_insurance_percentage = $insurancePercentage;
+            $credit->micro_insurance_amount = ($creditValue * $insurancePercentage) / 100;
+            if ($newStartDate) $credit->start_date = $newStartDate;
+
+            // Auditoría
+            $credit->has_been_modified = true;
+            $credit->modification_count = ($credit->modification_count ?? 0) + 1;
+            $credit->last_modified_at = now();
+            $credit->last_modified_by = Auth::id() ?? 1;
+            
             $credit->save();
+
+            // Registrar Auditoría
+            CreditModification::create([
+                'credit_id' => $credit->id,
+                'user_id' => Auth::id() ?? 1,
+                'modification_type' => 'frequency',
+                'old_value' => $oldValue,
+                'new_value' => [
+                    'payment_frequency' => $newFrequency,
+                    'number_installments' => $newNumInstallments,
+                    'total_interest' => $interestRate,
+                    'micro_insurance_percentage' => $insurancePercentage,
+                    'quota_amount' => $newQuotaAmount,
+                    'start_date' => $newStartDate
+                ],
+                'affected_installments' => $affectedInstallments,
+                'notes' => $notes ?: 'Modificación integral de condiciones financieras'
+            ]);
 
             DB::commit();
 
             return $this->successResponse([
                 'success' => true,
-                'message' => 'Frecuencia y calendario de cuotas actualizados correctamente',
+                'message' => 'Crédito actualizado correctamente con recalculo financiero',
                 'data' => [
                     'credit_id' => $credit->id,
-                    'payment_frequency' => $credit->payment_frequency,
-                    'first_quota_date' => $credit->first_quota_date,
-                    'installments_updated' => $installments->map(function ($i) {
-                        return ['id' => $i->id, 'quota_number' => $i->quota_number, 'due_date' => $i->due_date];
-                    })
+                    'new_quota_amount' => $newQuotaAmount,
+                    'new_total_cost' => round($newTotalCost, 2)
                 ]
             ]);
         } catch (\Exception $e) {
@@ -1766,5 +1868,201 @@ class CreditService
         }
 
         return $reportData;
+    }
+
+    /**
+     * Simulates a change in the credit schedule (initial date or frequency)
+     * 
+     * @param int $creditId
+     * @param string $newDate Base date for calculation
+     * @param string $type Type of change ('schedule' or 'frequency')
+     * @param string|null $newFrequency New frequency if applicable
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function simulateScheduleChange(
+        int $creditId, 
+        ?string $newDate = null, 
+        string $type = 'schedule', 
+        ?string $newFrequency = null,
+        ?int $newInstallments = null,
+        ?float $newInterestRate = null,
+        ?float $newInsurancePercentage = null,
+        ?string $newStartDate = null
+    ) {
+        try {
+            $credit = Credit::with(['installments'])->findOrFail($creditId);
+            $tz = self::TIMEZONE;
+            $adjustForExcludedDays = $this->getExcludedDaysAdjuster($credit);
+            
+            $frequency = $newFrequency ?? $credit->payment_frequency;
+            $totalInstallments = $newInstallments ?? $credit->number_installments;
+            $interestRate = $newInterestRate ?? $credit->total_interest;
+            $insurancePercentage = $newInsurancePercentage ?? $credit->micro_insurance_percentage ?? 0;
+
+            // Recalcular montos si hay cambios financieros
+            $creditValue = (float)$credit->credit_value;
+            // El costo total para las cuotas solo incluye Capital + Interés
+            $newTotalCost = $creditValue * (1 + ($interestRate / 100));
+            
+            $currentInstallments = $credit->installments->sortBy('quota_number');
+            $paidInstallments = $currentInstallments->filter(function($i) {
+                return in_array(strtolower($i->status), ['pagado', 'paid', 'pagada']);
+            });
+
+            $paidAmountSum = $paidInstallments->sum('quota_amount');
+            $paidCount = $paidInstallments->count();
+            
+            if ($totalInstallments < $paidCount) {
+                throw new \Exception("El nuevo número de cuotas ($totalInstallments) no puede ser menor a las ya pagadas ($paidCount).");
+            }
+
+            $pendingCount = $totalInstallments - $paidCount;
+            $remainingCost = $newTotalCost - $paidAmountSum;
+            $newQuotaAmount = $pendingCount > 0 ? round($remainingCost / $pendingCount, 2) : 0;
+
+            // Generar nuevas fechas (solo para las pendientes)
+            // Si no se pasó newDate, usamos la primera fecha de cuota original o la fecha de la primera pendiente
+            $startDateStr = $newDate;
+            if (!$startDateStr) {
+                $firstPending = $currentInstallments->whereNotIn('status', ['Pagado', 'Paid', 'Pagada'])->first();
+                $startDateStr = $firstPending ? $firstPending->due_date : $credit->first_quota_date;
+            }
+            $startDate = Carbon::parse($startDateStr, $tz);
+            
+            $newDates = $this->getNewScheduleDates($totalInstallments, $startDate, $frequency, $adjustForExcludedDays, $paidCount);
+            
+            $simulatedInstallments = [];
+            $changesCount = 0;
+
+            // 1. Agregar las pagadas (Inmutables)
+            foreach ($paidInstallments as $inst) {
+                $simulatedInstallments[] = [
+                    'id' => $inst->id,
+                    'quota_number' => $inst->quota_number,
+                    'current_date' => $inst->due_date,
+                    'simulated_date' => $inst->due_date,
+                    'current_amount' => (float)$inst->quota_amount,
+                    'simulated_amount' => (float)$inst->quota_amount,
+                    'status' => $inst->status,
+                    'is_paid' => true,
+                    'changed' => false
+                ];
+            }
+
+            // 2. Generar/Actualizar Pendientes
+            for ($i = $paidCount + 1; $i <= $totalInstallments; $i++) {
+                $existing = $currentInstallments->where('quota_number', $i)->first();
+                $simDate = $newDates[$i] ?? ($existing ? $existing->due_date : null);
+                
+                $item = [
+                    'id' => $existing ? $existing->id : null,
+                    'quota_number' => $i,
+                    'current_date' => $existing ? $existing->due_date : null,
+                    'simulated_date' => $simDate,
+                    'current_amount' => $existing ? (float)$existing->quota_amount : null,
+                    'simulated_amount' => $newQuotaAmount,
+                    'status' => $existing ? $existing->status : 'Pendiente',
+                    'is_paid' => false,
+                    'changed' => true
+                ];
+
+                if ($existing) {
+                    $item['changed'] = ($existing->due_date !== $simDate) || (abs((float)$existing->quota_amount - $newQuotaAmount) > 0.01);
+                }
+
+                if ($item['changed']) $changesCount++;
+                $simulatedInstallments[] = $item;
+            }
+
+            return $this->successResponse([
+                'success' => true,
+                'data' => [
+                    'credit_id' => $credit->id,
+                    'type' => $type,
+                    'current_frequency' => $credit->payment_frequency,
+                    'simulated_frequency' => $frequency,
+                    'current_total_cost' => round(($creditValue * (1 + ($credit->total_interest / 100))), 2),
+                    'new_total_cost' => round($newTotalCost, 2),
+                    'installments' => $simulatedInstallments,
+                    'summary' => [
+                        'total_installments' => $totalInstallments,
+                        'paid_installments' => $paidCount,
+                        'pending_installments' => $pendingCount,
+                        'modified_installments' => $changesCount,
+                        'new_quota_amount' => $newQuotaAmount,
+                        'new_final_date' => !empty($simulatedInstallments) ? end($simulatedInstallments)['simulated_date'] : null
+                    ]
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error("Error simulateScheduleChange ({$creditId}): " . $e->getMessage());
+            return $this->errorResponse('Error al simular cambios: ' . $e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Helper to calculate installment dates sequence
+     */
+    private function getNewScheduleDates(int $numInstallments, Carbon $startDate, string $frequency, $adjustForExcludedDays, int $startAtQuota = 0)
+    {
+        $dates = [];
+        $currentDate = $startDate->copy();
+        $currentDate = $adjustForExcludedDays($currentDate);
+
+        for ($i = $startAtQuota + 1; $i <= $numInstallments; $i++) {
+            $dates[$i] = $currentDate->format('Y-m-d');
+
+            switch ($frequency) {
+                case 'Diaria':
+                    $currentDate->addDay();
+                    break;
+                case 'Semanal':
+                    $currentDate->addWeek();
+                    break;
+                case 'Quincenal':
+                    $currentDate->addDays(15);
+                    break;
+                case 'Mensual':
+                    $currentDate->addMonth();
+                    break;
+                default:
+                    $currentDate->addMonth();
+            }
+            $currentDate = $adjustForExcludedDays($currentDate);
+        }
+
+        return $dates;
+    }
+
+    /**
+     * Helper to get a closure that adjusts dates based on excluded days
+     */
+    private function getExcludedDaysAdjuster(Credit $credit)
+    {
+        $excludedDayNames = json_decode($credit->excluded_days ?? '[]', true) ?? [];
+        $dayMap = [
+            'Domingo' => Carbon::SUNDAY,
+            'Lunes' => Carbon::MONDAY,
+            'Martes' => Carbon::TUESDAY,
+            'Miércoles' => Carbon::WEDNESDAY,
+            'Jueves' => Carbon::THURSDAY,
+            'Viernes' => Carbon::FRIDAY,
+            'Sábado' => Carbon::SATURDAY
+        ];
+        
+        $excludedDayNumbers = [];
+        foreach ($excludedDayNames as $dayName) {
+            if (isset($dayMap[$dayName])) {
+                $excludedDayNumbers[] = $dayMap[$dayName];
+            }
+        }
+
+        return function (Carbon $date) use ($excludedDayNumbers) {
+            while (in_array($date->dayOfWeek, $excludedDayNumbers)) {
+                $date->addDay();
+            }
+            return $date;
+        };
     }
 }
