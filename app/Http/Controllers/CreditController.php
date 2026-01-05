@@ -65,13 +65,15 @@ class CreditController extends Controller
     {
         try {
             $newDate = $request->input('first_quota_date');
+            $newStartDate = $request->input('new_start_date', null);
             $timezone = $request->input('timezone', null);
+            $notes = $request->input('notes', 'Cambio de fecha inicial de cuotas');
 
             if (!$newDate) {
                 return $this->errorResponse('first_quota_date es requerido', 400);
             }
 
-            return $this->creditService->updateCreditSchedule((int) $creditId, $newDate, $timezone);
+            return $this->creditService->updateCreditSchedule((int) $creditId, $newDate, $timezone, $notes, $newStartDate);
         } catch (\Exception $e) {
             \Log::error("Error updateSchedule ({$creditId}): " . $e->getMessage());
             return $this->errorResponse($e->getMessage(), 500);
@@ -83,18 +85,27 @@ class CreditController extends Controller
         try {
             $newFrequency = $request->input('frequency');
             $newFirstDate = $request->input('first_quota_date', null);
+            $newInstallments = $request->input('number_installments', null);
+            $newInterestRate = $request->input('interest_rate', null);
+            $newInsurance = $request->input('micro_insurance_percentage', null);
             $timezone = $request->input('timezone', null);
+            $notes = $request->input('notes', 'Modificación de frecuencia y/o parámetros financieros');
 
             if (!$newFrequency) {
                 return $this->errorResponse('El campo frequency es requerido', 400);
             }
 
-            $allowed = ['Diaria', 'Semanal', 'Quincenal', 'Mensual'];
-            if (!in_array($newFrequency, $allowed)) {
-                return $this->errorResponse('Frecuencia no válida', 400);
-            }
-
-            return $this->creditService->updateCreditFrequency((int) $creditId, $newFrequency, $newFirstDate, $timezone);
+            return $this->creditService->updateCreditFrequency(
+                (int) $creditId, 
+                $newFrequency, 
+                $newFirstDate,
+                $newInstallments ? (int)$newInstallments : null,
+                $newInterestRate ? (float)$newInterestRate : null,
+                $newInsurance ? (float)$newInsurance : null,
+                $timezone,
+                $notes,
+                $request->input('new_start_date', null)
+            );
         } catch (\Exception $e) {
             \Log::error("Error updateFrequency ({$creditId}): " . $e->getMessage());
             return $this->errorResponse($e->getMessage(), 500);
@@ -112,6 +123,60 @@ class CreditController extends Controller
             return $this->creditService->setCreditRenewalBlocked((int) $creditId, $blocked);
         } catch (\Exception $e) {
             \Log::error("Error setRenewalBlocked ({$creditId}): " . $e->getMessage());
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+    public function simulateSchedule(Request $request, $creditId)
+    {
+        try {
+            $newDate = $request->input('first_quota_date');
+            if (!$newDate) {
+                return $this->errorResponse('El campo first_quota_date es requerido', 400);
+            }
+
+            return $this->creditService->simulateScheduleChange((int) $creditId, $newDate, 'schedule');
+        } catch (\Exception $e) {
+            \Log::error("Error simulateSchedule ({$creditId}): " . $e->getMessage());
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+    public function simulateFrequency(Request $request, $creditId)
+    {
+        try {
+            $newFrequency = $request->input('frequency');
+            $newFirstDate = $request->input('first_quota_date', null);
+            $newInstallments = $request->input('number_installments', null);
+            $newInterestRate = $request->input('interest_rate', null);
+            $newInsurance = $request->input('micro_insurance_percentage', null);
+
+            return $this->creditService->simulateScheduleChange(
+                (int) $creditId, 
+                $newFirstDate, 
+                'frequency', 
+                $newFrequency,
+                $newInstallments ? (int)$newInstallments : null,
+                $newInterestRate ? (float)$newInterestRate : null,
+                $newInsurance ? (float)$newInsurance : null,
+                $request->input('new_start_date', null)
+            );
+        } catch (\Exception $e) {
+            \Log::error("Error simulateFrequency ({$creditId}): " . $e->getMessage());
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+    public function getModifications($creditId)
+    {
+        try {
+            $modifications = \App\Models\CreditModification::with('user')
+                ->where('credit_id', $creditId)
+                ->orderBy('created_at', 'desc')
+                ->get();
+            return $this->successResponse($modifications);
+        } catch (\Exception $e) {
+            \Log::error("Error getModifications ({$creditId}): " . $e->getMessage());
             return $this->errorResponse($e->getMessage(), 500);
         }
     }

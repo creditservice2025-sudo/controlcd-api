@@ -1551,10 +1551,14 @@ class ClientService
         try {
             $client = Client::with([
                 'credits' => function ($cq) {
-                    $cq->select('id', 'client_id', 'credit_value', 'total_interest', 'number_installments', 'status', 'created_at', 'payment_frequency', 'renewal_blocked')
+                    $cq->select('id', 'client_id', 'credit_value', 'total_interest', 'number_installments', 'status', 'created_at', 'payment_frequency', 'renewal_blocked', 'first_quota_date', 'has_been_modified', 'modification_count', 'last_modified_at')
                         ->with([
                             'payments' => function ($pq) {
-                                $pq->select('id', 'credit_id', 'amount', 'payment_date', 'created_at', 'payment_method', 'status');
+                                $pq->select('id', 'credit_id', 'amount', 'payment_date', 'created_at', 'payment_method', 'status', 'business_date');
+                            },
+                            'installments' => function ($iq) {
+                                $iq->select('id', 'credit_id', 'quota_number', 'due_date', 'quota_amount', 'paid_amount', 'status')
+                                    ->orderBy('quota_number', 'asc');
                             }
                         ]);
                 },
@@ -1563,6 +1567,12 @@ class ClientService
                 },
                 'credits.payments.installments.installment' => function ($q) {
                     $q->select('id', 'credit_id', 'quota_number', 'due_date', 'quota_amount', 'status');
+                },
+                'credits.installments.payments' => function ($q) {
+                    $q->select('payment_installments.id', 'payment_installments.payment_id', 'payment_installments.installment_id', 'payment_installments.applied_amount');
+                },
+                'credits.installments.payments.payment' => function ($q) {
+                    $q->select('id', 'credit_id', 'payment_date', 'created_at', 'amount', 'business_date', 'status');
                 },
                 'seller' => function ($q) {
                     $q->select('id', 'user_id', 'city_id');
