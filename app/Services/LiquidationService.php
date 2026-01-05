@@ -340,11 +340,12 @@ class LiquidationService
 
             $liquidations = $query->get();
 
-            foreach ($liquidations as $liq) {
-                if ($liq->status !== 'approved') {
-                    $this->recalculateLiquidation($sellerId, $liq->date);
-                }
-            }
+            // Removed automatic recalculation to prevent lock wait timeouts
+            // foreach ($liquidations as $liq) {
+            //     if ($liq->status !== 'approved') {
+            //         $this->recalculateLiquidation($sellerId, $liq->date);
+            //     }
+            // }
 
             $lastApprovedLiquidation = Liquidation::where('seller_id', $sellerId)
                 ->where('status', 'approved')
