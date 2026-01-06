@@ -660,14 +660,14 @@ class LiquidationService
         // 2. Recalcula los totales actuales desde la BD
         $totalExpenses = $userId
             ? Expense::where('user_id', $userId)
-                ->whereDate('created_at', $date)
+                ->whereBetween('created_at', [$startUTC, $endUTC])
                 ->whereNull('deleted_at')
                 ->sum('value')
             : 0;
 
         $totalIncome = $userId
             ? Income::where('user_id', $userId)
-                ->whereDate('created_at', $date)
+                ->whereBetween('created_at', [$startUTC, $endUTC])
                 ->whereNull('deleted_at')
                 ->sum('value')
             : 0;
@@ -677,7 +677,7 @@ class LiquidationService
             ->whereNull('renewed_to_id')
             ->whereNull('deleted_at')
             ->whereNull('unification_reason')
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
             ->sum('credit_value');
 
         $totalCollected = Payment::join('credits', 'payments.credit_id', '=', 'credits.id')
@@ -697,7 +697,7 @@ class LiquidationService
         $renewalCredits = DB::table('credits')
             ->where('seller_id', $sellerId)
             ->whereNull('deleted_at')
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
             ->whereNotNull('renewed_from_id')
             ->get();
 
@@ -739,7 +739,7 @@ class LiquidationService
 
         $poliza = (float) DB::table('credits')
             ->where('seller_id', $sellerId)
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
             ->whereNull('deleted_at')
             /*       ->whereNull('unification_reason') */
             ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
@@ -1303,8 +1303,8 @@ class LiquidationService
     public function getAccumulatedByCity($startDate, $endDate)
     {
         $timezone = 'America/Lima';
-        $startUTC = Carbon::parse($startDate, $timezone)->startOfDay()->setTimezone('UTC');
-        $endUTC = Carbon::parse($endDate, $timezone)->endOfDay()->setTimezone('UTC');
+        $startUTC = Carbon::parse($startDate, $timezone)->format('Y-m-d');
+        $endUTC = Carbon::parse($endDate, $timezone)->format('Y-m-d');
 
         \Log::debug("getAccumulatedByCity - Rango UTC:", ['startUTC' => $startUTC, 'endUTC' => $endUTC]);
 
@@ -1338,8 +1338,8 @@ class LiquidationService
     public function getAccumulatedBySellerInCity($cityId, $startDate, $endDate)
     {
         $timezone = 'America/Lima';
-        $startUTC = Carbon::parse($startDate, $timezone)->startOfDay()->setTimezone('UTC');
-        $endUTC = Carbon::parse($endDate, $timezone)->endOfDay()->setTimezone('UTC');
+        $startUTC = Carbon::parse($startDate, $timezone)->format('Y-m-d');
+        $endUTC = Carbon::parse($endDate, $timezone)->format('Y-m-d');
 
         return DB::table('liquidations')
             ->join('sellers', 'liquidations.seller_id', '=', 'sellers.id')
@@ -1368,8 +1368,8 @@ class LiquidationService
     public function getAccumulatedBySellersInCity($cityId, $startDate, $endDate)
     {
         $timezone = 'America/Lima';
-        $startUTC = Carbon::parse($startDate, $timezone)->startOfDay()->setTimezone('UTC');
-        $endUTC = Carbon::parse($endDate, $timezone)->endOfDay()->setTimezone('UTC');
+        $startUTC = Carbon::parse($startDate, $timezone)->format('Y-m-d');
+        $endUTC = Carbon::parse($endDate, $timezone)->format('Y-m-d');
 
         return DB::table('liquidations')
             ->join('sellers', 'liquidations.seller_id', '=', 'sellers.id')
@@ -1400,8 +1400,8 @@ class LiquidationService
     public function getSellerLiquidationsDetail($sellerId, $startDate, $endDate)
     {
         $timezone = 'America/Lima';
-        $startUTC = Carbon::parse($startDate, $timezone)->startOfDay()->setTimezone('UTC');
-        $endUTC = Carbon::parse($endDate, $timezone)->endOfDay()->setTimezone('UTC');
+        $startUTC = Carbon::parse($startDate, $timezone)->format('Y-m-d');
+        $endUTC = Carbon::parse($endDate, $timezone)->format('Y-m-d');
 
         return Liquidation::with(['seller', 'seller.user'])
             ->where('seller_id', $sellerId)
