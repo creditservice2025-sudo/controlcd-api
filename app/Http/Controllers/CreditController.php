@@ -88,6 +88,7 @@ class CreditController extends Controller
             $newInstallments = $request->input('number_installments', null);
             $newInterestRate = $request->input('interest_rate', null);
             $newInsurance = $request->input('micro_insurance_percentage', null);
+            $newCreditValue = $request->input('credit_value', null); // Nuevo
             $timezone = $request->input('timezone', null);
             $notes = $request->input('notes', 'Modificación de frecuencia y/o parámetros financieros');
 
@@ -104,7 +105,8 @@ class CreditController extends Controller
                 $newInsurance ? (float)$newInsurance : null,
                 $timezone,
                 $notes,
-                $request->input('new_start_date', null)
+                $request->input('new_start_date', null),
+                $newCreditValue ? (float)$newCreditValue : null // Nuevo
             );
         } catch (\Exception $e) {
             \Log::error("Error updateFrequency ({$creditId}): " . $e->getMessage());
@@ -150,6 +152,7 @@ class CreditController extends Controller
             $newInstallments = $request->input('number_installments', null);
             $newInterestRate = $request->input('interest_rate', null);
             $newInsurance = $request->input('micro_insurance_percentage', null);
+            $newCreditValue = $request->input('credit_value', null); // Nuevo
 
             return $this->creditService->simulateScheduleChange(
                 (int) $creditId, 
@@ -159,7 +162,8 @@ class CreditController extends Controller
                 $newInstallments ? (int)$newInstallments : null,
                 $newInterestRate ? (float)$newInterestRate : null,
                 $newInsurance ? (float)$newInsurance : null,
-                $request->input('new_start_date', null)
+                $request->input('new_start_date', null),
+                $newCreditValue ? (float)$newCreditValue : null // Nuevo
             );
         } catch (\Exception $e) {
             \Log::error("Error simulateFrequency ({$creditId}): " . $e->getMessage());

@@ -383,7 +383,12 @@ class ClientController extends Controller
         try {
             $search = $request->input('search', '');
             $companyId = $request->input('company_id');
-            return $this->clientService->getClientsSelect($search, $companyId);
+            $sellerId = $request->input('seller_id');
+            // Fix: Frontend sends string "null"
+            if ($sellerId === 'null') {
+                $sellerId = null;
+            }
+            return $this->clientService->getClientsSelect($search, $companyId, $sellerId);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
