@@ -588,7 +588,8 @@ class CreditService
         ?float $newInsurancePercentage = null,
         $timezone = null,
         $notes = null,
-        $newStartDate = null
+        $newStartDate = null,
+        ?float $newCreditValue = null
     ) {
         try {
             DB::beginTransaction();
@@ -625,6 +626,7 @@ class CreditService
             $newNumInstallments = $newInstallments ?? $credit->number_installments;
             $interestRate = $newInterestRate ?? $credit->total_interest;
             $insurancePercentage = $newInsurancePercentage ?? $credit->micro_insurance_percentage ?? 0;
+            $creditValue = $newCreditValue ?? (float)$credit->credit_value;
 
             // 1. Identificar cuotas pagadas
             $currentInstallments = $credit->installments->sortBy('quota_number');
@@ -640,7 +642,6 @@ class CreditService
             }
 
             // 2. Recalcular montos financieros
-            $creditValue = (float)$credit->credit_value;
             // El costo total para las cuotas solo incluye Capital + Interés
             $newTotalCost = $creditValue * (1 + ($interestRate / 100));
             $remainingCost = $newTotalCost - $paidAmountSum;
@@ -661,6 +662,8 @@ class CreditService
                 'number_installments' => $credit->number_installments,
                 'total_interest' => $credit->total_interest,
                 'micro_insurance_percentage' => $credit->micro_insurance_percentage,
+                'micro_insurance_amount' => $credit->micro_insurance_amount,
+                'credit_value' => $credit->credit_value,
                 'quota_amount' => $currentInstallments->whereNotIn('status', ['Pagado', 'Paid', 'Pagada'])->first()?->quota_amount
             ];
 
@@ -687,9 +690,6 @@ class CreditService
                 
                 $affectedInstallments[] = $inst->id;
                 
-                // Si ya existía y estaba atrasada, podrías querer mantener su estado, 
-                // pero usualmente una reprogramación resetea a Pendiente.
-                
                 // Avanzar fecha
                 switch ($newFrequency) {
                     case 'Diaria': $dueDate->addDay(); break;
@@ -709,6 +709,7 @@ class CreditService
             $credit->micro_insurance_percentage = $insurancePercentage;
             $credit->micro_insurance_amount = ($creditValue * $insurancePercentage) / 100;
             if ($newStartDate) $credit->start_date = $newStartDate;
+            if ($newCreditValue) $credit->credit_value = $newCreditValue;
 
             // Auditoría
             $credit->has_been_modified = true;
@@ -717,6 +718,86 @@ class CreditService
             $credit->last_modified_by = Auth::id() ?? 1;
             
             $credit->save();
+
+            // Registrar movimiento en el flujo del crédito (Payment)
+            // Solo si el crédito NO fue creado hoy. Si fue creado hoy, el reporte ajustará automáticamente el rubro "Nuevos Créditos".
+            if ($newCreditValue && $newCreditValue != $oldValue['credit_value']) {
+                $createdAt = Carbon::now($tz);
+                $creditDate = Carbon::parse($credit->created_at)->setTimezone($tz)->format('Y-m-d');
+                
+                if ($creditDate !== $createdAt->format('Y-m-d')) {
+                    $capDiff = $newCreditValue - $oldValue['credit_value'];
+                    
+                    // Calcular impacto del seguro
+                    $newInsPct = $newInsurance ?? $credit->micro_insurance_percentage;
+                    $newInsAmount = ($newCreditValue * $newInsPct) / 100;
+                    $oldInsAmount = $oldValue['micro_insurance_amount'];
+                    $insDiff = $newInsAmount - $oldInsAmount;
+
+                    // 1. Ajuste de Capital
+                    if (abs($capDiff) > 0.001) {
+                         $absCap = number_format(abs($capDiff), 2);
+                         $creationDate = Carbon::parse($credit->created_at)->format('Y-m-d');
+                         $oldValFmt = number_format($oldValue['credit_value'], 2);
+                         $newValFmt = number_format($newCreditValue, 2);
+
+                         $credit->load('seller');
+                         $sellerUserId = $credit->seller->user_id ?? Auth::id();
+
+                         if ($capDiff > 0) {
+                             // Aumento de Capital -> Salida de Dinero (Gasto)
+                             $desc = "AJUSTE CAPITAL CRÉDITO #{$credit->id} (Creado: {$creationDate}). Cambio: \${$oldValFmt} -> \${$newValFmt}. SALIDA DE CAJA.";
+                             Expense::create([
+                                 'value' => abs($capDiff),
+                                 'description' => $desc,
+                                 'user_id' => $sellerUserId,
+                                 'created_at' => $createdAt,
+                                 'status' => 'Aprobado'
+                             ]);
+                         } else {
+                             // Disminución de Capital -> Entrada de Dinero (Ingreso)
+                             $desc = "AJUSTE CAPITAL CRÉDITO #{$credit->id} (Creado: {$creationDate}). Cambio: \${$oldValFmt} -> \${$newValFmt}. ENTRADA A CAJA.";
+                             Income::create([
+                                 'value' => abs($capDiff),
+                                 'description' => $desc,
+                                 'user_id' => $sellerUserId,
+                                 'created_at' => $createdAt,
+                                 'status' => 'Aprobado'
+                             ]);
+                         }
+                    }
+
+                    // 2. Ajuste de Seguro (Póliza)
+                    if (abs($insDiff) > 0.001) {
+                         $absIns = number_format(abs($insDiff), 2);
+                         $credit->load('seller');
+                         $sellerUserId = $credit->seller->user_id ?? Auth::id();
+                         $creationDate = Carbon::parse($credit->created_at)->format('Y-m-d');
+
+                         if ($insDiff > 0) {
+                             // Aumento de Seguro -> Cobro Adicional -> Entrada de Dinero (Ingreso)
+                             $desc = "AJUSTE SEGURO CRÉDITO #{$credit->id}. Diferencia cobrada: \${$absIns}. ENTRADA A CAJA.";
+                             Income::create([
+                                 'value' => abs($insDiff),
+                                 'description' => $desc,
+                                 'user_id' => $sellerUserId,
+                                 'created_at' => $createdAt,
+                                 'status' => 'Aprobado'
+                             ]);
+                         } else {
+                             // Disminución de Seguro -> Devolución -> Salida de Dinero (Gasto)
+                             $desc = "AJUSTE SEGURO CRÉDITO #{$credit->id}. Diferencia devuelta: \${$absIns}. SALIDA DE CAJA.";
+                             Expense::create([
+                                 'value' => abs($insDiff),
+                                 'description' => $desc,
+                                 'user_id' => $sellerUserId,
+                                 'created_at' => $createdAt,
+                                 'status' => 'Aprobado'
+                             ]);
+                         }
+                    }
+                }
+            }
 
             // Registrar Auditoría
             CreditModification::create([
@@ -729,6 +810,7 @@ class CreditService
                     'number_installments' => $newNumInstallments,
                     'total_interest' => $interestRate,
                     'micro_insurance_percentage' => $insurancePercentage,
+                    'credit_value' => $creditValue,
                     'quota_amount' => $newQuotaAmount,
                     'start_date' => $newStartDate
                 ],
@@ -753,6 +835,17 @@ class CreditService
             return $this->errorResponse('Error al actualizar la frecuencia del crédito: ' . $e->getMessage(), 500);
         }
     }
+
+    // ... (setCreditRenewalBlocked, etc remain unchanged)
+    
+    // Skipping to simulateScheduleChange replacement below the ellipses...
+    // I will replace simulateScheduleChange separately if it is not contiguous or just replace both if I select properly.
+    // The selection in the replace_file_content tool is contiguous for updateCreditFrequency only.
+    // I will update simulateScheduleChange in a separate call or extend the range 
+    // Wait, updateCreditFrequency ends at 755. simulateScheduleChange starts at 1882.
+    // I should do two separate replacements or one if they were close. They are far.
+    // I'll do updateCreditFrequency first.
+
 
     public function setCreditRenewalBlocked(int $creditId, bool $blocked = true)
     {
@@ -1440,6 +1533,7 @@ class CreditService
 
         $reportData = [];
         $totalCollected = 0;
+        $totalAdditionalDisbursements = 0;
         $withPayment = 0;
         $withoutPayment = 0;
         $totalCapital = 0;
@@ -1458,16 +1552,22 @@ class CreditService
             $totalPaid = $credit->payments->sum('amount');
             $remainingAmount = $totalCreditValue - $totalPaid;
             $dayPayments = $credit->payments()->whereBetween('payments.created_at', [$start, $end])->get();
-            $paidToday = $dayPayments->sum('amount');
+            
+            $positivePaid = $dayPayments->where('amount', '>=', 0)->sum('amount');
+            $negativePaid = $dayPayments->where('amount', '<', 0)->sum('amount');
+            $paidToday = $positivePaid; 
+
             $paymentTime = $dayPayments->isNotEmpty() ? $dayPayments->last()->created_at->timezone(self::TIMEZONE)->format('H:i:s') : null;
 
-            if ($paidToday > 0) {
+            if ($positivePaid > 0) {
                 $withPayment++;
             } else {
                 $withoutPayment++;
             }
 
-            $totalCollected += $paidToday;
+            $totalCollected += $positivePaid;
+            $totalAdditionalDisbursements += abs($negativePaid);
+            
             $totalCapital += $credit->credit_value;
             $totalInterest += $interestAmount;
             $totalMicroInsurance += $credit->micro_insurance_amount;
@@ -1483,9 +1583,9 @@ class CreditService
                 $capitalRatio = $interestRatio = $microInsuranceRatio = 0;
             }
 
-            $capitalCollected += $paidToday * $capitalRatio;
-            $interestCollected += $paidToday * $interestRatio;
-            $microInsuranceCollected += $paidToday * $microInsuranceRatio;
+            $capitalCollected += $positivePaid * $capitalRatio;
+            $interestCollected += $positivePaid * $interestRatio;
+            $microInsuranceCollected += $positivePaid * $microInsuranceRatio;
 
             $reportData[] = [
                 'no' => $index + 1,
@@ -1515,14 +1615,20 @@ class CreditService
         $totalNewCredits = $newCredits->sum('credit_value');
 
         // Calcular utilidad neta y neto entregado al cobrador
-        $netUtility = $totalCollected + $totalIncomes - $totalExpenses;
-        $netAmount = $totalCollected - $totalExpenses;
+        // Net Utility = Collected (In) + Incomes (In) - Expenses (Out). (Disbursements are Principal movements, typically affects Cash but not "Utility" if Utility means Profit. Here utility seems to be Cash Flow)
+        // If we strictly follow Cash Flow:
+        $netUtility = $totalCollected + $totalIncomes - $totalExpenses; 
+        
+        // Net Amount (Caja Final) = Collected - Expenses + Incomes - Additional Disbursements
+        // Note: Existing code was '$totalCollected - $totalExpenses'. I am adding Incomes and subtracting Additional Disbursements.
+        $netAmount = $totalCollected + $totalIncomes - $totalExpenses - $totalAdditionalDisbursements;
         $netUtilityPlusCapital = $netUtility + $totalCapital;
 
         return [
             'report_date' => $date,
             'report_data' => $reportData,
             'total_collected' => $totalCollected,
+            'total_additional_disbursements' => $totalAdditionalDisbursements,
             'with_payment' => $withPayment,
             'without_payment' => $withoutPayment,
             'total_credits' => count($reportData),
@@ -1540,9 +1646,12 @@ class CreditService
             'capital_collected' => $capitalCollected,
             'interest_collected' => $interestCollected,
             'microinsurance_collected' => $microInsuranceCollected,
-            'net_utility' => $netUtility,
+            'net_utility' => $netUtility, 
+            'net_amount' => $netAmount, // Ensure this key is used in frontend if needed. Usually frontend calculates own totals or uses this? 
+            // In the Step 194 screenshot, I saw "Caja actual del vendedor (Real a entregar) $1734.76". This likely comes from Liquidation object or this report.
             'net_utility_plus_capital' => $netUtilityPlusCapital,
         ];
+
     }
     public function generatePDF($reportData)
     {
@@ -1887,7 +1996,8 @@ class CreditService
         ?int $newInstallments = null,
         ?float $newInterestRate = null,
         ?float $newInsurancePercentage = null,
-        ?string $newStartDate = null
+        ?string $newStartDate = null,
+        ?float $newCreditValue = null
     ) {
         try {
             $credit = Credit::with(['installments'])->findOrFail($creditId);
@@ -1898,9 +2008,9 @@ class CreditService
             $totalInstallments = $newInstallments ?? $credit->number_installments;
             $interestRate = $newInterestRate ?? $credit->total_interest;
             $insurancePercentage = $newInsurancePercentage ?? $credit->micro_insurance_percentage ?? 0;
+            $creditValue = $newCreditValue ?? (float)$credit->credit_value;
 
             // Recalcular montos si hay cambios financieros
-            $creditValue = (float)$credit->credit_value;
             // El costo total para las cuotas solo incluye Capital + Interés
             $newTotalCost = $creditValue * (1 + ($interestRate / 100));
             
@@ -1981,7 +2091,7 @@ class CreditService
                     'type' => $type,
                     'current_frequency' => $credit->payment_frequency,
                     'simulated_frequency' => $frequency,
-                    'current_total_cost' => round(($creditValue * (1 + ($credit->total_interest / 100))), 2),
+                    'current_total_cost' => round(((float)$credit->credit_value * (1 + ($credit->total_interest / 100))), 2),
                     'new_total_cost' => round($newTotalCost, 2),
                     'installments' => $simulatedInstallments,
                     'summary' => [

@@ -1441,47 +1441,68 @@ class ClientService
     }
 
 
-    public function getClientsSelect($search = '', $companyId = null)
+    public function getClientsSelect($search = '', $companyId = null, $sellerId = null)
     {
         try {
             $user = Auth::user();
             $search = trim($search);
 
             $query = Client::query()
-                ->select('id', 'name', 'seller_id', 'dni', 'email', 'phone', 'address');
+                ->leftJoin('sellers', 'clients.seller_id', '=', 'sellers.id')
+                ->leftJoin('users', 'sellers.user_id', '=', 'users.id')
+                ->select(
+                    'clients.id', 
+                    'clients.name', 
+                    'clients.seller_id', 
+                    'clients.dni', 
+                    'clients.email', 
+                    'clients.phone', 
+                    'clients.address',
+                    'users.name as seller_name',
+                    \DB::raw('(SELECT count(*) FROM credits WHERE credits.client_id = clients.id AND credits.status IN ("Activo", "Vigente", "Active")) as active_credits_count')
+                );
 
             if ($search !== '') {
                 $query->where(function ($q) use ($search) {
-                    $q->where('name', 'like', "%{$search}%")
-                        ->orWhere('dni', 'like', "%{$search}%")
-                        ->orWhere('email', 'like', "%{$search}%");
+                    $q->where('clients.name', 'like', "%{$search}%")
+                        ->orWhere('clients.dni', 'like', "%{$search}%")
+                        ->orWhere('clients.email', 'like', "%{$search}%")
+                        ->orWhere('users.name', 'like', "%{$search}%");
                 });
+            }
+
+            if ($sellerId) {
+                $query->where('clients.seller_id', $sellerId);
             }
 
             // scope to seller for role 5
             if ($user->role_id == 5 && $user->seller) {
-                $query->where('seller_id', $user->seller->id);
+                $query->where('clients.seller_id', $user->seller->id);
             }
 
             // scope to sellers asociados para role 11
             if ($user->role_id == 11) {
                 $sellerIds = \App\Models\UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
-                $query->whereIn('seller_id', $sellerIds);
+                $query->whereIn('clients.seller_id', $sellerIds);
             }
 
             // scope to company for role 2
             if ($user->role_id == 2) {
                 $company = $user->company;
                 if ($company) {
-                    $query->whereHas('seller', fn($q) => $q->where('company_id', $company->id));
+                    $query->where('sellers.company_id', $company->id);
                 }
             }
 
             if (Auth::user()->role_id == 1 && $companyId) {
-                $query->whereHas('seller', fn($q) => $q->where('company_id', $companyId));
+                $query->where('sellers.company_id', $companyId);
             }
 
-            $clients = $query->orderBy('name', 'asc')->get();
+            Log::info("getClientsSelect SQL: " . $query->toSql(), $query->getBindings());
+            // Group by seller (ordered by seller name first)
+            $clients = $query->orderBy('users.name', 'asc')
+                             ->orderBy('clients.name', 'asc')
+                             ->get();
 
             if ($clients->isEmpty()) {
                 return $this->errorNotFoundResponse('No se encontraron clientes');
@@ -1492,9 +1513,9 @@ class ClientService
                 'message' => 'Clientes encontrados',
                 'data' => $clients
             ]);
-        } catch (Throwable $e) {
-            Log::error("getClientsSelect error: {$e->getMessage()} | " . $e->getTraceAsString());
-            return $this->errorResponse('Error al obtener los clientes', 500);
+        } catch (\Throwable $e) {
+            Log::error("getClientsSelect ERROR: " . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
+            return $this->errorResponse("Fatal: " . $e->getMessage() . " in " . $e->getFile() . ":" . $e->getLine(), 500);
         }
     }
 
@@ -1551,7 +1572,7 @@ class ClientService
         try {
             $client = Client::with([
                 'credits' => function ($cq) {
-                    $cq->select('id', 'client_id', 'credit_value', 'total_interest', 'number_installments', 'status', 'created_at', 'payment_frequency', 'renewal_blocked', 'first_quota_date', 'has_been_modified', 'modification_count', 'last_modified_at')
+                    $cq->select('id', 'client_id', 'seller_id', 'credit_value', 'total_interest', 'number_installments', 'status', 'created_at', 'payment_frequency', 'renewal_blocked', 'first_quota_date', 'has_been_modified', 'modification_count', 'last_modified_at')
                         ->with([
                             'payments' => function ($pq) {
                                 $pq->select('id', 'credit_id', 'amount', 'payment_date', 'created_at', 'payment_method', 'status', 'business_date');

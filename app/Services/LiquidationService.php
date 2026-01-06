@@ -742,7 +742,22 @@ class LiquidationService
             ->whereNull('deleted_at')
             /*       ->whereNull('unification_reason') */
             ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
-        // Cálculo del realToDeliver
+        
+        // --- FIX: Recalcular initial_cash para corregir liquidaciones creadas vacías incorrectamente ---
+        $lastLiquidation = Liquidation::where('seller_id', $sellerId)
+            ->where('date', '<', $date)
+            ->orderBy('date', 'desc')
+            ->first();
+
+        // Autocorregir initial_cash
+        $correctedInitialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
+        if ($liquidation->initial_cash != $correctedInitialCash) {
+            \Log::info("Autocorrecting initial_cash for liquidation ID {$liquidation->id}: {$liquidation->initial_cash} -> {$correctedInitialCash}");
+            $liquidation->initial_cash = $correctedInitialCash;
+            // No hacemos save aquí, se hará en el update final
+        }
+
+        // Cálculo del realToDeliver con el initial_cash corregido
         $realToDeliver = $liquidation->initial_cash
             + $liquidation->base_delivered
             + ($totalIncome + $totalCollected + $poliza)
@@ -777,6 +792,7 @@ class LiquidationService
          */
         // Verificar si hay cambios
         $hasChanges = !(
+            $liquidation->initial_cash == $correctedInitialCash && // Check initial_cash change
             $liquidation->total_expenses == $totalExpenses &&
             $liquidation->new_credits == $newCredits &&
             $liquidation->total_income == $totalIncome &&
@@ -808,6 +824,7 @@ class LiquidationService
         \Log::debug("total_crossed_credits: {$liquidation->total_crossed_credits} -> $total_pending_absorbed");
  */
         $liquidation->update([
+            'initial_cash' => $correctedInitialCash,
             'total_expenses' => $totalExpenses,
             'new_credits' => $newCredits,
             'total_income' => $totalIncome,
