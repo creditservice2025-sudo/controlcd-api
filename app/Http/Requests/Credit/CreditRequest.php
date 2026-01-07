@@ -35,6 +35,8 @@ class CreditRequest extends FormRequest
             'is_advance_payment' => 'nullable|boolean',
             'timezone' => 'nullable|string',
             'phone' => 'required|string|min:7',
+            'images' => 'required|array|min:1',
+            'images.*.file' => 'required|image'
         ];
 
         if ($this->isMethod('put') || $this->isMethod('get')) {
@@ -81,6 +83,11 @@ class CreditRequest extends FormRequest
             'phone.min' => 'El teléfono debe tener al menos 7 caracteres',
             'micro_insurance_percentage.required' => 'El porcentaje de microseguro es obligatorio',
             'micro_insurance_percentage.numeric' => 'El porcentaje de microseguro debe ser un número',
+            'images.required' => 'La foto es obligatoria para crear el crédito',
+            'images.array' => 'Formato de imágenes no válido',
+            'images.min' => 'Debe subir al menos una foto',
+            'images.*.file.required' => 'El archivo de imagen es obligatorio',
+            'images.*.file.image' => 'El archivo debe ser una imagen válida',
         ];
     }
 }

@@ -70,9 +70,12 @@ class CreditService
             $sellerConfig = \App\Models\SellerConfig::where('seller_id', $params['seller_id'])->first();
             $limit = $sellerConfig ? floatval($sellerConfig->restrict_new_sales_amount ?? 0) : 0;
             if ($limit > 0) {
-                $today = Carbon::now($userTimezone)->toDateString();
+                $tz = $userTimezone ?: self::TIMEZONE;
+                $startUTC = Carbon::now($tz)->startOfDay()->setTimezone('UTC');
+                $endUTC = Carbon::now($tz)->endOfDay()->setTimezone('UTC');
+
                 $newCreditsAmount = \App\Models\Credit::where('seller_id', $params['seller_id'])
-                    ->whereDate('created_at', $today)
+                    ->whereBetween('created_at', [$startUTC, $endUTC])
                     ->sum('credit_value');
                 $totalWithNew = $newCreditsAmount + floatval($params['credit_value']);
                 if ($totalWithNew > $limit) {
@@ -214,6 +217,7 @@ class CreditService
                         'path' => $imagePath,
                         'type' => $imageData['type'],
                         'description' => $creditDescription,
+                        'credit_id' => $credit->id,
                         'created_at' => $params['created_at'] ?? null,
                         'updated_at' => $params['updated_at'] ?? null
                     ];
@@ -448,6 +452,38 @@ class CreditService
                 'payment_date' => now(),
                 'status'    => 'Pagado',
             ]); */
+
+            // 4.1 Process images for renewal
+            if ($request->has('images')) {
+                $images = $request->input('images');
+                $creditDescription = "Renovación Crédito ID: {$newCredit->id} (Desde: {$oldCredit->id}) - Valor: $" . number_format($newCredit->credit_value, 2) . " - Creado: " . ($newCredit->created_at ? $newCredit->created_at->format('Y-m-d H:i') : now()->format('Y-m-d H:i'));
+
+                foreach ($images as $index => $imageData) {
+                    $imageFile = $request->file("images.{$index}.file");
+                    $imagePath = Helper::uploadFile($imageFile, 'clients');
+
+                    $imageRecord = [
+                        'path' => $imagePath,
+                        'type' => $imageData['type'],
+                        'description' => $creditDescription,
+                        'credit_id' => $newCredit->id,
+                        'created_at' => $createdAt,
+                        'updated_at' => $updatedAt
+                    ];
+
+                    if (isset($imageData['latitude'])) $imageRecord['latitude'] = $imageData['latitude'];
+                    if (isset($imageData['longitude'])) $imageRecord['longitude'] = $imageData['longitude'];
+                    if (isset($imageData['accuracy'])) $imageRecord['accuracy'] = $imageData['accuracy'];
+                    if (isset($imageData['address'])) $imageRecord['address'] = $imageData['address'];
+                    if (isset($imageData['location_timestamp'])) {
+                        try {
+                            $imageRecord['location_timestamp'] = \Carbon\Carbon::parse($imageData['location_timestamp'])->format('Y-m-d H:i:s');
+                        } catch (\Exception $e) { $imageRecord['location_timestamp'] = null; }
+                    }
+
+                    $newCredit->client->images()->create($imageRecord);
+                }
+            }
 
             \DB::commit();
 
@@ -1399,7 +1435,7 @@ class CreditService
     public function getSellerCreditsByDate(int $sellerId, Request $request, int $perpage)
     {
         try {
-            $creditsQuery = Credit::with(['client', 'client.images', 'installments', 'payments'])
+            $creditsQuery = Credit::with(['client', 'client.images', 'installments', 'payments', 'images'])
                 ->whereNull('renewed_from_id')
                 ->where('seller_id', $sellerId);
 

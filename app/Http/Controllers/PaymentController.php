@@ -228,13 +228,13 @@ class PaymentController extends Controller
                 DB::raw('COALESCE(SUM(credit_value), 0) as total_credit_value'),
                 DB::raw('COALESCE(SUM(credit_value * (total_interest / 100)), 0) as total_interest_amount')
             )
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$start, $end])
             ->whereNull('deleted_at')
             ->whereNull('unification_reason')
             ->whereNull('renewed_from_id');
 
         $renewalCreditsQuery = DB::table('credits')
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$start, $end])
             ->whereNotNull('renewed_from_id');
 
 
@@ -299,7 +299,7 @@ class PaymentController extends Controller
         $expensesQuery = DB::table('expenses')
             ->select(DB::raw('COALESCE(SUM(value), 0) as total_expenses'))
             ->whereNull('deleted_at')
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$start, $end])
             ->where(function ($q) {
                 $q->where('status', 'Aprobado')
                     ->orWhere('description', 'like', '%AJUSTE%');
@@ -308,7 +308,7 @@ class PaymentController extends Controller
         $incomeQuery = DB::table('incomes')
             ->select(DB::raw('COALESCE(SUM(value), 0) as total_income'))
             ->whereNull('deleted_at')
-            ->whereDate('created_at', $date);
+            ->whereBetween('created_at', [$start, $end]);
 
         if ($user->role_id == 5) {
             $expensesQuery->where('user_id', $user->id);
@@ -319,7 +319,7 @@ class PaymentController extends Controller
 
         // List all expenses for the date - CORREGIDO: usar created_at con rango UTC
         $expensesListQuery = DB::table('expenses')
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$start, $end])
             ->where(function ($q) {
                 $q->where('status', 'Aprobado')
                     ->orWhere('description', 'like', '%AJUSTE%');
@@ -335,7 +335,7 @@ class PaymentController extends Controller
 
         // List all incomes for the date - CORREGIDO: usar created_at con rango UTC
         $incomesListQuery = DB::table('incomes')
-            ->whereDate('created_at', $date);
+            ->whereBetween('created_at', [$start, $end]);
 
         if ($user->role_id == 5) {
             $incomesListQuery = $incomesListQuery->where('user_id', $user->id);
@@ -357,7 +357,7 @@ class PaymentController extends Controller
 
         $totals['poliza'] = (float) DB::table('credits')
             ->where('seller_id', $sellerId)
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$start, $end])
             ->whereNull('deleted_at')
             ->whereNull('unification_reason')
             ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));

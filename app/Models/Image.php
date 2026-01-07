@@ -14,6 +14,7 @@ class Image extends Model
         'type',
         'description',
         'client_id',
+        'credit_id',
         'latitude',
         'longitude',
         'accuracy',
@@ -24,5 +25,10 @@ class Image extends Model
     public function client()
     {
         return $this->belongsTo(Client::class);
+    }
+
+    public function credit()
+    {
+        return $this->belongsTo(Credit::class);
     }
 }
