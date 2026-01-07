@@ -535,7 +535,10 @@ class DashboardService
                     ->sum('amount');
                 $expenses = Expense::where('user_id', $seller->user_id)
                     ->whereBetween('created_at', [$startUTC, $endUTC])
-                    ->where('status', 'Aprobado')
+                    ->where(function ($q) {
+                        $q->where('status', 'Aprobado')
+                            ->orWhere('description', 'like', '%AJUSTE%');
+                    })
                     ->sum('value');
                 $income = Income::where('user_id', $seller->user_id)
                     ->whereBetween('created_at', [$startUTC, $endUTC])
@@ -679,7 +682,12 @@ class DashboardService
             $cashPayments = (float) Payment::whereIn('credit_id', $creditIds)
                 ->whereBetween('created_at', [$startUTC, $endUTC])->sum('amount');
             $expenses = (float) Expense::whereIn('user_id', $userIds)
-                ->whereBetween('created_at', [$startUTC, $endUTC])->where('status', 'Aprobado')->sum('value');
+                ->whereBetween('created_at', [$startUTC, $endUTC])
+                ->where(function ($q) {
+                    $q->where('status', 'Aprobado')
+                        ->orWhere('description', 'like', '%AJUSTE%');
+                })
+                ->sum('value');
             $income = (float) Income::whereIn('user_id', $userIds)
                 ->whereBetween('created_at', [$startUTC, $endUTC])->sum('value');
 

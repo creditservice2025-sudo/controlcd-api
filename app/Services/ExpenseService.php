@@ -468,7 +468,11 @@ class ExpenseService
             }
 
             $expensesQuery = Expense::with(['user', 'category', 'images'])
-                ->where('user_id', $sellerUserId);
+                ->where('user_id', $sellerUserId)
+                ->where(function ($q) {
+                    $q->where('status', 'Aprobado')
+                        ->orWhere('description', 'like', '%AJUSTE%');
+                });
 
             $timezone = $request->input('timezone', 'America/Lima');
 

@@ -1399,7 +1399,7 @@ class CreditService
     public function getSellerCreditsByDate(int $sellerId, Request $request, int $perpage)
     {
         try {
-            $creditsQuery = Credit::with(['client', 'installments', 'payments'])
+            $creditsQuery = Credit::with(['client', 'client.images', 'installments', 'payments'])
                 ->whereNull('renewed_from_id')
                 ->where('seller_id', $sellerId);
 

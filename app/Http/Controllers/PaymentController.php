@@ -300,7 +300,10 @@ class PaymentController extends Controller
             ->select(DB::raw('COALESCE(SUM(value), 0) as total_expenses'))
             ->whereNull('deleted_at')
             ->whereDate('created_at', $date)
-            ->where('status', 'Aprobado');
+            ->where(function ($q) {
+                $q->where('status', 'Aprobado')
+                    ->orWhere('description', 'like', '%AJUSTE%');
+            });
 
         $incomeQuery = DB::table('incomes')
             ->select(DB::raw('COALESCE(SUM(value), 0) as total_income'))
@@ -317,7 +320,10 @@ class PaymentController extends Controller
         // List all expenses for the date - CORREGIDO: usar created_at con rango UTC
         $expensesListQuery = DB::table('expenses')
             ->whereDate('created_at', $date)
-            ->where('status', 'Aprobado');
+            ->where(function ($q) {
+                $q->where('status', 'Aprobado')
+                    ->orWhere('description', 'like', '%AJUSTE%');
+            });
 
         if ($user->role_id == 5) {
             $expensesListQuery = $expensesListQuery->where('user_id', $user->id);
