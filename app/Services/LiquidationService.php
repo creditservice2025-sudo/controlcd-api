@@ -662,6 +662,10 @@ class LiquidationService
             ? Expense::where('user_id', $userId)
                 ->whereBetween('created_at', [$startUTC, $endUTC])
                 ->whereNull('deleted_at')
+                ->where(function ($q) {
+                    $q->where('status', 'Aprobado')
+                        ->orWhere('description', 'like', '%AJUSTE%');
+                })
                 ->sum('value')
             : 0;
 
@@ -1065,14 +1069,26 @@ class LiquidationService
         $totals['created_credits_value'] = (float) $credits->value;
         $totals['created_credits_interest'] = (float) $credits->interest;
 
+        // Obtener el user_id correcto (del vendedor)
+        $targetUserId = $userId;
+        if ($sellerId) {
+            $sellerObj = Seller::find($sellerId);
+            if ($sellerObj && $sellerObj->user_id) {
+                $targetUserId = $sellerObj->user_id;
+            }
+        }
+
         // Obtener gastos
-        $totals['total_expenses'] = (float) Expense::where('user_id', $userId)
+        $totals['total_expenses'] = (float) Expense::where('user_id', $targetUserId)
             ->whereDate('created_at', $date)
             ->whereNull('deleted_at')
-            ->where('status', 'Aprobado')
+            ->where(function ($q) {
+                $q->where('status', 'Aprobado')
+                    ->orWhere('description', 'like', '%AJUSTE%');
+            })
             ->sum('value');
 
-        $totals['total_income'] = (float) Income::where('user_id', $userId)
+        $totals['total_income'] = (float) Income::where('user_id', $targetUserId)
             ->whereDate('created_at', $date)
             ->whereNull('deleted_at')
             ->sum('value');

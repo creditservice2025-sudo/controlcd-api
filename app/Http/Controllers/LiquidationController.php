@@ -80,9 +80,14 @@ class LiquidationController extends Controller
             ], 422);
         }
 
-        $pendingExpenses = Expense::where('user_id', $user->id)
+        // Obtener el user_id del vendedor
+        $sellerForCheck = Seller::find($sellerId);
+        $sellerUserId = $sellerForCheck ? $sellerForCheck->user_id : $user->id;
+
+        $pendingExpenses = Expense::where('user_id', $sellerUserId)
             ->whereDate('created_at', $request->date)
             ->where('status', 'Pendiente')
+            ->where('description', 'not like', '%AJUSTE%')
             ->exists();
 
         if ($pendingExpenses) {
@@ -512,6 +517,10 @@ class LiquidationController extends Controller
         $totalExpenses = $userId
             ? Expense::where('user_id', $userId)
                 ->whereBetween('created_at', [$startUTC, $endUTC])
+                ->where(function ($q) {
+                    $q->where('status', 'Aprobado')
+                        ->orWhere('description', 'like', '%AJUSTE%');
+                })
                 ->sum('value')
             : 0;
 
@@ -944,11 +953,24 @@ class LiquidationController extends Controller
         $totals['created_credits_value'] = (float) $credits->value;
         $totals['created_credits_interest'] = (float) $credits->interest;
 
-        $totals['total_expenses'] = (float) Expense::where('user_id', $user->id)
+        // Usar el user_id del vendedor si está disponible
+        $targetUserId = $user instanceof \App\Models\User ? $user->id : $user;
+        if ($sellerId) {
+            $sellerObj = Seller::find($sellerId);
+            if ($sellerObj && $sellerObj->user_id) {
+                $targetUserId = $sellerObj->user_id;
+            }
+        }
+
+        $totals['total_expenses'] = (float) Expense::where('user_id', $targetUserId)
             ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->where(function ($q) {
+                $q->where('status', 'Aprobado')
+                    ->orWhere('description', 'like', '%AJUSTE%');
+            })
             ->sum('value');
 
-        $totals['total_income'] = (float) Income::where('user_id', $user->id)
+        $totals['total_income'] = (float) Income::where('user_id', $targetUserId)
             ->whereBetween('created_at', [$startUTC, $endUTC])
             ->sum('value');
 
