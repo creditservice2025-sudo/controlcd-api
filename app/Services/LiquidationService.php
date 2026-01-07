@@ -1050,7 +1050,7 @@ class LiquidationService
         // Obtener créditos creados
         $credits = DB::table('credits')
             ->where('seller_id', $sellerId)
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
             ->whereNull('deleted_at')
             ->whereNull('renewed_from_id')
             ->whereNull('unification_reason')
@@ -1080,7 +1080,7 @@ class LiquidationService
 
         // Obtener gastos
         $totals['total_expenses'] = (float) Expense::where('user_id', $targetUserId)
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
             ->whereNull('deleted_at')
             ->where(function ($q) {
                 $q->where('status', 'Aprobado')
@@ -1089,7 +1089,7 @@ class LiquidationService
             ->sum('value');
 
         $totals['total_income'] = (float) Income::where('user_id', $targetUserId)
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
             ->whereNull('deleted_at')
             ->sum('value');
 
@@ -1115,7 +1115,7 @@ class LiquidationService
         // === Detalle de renovaciones ===
         $renewalCredits = DB::table('credits')
             ->where('seller_id', $sellerId)
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
             ->whereNotNull('renewed_from_id')
             ->get();
 
@@ -1151,7 +1151,7 @@ class LiquidationService
 
         $totals['poliza'] = (float) DB::table('credits')
             ->where('seller_id', $sellerId)
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
             ->whereNull('deleted_at')
             /*    ->whereNull('unification_reason') */
             ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));

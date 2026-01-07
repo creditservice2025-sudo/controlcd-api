@@ -295,8 +295,11 @@ class LiquidationController extends Controller
             ], 422);
         }
 
+        $startUTC = Carbon::parse($date, $timezone)->startOfDay()->setTimezone('UTC');
+        $endUTC = Carbon::parse($date, $timezone)->endOfDay()->setTimezone('UTC');
+
         $pendingExpenses = Expense::where('user_id', $user->id)
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
             ->where('status', 'Pendiente')
             ->exists();
 
@@ -323,13 +326,12 @@ class LiquidationController extends Controller
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
             ->where('credits.seller_id', $sellerId)
             ->where('credits.status', 'Cartera Irrecuperable')
-            ->whereDate('credits.updated_at', $date)
+            ->whereBetween('credits.updated_at', [$startUTC, $endUTC])
             ->where('installments.status', 'Pendiente')
             ->sum('installments.quota_amount');
 
         // === Calcular renovaciones desembolsadas ===
-        $startUTC = Carbon::parse($date, $timezone)->startOfDay()->setTimezone('UTC');
-        $endUTC = Carbon::parse($date, $timezone)->endOfDay()->setTimezone('UTC');
+        // $startUTC and $endUTC already calculated above
 
         $renewalCredits = \App\Models\Credit::where('seller_id', $sellerId)
             ->whereBetween('created_at', [$startUTC, $endUTC])
@@ -353,7 +355,7 @@ class LiquidationController extends Controller
 
         // === Calcular valor de póliza ===
         $poliza = \App\Models\Credit::where('seller_id', $sellerId)
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
             ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
 
         // === Calcular real_to_deliver incluyendo los nuevos campos ===

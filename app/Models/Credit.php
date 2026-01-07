@@ -68,6 +68,12 @@ class Credit extends Model
     {
         return $this->hasMany(Payment::class);
     }
+
+    public function images()
+    {
+        return $this->hasMany(Image::class, 'credit_id');
+    }
+
     public function paymentsToday()
     {
         return $this->hasMany(Payment::class)
