@@ -499,6 +499,14 @@ class ClientController extends Controller
     public function getSellerClientsForMap(Request $request, $sellerId)
     {
         try {
+            if (!is_numeric($sellerId)) {
+                $seller = Seller::where('uuid', $sellerId)->first();
+                if (!$seller) {
+                    return $this->errorResponse('Vendedor no encontrado', 404);
+                }
+                $sellerId = $seller->id;
+            }
+
             $search = $request->input('search', '');
             $date = $request->input('date', null);
             $timezone = $request->input('timezone', null);
