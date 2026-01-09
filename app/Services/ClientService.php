@@ -1160,6 +1160,7 @@ class ClientService
             $filterDate = $date ? Carbon::parse($date, $tz) : Carbon::now($tz);
             $startUTC = $filterDate->copy()->startOfDay()->timezone('UTC');
             $endUTC = $filterDate->copy()->endOfDay()->timezone('UTC');
+            $todayLocal = $filterDate->format('Y-m-d');
 
 
             $clients = Client::query()
@@ -1217,6 +1218,7 @@ class ClientService
 
             // Ahora procesamos en memoria: solo payments del día fueron cargados por crédito
             $clients->each(function ($client) use ($filterDate, $startUTC, $endUTC) {
+                try {
                 $client->distantPayments = collect();
                 $client->todayPayments = collect();
 
@@ -1259,7 +1261,7 @@ class ClientService
                         $client->todayPayments->push($paymentData);
 
                         // Distancia: asegúrate de que client->coordinates sea un array con keys latitude/longitude
-                        if (!empty($client->coordinates) && isset($client->coordinates['latitude'], $client->coordinates['longitude'])) {
+                        if (!empty($client->coordinates) && is_array($client->coordinates) && isset($client->coordinates['latitude'], $client->coordinates['longitude'])) {
                             $clientLat = (float) $client->coordinates['latitude'];
                             $clientLon = (float) $client->coordinates['longitude'];
 
@@ -1278,6 +1280,9 @@ class ClientService
                             }
                         }
                     }
+                }
+                } catch (\Exception $e) {
+                    \Log::error("Error processing map client {$client->id}: " . $e->getMessage());
                 }
             });
 
