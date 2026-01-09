@@ -81,7 +81,7 @@ class LiquidationController extends Controller
         }
 
         // Obtener el user_id del vendedor
-        $sellerForCheck = Seller::find($sellerId);
+        $sellerForCheck = Seller::find($request->seller_id);
         $sellerUserId = $sellerForCheck ? $sellerForCheck->user_id : $user->id;
 
         $pendingExpenses = Expense::where('user_id', $sellerUserId)
