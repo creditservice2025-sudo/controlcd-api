@@ -1195,7 +1195,7 @@ class ClientService
                     // Solo los pagos del día para cada crédito (esto evita cargar todo el histórico)
                     'credits.payments' => function ($q) use ($todayLocal) {
                         $q->select('id', 'credit_id', 'amount', 'payment_date', 'business_date', 'created_at', 'payment_method', 'latitude', 'longitude', 'status')
-                            ->where('business_date', $todayLocal);
+                            ->whereDate('business_date', $todayLocal);
                     },
                     // incluir payment_installments + installments.installment para obtener cuotas afectadas por cada pago
                     'credits.payments.installments' => function ($q) {
@@ -1219,8 +1219,8 @@ class ClientService
             // Ahora procesamos en memoria: solo payments del día fueron cargados por crédito
             $clients->each(function ($client) use ($filterDate, $startUTC, $endUTC) {
                 try {
-                $client->distantPayments = collect();
-                $client->todayPayments = collect();
+                $distantPayments = collect();
+                $todayPayments = collect();
 
                 foreach ($client->credits as $credit) {
                     $credit->paid_installments_count = $credit->paid_installments_count ?? 0;
@@ -1258,7 +1258,7 @@ class ClientService
                             'pending_installments' => $credit->pending_installments,
                         ];
 
-                        $client->todayPayments->push($paymentData);
+                        $todayPayments->push($paymentData);
 
                         // Distancia: asegúrate de que client->coordinates sea un array con keys latitude/longitude
                         if (!empty($client->coordinates) && is_array($client->coordinates) && isset($client->coordinates['latitude'], $client->coordinates['longitude'])) {
@@ -1275,12 +1275,21 @@ class ClientService
 
                                 if ($distance > 10) {
                                     $paymentData['distance'] = $distance;
-                                    $client->distantPayments->push($paymentData);
+                                    $distantPayments->push($paymentData);
                                 }
                             }
                         }
                     }
                 }
+                
+                // Asegurar que las propiedades dinámicas se incluyan en el JSON
+                $client->setAttribute('todayPayments', $todayPayments->values()->all());
+                $client->setAttribute('distantPayments', $distantPayments->values()->all());
+                
+                if ($todayPayments->isNotEmpty()) {
+                    \Log::info("GPS Debug: Client {$client->id} has " . $todayPayments->count() . " payments today.");
+                }
+
                 } catch (\Exception $e) {
                     \Log::error("Error processing map client {$client->id}: " . $e->getMessage());
                 }
