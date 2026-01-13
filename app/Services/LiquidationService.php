@@ -440,8 +440,9 @@ class LiquidationService
         $startLiquidation = Liquidation::where('seller_id', $sellerId)
             ->whereDate('date', $fromDate)
             ->first();
-        
-        if (!$startLiquidation) return [];
+
+        if (!$startLiquidation)
+            return [];
 
         // 2. Obtener todas las liquidaciones desde esa fecha en adelante
         $liquidations = Liquidation::where('seller_id', $sellerId)
@@ -454,27 +455,27 @@ class LiquidationService
 
         foreach ($liquidations as $liq) {
             $dateStr = $liq->date->format('Y-m-d');
-            
+
             // Si no es el primer día de la simulación, el initial_cash es el real_to_deliver proyectado del anterior
             $simulatedInitialCash = ($runningRealToDeliver !== null) ? $runningRealToDeliver : $liq->initial_cash;
 
             $metrics = $this->calculateLiquidationMetrics($sellerId, $dateStr, $simulatedInitialCash, $timezone);
-            
+
             $simulation[] = [
                 'date' => $dateStr,
                 'original' => [
-                    'initial_cash' => (float)$liq->initial_cash,
-                    'real_to_deliver' => (float)$liq->real_to_deliver,
-                    'shortage' => (float)$liq->shortage,
-                    'surplus' => (float)$liq->surplus,
+                    'initial_cash' => (float) $liq->initial_cash,
+                    'real_to_deliver' => (float) $liq->real_to_deliver,
+                    'shortage' => (float) $liq->shortage,
+                    'surplus' => (float) $liq->surplus,
                 ],
                 'simulated' => [
-                    'initial_cash' => (float)$metrics['initial_cash'],
-                    'real_to_deliver' => (float)$metrics['real_to_deliver'],
-                    'shortage' => (float)$metrics['shortage'],
-                    'surplus' => (float)$metrics['surplus'],
+                    'initial_cash' => (float) $metrics['initial_cash'],
+                    'real_to_deliver' => (float) $metrics['real_to_deliver'],
+                    'shortage' => (float) $metrics['shortage'],
+                    'surplus' => (float) $metrics['surplus'],
                 ],
-                'diff' => (float)($metrics['real_to_deliver'] - $liq->real_to_deliver)
+                'diff' => (float) ($metrics['real_to_deliver'] - $liq->real_to_deliver)
             ];
 
             $runningRealToDeliver = $metrics['real_to_deliver'];
@@ -692,7 +693,8 @@ class LiquidationService
             ->whereDate('date', $date)
             ->first();
 
-        if (!$liquidation) return [];
+        if (!$liquidation)
+            return [];
 
         $seller = Seller::find($sellerId);
         $userId = $seller ? $seller->user_id : null;
@@ -1833,11 +1835,11 @@ class LiquidationService
         $userName = $user->name;
         $detail = implode(", ", $changes);
         $newObservation = "AJUSTE MANUAL por {$userName}: {$detail}. Motivo: {$data['observation']}. Fecha: " . now()->toDateTimeString();
-        
-        $liquidation->observation = $liquidation->observation 
-            ? $liquidation->observation . "\n" . $newObservation 
+
+        $liquidation->observation = $liquidation->observation
+            ? $liquidation->observation . "\n" . $newObservation
             : $newObservation;
-        
+
         $liquidation->save();
 
         // Recalcular esta liquidación y las siguientes

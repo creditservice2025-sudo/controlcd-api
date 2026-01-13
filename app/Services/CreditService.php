@@ -517,14 +517,20 @@ class CreditService
                         'updated_at' => $updatedAt
                     ];
 
-                    if (isset($imageData['latitude'])) $imageRecord['latitude'] = $imageData['latitude'];
-                    if (isset($imageData['longitude'])) $imageRecord['longitude'] = $imageData['longitude'];
-                    if (isset($imageData['accuracy'])) $imageRecord['accuracy'] = $imageData['accuracy'];
-                    if (isset($imageData['address'])) $imageRecord['address'] = $imageData['address'];
+                    if (isset($imageData['latitude']))
+                        $imageRecord['latitude'] = $imageData['latitude'];
+                    if (isset($imageData['longitude']))
+                        $imageRecord['longitude'] = $imageData['longitude'];
+                    if (isset($imageData['accuracy']))
+                        $imageRecord['accuracy'] = $imageData['accuracy'];
+                    if (isset($imageData['address']))
+                        $imageRecord['address'] = $imageData['address'];
                     if (isset($imageData['location_timestamp'])) {
                         try {
                             $imageRecord['location_timestamp'] = \Carbon\Carbon::parse($imageData['location_timestamp'])->format('Y-m-d H:i:s');
-                        } catch (\Exception $e) { $imageRecord['location_timestamp'] = null; }
+                        } catch (\Exception $e) {
+                            $imageRecord['location_timestamp'] = null;
+                        }
                     }
 
                     $newCredit->client->images()->create($imageRecord);
@@ -606,16 +612,25 @@ class CreditService
 
                 $inst->due_date = $dueDate->format('Y-m-d');
                 $inst->save();
-                
+
                 $affectedInstallments[] = $inst->id;
 
                 // Avanzar la fecha según la frecuencia del crédito
                 switch ($credit->payment_frequency) {
-                    case 'Diaria': $dueDate->addDay(); break;
-                    case 'Semanal': $dueDate->addWeek(); break;
-                    case 'Quincenal': $dueDate->addDays(15); break;
-                    case 'Mensual': $dueDate->addMonth(); break;
-                    default: $dueDate->addMonth();
+                    case 'Diaria':
+                        $dueDate->addDay();
+                        break;
+                    case 'Semanal':
+                        $dueDate->addWeek();
+                        break;
+                    case 'Quincenal':
+                        $dueDate->addDays(15);
+                        break;
+                    case 'Mensual':
+                        $dueDate->addMonth();
+                        break;
+                    default:
+                        $dueDate->addMonth();
                 }
 
                 // Ajustar si cae en día excluido
@@ -662,9 +677,9 @@ class CreditService
     }
 
     public function updateCreditFrequency(
-        int $creditId, 
-        string $newFrequency, 
-        ?string $newFirstQuotaDate = null, 
+        int $creditId,
+        string $newFrequency,
+        ?string $newFirstQuotaDate = null,
         ?int $newInstallments = null,
         ?float $newInterestRate = null,
         ?float $newInsurancePercentage = null,
@@ -710,14 +725,14 @@ class CreditService
             $newNumInstallments = $newInstallments ?? $credit->number_installments;
             $interestRate = $newInterestRate ?? $credit->total_interest;
             $insurancePercentage = $newInsurancePercentage ?? $credit->micro_insurance_percentage ?? 0;
-            $creditValue = $newCreditValue ?? (float)$credit->credit_value;
+            $creditValue = $newCreditValue ?? (float) $credit->credit_value;
 
             // 1. Identificar cuotas pagadas
             $currentInstallments = $credit->installments->sortBy('quota_number');
-            $paidInstallments = $currentInstallments->filter(function($i) {
+            $paidInstallments = $currentInstallments->filter(function ($i) {
                 return in_array(strtolower($i->status), ['pagado', 'paid', 'pagada']);
             });
-            
+
             $paidCount = $paidInstallments->count();
             $paidAmountSum = $paidInstallments->sum('quota_amount');
 
@@ -729,7 +744,7 @@ class CreditService
             // El costo total para las cuotas incluye Capital + Interés
             $insuranceAmount = ($creditValue * $insurancePercentage) / 100;
             $newTotalCost = ($creditValue * (1 + ($interestRate / 100)));
-            
+
             if ($recalculatePaid) {
                 // Recalcular TODO desde la cuota 1
                 $newQuotaAmount = $newNumInstallments > 0 ? round($newTotalCost / $newNumInstallments, 2) : 0;
@@ -764,12 +779,12 @@ class CreditService
 
             // 4. ALWAYS reset all payments to unapplied and installments to Pendiente BEFORE the loop
             // This ensures that any change in structure (frequency, amounts) is correctly reflected in the schedule update.
-            
+
             // Un-apply existing payments
             $payments = \App\Models\Payment::where('credit_id', $credit->id)
                 ->where('status', '!=', 'Anulado')
                 ->get();
-            
+
             foreach ($payments as $payment) {
                 \App\Models\PaymentInstallment::where('payment_id', $payment->id)->delete();
                 $payment->unapplied_amount = $payment->amount;
@@ -815,17 +830,26 @@ class CreditService
                     ['credit_id' => $credit->id, 'quota_number' => $i],
                     $instData
                 );
-                
+
                 $affectedInstallments[] = $inst->id;
-                
+
                 // Avanzar fecha de referencia (incluso si no se usó en esta iteración por estar pagada)
                 if (!$isPaid || $recalculatePaid) {
                     switch ($newFrequency) {
-                        case 'Diaria': $dueDate->addDay(); break;
-                        case 'Semanal': $dueDate->addWeek(); break;
-                        case 'Quincenal': $dueDate->addDays(15); break;
-                        case 'Mensual': $dueDate->addMonth(); break;
-                        default: $dueDate->addMonth();
+                        case 'Diaria':
+                            $dueDate->addDay();
+                            break;
+                        case 'Semanal':
+                            $dueDate->addWeek();
+                            break;
+                        case 'Quincenal':
+                            $dueDate->addDays(15);
+                            break;
+                        case 'Mensual':
+                            $dueDate->addMonth();
+                            break;
+                        default:
+                            $dueDate->addMonth();
                     }
                     $dueDate = $adjustForExcludedDays($dueDate);
                 }
@@ -839,15 +863,18 @@ class CreditService
 
             // 5. Actualizar cabecera del crédito
             $credit->payment_frequency = $newFrequency;
-            if ($newFirstQuotaDate) $credit->first_quota_date = $newFirstQuotaDate;
+            if ($newFirstQuotaDate)
+                $credit->first_quota_date = $newFirstQuotaDate;
             $credit->number_installments = $newNumInstallments;
             $credit->total_interest = $interestRate;
-            $creditValue = $newCreditValue ?? (float)$credit->credit_value;
+            $creditValue = $newCreditValue ?? (float) $credit->credit_value;
             $credit->micro_insurance_percentage = $insurancePercentage;
             $credit->micro_insurance_amount = ($creditValue * $insurancePercentage) / 100;
             $credit->total_amount = $newTotalCost;
-            if ($newStartDate) $credit->start_date = $newStartDate;
-            if ($newCreditValue) $credit->credit_value = $newCreditValue;
+            if ($newStartDate)
+                $credit->start_date = $newStartDate;
+            if ($newCreditValue)
+                $credit->credit_value = $newCreditValue;
             $credit->remaining_amount = $credit->pendingAmount();
 
             // Auditoría
@@ -855,7 +882,7 @@ class CreditService
             $credit->modification_count = ($credit->modification_count ?? 0) + 1;
             $credit->last_modified_at = now();
             $credit->last_modified_by = Auth::id() ?? 1;
-            
+
             $credit->save();
 
             // Registrar movimiento en el flujo del crédito (Payment)
@@ -863,10 +890,10 @@ class CreditService
             if ($newCreditValue && $newCreditValue != $oldValue['credit_value']) {
                 $createdAt = Carbon::now($tz);
                 $creditDate = Carbon::parse($credit->created_at)->setTimezone($tz)->format('Y-m-d');
-                
+
                 if ($creditDate !== $createdAt->format('Y-m-d')) {
                     $capDiff = $newCreditValue - $oldValue['credit_value'];
-                    
+
                     // Calcular impacto del seguro
                     $newInsPct = $newInsurance ?? $credit->micro_insurance_percentage;
                     $newInsAmount = ($newCreditValue * $newInsPct) / 100;
@@ -875,65 +902,65 @@ class CreditService
 
                     // 1. Ajuste de Capital
                     if (abs($capDiff) > 0.001) {
-                         $absCap = number_format(abs($capDiff), 2);
-                         $creationDate = Carbon::parse($credit->created_at)->format('Y-m-d');
-                         $oldValFmt = number_format($oldValue['credit_value'], 2);
-                         $newValFmt = number_format($newCreditValue, 2);
+                        $absCap = number_format(abs($capDiff), 2);
+                        $creationDate = Carbon::parse($credit->created_at)->format('Y-m-d');
+                        $oldValFmt = number_format($oldValue['credit_value'], 2);
+                        $newValFmt = number_format($newCreditValue, 2);
 
-                         $credit->load('seller');
-                         $sellerUserId = $credit->seller->user_id ?? Auth::id();
+                        $credit->load('seller');
+                        $sellerUserId = $credit->seller->user_id ?? Auth::id();
 
-                         if ($capDiff > 0) {
-                             // Aumento de Capital -> Salida de Dinero (Gasto)
-                             $desc = "AJUSTE CAPITAL CRÉDITO #{$credit->id} (Creado: {$creationDate}). Cambio: \${$oldValFmt} -> \${$newValFmt}. SALIDA DE CAJA.";
-                             Expense::create([
-                                 'value' => abs($capDiff),
-                                 'description' => $desc,
-                                 'user_id' => $sellerUserId,
-                                 'created_at' => $createdAt,
-                                 'status' => 'Aprobado'
-                             ]);
-                         } else {
-                             // Disminución de Capital -> Entrada de Dinero (Ingreso)
-                             $desc = "AJUSTE CAPITAL CRÉDITO #{$credit->id} (Creado: {$creationDate}). Cambio: \${$oldValFmt} -> \${$newValFmt}. ENTRADA A CAJA.";
-                             Income::create([
-                                 'value' => abs($capDiff),
-                                 'description' => $desc,
-                                 'user_id' => $sellerUserId,
-                                 'created_at' => $createdAt,
-                                 'status' => 'Aprobado'
-                             ]);
-                         }
+                        if ($capDiff > 0) {
+                            // Aumento de Capital -> Salida de Dinero (Gasto)
+                            $desc = "AJUSTE CAPITAL CRÉDITO #{$credit->id} (Creado: {$creationDate}). Cambio: \${$oldValFmt} -> \${$newValFmt}. SALIDA DE CAJA.";
+                            Expense::create([
+                                'value' => abs($capDiff),
+                                'description' => $desc,
+                                'user_id' => $sellerUserId,
+                                'created_at' => $createdAt,
+                                'status' => 'Aprobado'
+                            ]);
+                        } else {
+                            // Disminución de Capital -> Entrada de Dinero (Ingreso)
+                            $desc = "AJUSTE CAPITAL CRÉDITO #{$credit->id} (Creado: {$creationDate}). Cambio: \${$oldValFmt} -> \${$newValFmt}. ENTRADA A CAJA.";
+                            Income::create([
+                                'value' => abs($capDiff),
+                                'description' => $desc,
+                                'user_id' => $sellerUserId,
+                                'created_at' => $createdAt,
+                                'status' => 'Aprobado'
+                            ]);
+                        }
                     }
 
                     // 2. Ajuste de Seguro (Póliza)
                     if (abs($insDiff) > 0.001) {
-                         $absIns = number_format(abs($insDiff), 2);
-                         $credit->load('seller');
-                         $sellerUserId = $credit->seller->user_id ?? Auth::id();
-                         $creationDate = Carbon::parse($credit->created_at)->format('Y-m-d');
+                        $absIns = number_format(abs($insDiff), 2);
+                        $credit->load('seller');
+                        $sellerUserId = $credit->seller->user_id ?? Auth::id();
+                        $creationDate = Carbon::parse($credit->created_at)->format('Y-m-d');
 
-                         if ($insDiff > 0) {
-                             // Aumento de Seguro -> Cobro Adicional -> Entrada de Dinero (Ingreso)
-                             $desc = "AJUSTE SEGURO CRÉDITO #{$credit->id}. Diferencia cobrada: \${$absIns}. ENTRADA A CAJA.";
-                             Income::create([
-                                 'value' => abs($insDiff),
-                                 'description' => $desc,
-                                 'user_id' => $sellerUserId,
-                                 'created_at' => $createdAt,
-                                 'status' => 'Aprobado'
-                             ]);
-                         } else {
-                             // Disminución de Seguro -> Devolución -> Salida de Dinero (Gasto)
-                             $desc = "AJUSTE SEGURO CRÉDITO #{$credit->id}. Diferencia devuelta: \${$absIns}. SALIDA DE CAJA.";
-                             Expense::create([
-                                 'value' => abs($insDiff),
-                                 'description' => $desc,
-                                 'user_id' => $sellerUserId,
-                                 'created_at' => $createdAt,
-                                 'status' => 'Aprobado'
-                             ]);
-                         }
+                        if ($insDiff > 0) {
+                            // Aumento de Seguro -> Cobro Adicional -> Entrada de Dinero (Ingreso)
+                            $desc = "AJUSTE SEGURO CRÉDITO #{$credit->id}. Diferencia cobrada: \${$absIns}. ENTRADA A CAJA.";
+                            Income::create([
+                                'value' => abs($insDiff),
+                                'description' => $desc,
+                                'user_id' => $sellerUserId,
+                                'created_at' => $createdAt,
+                                'status' => 'Aprobado'
+                            ]);
+                        } else {
+                            // Disminución de Seguro -> Devolución -> Salida de Dinero (Gasto)
+                            $desc = "AJUSTE SEGURO CRÉDITO #{$credit->id}. Diferencia devuelta: \${$absIns}. SALIDA DE CAJA.";
+                            Expense::create([
+                                'value' => abs($insDiff),
+                                'description' => $desc,
+                                'user_id' => $sellerUserId,
+                                'created_at' => $createdAt,
+                                'status' => 'Aprobado'
+                            ]);
+                        }
                     }
                 }
             }
@@ -976,11 +1003,11 @@ class CreditService
     }
 
     // ... (setCreditRenewalBlocked, etc remain unchanged)
-    
+
     // Skipping to simulateScheduleChange replacement below the ellipses...
     // I will replace simulateScheduleChange separately if it is not contiguous or just replace both if I select properly.
     // The selection in the replace_file_content tool is contiguous for updateCreditFrequency only.
-    // I will update simulateScheduleChange in a separate call or extend the range 
+    // I will update simulateScheduleChange in a separate call or extend the range
     // Wait, updateCreditFrequency ends at 755. simulateScheduleChange starts at 1882.
     // I should do two separate replacements or one if they were close. They are far.
     // I'll do updateCreditFrequency first.
@@ -1014,14 +1041,14 @@ class CreditService
     public function simulateDelete($creditId)
     {
         try {
-        $credit = Credit::with(['payments', 'seller', 'client'])->find($creditId);
+            $credit = Credit::with(['payments', 'seller', 'client'])->find($creditId);
             if (!$credit) {
                 return $this->errorResponse('Crédito no encontrado', 404);
             }
 
             // 1. Gather all direct impacts by date
             $deltasByDate = [];
-            
+
             // Payments removal
             $payments = $credit->payments()->whereNotNull('business_date')->get();
             foreach ($payments as $payment) {
@@ -1038,7 +1065,7 @@ class CreditService
                 }
                 $deltasByDate[$date]['total_collected'] -= floatval($payment->amount);
             }
-            
+
             // Credit creation removal
             $creationDate = $credit->created_at ? $credit->created_at->toDateString() : null;
             if ($creationDate) {
@@ -1051,32 +1078,32 @@ class CreditService
                         'total_pending_absorbed' => 0.0
                     ];
                 }
-                
+
                 if ($credit->renewed_from_id) {
                     // It was a renewal
                     $oldCredit = Credit::find($credit->renewed_from_id);
                     $pendingAmount = 0.0;
                     if ($oldCredit) {
-                         $oldCreditTotal = (floatval($oldCredit->credit_value) * floatval($oldCredit->total_interest) / 100) + floatval($oldCredit->credit_value);
-                         $oldCreditPaid = Payment::where('credit_id', $oldCredit->id)->sum('amount');
-                         $pendingAmount = max(0.0, floatval($oldCreditTotal) - floatval($oldCreditPaid));
+                        $oldCreditTotal = (floatval($oldCredit->credit_value) * floatval($oldCredit->total_interest) / 100) + floatval($oldCredit->credit_value);
+                        $oldCreditPaid = Payment::where('credit_id', $oldCredit->id)->sum('amount');
+                        $pendingAmount = max(0.0, floatval($oldCreditTotal) - floatval($oldCreditPaid));
                     }
                     $netDisbursement = floatval($credit->credit_value) - $pendingAmount;
-                    
+
                     $deltasByDate[$creationDate]['total_renewal_disbursed'] -= $netDisbursement;
                     $deltasByDate[$creationDate]['total_pending_absorbed'] -= $pendingAmount;
                 } else {
                     // Normal credit
                     $deltasByDate[$creationDate]['new_credits'] -= floatval($credit->credit_value);
                 }
-                
+
                 // Poliza removal
                 $polizaImpact = (floatval($credit->micro_insurance_percentage ?? 0) * floatval($credit->credit_value) / 100);
                 $deltasByDate[$creationDate]['poliza'] -= $polizaImpact;
             }
 
             if (empty($deltasByDate)) {
-                 return $this->successResponse([
+                return $this->successResponse([
                     'success' => true,
                     'data' => [
                         'entity' => $credit,
@@ -1098,7 +1125,7 @@ class CreditService
             foreach ($liquidations as $liquidation) {
                 $dateStr = $liquidation->date->format('Y-m-d');
                 $initialCashDelta = $runningInitialCashDelta;
-                
+
                 $direct = $deltasByDate[$dateStr] ?? [
                     'total_collected' => 0.0,
                     'new_credits' => 0.0,
@@ -1106,18 +1133,18 @@ class CreditService
                     'total_renewal_disbursed' => 0.0,
                     'total_pending_absorbed' => 0.0
                 ];
-                
+
                 // Impact calculation based on Liquidation formula
                 // deltaReal = deltaInitial + (deltaIncome + deltaCollected + deltaPoliza) - (deltaExpenses + deltaNew + deltaRenewal + deltaIrrecoverables)
-                $deltaRealToDeliver = $initialCashDelta 
-                    + (0.0 + $direct['total_collected'] + $direct['poliza']) 
+                $deltaRealToDeliver = $initialCashDelta
+                    + (0.0 + $direct['total_collected'] + $direct['poliza'])
                     - (0.0 + $direct['new_credits'] + $direct['total_renewal_disbursed'] + 0.0);
-                
+
                 $newRealToDeliver = floatval($liquidation->real_to_deliver) + $deltaRealToDeliver;
                 $difference = $newRealToDeliver - floatval($liquidation->base_delivered);
                 $newShortage = max(0.0, -$difference);
                 $newSurplus = max(0.0, $difference);
-                
+
                 $allChanges = [
                     'initial_cash' => floatval($liquidation->initial_cash) + $initialCashDelta,
                     'total_collected' => floatval($liquidation->total_collected) + $direct['total_collected'],
@@ -1132,13 +1159,19 @@ class CreditService
 
                 // Determine which fields to actually mark as changed
                 $finalChanges = [];
-                if ($initialCashDelta != 0) $finalChanges['initial_cash'] = $allChanges['initial_cash'];
-                if ($direct['total_collected'] != 0) $finalChanges['total_collected'] = $allChanges['total_collected'];
-                if ($direct['new_credits'] != 0) $finalChanges['new_credits'] = $allChanges['new_credits'];
-                if ($direct['poliza'] != 0) $finalChanges['poliza'] = $allChanges['poliza'];
-                if ($direct['total_renewal_disbursed'] != 0) $finalChanges['renewal_disbursed_total'] = $allChanges['renewal_disbursed_total'];
-                if ($direct['total_pending_absorbed'] != 0) $finalChanges['total_pending_absorbed'] = $allChanges['total_pending_absorbed'];
-                
+                if ($initialCashDelta != 0)
+                    $finalChanges['initial_cash'] = $allChanges['initial_cash'];
+                if ($direct['total_collected'] != 0)
+                    $finalChanges['total_collected'] = $allChanges['total_collected'];
+                if ($direct['new_credits'] != 0)
+                    $finalChanges['new_credits'] = $allChanges['new_credits'];
+                if ($direct['poliza'] != 0)
+                    $finalChanges['poliza'] = $allChanges['poliza'];
+                if ($direct['total_renewal_disbursed'] != 0)
+                    $finalChanges['renewal_disbursed_total'] = $allChanges['renewal_disbursed_total'];
+                if ($direct['total_pending_absorbed'] != 0)
+                    $finalChanges['total_pending_absorbed'] = $allChanges['total_pending_absorbed'];
+
                 // Real to deliver and shortage/surplus always included if changed
                 $finalChanges['real_to_deliver'] = $allChanges['real_to_deliver'];
                 $finalChanges['shortage'] = $allChanges['shortage'];
@@ -1207,16 +1240,16 @@ class CreditService
         try {
             $credit = Credit::with(['installments', 'seller', 'payments'])->findOrFail($creditId);
             $tz = self::TIMEZONE;
-            
-            $newCreditValue = isset($newData['credit_value']) ? (float)$newData['credit_value'] : (float)$credit->credit_value;
-            $newInterestRate = isset($newData['interest_rate']) ? (float)$newData['interest_rate'] : (float)$credit->total_interest;
-            $newInsurancePct = isset($newData['micro_insurance_percentage']) ? (float)$newData['micro_insurance_percentage'] : (float)$credit->micro_insurance_percentage;
-            $newNumInstallments = isset($newData['number_installments']) ? (int)$newData['number_installments'] : (int)$credit->number_installments;
-            $recalculatePaid = isset($newData['recalculate_paid']) ? (bool)$newData['recalculate_paid'] : false;
+
+            $newCreditValue = isset($newData['credit_value']) ? (float) $newData['credit_value'] : (float) $credit->credit_value;
+            $newInterestRate = isset($newData['interest_rate']) ? (float) $newData['interest_rate'] : (float) $credit->total_interest;
+            $newInsurancePct = isset($newData['micro_insurance_percentage']) ? (float) $newData['micro_insurance_percentage'] : (float) $credit->micro_insurance_percentage;
+            $newNumInstallments = isset($newData['number_installments']) ? (int) $newData['number_installments'] : (int) $credit->number_installments;
+            $recalculatePaid = isset($newData['recalculate_paid']) ? (bool) $newData['recalculate_paid'] : false;
 
             $newTotalCost = ($newCreditValue * (1 + ($newInterestRate / 100)));
             $currentInstallments = $credit->installments->sortBy('quota_number');
-            $paidInstallments = $currentInstallments->filter(function($i) {
+            $paidInstallments = $currentInstallments->filter(function ($i) {
                 return in_array(strtolower($i->status), ['pagado', 'paid', 'pagada']);
             });
             $paidCount = $paidInstallments->count();
@@ -1234,14 +1267,14 @@ class CreditService
 
             // 1. Impact for Capital & Insurance changes (at creation date for simulation report)
             $creditDate = Carbon::parse($credit->created_at)->setTimezone($tz)->format('Y-m-d');
-            
+
             // Capital delta
-            $capDiff = $newCreditValue - (float)$credit->credit_value;
+            $capDiff = $newCreditValue - (float) $credit->credit_value;
             if (abs($capDiff) > 0.001) {
                 if (!isset($deltasByDate[$creditDate])) {
                     $deltasByDate[$creditDate] = ['total_collected' => 0, 'new_credits' => 0, 'poliza' => 0, 'expenses' => 0, 'incomes' => 0, 'total_renewal_disbursed' => 0];
                 }
-                
+
                 if ($credit->renewed_from_id) {
                     $deltasByDate[$creditDate]['total_renewal_disbursed'] += $capDiff;
                 } else {
@@ -1251,7 +1284,7 @@ class CreditService
 
             // Insurance delta
             $newInsAmount = ($newCreditValue * $newInsurancePct) / 100;
-            $oldInsAmount = (float)$credit->micro_insurance_amount;
+            $oldInsAmount = (float) $credit->micro_insurance_amount;
             $insDiff = $newInsAmount - $oldInsAmount;
             if (abs($insDiff) > 0.001) {
                 if (!isset($deltasByDate[$creditDate])) {
@@ -1301,26 +1334,35 @@ class CreditService
                 $direct = $deltasByDate[$dateStr] ?? ['total_collected' => 0, 'new_credits' => 0, 'poliza' => 0, 'expenses' => 0, 'incomes' => 0, 'total_renewal_disbursed' => 0];
 
                 // deltaReal = initial + (incomes + collected + poliza) - (expenses + new_credits + renewal)
-                $deltaRealToDeliver = $initialCashDelta 
-                    + ($direct['incomes'] + $direct['total_collected'] + $direct['poliza']) 
+                $deltaRealToDeliver = $initialCashDelta
+                    + ($direct['incomes'] + $direct['total_collected'] + $direct['poliza'])
                     - ($direct['expenses'] + $direct['new_credits'] + $direct['total_renewal_disbursed']);
 
                 $finalChanges = [
                     'real_to_deliver' => floatval($liquidation->real_to_deliver) + $deltaRealToDeliver,
                     'initial_cash' => floatval($liquidation->initial_cash) + $initialCashDelta,
                 ];
-                
-                if ($direct['total_collected'] != 0) $finalChanges['total_collected'] = floatval($liquidation->total_collected) + $direct['total_collected'];
-                if ($direct['new_credits'] != 0) $finalChanges['new_credits'] = floatval($liquidation->new_credits) + $direct['new_credits'];
-                if ($direct['poliza'] != 0) $finalChanges['poliza'] = floatval($liquidation->poliza) + $direct['poliza'];
-                if ($direct['total_renewal_disbursed'] != 0) $finalChanges['renewal_disbursed_total'] = floatval($liquidation->renewal_disbursed_total) + $direct['total_renewal_disbursed'];
+
+                if ($direct['total_collected'] != 0)
+                    $finalChanges['total_collected'] = floatval($liquidation->total_collected) + $direct['total_collected'];
+                if ($direct['new_credits'] != 0)
+                    $finalChanges['new_credits'] = floatval($liquidation->new_credits) + $direct['new_credits'];
+                if ($direct['poliza'] != 0)
+                    $finalChanges['poliza'] = floatval($liquidation->poliza) + $direct['poliza'];
+                if ($direct['total_renewal_disbursed'] != 0)
+                    $finalChanges['renewal_disbursed_total'] = floatval($liquidation->renewal_disbursed_total) + $direct['total_renewal_disbursed'];
 
                 $dailyBreakdown = [];
-                if ($initialCashDelta != 0) $dailyBreakdown[] = ['label' => 'Arrastre', 'value' => $initialCashDelta];
-                if ($direct['total_collected'] != 0) $dailyBreakdown[] = ['label' => 'Ajuste Cobros', 'value' => $direct['total_collected']];
-                if ($direct['new_credits'] != 0) $dailyBreakdown[] = ['label' => 'Ajuste Capital', 'value' => -$direct['new_credits']];
-                if ($direct['poliza'] != 0) $dailyBreakdown[] = ['label' => 'Ajuste Póliza', 'value' => $direct['poliza']];
-                if ($direct['total_renewal_disbursed'] != 0) $dailyBreakdown[] = ['label' => 'Ajuste Renovación', 'value' => -$direct['total_renewal_disbursed']];
+                if ($initialCashDelta != 0)
+                    $dailyBreakdown[] = ['label' => 'Arrastre', 'value' => $initialCashDelta];
+                if ($direct['total_collected'] != 0)
+                    $dailyBreakdown[] = ['label' => 'Ajuste Cobros', 'value' => $direct['total_collected']];
+                if ($direct['new_credits'] != 0)
+                    $dailyBreakdown[] = ['label' => 'Ajuste Capital', 'value' => -$direct['new_credits']];
+                if ($direct['poliza'] != 0)
+                    $dailyBreakdown[] = ['label' => 'Ajuste Póliza', 'value' => $direct['poliza']];
+                if ($direct['total_renewal_disbursed'] != 0)
+                    $dailyBreakdown[] = ['label' => 'Ajuste Renovación', 'value' => -$direct['total_renewal_disbursed']];
 
                 $simulationData[] = [
                     'liquidation' => [
@@ -1340,14 +1382,14 @@ class CreditService
 
             $newFrequency = $newData['frequency'] ?? ($newData['payment_frequency'] ?? $credit->payment_frequency);
             $newFirstDate = isset($newData['first_quota_date']) ? $newData['first_quota_date'] : $credit->first_quota_date;
-            
+
             // Calculate total money actually paid (applied + unapplied)
             $totalPaidAmount = Payment::where('credit_id', $creditId)
                 ->where('status', '!=', 'Anulado')
                 ->sum('amount');
-            
+
             $remainingSimulationPaid = $totalPaidAmount;
-            
+
             // Re-trigger the logic to determine start date
             $baseDateStr = $newFirstDate;
             if (!$baseDateStr) {
@@ -1359,14 +1401,22 @@ class CreditService
             // Excluded days helper
             $excludedDayNames = json_decode($credit->excluded_days ?? '[]', true) ?? [];
             $dayMap = [
-                'Domingo' => Carbon::SUNDAY, 'Lunes' => Carbon::MONDAY, 'Martes' => Carbon::TUESDAY,
-                'Miércoles' => Carbon::WEDNESDAY, 'Jueves' => Carbon::THURSDAY, 'Viernes' => Carbon::FRIDAY, 'Sábado' => Carbon::SATURDAY
+                'Domingo' => Carbon::SUNDAY,
+                'Lunes' => Carbon::MONDAY,
+                'Martes' => Carbon::TUESDAY,
+                'Miércoles' => Carbon::WEDNESDAY,
+                'Jueves' => Carbon::THURSDAY,
+                'Viernes' => Carbon::FRIDAY,
+                'Sábado' => Carbon::SATURDAY
             ];
             $excludedDayNumbers = [];
-            foreach ($excludedDayNames as $dayName) if (isset($dayMap[$dayName])) $excludedDayNumbers[] = $dayMap[$dayName];
+            foreach ($excludedDayNames as $dayName)
+                if (isset($dayMap[$dayName]))
+                    $excludedDayNumbers[] = $dayMap[$dayName];
 
             $adjustDate = function (Carbon $date) use ($excludedDayNumbers) {
-                while (in_array($date->dayOfWeek, $excludedDayNumbers)) $date->addDay();
+                while (in_array($date->dayOfWeek, $excludedDayNumbers))
+                    $date->addDay();
                 return $date;
             };
 
@@ -1389,24 +1439,33 @@ class CreditService
                     $originallyPaid = $existing && in_array(strtolower($existing->status), ['pagado', 'paid', 'pagada']);
                     if ($originallyPaid) {
                         $status = 'Pagado';
-                        $installmentAmount = (float)$existing->quota_amount;
+                        $installmentAmount = (float) $existing->quota_amount;
                     }
                 }
-                
+
                 $projectedInstallments[] = [
                     'quota_number' => $i,
                     'due_date' => $dueDate->format('Y-m-d'),
-                    'quota_amount' => (float)$installmentAmount,
+                    'quota_amount' => (float) $installmentAmount,
                     'status' => $status
                 ];
 
                 if ($recalculatePaid || !$originallyPaid) {
                     switch ($newFrequency) {
-                        case 'Diaria': $dueDate->addDay(); break;
-                        case 'Semanal': $dueDate->addWeek(); break;
-                        case 'Quincenal': $dueDate->addDays(15); break;
-                        case 'Mensual': $dueDate->addMonth(); break;
-                        default: $dueDate->addMonth();
+                        case 'Diaria':
+                            $dueDate->addDay();
+                            break;
+                        case 'Semanal':
+                            $dueDate->addWeek();
+                            break;
+                        case 'Quincenal':
+                            $dueDate->addDays(15);
+                            break;
+                        case 'Mensual':
+                            $dueDate->addMonth();
+                            break;
+                        default:
+                            $dueDate->addMonth();
                     }
                     $dueDate = $adjustDate($dueDate);
                 }
@@ -1580,12 +1639,12 @@ class CreditService
             if (!$credit) {
                 return $this->errorResponse('Crédito no encontrado', 404);
             }
-            
+
             // We need to simulate the impact to know which liquidations to recalculate
             $simulation = $this->simulateDelete($creditId);
             $simulationContent = json_decode($simulation->getContent(), true);
             $affectedLiquidationsData = $simulationContent['data']['affected_liquidations'] ?? [];
-            
+
             DB::beginTransaction();
 
             // 1. Delete payments (and their relations like payment_installments)
@@ -1594,18 +1653,18 @@ class CreditService
             DB::table('payment_installments')->whereIn('payment_id', $paymentIds)->delete();
             // Delete Payments
             Payment::where('credit_id', $creditId)->delete();
-            
+
             // 2. Recalculate Liquidations
             foreach ($affectedLiquidationsData as $affLiq) {
                 // $affLiq is an array
-                $liqId = $affLiq['liquidation']['id']; 
+                $liqId = $affLiq['liquidation']['id'];
                 $changes = $affLiq['changes'];
-                
+
                 Liquidation::where('id', $liqId)->update([
                     'total_collected' => $changes['total_collected'] ?? DB::raw('total_collected'),
                     'real_to_deliver' => $changes['real_to_deliver'] ?? DB::raw('real_to_deliver'),
                     'new_credits' => $changes['new_credits'] ?? DB::raw('new_credits'),
-                     // We might need to update shortage/surplus too
+                    // We might need to update shortage/surplus too
                 ]);
             }
 
@@ -1727,7 +1786,7 @@ class CreditService
             $interestRate = floatval($params['interest_rate'] ?? 0);
             $totalInterestAmount = ($creditValue * $interestRate) / 100;
             $totalAmount = $creditValue + $totalInterestAmount;
-            
+
             $microInsurancePercentage = floatval($params['micro_insurance_percentage'] ?? 0);
             $microInsuranceAmount = ($creditValue * $microInsurancePercentage) / 100;
 
@@ -2135,10 +2194,10 @@ class CreditService
             $totalPaid = $credit->payments->sum('amount');
             $remainingAmount = $totalCreditValue - $totalPaid;
             $dayPayments = $credit->payments()->whereBetween('payments.created_at', [$start, $end])->get();
-            
+
             $positivePaid = $dayPayments->where('amount', '>=', 0)->sum('amount');
             $negativePaid = $dayPayments->where('amount', '<', 0)->sum('amount');
-            $paidToday = $positivePaid; 
+            $paidToday = $positivePaid;
 
             $paymentTime = $dayPayments->isNotEmpty() ? $dayPayments->last()->created_at->timezone(self::TIMEZONE)->format('H:i:s') : null;
 
@@ -2150,7 +2209,7 @@ class CreditService
 
             $totalCollected += $positivePaid;
             $totalAdditionalDisbursements += abs($negativePaid);
-            
+
             $totalCapital += $credit->credit_value;
             $totalInterest += $interestAmount;
             $totalMicroInsurance += $credit->micro_insurance_amount;
@@ -2200,8 +2259,8 @@ class CreditService
         // Calcular utilidad neta y neto entregado al cobrador
         // Net Utility = Collected (In) + Incomes (In) - Expenses (Out). (Disbursements are Principal movements, typically affects Cash but not "Utility" if Utility means Profit. Here utility seems to be Cash Flow)
         // If we strictly follow Cash Flow:
-        $netUtility = $totalCollected + $totalIncomes - $totalExpenses; 
-        
+        $netUtility = $totalCollected + $totalIncomes - $totalExpenses;
+
         // Net Amount (Caja Final) = Collected - Expenses + Incomes - Additional Disbursements
         // Note: Existing code was '$totalCollected - $totalExpenses'. I am adding Incomes and subtracting Additional Disbursements.
         $netAmount = $totalCollected + $totalIncomes - $totalExpenses - $totalAdditionalDisbursements;
@@ -2229,8 +2288,8 @@ class CreditService
             'capital_collected' => $capitalCollected,
             'interest_collected' => $interestCollected,
             'microinsurance_collected' => $microInsuranceCollected,
-            'net_utility' => $netUtility, 
-            'net_amount' => $netAmount, // Ensure this key is used in frontend if needed. Usually frontend calculates own totals or uses this? 
+            'net_utility' => $netUtility,
+            'net_amount' => $netAmount, // Ensure this key is used in frontend if needed. Usually frontend calculates own totals or uses this?
             // In the Step 194 screenshot, I saw "Caja actual del vendedor (Real a entregar) $1734.76". This likely comes from Liquidation object or this report.
             'net_utility_plus_capital' => $netUtilityPlusCapital,
         ];
@@ -2564,7 +2623,7 @@ class CreditService
 
     /**
      * Simulates a change in the credit schedule (initial date or frequency)
-     * 
+     *
      * @param int $creditId
      * @param string $newDate Base date for calculation
      * @param string $type Type of change ('schedule' or 'frequency')
@@ -2572,9 +2631,9 @@ class CreditService
      * @return \Illuminate\Http\JsonResponse
      */
     public function simulateScheduleChange(
-        int $creditId, 
-        ?string $newDate = null, 
-        string $type = 'schedule', 
+        int $creditId,
+        ?string $newDate = null,
+        string $type = 'schedule',
         ?string $newFrequency = null,
         ?int $newInstallments = null,
         ?float $newInterestRate = null,
@@ -2586,25 +2645,25 @@ class CreditService
             $credit = Credit::with(['installments'])->findOrFail($creditId);
             $tz = self::TIMEZONE;
             $adjustForExcludedDays = $this->getExcludedDaysAdjuster($credit);
-            
+
             $frequency = $newFrequency ?? $credit->payment_frequency;
             $totalInstallments = $newInstallments ?? $credit->number_installments;
             $interestRate = $newInterestRate ?? $credit->total_interest;
             $insurancePercentage = $newInsurancePercentage ?? $credit->micro_insurance_percentage ?? 0;
-            $creditValue = $newCreditValue ?? (float)$credit->credit_value;
+            $creditValue = $newCreditValue ?? (float) $credit->credit_value;
 
             // Recalcular montos si hay cambios financieros
             // El costo total para las cuotas solo incluye Capital + Interés + Microseguro
             $newTotalCost = ($creditValue * (1 + ($interestRate / 100))) + (($creditValue * $insurancePercentage) / 100);
-            
+
             $currentInstallments = $credit->installments->sortBy('quota_number');
-            $paidInstallments = $currentInstallments->filter(function($i) {
+            $paidInstallments = $currentInstallments->filter(function ($i) {
                 return in_array(strtolower($i->status), ['pagado', 'paid', 'pagada']);
             });
 
             $paidAmountSum = $paidInstallments->sum('quota_amount');
             $paidCount = $paidInstallments->count();
-            
+
             if ($totalInstallments < $paidCount) {
                 throw new \Exception("El nuevo número de cuotas ($totalInstallments) no puede ser menor a las ya pagadas ($paidCount).");
             }
@@ -2621,9 +2680,9 @@ class CreditService
                 $startDateStr = $firstPending ? $firstPending->due_date : $credit->first_quota_date;
             }
             $startDate = Carbon::parse($startDateStr, $tz);
-            
+
             $newDates = $this->getNewScheduleDates($totalInstallments, $startDate, $frequency, $adjustForExcludedDays, $paidCount);
-            
+
             $simulatedInstallments = [];
             $changesCount = 0;
 
@@ -2634,8 +2693,8 @@ class CreditService
                     'quota_number' => $inst->quota_number,
                     'current_date' => $inst->due_date,
                     'simulated_date' => $inst->due_date,
-                    'current_amount' => (float)$inst->quota_amount,
-                    'simulated_amount' => (float)$inst->quota_amount,
+                    'current_amount' => (float) $inst->quota_amount,
+                    'simulated_amount' => (float) $inst->quota_amount,
                     'status' => $inst->status,
                     'is_paid' => true,
                     'changed' => false
@@ -2646,13 +2705,13 @@ class CreditService
             for ($i = $paidCount + 1; $i <= $totalInstallments; $i++) {
                 $existing = $currentInstallments->where('quota_number', $i)->first();
                 $simDate = $newDates[$i] ?? ($existing ? $existing->due_date : null);
-                
+
                 $item = [
                     'id' => $existing ? $existing->id : null,
                     'quota_number' => $i,
                     'current_date' => $existing ? $existing->due_date : null,
                     'simulated_date' => $simDate,
-                    'current_amount' => $existing ? (float)$existing->quota_amount : null,
+                    'current_amount' => $existing ? (float) $existing->quota_amount : null,
                     'simulated_amount' => $newQuotaAmount,
                     'status' => $existing ? $existing->status : 'Pendiente',
                     'is_paid' => false,
@@ -2660,10 +2719,11 @@ class CreditService
                 ];
 
                 if ($existing) {
-                    $item['changed'] = ($existing->due_date !== $simDate) || (abs((float)$existing->quota_amount - $newQuotaAmount) > 0.01);
+                    $item['changed'] = ($existing->due_date !== $simDate) || (abs((float) $existing->quota_amount - $newQuotaAmount) > 0.01);
                 }
 
-                if ($item['changed']) $changesCount++;
+                if ($item['changed'])
+                    $changesCount++;
                 $simulatedInstallments[] = $item;
             }
 
@@ -2674,7 +2734,7 @@ class CreditService
                     'type' => $type,
                     'current_frequency' => $credit->payment_frequency,
                     'simulated_frequency' => $frequency,
-                    'current_total_cost' => round(((float)$credit->credit_value * (1 + ($credit->total_interest / 100))), 2),
+                    'current_total_cost' => round(((float) $credit->credit_value * (1 + ($credit->total_interest / 100))), 2),
                     'new_total_cost' => round($newTotalCost, 2),
                     'installments' => $simulatedInstallments,
                     'summary' => [
@@ -2743,7 +2803,7 @@ class CreditService
             'Viernes' => Carbon::FRIDAY,
             'Sábado' => Carbon::SATURDAY
         ];
-        
+
         $excludedDayNumbers = [];
         foreach ($excludedDayNames as $dayName) {
             if (isset($dayMap[$dayName])) {

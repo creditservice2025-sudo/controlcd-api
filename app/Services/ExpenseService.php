@@ -147,10 +147,10 @@ class ExpenseService
 
             if ($liquidation) {
                 $amount = $expense->value; // Assuming 'value' is the amount of the expense
-                
+
                 // If we delete an expense, total_expenses decreases.
                 // real_to_deliver = ... - expenses ...\n                // So if expenses decreases, real_to_deliver INCREASES.
-                
+
                 $newTotalExpenses = $liquidation->total_expenses - $amount;
                 $newRealToDeliver = $liquidation->real_to_deliver + $amount;
 
@@ -337,10 +337,10 @@ class ExpenseService
                 'success' => true,
                 'message' => "Gasto eliminado con éxito y liquidaciones actualizadas",
             ]);
-    } catch (\Exception $e) {
-        Log::error($e->getMessage());
-        return $this->errorResponse('Error al eliminar el gasto', 500);
-    }
+        } catch (\Exception $e) {
+            Log::error($e->getMessage());
+            return $this->errorResponse('Error al eliminar el gasto', 500);
+        }
     }
 
     public function changeExpenseStatus($expenseId, $status)
@@ -575,9 +575,9 @@ class ExpenseService
             $expensesQuery = Expense::query()
                 ->select('expenses.*', 'liquidations.id as liquidation_number')
                 ->with(['user', 'category', 'images'])
-                ->leftJoin('liquidations', function($join) use ($seller) {
+                ->leftJoin('liquidations', function ($join) use ($seller) {
                     $join->on(DB::raw('DATE(expenses.created_at)'), '=', DB::raw('DATE(liquidations.date)'))
-                         ->where('liquidations.seller_id', '=', $seller->id);
+                        ->where('liquidations.seller_id', '=', $seller->id);
                 })
                 ->where('expenses.user_id', $seller->user_id)
                 ->where(function ($q) {
