@@ -108,4 +108,29 @@ class SellerController extends Controller
         $status = $request->input('status');
         return $this->sellerService->toggleStatus($routeId, $status);
     }
+
+    /**
+     * Get seller cash info (current and previous cash)
+     */
+    public function getCashInfo(Request $request, $sellerId)
+    {
+        try {
+            return $this->sellerService->getCashInfo($sellerId);
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Get seller liquidations
+     */
+    public function getLiquidations(Request $request, $sellerId)
+    {
+        try {
+            $limit = $request->get('limit', 10);
+            return $this->sellerService->getLiquidations($sellerId, $limit);
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
 }

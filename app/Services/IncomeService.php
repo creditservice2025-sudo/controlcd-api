@@ -75,8 +75,98 @@ class IncomeService
                 'data' => $income,
             ]);
         } catch (\Exception $e) {
-            Log::error($e->getMessage());
-            return $this->errorResponse('Error al crear el ingreso', 500);
+            \Log::error("Error changing income status: " . $e->getMessage());
+            return $this->errorResponse('Error al cambiar estado del ingreso', 500);
+        }
+    }
+
+    public function simulateDelete($incomeId)
+    {
+        try {
+            $income = Income::find($incomeId);
+            if (!$income) {
+                return $this->errorResponse('Ingreso no encontrado', 404);
+            }
+
+            // Assuming user_id -> Seller mapping
+            $seller = Seller::where('user_id', $income->user_id)->first();
+            if (!$seller) {
+                 return $this->errorResponse('Vendedor no encontrado', 404);
+            }
+
+            $incomeDate = $income->created_at->format('Y-m-d');
+            $liquidation = Liquidation::whereDate('date', $incomeDate)
+                ->where('seller_id', $seller->id)
+                ->first();
+
+            $simulationData = [];
+
+            if ($liquidation) {
+                $amount = $income->value;
+                
+                // If we delete an income, total_income decreases.
+                // real_to_deliver = ... + income ...
+                // So if income decreases, real_to_deliver DECREASES.
+                
+                $newTotalIncome = $liquidation->total_income - $amount;
+                $newRealToDeliver = $liquidation->real_to_deliver - $amount;
+
+                $simulationData[] = [
+                    'liquidation' => [
+                        'id' => $liquidation->id,
+                        'date' => $liquidation->date,
+                        'total_income' => $liquidation->total_income,
+                        'initial_cash' => $liquidation->initial_cash,
+                        'real_to_deliver' => $liquidation->real_to_deliver
+                    ],
+                    'changes' => [
+                        'total_income' => $newTotalIncome,
+                        'real_to_deliver' => $newRealToDeliver
+                    ],
+                    'impact_amount' => $amount,
+                    'type' => 'Ingreso'
+                ];
+
+                // Get all subsequent liquidations
+                $subsequentLiquidations = Liquidation::where('seller_id', $seller->id)
+                    ->whereDate('date', '>', $incomeDate)
+                    ->orderBy('date', 'ASC')
+                    ->get();
+
+                // Calculate cascading effect on subsequent liquidations
+                // For income deletion, the impact is NEGATIVE (decreases real_to_deliver)
+                $cumulativeImpact = -$amount; // Negative because income deletion reduces cash
+                foreach ($subsequentLiquidations as $subLiq) {
+                    $newInitialCash = $subLiq->initial_cash + $cumulativeImpact;
+                    $newRealToDeliverSub = $subLiq->real_to_deliver + $cumulativeImpact;
+
+                    $simulationData[] = [
+                        'liquidation' => [
+                            'id' => $subLiq->id,
+                            'date' => $subLiq->date,
+                            'initial_cash' => $subLiq->initial_cash,
+                            'real_to_deliver' => $subLiq->real_to_deliver
+                        ],
+                        'changes' => [
+                            'initial_cash' => $newInitialCash,
+                            'real_to_deliver' => $newRealToDeliverSub
+                        ],
+                        'impact_amount' => $cumulativeImpact,
+                        'type' => 'Cascada'
+                    ];
+                }
+            }
+
+            return $this->successResponse([
+                'success' => true,
+                'data' => [
+                    'entity' => $income,
+                    'affected_liquidations' => $simulationData
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error simulando eliminación: ' . $e->getMessage(), 500);
         }
     }
 
@@ -248,13 +338,6 @@ class IncomeService
             $incomeDate = Carbon::parse($income->created_at)->timezone($timezone)->format('Y-m-d');
             $currentDate = Carbon::now($timezone)->format('Y-m-d');
 
-            if ($incomeDate !== $currentDate) {
-                return $this->errorResponse(
-                    'Solo se pueden eliminar ingresos creados el día de hoy',
-                    422
-                );
-            }
-
             // Obtener el vendedor asociado al usuario del ingreso
             $seller = Seller::where('user_id', $income->user_id)->first();
 
@@ -262,30 +345,53 @@ class IncomeService
                 return $this->errorResponse('No se encontró el vendedor asociado a este ingreso', 422);
             }
 
-            // Verificar si existe liquidación aprobada para la fecha del ingreso y este vendedor
+            // Verificar si existe liquidación para la fecha del ingreso y este vendedor
             $liquidation = Liquidation::where('seller_id', $seller->id)
                 ->whereDate('date', $incomeDate)
                 ->first();
 
-            if ($liquidation) {
+            if ($incomeDate !== $currentDate && (!$user->can('ajustar_caja') && $user->role_id != 1)) {
                 return $this->errorResponse(
-                    'No se puede eliminar el ingreso porque ya existe una liquidación aprobada para esta fecha',
+                    'Solo se pueden eliminar ingresos creados el día de hoy o si tiene permisos de ajuste',
                     422
                 );
             }
 
-            $timezone = $request && $request->has('timezone') ? $request->get('timezone') : null;
-            if ($timezone) {
-                $income->deleted_at = Carbon::now($timezone);
+            if ($liquidation && !$user->can('ajustar_caja') && $user->role_id != 1) {
+                return $this->errorResponse(
+                    'No se puede eliminar el ingreso porque ya existe una liquidación para esta fecha y no tiene permisos de ajuste',
+                    422
+                );
+            }
+
+            $timezoneRequest = $request && $request->has('timezone') ? $request->get('timezone') : null;
+            if ($timezoneRequest) {
+                $income->deleted_at = Carbon::now($timezoneRequest);
                 $income->save();
                 $income->delete();
             } else {
                 $income->delete();
             }
 
+            // Si hay liquidación, agregar observación
+            if ($liquidation) {
+                $userName = $user->name;
+                $amountFormated = number_format($income->value, 2);
+                $newObservation = "Eliminación de ingreso #{$income->id} por \${$amountFormated} realizada por {$userName} el " . now()->toDateTimeString();
+                $liquidation->observation = $liquidation->observation 
+                    ? $liquidation->observation . "\n" . $newObservation 
+                    : $newObservation;
+                $liquidation->save();
+
+                // Recalcular liquidaciones
+                $liquidationService = app(LiquidationService::class);
+                $liquidationService->recalculateLiquidation($seller->id, $incomeDate);
+                $liquidationService->recalculateNextLiquidations($seller->id, $incomeDate);
+            }
+
             return $this->successResponse([
                 'success' => true,
-                'message' => "Ingreso eliminado con éxito",
+                'message' => "Ingreso eliminado con éxito y liquidaciones actualizadas",
             ]);
         } catch (\Exception $e) {
             Log::error($e->getMessage());
@@ -472,13 +578,13 @@ class IncomeService
     public function getSellerIncomeByDate(int $sellerId, Request $request, int $perpage, $companyId = null)
     {
         try {
-            $sellerUserId = Seller::where('id', $sellerId)
+            $seller = Seller::where('id', $sellerId)
                 ->when($companyId, function ($query) use ($companyId) {
                     $query->where('company_id', $companyId);
                 })
-                ->value('user_id');
+                ->first();
 
-            if (!$sellerUserId) {
+            if (!$seller || !$seller->user_id) {
                 return $this->successResponse([
                     'success' => true,
                     'message' => 'No se encontró el usuario asociado a este ID de vendedor.',
@@ -486,39 +592,51 @@ class IncomeService
                 ]);
             }
 
-            $incomeQuery = Income::with(['user', 'images'])
-                ->where('user_id', $sellerUserId);
+            $incomeQuery = Income::query()
+                ->select('incomes.*', 'liquidations.id as liquidation_number')
+                ->with(['user', 'images'])
+                ->leftJoin('liquidations', function($join) use ($seller) {
+                    $join->on(DB::raw('DATE(incomes.created_at)'), '=', DB::raw('DATE(liquidations.date)'))
+                         ->where('liquidations.seller_id', '=', $seller->id);
+                })
+                ->where('incomes.user_id', $seller->user_id);
 
             $timezone = $request->input('timezone', 'America/Lima');
 
-            if ($request->has('start_date') && $request->has('end_date')) {
-                $startDate = $request->get('start_date');
-                $endDate = $request->get('end_date');
+            // Check if include_all_dates flag is present
+            if (!$request->has('include_all_dates')) {
+                // Apply date filtering only if include_all_dates is NOT set
+                if ($request->has('start_date') && $request->has('end_date')) {
+                    $startDate = $request->get('start_date');
+                    $endDate = $request->get('end_date');
 
-                $start = Carbon::parse($startDate, $timezone)
-                    ->startOfDay()
-                    ->timezone('UTC');
-                $end = Carbon::parse($endDate, $timezone)
-                    ->endOfDay()
-                    ->timezone('UTC');
+                    $start = Carbon::parse($startDate, $timezone)
+                        ->startOfDay()
+                        ->timezone('UTC');
+                    $end = Carbon::parse($endDate, $timezone)
+                        ->endOfDay()
+                        ->timezone('UTC');
 
-                $incomeQuery->whereBetween('created_at', [$start, $end]);
-            } elseif ($request->has('date')) {
-                $filterDate = $request->get('date');
+                    $incomeQuery->whereBetween('incomes.created_at', [$start, $end]);
+                } elseif ($request->has('date')) {
+                    $filterDate = $request->get('date');
 
-                $start = Carbon::parse($filterDate, $timezone)
-                    ->startOfDay()
-                    ->timezone('UTC');
-                $end = Carbon::parse($filterDate, $timezone)
-                    ->endOfDay()
-                    ->timezone('UTC');
+                    $start = Carbon::parse($filterDate, $timezone)
+                        ->startOfDay()
+                        ->timezone('UTC');
+                    $end = Carbon::parse($filterDate, $timezone)
+                        ->endOfDay()
+                        ->timezone('UTC');
 
-                $incomeQuery->whereBetween('created_at', [$start, $end]);
-            } else {
-                $todayStart = Carbon::now($timezone)->startOfDay()->timezone('UTC');
-                $todayEnd = Carbon::now($timezone)->endOfDay()->timezone('UTC');
-                $incomeQuery->whereBetween('created_at', [$todayStart, $todayEnd]);
+                    $incomeQuery->whereBetween('incomes.created_at', [$start, $end]);
+                } else {
+                    $todayStart = Carbon::now($timezone)->startOfDay()->timezone('UTC');
+                    $todayEnd = Carbon::now($timezone)->endOfDay()->timezone('UTC');
+                    $incomeQuery->whereBetween('incomes.created_at', [$todayStart, $todayEnd]);
+                }
             }
+
+            $incomeQuery->orderBy('incomes.created_at', 'desc');
 
             $income = $incomeQuery->paginate($perpage);
 

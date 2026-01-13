@@ -31,12 +31,13 @@ class CreditRequest extends FormRequest
             'excluded_days' => 'nullable|array',
             'micro_insurance_percentage' => 'required|numeric',
             'micro_insurance_amount' => 'nullable|numeric',
-            'first_installment_date' => 'nullable|date',
+            'first_quota_date' => 'nullable|date',
             'is_advance_payment' => 'nullable|boolean',
             'timezone' => 'nullable|string',
             'phone' => 'required|string|min:7',
             'images' => 'required|array|min:1',
-            'images.*.file' => 'required|image'
+            'images.*.file' => 'required|image',
+            'number_installments' => 'required|integer|min:1'
         ];
 
         if ($this->isMethod('put') || $this->isMethod('get')) {

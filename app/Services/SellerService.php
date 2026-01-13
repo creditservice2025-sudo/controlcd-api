@@ -736,4 +736,53 @@ class SellerService
             return $this->errorResponse('Error al actualizar el estado de la ruta', 500);
         }
     }
+
+    /**
+     * Get seller cash info
+     */
+    public function getCashInfo($sellerId)
+    {
+        try {
+            // Get last two liquidations to get current and previous cash
+            $lastTwoLiquidations = Liquidation::where('seller_id', $sellerId)
+                ->orderBy('date', 'DESC')
+                ->limit(2)
+                ->get();
+
+            $currentCash = $lastTwoLiquidations->first()->real_to_deliver ?? 0;
+            $previousCash = $lastTwoLiquidations->skip(1)->first()->real_to_deliver ?? 0;
+
+            return $this->successResponse([
+                'success' => true,
+                'data' => [
+                    'current_cash' => $currentCash,
+                    'previous_cash' => $previousCash
+                ]
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error getting seller cash info: ' . $e->getMessage());
+            return $this->errorResponse('Error al obtener la información de caja', 500);
+        }
+    }
+
+    /**
+     * Get seller liquidations
+     */
+    public function getLiquidations($sellerId, $limit = 10)
+    {
+        try {
+            $liquidations = Liquidation::where('seller_id', $sellerId)
+                ->orderBy('date', 'DESC')
+                ->limit($limit)
+                ->get();
+
+            return $this->successResponse([
+                'success' => true,
+                'data' => $liquidations
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error getting seller liquidations: ' . $e->getMessage());
+            return $this->errorResponse('Error al obtener las liquidaciones', 500);
+        }
+    }
 }
