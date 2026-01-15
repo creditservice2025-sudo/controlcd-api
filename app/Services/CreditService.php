@@ -1049,10 +1049,11 @@ class CreditService
             // 1. Gather all direct impacts by date
             $deltasByDate = [];
 
-            // Payments removal
+            $tz = self::TIMEZONE;
+
+            // Payments removal - use ONLY business_date to match calculateLiquidationMetrics
             $payments = $credit->payments()->whereNotNull('business_date')->get();
             foreach ($payments as $payment) {
-                // business_date is cast to date, so it's a Carbon object
                 $date = $payment->business_date->format('Y-m-d');
                 if (!isset($deltasByDate[$date])) {
                     $deltasByDate[$date] = [
@@ -1066,8 +1067,8 @@ class CreditService
                 $deltasByDate[$date]['total_collected'] -= floatval($payment->amount);
             }
 
-            // Credit creation removal
-            $creationDate = $credit->created_at ? $credit->created_at->toDateString() : null;
+            // Credit creation removal - MUST use the same timezone-aware logic as calculateLiquidationMetrics
+            $creationDate = $credit->created_at ? $credit->created_at->setTimezone($tz)->toDateString() : null;
             if ($creationDate) {
                 if (!isset($deltasByDate[$creationDate])) {
                     $deltasByDate[$creationDate] = [
@@ -1102,6 +1103,22 @@ class CreditService
                 $deltasByDate[$creationDate]['poliza'] -= $polizaImpact;
             }
 
+            // DEBUG: Log before empty check
+            \Log::info("simulateDelete BEFORE empty check for credit #{$creditId}", [
+                'seller_id' => $credit->seller_id,
+                'payment_count' => count($payments),
+                'payments_data' => $payments->map(fn($p) => [
+                    'id' => $p->id,
+                    'business_date' => $p->business_date,
+                    'payment_date' => $p->payment_date,
+                    'created_at' => $p->created_at,
+                    'amount' => $p->amount
+                ])->toArray(),
+                'creationDate' => $creationDate,
+                'deltasByDate_keys' => array_keys($deltasByDate),
+                'deltasByDate' => $deltasByDate
+            ]);
+
             if (empty($deltasByDate)) {
                 return $this->successResponse([
                     'success' => true,
@@ -1122,6 +1139,15 @@ class CreditService
                 ->orderBy('date', 'asc')
                 ->get();
 
+            // DEBUG: Log simulation data
+            \Log::info("simulateDelete DEBUG for credit #{$creditId}", [
+                'seller_id' => $credit->seller_id,
+                'payment_count' => $credit->payments()->count(),
+                'deltasByDate' => $deltasByDate,
+                'earliestDate' => $earliestDate,
+                'liquidations_found' => $liquidations->count()
+            ]);
+
             // Ensure today is represented if we have a delta for it, even if no liquidation exists
             if (!isset($deltasByDate[$today]) && $credit->created_at->setTimezone($tz)->toDateString() === $today) {
                 // Should already be in deltasByDate if it's creation date, but just in case
@@ -1129,8 +1155,8 @@ class CreditService
 
             $liquidationDates = $liquidations->pluck('date')->map(fn($d) => $d->format('Y-m-d'))->toArray();
 
-            // Re-build a list of dates to process
-            $allDates = array_unique(array_merge($liquidationDates, array_keys($deltasByDate)));
+            // Re-build a list of dates to process. Force inclusion of today's date so "En curso" shows impact.
+            $allDates = array_unique(array_merge($liquidationDates, array_keys($deltasByDate), [$today]));
             sort($allDates);
 
             $simulationData = [];
@@ -1138,7 +1164,10 @@ class CreditService
             $liquidationService = app(\App\Services\LiquidationService::class);
 
             foreach ($allDates as $dateStr) {
-                $liquidation = $liquidations->where('date', $dateStr)->first();
+                // Find liquidation by comparing formatted date strings
+                $liquidation = $liquidations->first(function ($liq) use ($dateStr) {
+                    return $liq->date->format('Y-m-d') === $dateStr;
+                });
                 $isVirtual = false;
 
                 if (!$liquidation) {
@@ -1357,7 +1386,9 @@ class CreditService
                 ->get();
 
             $liquidationDates = $liquidations->pluck('date')->map(fn($d) => $d->format('Y-m-d'))->toArray();
-            $allDates = array_unique(array_merge($liquidationDates, array_keys($deltasByDate)));
+
+            // Force inclusion of today's date so "En curso" shows impact
+            $allDates = array_unique(array_merge($liquidationDates, array_keys($deltasByDate), [$today]));
             sort($allDates);
 
             $simulationData = [];
@@ -1365,7 +1396,9 @@ class CreditService
             $liquidationService = app(\App\Services\LiquidationService::class);
 
             foreach ($allDates as $dateStr) {
-                $liquidation = $liquidations->where('date', $dateStr)->first();
+                $liquidation = $liquidations->first(function ($liq) use ($dateStr) {
+                    return $liq->date->format('Y-m-d') === $dateStr;
+                });
                 $isVirtual = false;
 
                 if (!$liquidation) {
@@ -1714,7 +1747,11 @@ class CreditService
             // Delete Payments
             Payment::where('credit_id', $creditId)->delete();
 
-            // 2. Recalculate Liquidations
+            // 2. Delete Credit and Installments (IMPORTANT: Do this BEFORE recalculating liquidations)
+            $credit->installments()->delete();
+            $credit->delete();
+
+            // 3. Recalculate Liquidations
             $liquidationService = app(\App\Services\LiquidationService::class);
             $earliestDate = !empty($affectedLiquidationsData)
                 ? min(array_map(fn($l) => $l['liquidation']['date'], $affectedLiquidationsData))
@@ -1754,10 +1791,6 @@ class CreditService
                     ]);
                 }
             }
-
-            // 3. Delete Credit and Installments
-            $credit->installments()->delete();
-            $credit->delete();
 
             DB::commit();
 

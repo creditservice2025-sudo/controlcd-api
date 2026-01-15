@@ -340,10 +340,6 @@ class LiquidationService
 
             $liquidations = $query->get();
 
-            // Debug: Log cuántas liquidaciones se están devolviendo
-            \Log::info("getLiquidationsBySeller: Vendedor {$sellerId}, Total liquidaciones: " . $liquidations->count());
-            \Log::info("getLiquidationsBySeller: Filtros aplicados - start_date: " . ($request->has('start_date') ? $request->get('start_date') : 'NO') . ", end_date: " . ($request->has('end_date') ? $request->get('end_date') : 'NO'));
-
             // Removed automatic recalculation to prevent lock wait timeouts
             // foreach ($liquidations as $liq) {
             //     if ($liq->status !== 'approved') {
@@ -686,6 +682,9 @@ class LiquidationService
             'renewal_disbursed_total' => floatval($dynamicData['total_renewal_disbursed'] ?? 0),
             'total_pending_absorbed' => floatval($dynamicData['total_pending_absorbed'] ?? 0),
             'irrecoverable_credits_amount' => floatval($dynamicData['irrecoverable_credits'] ?? 0),
+            'shortage' => 0,
+            'surplus' => 0,
+            'cash_delivered' => 0,
         ]);
     }
 

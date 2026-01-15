@@ -19,6 +19,8 @@ class IncomeService
 {
     use ApiResponse;
 
+    const TIMEZONE = 'America/Lima';
+
     public function create(Request $request)
     {
         try {
@@ -94,7 +96,8 @@ class IncomeService
                  return $this->errorResponse('Vendedor no encontrado', 404);
             }
 
-            $incomeDate = $income->created_at->format('Y-m-d');
+            $timezone = self::TIMEZONE;
+            $incomeDate = $income->created_at->setTimezone($timezone)->format('Y-m-d');
             $liquidation = Liquidation::whereDate('date', $incomeDate)
                 ->where('seller_id', $seller->id)
                 ->first();

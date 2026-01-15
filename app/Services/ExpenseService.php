@@ -138,7 +138,8 @@ class ExpenseService
                 return $this->errorResponse('Vendedor no encontrado para el gasto', 404);
             }
 
-            $expenseDate = $expense->created_at->format('Y-m-d');
+            $timezone = self::TIMEZONE;
+            $expenseDate = $expense->created_at->setTimezone($timezone)->format('Y-m-d');
             $liquidation = Liquidation::whereDate('date', $expenseDate)
                 ->where('seller_id', $seller->id)
                 ->first();
@@ -292,8 +293,16 @@ class ExpenseService
             if (!$expense) {
                 return $this->errorNotFoundResponse('Gasto no encontrado');
             }
-            // Obtener el vendedor asociado al usuario del ingreso
+
+            $timezone = self::TIMEZONE;
+            $businessDate = Carbon::parse($expense->created_at)->setTimezone($timezone)->format('Y-m-d');
+
+            // Obtener el vendedor asociado al usuario del gasto
             $seller = Seller::where('user_id', $expense->user_id)->first();
+
+            if (!$seller) {
+                return $this->errorResponse('No se encontró el vendedor asociado a este gasto', 422);
+            }
 
             // Ensure liquidation record exists for auditing
             $liquidationService = app(LiquidationService::class);
@@ -306,9 +315,9 @@ class ExpenseService
                 ], 422);
             }
 
-            $timezone = $request && $request->has('timezone') ? $request->get('timezone') : null;
-            if ($timezone) {
-                $expense->deleted_at = Carbon::now($timezone);
+            $timezoneRequest = $request && $request->has('timezone') ? $request->get('timezone') : null;
+            if ($timezoneRequest) {
+                $expense->deleted_at = Carbon::now($timezoneRequest);
                 $expense->save();
                 $expense->delete();
             } else {
