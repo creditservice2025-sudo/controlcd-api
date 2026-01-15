@@ -270,7 +270,7 @@ class ClientService
             'seller_id' => $params['seller_id'] ?? $client->seller_id,
             'credit_value' => $params['credit_value'],
             'total_interest' => $params['interest_rate'] ?? 0,
-            'number_installments' => $params['installment_count'] ?? 1,
+            'number_installments' => $params['number_installments'] ?? $params['installment_count'] ?? 1,
             'payment_frequency' => $paymentFrequency,
             'first_quota_date' => $firstQuotaDate,
             'excluded_days' => json_encode($excludedDays),

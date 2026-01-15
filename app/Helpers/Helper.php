@@ -118,8 +118,25 @@ class Helper
 
             // Generate unique filename
             $extension = $wasCompressed ? 'jpg' : $fileToUpload->getClientOriginalExtension();
+            
+            // Fallback for empty extension
+            if (empty($extension)) {
+                $mime = $fileToUpload->getMimeType();
+                $mimeMap = [
+                    'image/jpeg' => 'jpg',
+                    'image/jpg' => 'jpg', 
+                    'image/png' => 'png',
+                    'image/gif' => 'gif',
+                    'image/webp' => 'webp'
+                ];
+                $extension = $mimeMap[$mime] ?? 'jpg';
+            }
+
             $fileName = Str::random(20) . '_' . time() . '.' . $extension;
-            $fullPath = $folderPath . '/' . $fileName;
+            
+            // Normalize path separators for Windows compatibility
+            $folderPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $folderPath);
+            $fullPath = $folderPath . DIRECTORY_SEPARATOR . $fileName;
 
             // Check if file already exists (unlikely but possible)
             if (file_exists($fullPath)) {

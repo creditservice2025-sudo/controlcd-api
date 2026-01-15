@@ -122,6 +122,96 @@ class ExpenseService
         }
     }
 
+    public function simulateDelete($expenseId)
+    {
+        try {
+            $expense = Expense::find($expenseId);
+            if (!$expense) {
+                return $this->errorResponse('Gasto no encontrado', 404);
+            }
+
+            // Assuming 'date' and 'seller_id' exist on the Expense model or can be derived
+            // If expense->created_at is the date, use that.
+            // If expense->user_id is used to find seller, then use that.
+            $seller = Seller::where('user_id', $expense->user_id)->first();
+            if (!$seller) {
+                return $this->errorResponse('Vendedor no encontrado para el gasto', 404);
+            }
+
+            $expenseDate = $expense->created_at->format('Y-m-d');
+            $liquidation = Liquidation::whereDate('date', $expenseDate)
+                ->where('seller_id', $seller->id)
+                ->first();
+
+            $simulationData = [];
+
+            if ($liquidation) {
+                $amount = $expense->value; // Assuming 'value' is the amount of the expense
+                
+                // If we delete an expense, total_expenses decreases.
+                // real_to_deliver = ... - expenses ...\n                // So if expenses decreases, real_to_deliver INCREASES.
+                
+                $newTotalExpenses = $liquidation->total_expenses - $amount;
+                $newRealToDeliver = $liquidation->real_to_deliver + $amount;
+
+                $simulationData[] = [
+                    'liquidation' => [
+                        'id' => $liquidation->id,
+                        'date' => $liquidation->date,
+                        'total_expenses' => $liquidation->total_expenses,
+                        'initial_cash' => $liquidation->initial_cash,
+                        'real_to_deliver' => $liquidation->real_to_deliver
+                    ],
+                    'changes' => [
+                        'total_expenses' => $newTotalExpenses,
+                        'real_to_deliver' => $newRealToDeliver
+                    ],
+                    'impact_amount' => $amount,
+                    'type' => 'Gasto'
+                ];
+
+                // Get all subsequent liquidations
+                $subsequentLiquidations = Liquidation::where('seller_id', $seller->id)
+                    ->whereDate('date', '>', $expenseDate)
+                    ->orderBy('date', 'ASC')
+                    ->get();
+
+                // Calculate cascading effect on subsequent liquidations
+                $cumulativeImpact = $amount; // The change in real_to_deliver carries forward
+                foreach ($subsequentLiquidations as $subLiq) {
+                    $newInitialCash = $subLiq->initial_cash + $cumulativeImpact;
+                    $newRealToDeliverSub = $subLiq->real_to_deliver + $cumulativeImpact;
+
+                    $simulationData[] = [
+                        'liquidation' => [
+                            'id' => $subLiq->id,
+                            'date' => $subLiq->date,
+                            'initial_cash' => $subLiq->initial_cash,
+                            'real_to_deliver' => $subLiq->real_to_deliver
+                        ],
+                        'changes' => [
+                            'initial_cash' => $newInitialCash,
+                            'real_to_deliver' => $newRealToDeliverSub
+                        ],
+                        'impact_amount' => $cumulativeImpact,
+                        'type' => 'Cascada'
+                    ];
+                }
+            }
+
+            return $this->successResponse([
+                'success' => true,
+                'data' => [
+                    'entity' => $expense,
+                    'affected_liquidations' => $simulationData
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error simulando eliminación: ' . $e->getMessage(), 500);
+        }
+    }
+
     public function update(Request $request, $expenseId)
     {
         try {
@@ -205,17 +295,14 @@ class ExpenseService
             // Obtener el vendedor asociado al usuario del ingreso
             $seller = Seller::where('user_id', $expense->user_id)->first();
 
-            // Verificar si existe liquidación aprobada para la fecha del gasto
-            $liquidation = Liquidation::where('seller_id', $seller->id)
-                ->whereDate('date', $expense->created_at->format('Y-m-d'))
-                ->first();
+            // Ensure liquidation record exists for auditing
+            $liquidationService = app(LiquidationService::class);
+            $liquidation = $liquidationService->getOrCreateLiquidation($seller->id, $businessDate);
 
-
-
-            if ($liquidation && $user->role_id != 1) {
+            if ($liquidation && $liquidation->status === 'approved' && !$user->can('ajustar_caja') && $user->role_id != 1) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'No se puede eliminar el gasto porque ya existe una liquidación aprobada para esta fecha'
+                    'message' => 'No se puede eliminar el gasto porque ya existe una liquidación aprobada para esta fecha y no tiene permisos de ajuste.'
                 ], 422);
             }
 
@@ -228,14 +315,42 @@ class ExpenseService
                 $expense->delete();
             }
 
+            if ($liquidation) {
+                $oldRealToDeliver = floatval($liquidation->real_to_deliver);
+
+                // Recalcular liquidaciones
+                $liquidationService = app(LiquidationService::class);
+                $liquidationService->recalculateLiquidation($seller->id, $businessDate);
+                $liquidationService->recalculateNextLiquidations($seller->id, $businessDate);
+
+                // Re-fetch liquidation
+                $updatedLiquidation = Liquidation::find($liquidation->id);
+                $newRealToDeliver = $updatedLiquidation ? floatval($updatedLiquidation->real_to_deliver) : 0;
+
+                // Record Audit
+                \App\Models\LiquidationAudit::create([
+                    'liquidation_id' => $liquidation->id,
+                    'user_id' => $user->id,
+                    'action' => 'deleted_expense',
+                    'changes' => [
+                        'description' => "Eliminación de Gasto #{$expense->id} - Desc: {$expense->description} - Monto: {$expense->value}",
+                        'expense_id' => $expense->id,
+                        'amount' => floatval($expense->value),
+                        'old_real_to_deliver' => $oldRealToDeliver,
+                        'new_real_to_deliver' => $newRealToDeliver,
+                        'impact' => $newRealToDeliver - $oldRealToDeliver
+                    ]
+                ]);
+            }
+
             return $this->successResponse([
                 'success' => true,
-                'message' => "Gasto eliminado con éxito",
+                'message' => "Gasto eliminado con éxito y liquidaciones actualizadas",
             ]);
-        } catch (\Exception $e) {
-            Log::error($e->getMessage());
-            return $this->errorResponse('Error al eliminar el gasto', 500);
-        }
+    } catch (\Exception $e) {
+        Log::error($e->getMessage());
+        return $this->errorResponse('Error al eliminar el gasto', 500);
+    }
     }
 
     public function changeExpenseStatus($expenseId, $status)
@@ -453,13 +568,13 @@ class ExpenseService
     public function getSellerExpensesByDate(int $sellerId, Request $request, int $perpage, $companyId = null)
     {
         try {
-            $sellerUserId = Seller::where('id', $sellerId)
+            $seller = Seller::where('id', $sellerId)
                 ->when($companyId, function ($query) use ($companyId) {
                     $query->where('company_id', $companyId);
                 })
-                ->value('user_id');
+                ->first();
 
-            if (!$sellerUserId) {
+            if (!$seller || !$seller->user_id) {
                 return $this->successResponse([
                     'success' => true,
                     'message' => 'No se encontró el usuario asociado a este ID de vendedor.',
@@ -467,29 +582,41 @@ class ExpenseService
                 ]);
             }
 
-            $expensesQuery = Expense::with(['user', 'category', 'images'])
-                ->where('user_id', $sellerUserId)
+            $expensesQuery = Expense::query()
+                ->select('expenses.*', 'liquidations.id as liquidation_number')
+                ->with(['user', 'category', 'images'])
+                ->leftJoin('liquidations', function($join) use ($seller) {
+                    $join->on(DB::raw('DATE(expenses.created_at)'), '=', DB::raw('DATE(liquidations.date)'))
+                         ->where('liquidations.seller_id', '=', $seller->id);
+                })
+                ->where('expenses.user_id', $seller->user_id)
                 ->where(function ($q) {
-                    $q->where('status', 'Aprobado')
-                        ->orWhere('description', 'like', '%AJUSTE%');
+                    $q->where('expenses.status', 'Aprobado')
+                        ->orWhere('expenses.description', 'like', '%AJUSTE%');
                 });
 
             $timezone = $request->input('timezone', 'America/Lima');
 
-            if ($request->has('start_date') && $request->has('end_date')) {
-                $startDate = Carbon::parse($request->get('start_date'), $timezone)->startOfDay()->timezone('UTC');
-                $endDate = Carbon::parse($request->get('end_date'), $timezone)->endOfDay()->timezone('UTC');
-                $expensesQuery->whereBetween('created_at', [$startDate, $endDate]);
-            } elseif ($request->has('date')) {
-                $filterDate = Carbon::parse($request->get('date'), $timezone);
-                $start = $filterDate->copy()->startOfDay()->timezone('UTC');
-                $end = $filterDate->copy()->endOfDay()->timezone('UTC');
-                $expensesQuery->whereBetween('created_at', [$start, $end]);
-            } else {
-                $todayStart = Carbon::now($timezone)->startOfDay()->timezone('UTC');
-                $todayEnd = Carbon::now($timezone)->endOfDay()->timezone('UTC');
-                $expensesQuery->whereBetween('created_at', [$todayStart, $todayEnd]);
+            // Check if include_all_dates flag is present
+            if (!$request->has('include_all_dates')) {
+                // Apply date filtering only if include_all_dates is NOT set
+                if ($request->has('start_date') && $request->has('end_date')) {
+                    $startDate = Carbon::parse($request->get('start_date'), $timezone)->startOfDay()->timezone('UTC');
+                    $endDate = Carbon::parse($request->get('end_date'), $timezone)->endOfDay()->timezone('UTC');
+                    $expensesQuery->whereBetween('expenses.created_at', [$startDate, $endDate]);
+                } elseif ($request->has('date')) {
+                    $filterDate = Carbon::parse($request->get('date'), $timezone);
+                    $start = $filterDate->copy()->startOfDay()->timezone('UTC');
+                    $end = $filterDate->copy()->endOfDay()->timezone('UTC');
+                    $expensesQuery->whereBetween('expenses.created_at', [$start, $end]);
+                } else {
+                    $todayStart = Carbon::now($timezone)->startOfDay()->timezone('UTC');
+                    $todayEnd = Carbon::now($timezone)->endOfDay()->timezone('UTC');
+                    $expensesQuery->whereBetween('expenses.created_at', [$todayStart, $todayEnd]);
+                }
             }
+
+            $expensesQuery->orderBy('expenses.created_at', 'desc');
 
             $expenses = $expensesQuery->paginate($perpage);
 
