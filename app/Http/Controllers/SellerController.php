@@ -127,7 +127,7 @@ class SellerController extends Controller
     public function getLiquidations(Request $request, $sellerId)
     {
         try {
-            $limit = $request->get('limit', 10);
+            $limit = $request->get('limit', 1000);
             return $this->sellerService->getLiquidations($sellerId, $limit);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);

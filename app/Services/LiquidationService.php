@@ -340,6 +340,10 @@ class LiquidationService
 
             $liquidations = $query->get();
 
+            // Debug: Log cuántas liquidaciones se están devolviendo
+            \Log::info("getLiquidationsBySeller: Vendedor {$sellerId}, Total liquidaciones: " . $liquidations->count());
+            \Log::info("getLiquidationsBySeller: Filtros aplicados - start_date: " . ($request->has('start_date') ? $request->get('start_date') : 'NO') . ", end_date: " . ($request->has('end_date') ? $request->get('end_date') : 'NO'));
+
             // Removed automatic recalculation to prevent lock wait timeouts
             // foreach ($liquidations as $liq) {
             //     if ($liq->status !== 'approved') {
