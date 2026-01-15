@@ -792,7 +792,7 @@ class SellerService
     /**
      * Get seller liquidations
      */
-    public function getLiquidations($sellerId, $limit = 10)
+    public function getLiquidations($sellerId, $limit = 1000)
     {
         try {
             $timezone = 'America/Lima';
