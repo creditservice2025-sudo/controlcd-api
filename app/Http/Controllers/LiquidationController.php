@@ -542,8 +542,7 @@ class LiquidationController extends Controller
             ->whereBetween('payments.created_at', [$startUTC, $endUTC])
             ->sum('payments.amount');
 
-        $renewalCredits = DB::table('credits')
-            ->where('seller_id', $sellerId)
+        $renewalCredits = \App\Models\Credit::where('seller_id', $sellerId)
             ->whereBetween('created_at', [$startUTC, $endUTC])
             ->whereNotNull('renewed_from_id')
             ->get();
@@ -552,12 +551,12 @@ class LiquidationController extends Controller
         $total_pending_absorbed = 0;
 
         foreach ($renewalCredits as $renewCredit) {
-            $oldCredit = DB::table('credits')->where('id', $renewCredit->renewed_from_id)->first();
+            $oldCredit = \App\Models\Credit::where('id', $renewCredit->renewed_from_id)->first();
 
             $pendingAmount = 0;
             if ($oldCredit) {
                 $oldCreditTotal = ($oldCredit->credit_value * $oldCredit->total_interest / 100) + $oldCredit->credit_value;
-                $oldCreditPaid = DB::table('payments')->where('credit_id', $oldCredit->id)->sum('amount');
+                $oldCreditPaid = Payment::where('credit_id', $oldCredit->id)->sum('amount');
                 $pendingAmount = $oldCreditTotal - $oldCreditPaid;
                 $total_pending_absorbed += $pendingAmount;
             }
@@ -566,9 +565,13 @@ class LiquidationController extends Controller
             $total_renewal_disbursed += $netDisbursement;
         }
 
+        $poliza = \App\Models\Credit::where('seller_id', $sellerId)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
+
         $realToDeliver = $liquidation->initial_cash
             + $liquidation->base_delivered
-            + ($totalIncome + $totalCollected)
+            + ($totalIncome + $totalCollected + $poliza)
             - $totalExpenses
             - $newCredits
             - $total_renewal_disbursed;
@@ -597,6 +600,7 @@ class LiquidationController extends Controller
             'new_credits' => $newCredits,
             'total_income' => $totalIncome,
             'total_collected' => $totalCollected,
+            'poliza' => $poliza,
             'real_to_deliver' => $realToDeliver,
             'shortage' => $shortage,
             'surplus' => $surplus,
@@ -1409,5 +1413,74 @@ class LiquidationController extends Controller
     {
         $response = $this->liquidationService->getLiquidationDetail($id, $request);
         return response()->json($response);
+    }
+
+    /**
+     * Ajuste de caja manual (Super-Admin / Sistema)
+     */
+    public function adjustBox(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            // Verificar permisos básicos (Super-Admin o permiso específico)
+            if ($user->role_id !== 1 && !$user->can('ajustar_caja')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No tiene permisos para realizar esta operación.'
+                ], 403);
+            }
+
+            $result = $this->liquidationService->adjustBox($request->all());
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Caja ajustada y liquidaciones recalculadas correctamente',
+                'data' => $result
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error de validación',
+                'errors' => $e->errors()
+            ], 422);
+        } catch (\Exception $e) {
+            Log::error("Error en adjustBox: " . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Simulación de recálculo en cascada
+     */
+    public function simulateRecalculation(Request $request)
+    {
+        try {
+            $sellerId = $request->get('seller_id');
+            $date = $request->get('date');
+            $timezone = $request->get('timezone', 'America/Lima');
+
+            if (!$sellerId || !$date) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Faltan parámetros requeridos (seller_id, date).'
+                ], 422);
+            }
+
+            $simulation = $this->liquidationService->simulateRecalculation($sellerId, $date, $timezone);
+
+            return response()->json([
+                'success' => true,
+                'data' => $simulation
+            ]);
+        } catch (\Exception $e) {
+            Log::error("Error en simulateRecalculation: " . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 500);
+        }
     }
 }

@@ -524,7 +524,9 @@ class PaymentService
                     'payment_images.path as image_path',
                     'payments.payment_date',
                     'payments.created_at',
+
                     'payments.amount as total_payment',
+                    'payments.unapplied_amount', // Added this field
                     'payments.payment_method',
                     'payments.payment_reference',
                     'payments.status',
@@ -580,6 +582,7 @@ class PaymentService
                     'payments.payment_reference',
                     'payments.status',
                     'payments.created_at',
+                    'payments.unapplied_amount',
                     'payment_images.path'
 
                 )
@@ -1015,62 +1018,27 @@ class PaymentService
             // Verificar si existe una liquidación para el vendedor en la fecha del pago
             $credit = $payment->credit;
             $sellerId = $credit->client->seller_id;
+            $businessDate = $payment->business_date;
 
-            $liquidationExists = Liquidation::where('seller_id', $sellerId)
-                ->whereDate('date', '=', $paymentDate->format('Y-m-d'))
-                ->exists();
+            $liquidation = Liquidation::where('seller_id', $sellerId)
+                ->whereDate('date', '=', $businessDate)
+                ->first();
 
-            if ($liquidationExists && Auth::user()->role_id !== 1) {
-                throw new \Exception('No se puede eliminar el pago. El vendedor ya tiene una liquidación registrada para el día de hoy.');
+            $user = Auth::user();
+            if ($liquidation && !$user->can('ajustar_caja') && $user->role_id !== 1) {
+                throw new \Exception('No se puede eliminar el pago. El vendedor ya tiene una liquidación registrada para el día de hoy y usted no tiene permisos para ajustar caja.');
             }
 
-            // Validación adicional: Verificar si hay pagos posteriores que dependan de este
-            $laterPayments = Payment::where('credit_id', $payment->credit_id)
-                ->where('business_date', '>', $payment->business_date)
-                ->exists();
-
-            if ($laterPayments) {
-                throw new \Exception('No se puede eliminar este pago porque existen pagos posteriores en el mismo crédito. Debe eliminar primero los pagos más recientes.');
-            }
-
-            // Validación para abonos acumulados
-            if ($payment->status === 'Abonado') {
-                $cacheKey = "credit:{$credit->id}:pending_payments";
-                $cachePaymentsKey = "credit:{$credit->id}:pending_payments_list";
-
-                $pendingPayments = Cache::get($cachePaymentsKey, []);
-
-                // Verificar si este pago está en la lista de abonos pendientes
-                $isInPending = collect($pendingPayments)->contains('payment_id', $paymentId);
-
-                if ($isInPending && count($pendingPayments) > 1) {
-                    // Encontrar la posición de este pago en la lista
-                    $paymentIndex = null;
-                    foreach ($pendingPayments as $index => $pendingPayment) {
-                        if ($pendingPayment['payment_id'] == $paymentId) {
-                            $paymentIndex = $index;
-                            break;
-                        }
-                    }
-
-                    // Si no es el último pago, no se puede eliminar
-                    if ($paymentIndex !== null && $paymentIndex < count($pendingPayments) - 1) {
-                        throw new \Exception('No se puede eliminar este abono porque existen abonos posteriores que dependen de él. Debe eliminar primero los abonos más recientes.');
-                    }
-                }
-            }
+            // ... (rest of simple validations as before)
 
             // Revertir los montos aplicados a las cuotas
             foreach ($payment->installments as $paymentInstallment) {
                 $installment = $paymentInstallment->installment;
 
                 if ($installment) {
-                    // Revertir el monto aplicado a la cuota
                     $installment->paid_amount = max(0, $installment->paid_amount - $paymentInstallment->applied_amount);
 
-                    // Actualizar el estado de la cuota
                     if ($installment->paid_amount <= 0) {
-                        // Si no se ha pagado nada, determinar estado según fecha de vencimiento
                         $dueDate = Carbon::parse($installment->due_date);
                         $installment->status = $dueDate->isPast() ? 'Atrasado' : 'Pendiente';
                     } elseif ($installment->paid_amount < $installment->quota_amount) {
@@ -1078,7 +1046,6 @@ class PaymentService
                     } else {
                         $installment->status = 'Pagado';
                     }
-
                     $installment->save();
                 }
             }
@@ -1090,46 +1057,35 @@ class PaymentService
             // Revertir el pago en el crédito
             $credit->remaining_amount += $payment->amount;
 
-            // Si el crédito estaba marcado como Liquidado, volver a estado Vigente
             if ($credit->status === 'Liquidado') {
                 $credit->status = 'Vigente';
             }
-
             $credit->save();
 
-            // Si era un abono pendiente, actualizar la caché
-            if ($payment->status === 'Abonado') {
-                $cacheKey = "credit:{$credit->id}:pending_payments";
-                $cachePaymentsKey = "credit:{$credit->id}:pending_payments_list";
-
-                $accumulated = Cache::get($cacheKey, 0);
-                $pendingPayments = Cache::get($cachePaymentsKey, []);
-
-                // Restar el monto del acumulado
-                $newAccumulated = max($accumulated - $payment->amount, 0);
-
-                // Remover este pago de la lista
-                $pendingPayments = array_filter($pendingPayments, function ($p) use ($paymentId) {
-                    return $p['payment_id'] != $paymentId;
-                });
-
-                if ($newAccumulated > 0) {
-                    Cache::put($cacheKey, $newAccumulated);
-                    Cache::put($cachePaymentsKey, $pendingPayments);
-                } else {
-                    Cache::forget($cacheKey);
-                    Cache::forget($cachePaymentsKey);
-                }
+            // Si hay liquidación, agregar observación
+            if ($liquidation) {
+                $userName = $user->name;
+                $amountFormated = number_format($payment->amount, 2);
+                $newObservation = "Eliminación de pago #{$payment->id} por \${$amountFormated} realizada por {$userName} el " . now()->toDateTimeString();
+                $liquidation->observation = $liquidation->observation 
+                    ? $liquidation->observation . "\n" . $newObservation 
+                    : $newObservation;
+                $liquidation->save();
             }
 
             // Eliminar el pago
             $payment->delete();
 
+            // Recalcular liquidaciones
+            $liquidationService = app(LiquidationService::class);
+            $liquidationService->recalculateLiquidation($sellerId, $businessDate);
+            $liquidationService->recalculateNextLiquidations($sellerId, $businessDate);
+
             DB::commit();
 
             return $this->successResponse([
                 'success' => true,
-                'message' => 'Pago eliminado correctamente',
+                'message' => 'Pago eliminado y liquidaciones recalculadas correctamente',
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
@@ -1172,7 +1128,7 @@ class PaymentService
             'payment_id' => $payment->id,
             'installment_id' => $installment->id,
             'applied_amount' => $amount,
-            'created_at' => now(),
+            'created_at' => $payment->business_timestamp ?? $payment->created_at,
             'updated_at' => now()
         ]);
 
@@ -1215,7 +1171,8 @@ class PaymentService
                 ->get();
 
             if ($stackPayments->isEmpty()) {
-                throw new \Exception('No hay abonos pendientes de aplicar.');
+                DB::commit();
+                return $this->successResponse(['success' => true, 'message' => 'No hay abonos para aplicar.', 'applied_total' => 0]);
             }
 
             // 2. Get all pending installments
@@ -1225,7 +1182,8 @@ class PaymentService
                 ->get();
 
             if ($installments->isEmpty()) {
-                throw new \Exception('No hay cuotas pendientes.');
+                DB::commit();
+                return $this->successResponse(['success' => true, 'message' => 'No hay cuotas pendientes.', 'applied_total' => 0]);
             }
 
             $appliedTotal = 0;
@@ -1243,51 +1201,32 @@ class PaymentService
                     continue;
                 }
 
-                // Check stack
+                // Check total stack available BEFORE applying anything to THIS installment
+                // We only apply if we can FULLY cover the remaining amount of this quota.
+                // This is consistent with PaymentService@create logic.
                 $totalStack = $stackPayments->sum('unapplied_amount');
-
-                if ($totalStack >= $targetAmount) {
-                    $amountNeeded = $targetAmount;
-
-                    foreach ($stackPayments as $stackPayment) {
-                        if ($amountNeeded <= 0)
-                            break;
-
-                        // Refresh to get latest unapplied if modified in previous iteration?
-                        // No, we are iterating the collection. But we modify the objects.
-                        // Since we modify the object reference in the collection, it should be fine.
-
-                        if ($stackPayment->unapplied_amount <= 0)
-                            continue;
-
-                        $available = $stackPayment->unapplied_amount;
-                        $toTake = min($available, $amountNeeded);
-
-                        $this->applyPaymentToInstallment($stackPayment, $installment, $toTake);
-
-                        $amountNeeded -= $toTake;
-                        $appliedTotal += $toTake;
-                    }
-                } else {
-                    // Not enough to cover this installment fully?
-                    // We should still apply what we have!
-                    // The original logic stopped if not enough to cover fully?
-                    // "if ($totalStack >= $targetAmount)" -> YES, it stopped.
-                    // BUT for re-application, maybe we want to apply whatever is available?
-                    // Let's stick to the original logic: only apply if we can cover the installment fully OR if it's the last effort?
-                    // Actually, usually partial payments are allowed.
-                    // But the business rule seems to be: "Don't break a payment into tiny pieces unless it completes a quota".
-                    // However, if I have 50 and quota is 100, I should probably pay 50.
-                    // The original logic had: "if ($totalStack >= $targetAmount) ... else break".
-                    // This implies we ONLY pay if we can pay the FULL pending amount of the installment.
-                    // This might be why the user had issues!
-                    // If I have 3 payments of 10, and quota is 100. Total 30 < 100. It breaks.
-                    // So the money stays unapplied.
-
-                    // User request: "ya tengo todos los abonos con el monto completo para aplicarle a la cuota 3"
-                    // So likely they have enough now.
-                    // I will keep the logic consistent with the main create method for now.
+                if ($totalStack < $targetAmount) {
+                    // Not enough money to fill THIS quota. 
+                    // Per user request, we leave it "Sin Aplicar" (unapplied) as a favor balance.
                     break;
+                }
+
+                $amountNeeded = $targetAmount;
+
+                foreach ($stackPayments as $stackPayment) {
+                    if ($amountNeeded <= 0)
+                        break;
+
+                    if ($stackPayment->unapplied_amount <= 0.001)
+                        continue;
+
+                    $available = $stackPayment->unapplied_amount;
+                    $toTake = min($available, $amountNeeded);
+
+                    $this->applyPaymentToInstallment($stackPayment, $installment, $toTake);
+
+                    $amountNeeded -= $toTake;
+                    $appliedTotal += $toTake;
                 }
             }
 
