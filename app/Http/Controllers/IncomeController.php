@@ -63,7 +63,7 @@ class IncomeController extends Controller
 
     public function getSellerIncomeByDate(Request $request, $sellerId)
     {
-        $perPage = $request->input('perPage', 1000);
+        $perPage = $request->input('perPage', 10);
         $companyId = $request->input('company_id');
         return $this->incomeService->getSellerIncomeByDate($sellerId, $request, $perPage, $companyId);
     }

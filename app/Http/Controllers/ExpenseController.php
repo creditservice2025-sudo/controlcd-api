@@ -79,7 +79,7 @@ class ExpenseController extends Controller
     {
         try {
             $search = $request->get('search') ?? '';
-            $perPage = $request->get('perPage') ?? 1000;
+            $perPage = $request->get('perPage') ?? 10;
             $companyId = $request->input('company_id');
             return $this->expenseService->getSellerExpensesByDate($sellerId, $request, $perPage, $companyId);
         } catch (\Exception $e) {
