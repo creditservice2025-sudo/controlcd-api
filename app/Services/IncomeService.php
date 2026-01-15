@@ -345,11 +345,6 @@ class IncomeService
                 return $this->errorResponse('No se encontró el vendedor asociado a este ingreso', 422);
             }
 
-            // Verificar si existe liquidación para la fecha del ingreso y este vendedor
-            $liquidation = Liquidation::where('seller_id', $seller->id)
-                ->whereDate('date', $incomeDate)
-                ->first();
-
             if ($incomeDate !== $currentDate && (!$user->can('ajustar_caja') && $user->role_id != 1)) {
                 return $this->errorResponse(
                     'Solo se pueden eliminar ingresos creados el día de hoy o si tiene permisos de ajuste',
@@ -357,9 +352,13 @@ class IncomeService
                 );
             }
 
-            if ($liquidation && !$user->can('ajustar_caja') && $user->role_id != 1) {
+            // Ensure liquidation record exists for auditing
+            $liquidationService = app(LiquidationService::class);
+            $liquidation = $liquidationService->getOrCreateLiquidation($seller->id, $incomeDate);
+
+            if ($liquidation && $liquidation->status === 'approved' && !$user->can('ajustar_caja') && $user->role_id != 1) {
                 return $this->errorResponse(
-                    'No se puede eliminar el ingreso porque ya existe una liquidación para esta fecha y no tiene permisos de ajuste',
+                    'No se puede eliminar el ingreso porque ya existe una liquidación aprobada para esta fecha y no tiene permisos de ajuste',
                     422
                 );
             }
@@ -373,20 +372,32 @@ class IncomeService
                 $income->delete();
             }
 
-            // Si hay liquidación, agregar observación
             if ($liquidation) {
-                $userName = $user->name;
-                $amountFormated = number_format($income->value, 2);
-                $newObservation = "Eliminación de ingreso #{$income->id} por \${$amountFormated} realizada por {$userName} el " . now()->toDateTimeString();
-                $liquidation->observation = $liquidation->observation 
-                    ? $liquidation->observation . "\n" . $newObservation 
-                    : $newObservation;
-                $liquidation->save();
+                $oldRealToDeliver = floatval($liquidation->real_to_deliver);
 
                 // Recalcular liquidaciones
                 $liquidationService = app(LiquidationService::class);
                 $liquidationService->recalculateLiquidation($seller->id, $incomeDate);
                 $liquidationService->recalculateNextLiquidations($seller->id, $incomeDate);
+
+                // Re-fetch liquidation to get new values
+                $updatedLiquidation = Liquidation::find($liquidation->id);
+                $newRealToDeliver = $updatedLiquidation ? floatval($updatedLiquidation->real_to_deliver) : 0;
+
+                // Record Audit
+                \App\Models\LiquidationAudit::create([
+                    'liquidation_id' => $liquidation->id,
+                    'user_id' => $user->id,
+                    'action' => 'deleted_income',
+                    'changes' => [
+                        'description' => "Eliminación de Ingreso #{$income->id} - Desc: {$income->description} - Monto: {$income->value}",
+                        'income_id' => $income->id,
+                        'amount' => floatval($income->value),
+                        'old_real_to_deliver' => $oldRealToDeliver,
+                        'new_real_to_deliver' => $newRealToDeliver,
+                        'impact' => $newRealToDeliver - $oldRealToDeliver
+                    ]
+                ]);
             }
 
             return $this->successResponse([

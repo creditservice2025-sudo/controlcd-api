@@ -637,7 +637,51 @@ class LiquidationService
             'liquidation_start_date' => $dailyTotals['liquidation_start_date'],
             'total_crossed_credits' => $dailyTotals['total_crossed_credits'],
             'total_renewal_disbursed' => $dailyTotals['total_renewal_disbursed'],
+            'poliza' => $poliza,
+            'irrecoverable_credits' => $irrecoverableCredits,
+            'total_pending_absorbed' => $dailyTotals['total_crossed_credits'],
         ];
+    }
+
+    /**
+     * Get or create a liquidation record for a seller and date.
+     * Useful for logging audits before a formal close.
+     */
+    public function getOrCreateLiquidation($sellerId, $date, $timezone = null)
+    {
+        $tz = $timezone ?: self::TIMEZONE;
+        
+        $liquidation = Liquidation::where('seller_id', $sellerId)
+            ->whereDate('date', $date)
+            ->first();
+
+        if ($liquidation) {
+            return $liquidation;
+        }
+
+        // Create a draft liquidation
+        $seller = Seller::find($sellerId);
+        $userId = $seller ? $seller->user_id : null;
+        
+        $dynamicData = $this->getLiquidationData($sellerId, $date, $userId, $tz);
+        
+        return Liquidation::create([
+            'seller_id' => $sellerId,
+            'date' => $date,
+            'status' => 'En curso',
+            'initial_cash' => floatval($dynamicData['initial_cash'] ?? 0),
+            'collection_target' => floatval($dynamicData['collection_target'] ?? 0),
+            'base_delivered' => 0,
+            'total_collected' => floatval($dynamicData['total_collected'] ?? 0),
+            'total_expenses' => floatval($dynamicData['total_expenses'] ?? 0),
+            'total_income' => floatval($dynamicData['total_income'] ?? 0),
+            'new_credits' => floatval($dynamicData['new_credits'] ?? 0),
+            'real_to_deliver' => floatval($dynamicData['real_to_deliver'] ?? 0),
+            'poliza' => floatval($dynamicData['poliza'] ?? 0),
+            'renewal_disbursed_total' => floatval($dynamicData['total_renewal_disbursed'] ?? 0),
+            'total_pending_absorbed' => floatval($dynamicData['total_pending_absorbed'] ?? 0),
+            'irrecoverable_credits_amount' => floatval($dynamicData['irrecoverable_credits'] ?? 0),
+        ]);
     }
 
     public function recalculateLiquidation($sellerId, $date, $timezone = null)
@@ -1197,8 +1241,15 @@ class LiquidationService
             'total_pending_absorbed' => $liquidation->total_pending_absorbed,
             'total_crossed_credits' => $dailyTotals['total_crossed_credits'],
             'total_renewal_disbursed' => $dailyTotals['total_renewal_disbursed'],
-            'audits' => $liquidation->audits->filter(function ($audit) {
-                return in_array(optional($audit->user)->role_id, [5]);
+            'audits' => $liquidation->audits->map(function ($audit) {
+                return [
+                    'id' => $audit->id,
+                    'user_id' => $audit->user_id,
+                    'user_name' => optional($audit->user)->name,
+                    'action' => $audit->action,
+                    'changes' => $audit->changes,
+                    'created_at' => $audit->created_at->format('Y-m-d H:i:s')
+                ];
             })->values(),
             'end_date' => $liquidation->end_date,
 

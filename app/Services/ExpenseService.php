@@ -295,16 +295,14 @@ class ExpenseService
             // Obtener el vendedor asociado al usuario del ingreso
             $seller = Seller::where('user_id', $expense->user_id)->first();
 
-            // Verificar si existe liquidación aprobada para la fecha del gasto
-            $businessDate = $expense->created_at->format('Y-m-d');
-            $liquidation = Liquidation::where('seller_id', $seller->id)
-                ->whereDate('date', $businessDate)
-                ->first();
+            // Ensure liquidation record exists for auditing
+            $liquidationService = app(LiquidationService::class);
+            $liquidation = $liquidationService->getOrCreateLiquidation($seller->id, $businessDate);
 
-            if ($liquidation && !$user->can('ajustar_caja') && $user->role_id != 1) {
+            if ($liquidation && $liquidation->status === 'approved' && !$user->can('ajustar_caja') && $user->role_id != 1) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'No se puede eliminar el gasto porque ya existe una liquidación para esta fecha y no tiene permisos de ajuste.'
+                    'message' => 'No se puede eliminar el gasto porque ya existe una liquidación aprobada para esta fecha y no tiene permisos de ajuste.'
                 ], 422);
             }
 
@@ -317,20 +315,32 @@ class ExpenseService
                 $expense->delete();
             }
 
-            // Si hay liquidación, agregar observación
             if ($liquidation) {
-                $userName = $user->name;
-                $amountFormated = number_format($expense->value, 2);
-                $newObservation = "Eliminación de egreso #{$expense->id} por \${$amountFormated} realizada por {$userName} el " . now()->toDateTimeString();
-                $liquidation->observation = $liquidation->observation
-                    ? $liquidation->observation . "\n" . $newObservation
-                    : $newObservation;
-                $liquidation->save();
+                $oldRealToDeliver = floatval($liquidation->real_to_deliver);
 
                 // Recalcular liquidaciones
                 $liquidationService = app(LiquidationService::class);
                 $liquidationService->recalculateLiquidation($seller->id, $businessDate);
                 $liquidationService->recalculateNextLiquidations($seller->id, $businessDate);
+
+                // Re-fetch liquidation
+                $updatedLiquidation = Liquidation::find($liquidation->id);
+                $newRealToDeliver = $updatedLiquidation ? floatval($updatedLiquidation->real_to_deliver) : 0;
+
+                // Record Audit
+                \App\Models\LiquidationAudit::create([
+                    'liquidation_id' => $liquidation->id,
+                    'user_id' => $user->id,
+                    'action' => 'deleted_expense',
+                    'changes' => [
+                        'description' => "Eliminación de Gasto #{$expense->id} - Desc: {$expense->description} - Monto: {$expense->value}",
+                        'expense_id' => $expense->id,
+                        'amount' => floatval($expense->value),
+                        'old_real_to_deliver' => $oldRealToDeliver,
+                        'new_real_to_deliver' => $newRealToDeliver,
+                        'impact' => $newRealToDeliver - $oldRealToDeliver
+                    ]
+                ]);
             }
 
             return $this->successResponse([

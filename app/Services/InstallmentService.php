@@ -189,55 +189,74 @@ class InstallmentService
             }
 
             // 2. Load ALL liquidations from the earliest affected date onwards
+            $tz = 'America/Lima';
+            $today = Carbon::now($tz)->toDateString();
             $earliestDate = min(array_keys($deltasByDate));
-            $allFutureLiquidations = Liquidation::where('seller_id', $installment->credit->seller_id)
+            
+            $liquidations = Liquidation::where('seller_id', $installment->credit->seller_id)
                 ->where('date', '>=', $earliestDate)
                 ->orderBy('date', 'asc')
                 ->get();
 
+            $liquidationDates = $liquidations->pluck('date')->map(fn($d) => $d->toDateString())->toArray();
+            $allDates = array_unique(array_merge($liquidationDates, array_keys($deltasByDate)));
+            sort($allDates);
+
             $simulationData = [];
             $runningCashDelta = 0;
+            $liquidationService = app(\App\Services\LiquidationService::class);
 
-            foreach ($allFutureLiquidations as $liquidation) {
-                $dateStr = $liquidation->date->toDateString();
-                
-                // If this day has a direct deletion impact
+            foreach ($allDates as $dateStr) {
+                $liquidation = $liquidations->where('date', $dateStr)->first();
+                $isVirtual = false;
+
+                if (!$liquidation) {
+                    if ($dateStr !== $today) continue;
+                    
+                    $dynamic = $liquidationService->getLiquidationData($installment->credit->seller_id, $today, $installment->credit->seller->user_id, $tz);
+                    $liquidation = (object)[
+                        'id' => null,
+                        'date' => Carbon::parse($dateStr),
+                        'total_collected' => $dynamic['total_collected'] ?? 0,
+                        'real_to_deliver' => $dynamic['real_to_deliver'] ?? 0,
+                        'initial_cash' => $dynamic['initial_cash'] ?? 0,
+                        'new_credits' => $dynamic['new_credits'] ?? 0,
+                        'poliza' => $dynamic['poliza'] ?? 0,
+                        'total_expenses' => $dynamic['total_expenses'] ?? 0,
+                        'shortage' => 0,
+                        'surplus' => 0,
+                        'renewal_disbursed_total' => $dynamic['total_renewal_disbursed'] ?? 0,
+                        'total_pending_absorbed' => $dynamic['total_pending_absorbed'] ?? 0,
+                        'base_delivered' => $dynamic['base_delivered'] ?? 0,
+                        'cash_delivered' => 0 // For virtual, we assume 0 delivered yet
+                    ];
+                    $isVirtual = true;
+                }
+
                 $dayDirectDelta = $deltasByDate[$dateStr] ?? 0;
-                
-                // Total impact on Real to Deliver = Direct Delta + Accumulated Initial Cash Delta
-                // Note: The direct delta affects Total Collected. The running cash delta affects Initial Cash.
                 
                 $currentValues = [
                     'id' => $liquidation->id,
-                    'date' => $liquidation->date,
-                    'total_collected' => $liquidation->total_collected,
-                    'real_to_deliver' => $liquidation->real_to_deliver,
-                    'shortage' => $liquidation->shortage,
-                    'surplus' => $liquidation->surplus,
-                    'initial_cash' => $liquidation->initial_cash
+                    'date' => $liquidation->date->toDateString(),
+                    'total_collected' => floatval($liquidation->total_collected),
+                    'real_to_deliver' => floatval($liquidation->real_to_deliver),
+                    'shortage' => floatval($liquidation->shortage),
+                    'surplus' => floatval($liquidation->surplus),
+                    'initial_cash' => floatval($liquidation->initial_cash)
                 ];
 
-                // New Initial Cash (affected by previous days)
-                $newInitialCash = $liquidation->initial_cash + $runningCashDelta;
+                $newInitialCash = floatval($liquidation->initial_cash) + $runningCashDelta;
+                $newTotalCollected = floatval($liquidation->total_collected) + $dayDirectDelta;
                 
-                // New Total Collected (affected by direct deletion on this day)
-                $newTotalCollected = $liquidation->total_collected + $dayDirectDelta;
+                $newRealToDeliver = floatval($liquidation->real_to_deliver) + ($newInitialCash - floatval($liquidation->initial_cash)) + ($newTotalCollected - floatval($liquidation->total_collected));
                 
-                // New Real To Deliver
-                // Formula: Initial + Total Collected - Delivered + (Other metrics assumed constant)
-                // Since only Initial and Total Collected change:
-                // NewReal = OldReal + (NewInitial - OldInitial) + (NewCollected - OldCollected)
-                $newRealToDeliver = $liquidation->real_to_deliver + ($newInitialCash - $liquidation->initial_cash) + ($newTotalCollected - $liquidation->total_collected);
-                
-                // Recalculate Shortage/Surplus
-                // Logic: Cash Delivered vs New Real To Deliver
                 $newShortage = 0;
                 $newSurplus = 0;
-                $diff = $liquidation->cash_delivered - $newRealToDeliver;
+                $diff = floatval($liquidation->cash_delivered ?? 0) - $newRealToDeliver;
                 if ($diff < 0) {
                     $newShortage = abs($diff);
                 } else {
-                    $newSurplus = $diff; // Usually surplus if delivered > real
+                    $newSurplus = $diff;
                 }
 
                 $newValues = [
@@ -248,18 +267,16 @@ class InstallmentService
                     'surplus' => $newSurplus
                 ];
 
-                // Add checking logic: Only add to report if values actually changed
                 if ($dayDirectDelta != 0 || $runningCashDelta != 0) {
                      $simulationData[] = [
                         'liquidation' => $currentValues,
                         'changes' => $newValues,
-                        'installment_impact' => abs($dayDirectDelta)
+                        'installment_impact' => abs($dayDirectDelta),
+                        'type' => $isVirtual ? 'Liquidación en curso' : 'Simulación de Eliminación'
                     ];
                 }
                 
-                // Update running delta for next day
-                // The change in Real To Deliver for today becomes the change in Initial Cash for tomorrow
-                 $runningCashDelta = ($newRealToDeliver - $liquidation->real_to_deliver);
+                $runningCashDelta = ($newRealToDeliver - floatval($liquidation->real_to_deliver));
             }
 
             return response()->json([
@@ -352,6 +369,11 @@ class InstallmentService
                 // Recalculate ALL liquidations via service
                 if ($earliestDate) {
                     $liquidationService = app(\App\Services\LiquidationService::class);
+                    
+                    // Ensure the earliest liquidation exists for audit
+                    $mainLiquidation = $liquidationService->getOrCreateLiquidation($sellerId, $earliestDate->toDateString());
+                    $oldRealToDeliver = $mainLiquidation ? floatval($mainLiquidation->real_to_deliver) : 0;
+
                     $affectedLiqs = Liquidation::where('seller_id', $sellerId)
                         ->where('date', '>=', $earliestDate)
                         ->orderBy('date', 'asc')
@@ -361,6 +383,29 @@ class InstallmentService
                         $liquidationService->recalculateLiquidation($liq->seller_id, $liq->date->toDateString());
                     }
                     $liquidationService->recalculateNextLiquidations($sellerId, $earliestDate->toDateString());
+
+                    // Re-fetch to get new value
+                    $updatedLiquidation = Liquidation::where('seller_id', $sellerId)
+                        ->where('date', $earliestDate)
+                        ->first();
+                    $newRealToDeliver = $updatedLiquidation ? floatval($updatedLiquidation->real_to_deliver) : 0;
+                    
+                    if ($updatedLiquidation) {
+                        \App\Models\LiquidationAudit::create([
+                            'liquidation_id' => $updatedLiquidation->id,
+                            'user_id' => $user->id,
+                            'action' => 'reverted_installment_payment',
+                            'changes' => [
+                                'description' => "Reversión de Pago Cuota #{$installment->quota_number} - Crédito #{$credit->id} - Monto: {$totalRevertedAmount}",
+                                'credit_id' => $credit->id,
+                                'quota_number' => $installment->quota_number,
+                                'amount' => floatval($totalRevertedAmount),
+                                'old_real_to_deliver' => $oldRealToDeliver,
+                                'new_real_to_deliver' => $newRealToDeliver,
+                                'impact' => $newRealToDeliver - $oldRealToDeliver
+                            ]
+                        ]);
+                    }
                 }
 
                 DB::commit();

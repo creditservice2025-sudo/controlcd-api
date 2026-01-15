@@ -1086,17 +1086,56 @@ class CreditService
             }
 
             // 2. Propagate changes through liquidations
+            $tz = self::TIMEZONE;
+            $today = Carbon::now($tz)->toDateString();
             $earliestDate = min(array_keys($deltasByDate));
+            
             $liquidations = Liquidation::where('seller_id', $credit->seller_id)
                 ->where('date', '>=', $earliestDate)
                 ->orderBy('date', 'asc')
                 ->get();
 
+            // Ensure today is represented if we have a delta for it, even if no liquidation exists
+            if (!isset($deltasByDate[$today]) && $credit->created_at->setTimezone($tz)->toDateString() === $today) {
+                // Should already be in deltasByDate if it's creation date, but just in case
+            }
+
+            $liquidationDates = $liquidations->pluck('date')->map(fn($d) => $d->format('Y-m-d'))->toArray();
+            
+            // Re-build a list of dates to process
+            $allDates = array_unique(array_merge($liquidationDates, array_keys($deltasByDate)));
+            sort($allDates);
+
             $simulationData = [];
             $runningInitialCashDelta = 0.0;
+            $liquidationService = app(\App\Services\LiquidationService::class);
 
-            foreach ($liquidations as $liquidation) {
-                $dateStr = $liquidation->date->format('Y-m-d');
+            foreach ($allDates as $dateStr) {
+                $liquidation = $liquidations->where('date', $dateStr)->first();
+                $isVirtual = false;
+
+                if (!$liquidation) {
+                    if ($dateStr !== $today) continue; // Only "today" can be virtual for now
+                    
+                    // Create a virtual liquidation for today
+                    $dynamic = $liquidationService->getLiquidationData($credit->seller_id, $today, $credit->seller->user_id, $tz);
+                    $liquidation = (object)[
+                        'id' => null,
+                        'date' => Carbon::parse($dateStr),
+                        'total_collected' => $dynamic['total_collected'] ?? 0,
+                        'real_to_deliver' => $dynamic['real_to_deliver'] ?? 0,
+                        'initial_cash' => $dynamic['initial_cash'] ?? 0,
+                        'new_credits' => $dynamic['new_credits'] ?? 0,
+                        'poliza' => $dynamic['poliza'] ?? 0,
+                        'shortage' => 0,
+                        'surplus' => 0,
+                        'renewal_disbursed_total' => $dynamic['total_renewal_disbursed'] ?? 0,
+                        'total_pending_absorbed' => $dynamic['total_pending_absorbed'] ?? 0,
+                        'base_delivered' => $dynamic['base_delivered'] ?? 0
+                    ];
+                    $isVirtual = true;
+                }
+
                 $initialCashDelta = $runningInitialCashDelta;
                 
                 $direct = $deltasByDate[$dateStr] ?? [
@@ -1107,8 +1146,6 @@ class CreditService
                     'total_pending_absorbed' => 0.0
                 ];
                 
-                // Impact calculation based on Liquidation formula
-                // deltaReal = deltaInitial + (deltaIncome + deltaCollected + deltaPoliza) - (deltaExpenses + deltaNew + deltaRenewal + deltaIrrecoverables)
                 $deltaRealToDeliver = $initialCashDelta 
                     + (0.0 + $direct['total_collected'] + $direct['poliza']) 
                     - (0.0 + $direct['new_credits'] + $direct['total_renewal_disbursed'] + 0.0);
@@ -1130,7 +1167,6 @@ class CreditService
                     'surplus' => $newSurplus
                 ];
 
-                // Determine which fields to actually mark as changed
                 $finalChanges = [];
                 if ($initialCashDelta != 0) $finalChanges['initial_cash'] = $allChanges['initial_cash'];
                 if ($direct['total_collected'] != 0) $finalChanges['total_collected'] = $allChanges['total_collected'];
@@ -1139,28 +1175,16 @@ class CreditService
                 if ($direct['total_renewal_disbursed'] != 0) $finalChanges['renewal_disbursed_total'] = $allChanges['renewal_disbursed_total'];
                 if ($direct['total_pending_absorbed'] != 0) $finalChanges['total_pending_absorbed'] = $allChanges['total_pending_absorbed'];
                 
-                // Real to deliver and shortage/surplus always included if changed
                 $finalChanges['real_to_deliver'] = $allChanges['real_to_deliver'];
                 $finalChanges['shortage'] = $allChanges['shortage'];
                 $finalChanges['surplus'] = $allChanges['surplus'];
 
                 $dailyBreakdown = [];
-                if ($initialCashDelta != 0) {
-                    $dailyBreakdown[] = ['label' => 'Arrastre (Caja Ant.)', 'value' => $initialCashDelta];
-                }
-                if ($direct['total_collected'] != 0) {
-                    $dailyBreakdown[] = ['label' => 'Cobros', 'value' => $direct['total_collected']];
-                }
-                if ($direct['poliza'] != 0) {
-                    $dailyBreakdown[] = ['label' => 'Póliza', 'value' => $direct['poliza']];
-                }
-                if ($direct['new_credits'] != 0) {
-                    // It's a subtraction in formula, so negative delta means POSITIVE impact
-                    $dailyBreakdown[] = ['label' => 'Crédito Nuevo', 'value' => -$direct['new_credits']];
-                }
-                if ($direct['total_renewal_disbursed'] != 0) {
-                    $dailyBreakdown[] = ['label' => 'Renovación', 'value' => -$direct['total_renewal_disbursed']];
-                }
+                if ($initialCashDelta != 0) $dailyBreakdown[] = ['label' => 'Arrastre (Caja Ant.)', 'value' => $initialCashDelta];
+                if ($direct['total_collected'] != 0) $dailyBreakdown[] = ['label' => 'Cobros', 'value' => $direct['total_collected']];
+                if ($direct['poliza'] != 0) $dailyBreakdown[] = ['label' => 'Póliza', 'value' => $direct['poliza']];
+                if ($direct['new_credits'] != 0) $dailyBreakdown[] = ['label' => 'Crédito Nuevo', 'value' => -$direct['new_credits']];
+                if ($direct['total_renewal_disbursed'] != 0) $dailyBreakdown[] = ['label' => 'Renovación', 'value' => -$direct['total_renewal_disbursed']];
 
                 $simulationData[] = [
                     'liquidation' => [
@@ -1177,10 +1201,9 @@ class CreditService
                     'changes' => $finalChanges,
                     'impact_amount' => $deltaRealToDeliver,
                     'breakdown' => $dailyBreakdown,
-                    'type' => 'Simulación de Eliminación'
+                    'type' => $isVirtual ? 'Liquidación en curso' : 'Simulación de Eliminación'
                 ];
 
-                // Propagate the real_to_deliver delta to next day's initial_cash
                 $runningInitialCashDelta = $deltaRealToDeliver;
             }
 
@@ -1286,24 +1309,54 @@ class CreditService
             }
 
             // 3. Propagate changes
+            $today = Carbon::now($tz)->toDateString();
             $earliestDate = min(array_keys($deltasByDate));
+            
             $liquidations = Liquidation::where('seller_id', $credit->seller_id)
                 ->where('date', '>=', $earliestDate)
                 ->orderBy('date', 'asc')
                 ->get();
 
+            $liquidationDates = $liquidations->pluck('date')->map(fn($d) => $d->format('Y-m-d'))->toArray();
+            $allDates = array_unique(array_merge($liquidationDates, array_keys($deltasByDate)));
+            sort($allDates);
+
             $simulationData = [];
             $runningInitialCashDelta = 0.0;
+            $liquidationService = app(\App\Services\LiquidationService::class);
 
-            foreach ($liquidations as $liquidation) {
-                $dateStr = $liquidation->date->format('Y-m-d');
+            foreach ($allDates as $dateStr) {
+                $liquidation = $liquidations->where('date', $dateStr)->first();
+                $isVirtual = false;
+
+                if (!$liquidation) {
+                    if ($dateStr !== $today) continue;
+                    
+                    $dynamic = $liquidationService->getLiquidationData($credit->seller_id, $today, $credit->seller->user_id, $tz);
+                    $liquidation = (object)[
+                        'id' => null,
+                        'date' => Carbon::parse($dateStr),
+                        'total_collected' => $dynamic['total_collected'] ?? 0,
+                        'real_to_deliver' => $dynamic['real_to_deliver'] ?? 0,
+                        'initial_cash' => $dynamic['initial_cash'] ?? 0,
+                        'new_credits' => $dynamic['new_credits'] ?? 0,
+                        'poliza' => $dynamic['poliza'] ?? 0,
+                        'shortage' => 0,
+                        'surplus' => 0,
+                        'renewal_disbursed_total' => $dynamic['total_renewal_disbursed'] ?? 0,
+                        'total_pending_absorbed' => $dynamic['total_pending_absorbed'] ?? 0,
+                        'base_delivered' => $dynamic['base_delivered'] ?? 0
+                    ];
+                    $isVirtual = true;
+                }
+
                 $initialCashDelta = $runningInitialCashDelta;
                 $direct = $deltasByDate[$dateStr] ?? ['total_collected' => 0, 'new_credits' => 0, 'poliza' => 0, 'expenses' => 0, 'incomes' => 0, 'total_renewal_disbursed' => 0];
 
                 // deltaReal = initial + (incomes + collected + poliza) - (expenses + new_credits + renewal)
                 $deltaRealToDeliver = $initialCashDelta 
-                    + ($direct['incomes'] + $direct['total_collected'] + $direct['poliza']) 
-                    - ($direct['expenses'] + $direct['new_credits'] + $direct['total_renewal_disbursed']);
+                    + (($direct['incomes'] ?? 0) + $direct['total_collected'] + $direct['poliza']) 
+                    - (($direct['expenses'] ?? 0) + $direct['new_credits'] + $direct['total_renewal_disbursed']);
 
                 $finalChanges = [
                     'real_to_deliver' => floatval($liquidation->real_to_deliver) + $deltaRealToDeliver,
@@ -1332,7 +1385,7 @@ class CreditService
                     'changes' => $finalChanges,
                     'impact_amount' => $deltaRealToDeliver,
                     'breakdown' => $dailyBreakdown,
-                    'type' => 'Simulación de Edición'
+                    'type' => $isVirtual ? 'Liquidación en curso' : 'Simulación de Edición'
                 ];
 
                 $runningInitialCashDelta = $deltaRealToDeliver;
@@ -1575,7 +1628,7 @@ class CreditService
                 return $this->errorResponse('Contraseña incorrecta', 401);
             }
 
-            $credit = Credit::with(['payments', 'installments', 'seller'])->find($creditId);
+            $credit = Credit::with(['payments', 'installments', 'seller', 'client'])->find($creditId);
 
             if (!$credit) {
                 return $this->errorResponse('Crédito no encontrado', 404);
@@ -1596,17 +1649,44 @@ class CreditService
             Payment::where('credit_id', $creditId)->delete();
             
             // 2. Recalculate Liquidations
-            foreach ($affectedLiquidationsData as $affLiq) {
-                // $affLiq is an array
-                $liqId = $affLiq['liquidation']['id']; 
-                $changes = $affLiq['changes'];
-                
-                Liquidation::where('id', $liqId)->update([
-                    'total_collected' => $changes['total_collected'] ?? DB::raw('total_collected'),
-                    'real_to_deliver' => $changes['real_to_deliver'] ?? DB::raw('real_to_deliver'),
-                    'new_credits' => $changes['new_credits'] ?? DB::raw('new_credits'),
-                     // We might need to update shortage/surplus too
-                ]);
+            $liquidationService = app(\App\Services\LiquidationService::class);
+            $earliestDate = !empty($affectedLiquidationsData) 
+                ? min(array_map(fn($l) => $l['liquidation']['date'], $affectedLiquidationsData)) 
+                : null;
+
+            if ($earliestDate) {
+                 // Ensure the earliest liquidation exists for audit
+                 $mainLiquidation = $liquidationService->getOrCreateLiquidation($credit->seller_id, $earliestDate);
+                 $oldRealToDeliver = $mainLiquidation ? floatval($mainLiquidation->real_to_deliver) : 0;
+
+                 // Recalculate the first affected one
+                 $liquidationService->recalculateLiquidation($credit->seller_id, $earliestDate);
+                 // Cascade to all future ones
+                 $liquidationService->recalculateNextLiquidations($credit->seller_id, $earliestDate);
+
+                 // Record Audit
+                 // Re-fetch to get new value
+                 $updatedLiquidation = Liquidation::where('seller_id', $credit->seller_id)
+                    ->where('date', $earliestDate)
+                    ->first();
+                 $newRealToDeliver = $updatedLiquidation ? floatval($updatedLiquidation->real_to_deliver) : 0;
+                 
+                 if ($updatedLiquidation) {
+                    \App\Models\LiquidationAudit::create([
+                        'liquidation_id' => $updatedLiquidation->id,
+                        'user_id' => $user->id,
+                        'action' => 'deleted_credit',
+                        'changes' => [
+                            'description' => "Eliminación de Crédito #{$credit->id} - Cliente: {$credit->client->name} - Monto: {$credit->credit_value}",
+                            'credit_id' => $credit->id,
+                            'client' => $credit->client->name,
+                            'amount' => floatval($credit->credit_value),
+                            'old_real_to_deliver' => $oldRealToDeliver,
+                            'new_real_to_deliver' => $newRealToDeliver,
+                            'impact' => $newRealToDeliver - $oldRealToDeliver
+                        ]
+                    ]);
+                 }
             }
 
             // 3. Delete Credit and Installments
