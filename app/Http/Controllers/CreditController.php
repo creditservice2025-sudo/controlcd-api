@@ -106,10 +106,21 @@ class CreditController extends Controller
                 $timezone,
                 $notes,
                 $request->input('new_start_date', null),
-                $newCreditValue ? (float)$newCreditValue : null // Nuevo
+                $request->input('new_start_date', null),
+                $newCreditValue ? (float)$newCreditValue : null,
+                (bool)$request->input('recalculate_paid', false)
             );
         } catch (\Exception $e) {
             \Log::error("Error updateFrequency ({$creditId}): " . $e->getMessage());
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+    public function simulateEdit(Request $request, $creditId)
+    {
+        try {
+            return $this->creditService->simulateEdit((int)$creditId, $request->all());
+        } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
     }
@@ -155,9 +166,9 @@ class CreditController extends Controller
             $newCreditValue = $request->input('credit_value', null); // Nuevo
 
             return $this->creditService->simulateScheduleChange(
-                (int) $creditId, 
-                $newFirstDate, 
-                'frequency', 
+                (int) $creditId,
+                $newFirstDate,
+                'frequency',
                 $newFrequency,
                 $newInstallments ? (int)$newInstallments : null,
                 $newInterestRate ? (float)$newInterestRate : null,
@@ -168,6 +179,16 @@ class CreditController extends Controller
         } catch (\Exception $e) {
             \Log::error("Error simulateFrequency ({$creditId}): " . $e->getMessage());
             return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+    public function simulateDelete($creditId)
+    {
+        try {
+            return $this->creditService->simulateDelete($creditId);
+        } catch (\Throwable $e) {
+            \Log::error("Error in CreditController::simulateDelete: " . $e->getMessage());
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
 
@@ -185,10 +206,14 @@ class CreditController extends Controller
         }
     }
 
-    public function delete($id)
+    public function delete(Request $request, $id)
     {
         try {
-            return $this->creditService->delete($id);
+            $password = $request->input('password');
+            if (!$password) {
+                return $this->errorResponse('Contraseña requerida', 422);
+            }
+            return $this->creditService->delete($id, $password);
         } catch (Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }

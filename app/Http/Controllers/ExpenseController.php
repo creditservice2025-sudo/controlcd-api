@@ -86,4 +86,9 @@ class ExpenseController extends Controller
             return $this->errorResponse($e->getMessage(), 500);
         }
     }
+
+    public function simulateDelete($expenseId)
+    {
+        return $this->expenseService->simulateDelete($expenseId);
+    }
 }

@@ -148,6 +148,85 @@ class LiquidationService
     /**
      * Realiza los cálculos financieros automáticos.
      *
+    /**
+     * Calcula métricas de liquidación para una fecha y vendedor específicos.
+     * Útil para visualización previa o auditoría.
+     */
+    public function calculateLiquidationMetrics($sellerId, $date)
+    {
+        $liquidation = Liquidation::where('seller_id', $sellerId)
+            ->whereDate('date', $date)
+            ->first();
+
+        // 1. Total Cobrado (Payments)
+        $totalCollected = Payment::where('user_id', $sellerId)
+            ->whereDate('created_at', $date)
+            ->sum('amount');
+
+        // 2. Total Gastos (Expenses - Approved or 'AJUSTE')
+        $totalExpenses = Expense::where('user_id', $sellerId)
+            ->whereDate('created_at', $date)
+            ->where(function ($q) {
+                $q->where('status', 'Aprobado')
+                    ->orWhere('description', 'like', '%AJUSTE%');
+            })
+            ->sum('amount');
+
+        // 3. Total Ingresos (Incomes)
+        $totalIncomes = Income::where('user_id', $sellerId)
+            ->whereDate('created_at', $date)
+            ->sum('amount');
+
+        // 4. Nuevos Créditos (Credits created today)
+        $creditsValue = Credit::where('seller_id', $sellerId)
+            ->whereDate('created_at', $date)
+            ->sum('credit_value');
+
+
+        // 5. Calcular Real a Entregar (Caja del sistema)
+        // = Cobrado + Ingresos - Gastos - Nuevos Créditos
+        $realToDeliver = $totalCollected + $totalIncomes - $totalExpenses - $creditsValue;
+
+        // 6. Obtener saldo acumulado del día anterior (Wallet)
+        $previousLiquidation = Liquidation::where('seller_id', $sellerId)
+            ->whereDate('date', '<', $date)
+            ->orderBy('date', 'desc')
+            ->first();
+
+        $initialCash = $previousLiquidation ? $previousLiquidation->real_to_deliver : 0;
+
+        // 7. Calcular Total a Entregar (Suma del día + Acumulado anterior)
+        $totalToDeliver = $realToDeliver + $initialCash;
+
+
+        // Calcular faltante/sobrante
+        // Si el user_received_amount es null (aún no ingresado), asumimos 0 para cálculos visuales,
+        // pero el shortage/surplus real depende de lo ingresado.
+        $received = $liquidation ? $liquidation->user_received_amount : 0;
+        $shortage = 0;
+        $surplus = 0;
+
+        if ($received < $totalToDeliver) {
+            $shortage = $totalToDeliver - $received;
+        } elseif ($received > $totalToDeliver) {
+            $surplus = $received - $totalToDeliver;
+        }
+
+        return [
+            'total_collected' => round($totalCollected, 2),
+            'total_expenses' => round($totalExpenses, 2),
+            'total_incomes' => round($totalIncomes, 2),
+            'new_credits_amount' => round($creditsValue, 2),
+            'initial_cash' => round($initialCash, 2), // Wallet del día anterior
+            'real_to_deliver' => round($realToDeliver, 2), // Caja generada HOY
+            'total_to_deliver' => round($totalToDeliver, 2), // Caja HOY + Wallet Anterior
+            'shortage' => round($shortage, 2),
+            'surplus' => round($surplus, 2),
+            'gross_margin' => 0 // To be implemented if needed
+        ];
+    }
+
+    /**
      * @param array &$data
      */
     protected function calculateFields(array &$data): void
@@ -417,56 +496,70 @@ class LiquidationService
         }
     }
 
-    protected function recalculateNextLiquidations($sellerId, $fromDate)
+    public function recalculateNextLiquidations($sellerId, $fromDate)
     {
-        $timezone = 'America/Lima';
-
+        // Busca todas las liquidaciones posteriores
         $liquidations = Liquidation::where('seller_id', $sellerId)
             ->where('date', '>', $fromDate)
             ->orderBy('date', 'asc')
             ->get();
 
-        $baseLiquidation = Liquidation::where('seller_id', $sellerId)
-            ->where('date', $fromDate)
-            ->first();
-
-        $previousRealToDeliver = $baseLiquidation ? $baseLiquidation->real_to_deliver : 0;
-
         foreach ($liquidations as $liquidation) {
-            $initial_cash = $previousRealToDeliver;
-
-            $realToDeliver = $initial_cash +
-                ($liquidation->total_income + $liquidation->total_collected) -
-                ($liquidation->total_expenses + $liquidation->new_credits + $liquidation->irrecoverable_credits_amount + $liquidation->renewal_disbursed_total);
-
-            $shortage = 0;
-            $surplus = 0;
-
-            if ($realToDeliver > 0) {
-                if ($liquidation->cash_delivered < $realToDeliver) {
-                    $shortage = $realToDeliver - $liquidation->cash_delivered;
-                } else {
-                    $surplus = $liquidation->cash_delivered - $realToDeliver;
-                }
-            } else {
-                $debtAmount = abs($realToDeliver);
-
-                if ($liquidation->cash_delivered > $debtAmount) {
-                    $surplus = $liquidation->cash_delivered - $debtAmount;
-                } else {
-                    $shortage = $debtAmount - $liquidation->cash_delivered;
-                }
-            }
-
-            $liquidation->update([
-                'initial_cash' => $initial_cash,
-                'real_to_deliver' => $realToDeliver,
-                'shortage' => $shortage,
-                'surplus' => $surplus,
-            ]);
-
-            $previousRealToDeliver = $realToDeliver;
+            // Usamos la lógica completa de recalculateLiquidation para cada una
+            $this->recalculateLiquidation($sellerId, $liquidation->date->format('Y-m-d'));
         }
+    }
+
+    /**
+     * Simula el recálculo en cascada sin guardar en base de datos.
+     */
+    public function simulateRecalculation($sellerId, $fromDate, $timezone = 'America/Lima')
+    {
+        // 1. Obtener la liquidación del día del cambio (el disparador)
+        $startLiquidation = Liquidation::where('seller_id', $sellerId)
+            ->whereDate('date', $fromDate)
+            ->first();
+        
+        if (!$startLiquidation) return [];
+
+        // 2. Obtener todas las liquidaciones desde esa fecha en adelante
+        $liquidations = Liquidation::where('seller_id', $sellerId)
+            ->where('date', '>=', $fromDate)
+            ->orderBy('date', 'asc')
+            ->get();
+
+        $simulation = [];
+        $runningRealToDeliver = null;
+
+        foreach ($liquidations as $liq) {
+            $dateStr = $liq->date->format('Y-m-d');
+            
+            // Si no es el primer día de la simulación, el initial_cash es el real_to_deliver proyectado del anterior
+            $simulatedInitialCash = ($runningRealToDeliver !== null) ? $runningRealToDeliver : $liq->initial_cash;
+
+            $metrics = $this->calculateLiquidationMetrics($sellerId, $dateStr, $simulatedInitialCash, $timezone);
+            
+            $simulation[] = [
+                'date' => $dateStr,
+                'original' => [
+                    'initial_cash' => (float)$liq->initial_cash,
+                    'real_to_deliver' => (float)$liq->real_to_deliver,
+                    'shortage' => (float)$liq->shortage,
+                    'surplus' => (float)$liq->surplus,
+                ],
+                'simulated' => [
+                    'initial_cash' => (float)$metrics['initial_cash'],
+                    'real_to_deliver' => (float)$metrics['real_to_deliver'],
+                    'shortage' => (float)$metrics['shortage'],
+                    'surplus' => (float)$metrics['surplus'],
+                ],
+                'diff' => (float)($metrics['real_to_deliver'] - $liq->real_to_deliver)
+            ];
+
+            $runningRealToDeliver = $metrics['real_to_deliver'];
+        }
+
+        return $simulation;
     }
 
     /**
@@ -623,7 +716,51 @@ class LiquidationService
             'liquidation_start_date' => $dailyTotals['liquidation_start_date'],
             'total_crossed_credits' => $dailyTotals['total_crossed_credits'],
             'total_renewal_disbursed' => $dailyTotals['total_renewal_disbursed'],
+            'poliza' => $poliza,
+            'irrecoverable_credits' => $irrecoverableCredits,
+            'total_pending_absorbed' => $dailyTotals['total_crossed_credits'],
         ];
+    }
+
+    /**
+     * Get or create a liquidation record for a seller and date.
+     * Useful for logging audits before a formal close.
+     */
+    public function getOrCreateLiquidation($sellerId, $date, $timezone = null)
+    {
+        $tz = $timezone ?: self::TIMEZONE;
+        
+        $liquidation = Liquidation::where('seller_id', $sellerId)
+            ->whereDate('date', $date)
+            ->first();
+
+        if ($liquidation) {
+            return $liquidation;
+        }
+
+        // Create a draft liquidation
+        $seller = Seller::find($sellerId);
+        $userId = $seller ? $seller->user_id : null;
+        
+        $dynamicData = $this->getLiquidationData($sellerId, $date, $userId, $tz);
+        
+        return Liquidation::create([
+            'seller_id' => $sellerId,
+            'date' => $date,
+            'status' => 'En curso',
+            'initial_cash' => floatval($dynamicData['initial_cash'] ?? 0),
+            'collection_target' => floatval($dynamicData['collection_target'] ?? 0),
+            'base_delivered' => 0,
+            'total_collected' => floatval($dynamicData['total_collected'] ?? 0),
+            'total_expenses' => floatval($dynamicData['total_expenses'] ?? 0),
+            'total_income' => floatval($dynamicData['total_income'] ?? 0),
+            'new_credits' => floatval($dynamicData['new_credits'] ?? 0),
+            'real_to_deliver' => floatval($dynamicData['real_to_deliver'] ?? 0),
+            'poliza' => floatval($dynamicData['poliza'] ?? 0),
+            'renewal_disbursed_total' => floatval($dynamicData['total_renewal_disbursed'] ?? 0),
+            'total_pending_absorbed' => floatval($dynamicData['total_pending_absorbed'] ?? 0),
+            'irrecoverable_credits_amount' => floatval($dynamicData['irrecoverable_credits'] ?? 0),
+        ]);
     }
 
     public function recalculateLiquidation($sellerId, $date, $timezone = null)
@@ -631,33 +768,59 @@ class LiquidationService
         if (!$timezone) {
             $timezone = 'America/Lima';
         }
-        $startUTC = Carbon::parse($date, $timezone)->startOfDay()->setTimezone('UTC');
-        $endUTC = Carbon::parse($date, $timezone)->endOfDay()->setTimezone('UTC');
 
-        /*     \Log::debug("=== INICIO recalculateLiquidation ===");
-        \Log::debug("Seller ID: $sellerId, Fecha: $date");
-        \Log::debug("Rango UTC: $startUTC a $endUTC"); */
-
-        // Busca la liquidación del vendedor en esa fecha usando whereDate para coincidir con getLiquidationData
         $liquidation = Liquidation::where('seller_id', $sellerId)
-            ->whereDate('date', $date)  // CAMBIADO: whereBetween por whereDate
+            ->whereDate('date', $date)
             ->first();
 
         if (!$liquidation) {
-            /*   \Log::debug("❌ NO se encontró liquidación para recálculo");
-            \Log::debug("Consulta ejecutada: seller_id = $sellerId, date = $date"); */
             return;
         }
 
-        /* \Log::debug("✅ Liquidación encontrada - ID: {$liquidation->id}");
-        \Log::debug("Fecha liquidación: {$liquidation->date}"); */
+        // Obtener métricas calculadas (con autocorrección de initial_cash si es necesario)
+        $metrics = $this->calculateLiquidationMetrics($sellerId, $date, null, $timezone);
 
-        // 1. Obtener el user_id del vendedor
+        // Verificar si hay cambios reales comparando el modelo con las métricas
+        $hasChanges = !(
+            $liquidation->initial_cash == $metrics['initial_cash'] &&
+            $liquidation->total_expenses == $metrics['total_expenses'] &&
+            $liquidation->new_credits == $metrics['new_credits'] &&
+            $liquidation->total_income == $metrics['total_income'] &&
+            $liquidation->total_collected == $metrics['total_collected'] &&
+            $liquidation->real_to_deliver == $metrics['real_to_deliver'] &&
+            $liquidation->shortage == $metrics['shortage'] &&
+            $liquidation->surplus == $metrics['surplus'] &&
+            $liquidation->poliza == $metrics['poliza'] &&
+            $liquidation->renewal_disbursed_total == $metrics['renewal_disbursed_total'] &&
+            $liquidation->total_pending_absorbed == $metrics['total_pending_absorbed']
+        );
+
+        if (!$hasChanges) {
+            return;
+        }
+
+        $liquidation->update($metrics);
+    }
+
+    /**
+     * Centraliza el cálculo de métricas para una liquidación.
+     * Si $forcedInitialCash es null, se calcula automáticamente basado en el día anterior.
+     */
+    public function calculateLiquidationMetrics($sellerId, $date, $forcedInitialCash = null, $timezone = 'America/Lima')
+    {
+        $startUTC = Carbon::parse($date, $timezone)->startOfDay()->setTimezone('UTC');
+        $endUTC = Carbon::parse($date, $timezone)->endOfDay()->setTimezone('UTC');
+
+        $liquidation = Liquidation::where('seller_id', $sellerId)
+            ->whereDate('date', $date)
+            ->first();
+
+        if (!$liquidation) return [];
+
         $seller = Seller::find($sellerId);
         $userId = $seller ? $seller->user_id : null;
-        /*  \Log::debug("User ID del vendedor: $userId"); */
 
-        // 2. Recalcula los totales actuales desde la BD
+        // Cálculos de la BD
         $totalExpenses = $userId
             ? Expense::where('user_id', $userId)
                 ->whereBetween('created_at', [$startUTC, $endUTC])
@@ -691,44 +854,26 @@ class LiquidationService
             ->whereIn('payments.status', ['Pagado', 'Aprobado', 'Abonado'])
             ->sum('payments.amount');
 
-        /*  \Log::debug("Nuevos valores calculados desde BD:");
-        \Log::debug("- totalExpenses: $totalExpenses");
-        \Log::debug("- totalIncome: $totalIncome");
-        \Log::debug("- newCredits: $newCredits");
-        \Log::debug("- totalCollected: $totalCollected"); */
-
-        // === Detalle de renovaciones ===
-        $renewalCredits = DB::table('credits')
-            ->where('seller_id', $sellerId)
-            ->whereNull('deleted_at')
+        $renewalCredits = Credit::where('seller_id', $sellerId)
             ->whereBetween('created_at', [$startUTC, $endUTC])
             ->whereNotNull('renewed_from_id')
             ->get();
-
-        /* \Log::debug("Créditos de renovación encontrados: " . $renewalCredits->count()); */
 
         $total_renewal_disbursed = 0;
         $total_pending_absorbed = 0;
 
         foreach ($renewalCredits as $renewCredit) {
-            $oldCredit = DB::table('credits')->where('id', $renewCredit->renewed_from_id)->first();
-
+            $oldCredit = Credit::find($renewCredit->renewed_from_id);
             $pendingAmount = 0;
             if ($oldCredit) {
                 $oldCreditTotal = ($oldCredit->credit_value * $oldCredit->total_interest / 100) + $oldCredit->credit_value;
-                $oldCreditPaid = DB::table('payments')->where('credit_id', $oldCredit->id)->sum('amount');
-                $pendingAmount = $oldCreditTotal - $oldCreditPaid;
+                $oldCreditPaid = Payment::where('credit_id', $oldCredit->id)->sum('amount');
+                $pendingAmount = max(0, $oldCreditTotal - $oldCreditPaid);
                 $total_pending_absorbed += $pendingAmount;
             }
-
             $netDisbursement = $renewCredit->credit_value - $pendingAmount;
             $total_renewal_disbursed += $netDisbursement;
-
-            \Log::debug("Renovación - ID: {$renewCredit->id}, Valor: {$renewCredit->credit_value}, Pendiente absorbido: $pendingAmount, Neto desembolsado: $netDisbursement");
         }
-
-        /*   \Log::debug("Total pending absorbed: $total_pending_absorbed");
-        \Log::debug("Total renewal disbursed: $total_renewal_disbursed"); */
 
         $irrecoverableCredits = DB::table('installments')
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
@@ -739,14 +884,10 @@ class LiquidationService
             ->where('installments.status', 'Pendiente')
             ->sum('installments.quota_amount');
 
-        \Log::debug("Créditos irrecuperables: $irrecoverableCredits");
-
-        $poliza = (float) DB::table('credits')
-            ->where('seller_id', $sellerId)
+        $poliza = (float) Credit::where('seller_id', $sellerId)
             ->whereBetween('created_at', [$startUTC, $endUTC])
-            ->whereNull('deleted_at')
-            /*       ->whereNull('unification_reason') */
             ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
+<<<<<<< HEAD
         
         // --- FIX: Recalcular initial_cash para corregir liquidaciones creadas vacías incorrectamente ---
         $lastLiquidation = Liquidation::where('seller_id', $sellerId)
@@ -764,16 +905,27 @@ class LiquidationService
 
         // Cálculo del realToDeliver con el initial_cash corregido
         $realToDeliver = $liquidation->initial_cash
+=======
+
+        // Determinar initial_cash
+        $initialCash = $forcedInitialCash;
+        if ($initialCash === null) {
+            $lastLiquidation = Liquidation::where('seller_id', $sellerId)
+                ->where('date', '<', $date)
+                ->orderBy('date', 'desc')
+                ->first();
+            $initialCash = $lastLiquidation ? $lastLiquidation->real_to_deliver : 0;
+        }
+
+        $realToDeliver = $initialCash
+>>>>>>> hotfix/reports/maintenance-credit12012026
             + $liquidation->base_delivered
             + ($totalIncome + $totalCollected + $poliza)
             - ($totalExpenses
                 + $newCredits
                 + $total_renewal_disbursed
                 + $irrecoverableCredits);
-        /*
-        \Log::debug("Cálculo realToDeliver:");
-        \Log::debug("initial_cash ({$liquidation->initial_cash}) + base_delivered ({$liquidation->base_delivered}) + (totalIncome ($totalIncome) + totalCollected ($totalCollected)) - (totalExpenses ($totalExpenses) + newCredits ($newCredits) + total_renewal_disbursed ($total_renewal_disbursed) + irrecoverableCredits ($irrecoverableCredits)) = $realToDeliver");
- */
+
         $cashDelivered = $liquidation->cash_delivered;
         $shortage = 0;
         $surplus = 0;
@@ -793,6 +945,7 @@ class LiquidationService
             }
         }
 
+<<<<<<< HEAD
         /*  \Log::debug("cashDelivered: $cashDelivered, shortage: $shortage, surplus: $surplus");
          */
         // Verificar si hay cambios
@@ -830,6 +983,10 @@ class LiquidationService
  */
         $liquidation->update([
             'initial_cash' => $correctedInitialCash,
+=======
+        return [
+            'initial_cash' => $initialCash,
+>>>>>>> hotfix/reports/maintenance-credit12012026
             'total_expenses' => $totalExpenses,
             'new_credits' => $newCredits,
             'total_income' => $totalIncome,
@@ -841,10 +998,7 @@ class LiquidationService
             'renewal_disbursed_total' => $total_renewal_disbursed,
             'irrecoverable_credits_amount' => $irrecoverableCredits,
             'total_pending_absorbed' => $total_pending_absorbed,
-        ]);
-
-        /*   \Log::debug("✅ Liquidación actualizada exitosamente");
-        \Log::debug("=== FIN recalculateLiquidation (con actualización) ==="); */
+        ];
     }
 
 
@@ -1226,8 +1380,15 @@ class LiquidationService
             'total_pending_absorbed' => $liquidation->total_pending_absorbed,
             'total_crossed_credits' => $dailyTotals['total_crossed_credits'],
             'total_renewal_disbursed' => $dailyTotals['total_renewal_disbursed'],
-            'audits' => $liquidation->audits->filter(function ($audit) {
-                return in_array(optional($audit->user)->role_id, [5]);
+            'audits' => $liquidation->audits->map(function ($audit) {
+                return [
+                    'id' => $audit->id,
+                    'user_id' => $audit->user_id,
+                    'user_name' => optional($audit->user)->name,
+                    'action' => $audit->action,
+                    'changes' => $audit->changes,
+                    'created_at' => $audit->created_at->format('Y-m-d H:i:s')
+                ];
             })->values(),
             'end_date' => $liquidation->end_date,
 
@@ -1813,5 +1974,66 @@ class LiquidationService
             'ingresos_listado' => $ingresosPaginados,
             'liquidacion' => $liquidation,
         ];
+    }
+
+    /**
+     * Ajusta los campos de una liquidación (initial_cash, base_delivered, cash_delivered)
+     * e inicia un recálculo en cascada.
+     * Solo accesible con contraseña y permisos adecuados.
+     */
+    public function adjustBox(array $data)
+    {
+        $validator = Validator::make($data, [
+            'liquidation_id' => 'required|exists:liquidations,id',
+            'password' => 'required|string',
+            'observation' => 'required|string|min:10',
+            'initial_cash' => 'nullable|numeric',
+            'base_delivered' => 'nullable|numeric',
+            'cash_delivered' => 'nullable|numeric',
+        ]);
+
+        if ($validator->fails()) {
+            throw new ValidationException($validator);
+        }
+
+        // Validar contraseña (hardcoded por ahora como SISTEMA2026, idealmente en .env)
+        $systemPassword = env('SYSTEM_ADJUST_PASSWORD', 'SISTEMA2026');
+        if ($data['password'] !== $systemPassword) {
+            throw new \Exception('Contraseña de ajuste de caja incorrecta.');
+        }
+
+        $liquidation = Liquidation::findOrFail($data['liquidation_id']);
+        $user = Auth::user();
+
+        // Registrar cambios para la observación
+        $changes = [];
+        if (isset($data['initial_cash'])) {
+            $changes[] = "Saldo Inicial: {$liquidation->initial_cash} -> {$data['initial_cash']}";
+            $liquidation->initial_cash = $data['initial_cash'];
+        }
+        if (isset($data['base_delivered'])) {
+            $changes[] = "Base: {$liquidation->base_delivered} -> {$data['base_delivered']}";
+            $liquidation->base_delivered = $data['base_delivered'];
+        }
+        if (isset($data['cash_delivered'])) {
+            $changes[] = "Entregado: {$liquidation->cash_delivered} -> {$data['cash_delivered']}";
+            $liquidation->cash_delivered = $data['cash_delivered'];
+        }
+
+        $userName = $user->name;
+        $detail = implode(", ", $changes);
+        $newObservation = "AJUSTE MANUAL por {$userName}: {$detail}. Motivo: {$data['observation']}. Fecha: " . now()->toDateTimeString();
+        
+        $liquidation->observation = $liquidation->observation 
+            ? $liquidation->observation . "\n" . $newObservation 
+            : $newObservation;
+        
+        $liquidation->save();
+
+        // Recalcular esta liquidación y las siguientes
+        $this->recalculateLiquidation($liquidation->seller_id, $liquidation->date->toDateString());
+        $this->recalculateNextLiquidations($liquidation->seller_id, $liquidation->date->toDateString());
+
+        return $liquidation;
     }
 }

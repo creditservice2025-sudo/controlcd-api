@@ -736,4 +736,150 @@ class SellerService
             return $this->errorResponse('Error al actualizar el estado de la ruta', 500);
         }
     }
+
+    /**
+     * Get seller cash info
+     */
+    public function getCashInfo($sellerId)
+    {
+        try {
+            $timezone = 'America/Lima'; // Standardize timezone
+            $today = Carbon::now($timezone)->toDateString();
+
+            // Get last two liquidations to get current and previous cash
+            $lastTwoLiquidations = Liquidation::where('seller_id', $sellerId)
+                ->orderBy('date', 'DESC')
+                ->limit(2)
+                ->get();
+
+            $latestLiq = $lastTwoLiquidations->first();
+            $previousLiq = $lastTwoLiquidations->skip(1)->first();
+
+            $currentCash = 0;
+            $previousCash = $previousLiq ? $previousLiq->real_to_deliver : 0;
+
+            if ($latestLiq && $latestLiq->date->toDateString() === $today) {
+                // If today's liquidation already exists, use its value (which should be recalculated by the app or on demand)
+                $currentCash = $latestLiq->real_to_deliver;
+                $previousCash = $previousLiq ? $previousLiq->real_to_deliver : 0;
+            } else {
+                // If today's liquidation doesn't exist yet, we calculate it dynamically
+                // Previous cash is actually the latest liquidations real_to_deliver
+                $previousCash = $latestLiq ? $latestLiq->real_to_deliver : 0;
+
+                $liquidationService = app(\App\Services\LiquidationService::class);
+                $seller = Seller::find($sellerId);
+                if ($seller) {
+                    $dynamicData = $liquidationService->getLiquidationData($sellerId, $today, $seller->user_id, $timezone);
+                    $currentCash = $dynamicData['real_to_deliver'] ?? 0;
+                }
+            }
+
+            return $this->successResponse([
+                'success' => true,
+                'data' => [
+                    'current_cash' => floatval($currentCash),
+                    'previous_cash' => floatval($previousCash),
+                    'is_live' => !($latestLiq && $latestLiq->date->toDateString() === $today)
+                ]
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error getting seller cash info: ' . $e->getMessage());
+            return $this->errorResponse('Error al obtener la información de caja: ' . $e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Get seller liquidations
+     */
+    public function getLiquidations($sellerId, $limit = 10)
+    {
+        try {
+            $timezone = 'America/Lima';
+            $today = Carbon::now($timezone)->toDateString();
+
+            $liquidations = Liquidation::with(['audits.user' => function($q) {
+                    $q->select('id', 'name');
+                }])
+                ->where('seller_id', $sellerId)
+                ->orderBy('date', 'DESC')
+                ->limit($limit)
+                ->get();
+
+            $hasToday = $liquidations->contains(function ($liq) use ($today) {
+                return $liq->date->toDateString() === $today;
+            });
+
+            $liquidationService = app(\App\Services\LiquidationService::class);
+
+            if (!$hasToday) {
+                $seller = Seller::find($sellerId);
+                if ($seller) {
+                    $dynamicData = $liquidationService->getLiquidationData($sellerId, $today, $seller->user_id, $timezone);
+                    
+                    // Create a virtual liquidation object for the list
+                    $virtualToday = new Liquidation([
+                        'id' => null, // null ID indicates it's virtual/in-progress
+                        'seller_id' => $sellerId,
+                        'date' => Carbon::now($timezone),
+                        'status' => 'En curso',
+                        'initial_cash' => floatval($dynamicData['initial_cash'] ?? 0),
+                        'total_collected' => floatval($dynamicData['total_collected'] ?? 0),
+                        'total_expenses' => floatval($dynamicData['total_expenses'] ?? 0),
+                        'total_income' => floatval($dynamicData['total_income'] ?? 0),
+                        'new_credits' => floatval($dynamicData['new_credits'] ?? 0),
+                        'renewal_disbursed_total' => floatval($dynamicData['total_renewal_disbursed'] ?? 0),
+                        'total_pending_absorbed' => floatval($dynamicData['total_pending_absorbed'] ?? 0),
+                        'irrecoverable_credits_amount' => floatval($dynamicData['irrecoverable_credits'] ?? 0),
+                        'poliza' => floatval($dynamicData['poliza'] ?? 0),
+                        'real_to_deliver' => floatval($dynamicData['real_to_deliver'] ?? 0),
+                        'cash_delivered' => 0,
+                        'shortage' => 0,
+                        'surplus' => 0,
+                    ]);
+                    
+                    // Explicitly set date and status just in case
+                    $virtualToday->date = Carbon::now($timezone);
+                    $virtualToday->status = 'En curso';
+                    
+                    // For virtual records, audits will naturally be empty as there's no ID to link them to
+                    $virtualToday->setRelation('audits', collect());
+
+                    $liquidations = collect([$virtualToday])->concat($liquidations)->take($limit);
+                }
+            }
+
+            // Map and format for response
+            $formattedLiquidations = $liquidations->map(function ($liq) use ($liquidationService) {
+                // We use setRelation or manual mapping to ensure audits are present
+                $data = $liq->toArray();
+                
+                // Ensure audits use the standardized format the frontend expects
+                if ($liq->relationLoaded('audits')) {
+                    $data['audits'] = $liq->audits->map(function ($audit) {
+                        return [
+                            'id' => $audit->id,
+                            'user_id' => $audit->user_id,
+                            'user_name' => optional($audit->user)->name,
+                            'action' => $audit->action,
+                            'changes' => $audit->changes,
+                            'created_at' => $audit->created_at ? $audit->created_at->format('Y-m-d H:i:s') : null
+                        ];
+                    });
+                } else {
+                    $data['audits'] = [];
+                }
+                
+                return $data;
+            });
+
+            return $this->successResponse([
+                'success' => true,
+                'data' => $formattedLiquidations
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error getting seller liquidations: ' . $e->getMessage());
+            return $this->errorResponse('Error al obtener las liquidaciones: ' . $e->getMessage(), 500);
+        }
+    }
 }

@@ -3,9 +3,8 @@
 namespace App\Services;
 
 use App\Helpers\Helper;
-use App\Traits\ApiResponse;
+use Illuminate\Support\Facades\Hash;
 use App\Models\Client;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use App\Models\Guarantor;
 use Illuminate\Support\Str;
@@ -20,8 +19,11 @@ use App\Models\Seller;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use App\Models\CreditModification;
+use App\Models\PaymentInstallment;
 use Barryvdh\DomPDF\Facade\Pdf;
+use App\Traits\ApiResponse;
 
 class CreditService
 {
@@ -43,8 +45,10 @@ class CreditService
                 $userTimezone = null;
             }
 
-            // Calcular fecha de primera cuota si no se proporciona
-            if ($params['is_advance_payment']) {
+            // Calcular fecha de primera cuota
+            if (isset($params['first_quota_date']) && !empty($params['first_quota_date'])) {
+                $firstQuotaDate = $params['first_quota_date'];
+            } elseif ($params['is_advance_payment'] ?? false) {
                 $firstQuotaDate = now()->format('Y-m-d');
             } else {
                 $today = now();
@@ -83,23 +87,42 @@ class CreditService
                 }
             }
 
+            // Calculate total interest amount
+            $interestRate = floatval($params['interest_rate'] ?? 0);
+            $creditValue = floatval($params['credit_value'] ?? 0);
+            $totalInterestAmount = ($creditValue * $interestRate) / 100;
+
+            // Calculate micro insurance amount
+            $microInsurancePercentage = floatval($params['micro_insurance_percentage'] ?? 0);
+            // Always calculate based on value and percentage to ensure accuracy and prevent frontend calculation errors from persisting
+            $microInsuranceAmount = ($creditValue * $microInsurancePercentage) / 100;
+
+            // Calculate total amount (Capital + Interest only, Micro-insurance is deducted from disbursement)
+            $totalAmount = $creditValue + $totalInterestAmount;
+
+            $now = Carbon::now($userTimezone ?: self::TIMEZONE);
+            $createdAt = $params['created_at'] ?? $now;
+            $updatedAt = $params['updated_at'] ?? $now;
+
             $creditData = [
                 'client_id' => $params['client_id'],
-                'phone' => $params['phone'] ?? null,
-                'seller_id' => $params['seller_id'],
+                'phone' => $params['phone'],
                 'guarantor_id' => $params['guarantor_id'] ?? null,
+                'seller_id' => $params['seller_id'],
                 'credit_value' => $params['credit_value'],
-                'total_interest' => $params['interest_rate'],
-                'number_installments' => $params['installment_count'],
+                'number_installments' => $params['number_installments'] ?? $params['installment_count'] ?? null,
                 'payment_frequency' => $params['payment_frequency'],
-                'excluded_days' => json_encode($params['excluded_days'] ?? []),
-                'micro_insurance_percentage' => $params['micro_insurance_percentage'] ?? null,
-                'micro_insurance_amount' => $params['micro_insurance_amount'] ?? null,
+                'total_interest' => $interestRate, // Keeping consistent with existing logic where total_interest stores the rate
+                'total_amount' => $totalAmount,
+                'remaining_amount' => $totalAmount,
                 'first_quota_date' => $firstQuotaDate,
-                'is_advance_payment' => $params['is_advance_payment'],
+                'excluded_days' => isset($params['excluded_days']) ? json_encode($params['excluded_days']) : null,
+                'micro_insurance_percentage' => $microInsurancePercentage,
+                'micro_insurance_amount' => $microInsuranceAmount,
+                'is_advance_payment' => $params['is_advance_payment'] ?? false,
                 'status' => 'Vigente',
-                'created_at' => $params['created_at'] ?? null,
-                'updated_at' => $params['updated_at'] ?? null
+                'created_at' => $createdAt,
+                'updated_at' => $updatedAt
             ];
 
             $credit = Credit::create($creditData);
@@ -136,7 +159,7 @@ class CreditService
                 }
             } */
 
-            $quotaAmount = (($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value) / $credit->number_installments;
+            $quotaAmount = $credit->total_amount / $credit->number_installments;
 
             $excludedDayNames = json_decode($credit->excluded_days, true) ?? [];
 
@@ -175,8 +198,8 @@ class CreditService
                     'due_date' => $dueDate->format('Y-m-d'),
                     'quota_amount' => round($quotaAmount, 2),
                     'status' => 'Pendiente',
-                    'created_at' => $params['created_at'] ?? null,
-                    'updated_at' => $params['updated_at'] ?? null
+                    'created_at' => $createdAt,
+                    'updated_at' => $updatedAt
                 ]);
 
                 if ($i < $credit->number_installments) {
@@ -218,8 +241,13 @@ class CreditService
                         'type' => $imageData['type'],
                         'description' => $creditDescription,
                         'credit_id' => $credit->id,
+<<<<<<< HEAD
                         'created_at' => $params['created_at'] ?? null,
                         'updated_at' => $params['updated_at'] ?? null
+=======
+                        'created_at' => $createdAt,
+                        'updated_at' => $updatedAt
+>>>>>>> hotfix/reports/maintenance-credit12012026
                     ];
 
                     // Add GPS metadata if available
@@ -275,6 +303,16 @@ class CreditService
                 );
             }
 
+            // Start Fix: Actualizar liquidación inmediatamente
+            try {
+                $liquidationService = app(\App\Services\LiquidationService::class);
+                $liquidationCbDate = $credit->created_at ? $credit->created_at->format('Y-m-d') : now()->format('Y-m-d');
+                $liquidationService->recalculateLiquidation($credit->seller_id, $liquidationCbDate);
+                \Log::info("Liquidación recalculada tras creación de crédito " . $credit->id);
+            } catch (\Exception $e) {
+                \Log::error("Error recalculando liquidación al crear crédito: " . $e->getMessage());
+            }
+
             return $response;
         } catch (\Exception $e) {
             \Log::error("Error al crear crédito: " . $e->getMessage());
@@ -302,6 +340,8 @@ class CreditService
             DB::beginTransaction();
 
             $params = $request->all();
+            $createdAt = null;
+            $updatedAt = null;
             if (isset($params['timezone']) && !empty($params['timezone'])) {
                 $createdAt = Carbon::now($params['timezone']);
                 $updatedAt = Carbon::now($params['timezone']);
@@ -342,13 +382,23 @@ class CreditService
             $microInsurancePercentage = $request->input('micro_insurance_percentage', 0);
             $microInsuranceAmount = ($request->new_credit_value * $microInsurancePercentage) / 100;
 
+            // Calculate total interest amount
+            $interestRate = $request->input('interest_rate', $oldCredit->total_interest);
+            $totalInterestAmount = ($request->new_credit_value * $interestRate) / 100;
+
+            // Calculate total amount (Capital + Interest + Pending Amount)
+            // Micro-insurance is NOT added to the total amount to pay
+            $totalAmount = $request->new_credit_value + $totalInterestAmount + $pendingAmount;
+
             $newCredit = Credit::create([
                 'client_id' => $oldCredit->client_id,
                 'phone' => $request->input('phone'),
                 'seller_id' => $oldCredit->seller_id,
                 'credit_value' => $request->new_credit_value,
-                'total_interest' => $request->input('interest_rate', $oldCredit->total_interest),
-                'number_installments' => $request->input('installment_count', $oldCredit->number_installments),
+                'total_interest' => $interestRate,
+                'total_amount' => $totalAmount,
+                'remaining_amount' => $totalAmount,
+                'number_installments' => $request->input('number_installments') ?? $request->input('installment_count', $oldCredit->number_installments),
                 'payment_frequency' => $request->input('payment_frequency', $oldCredit->payment_frequency),
                 'first_quota_date' => $firstQuotaDate,
                 'previous_pending_amount' => $pendingAmount,
@@ -361,7 +411,7 @@ class CreditService
                 'updated_at' => $updatedAt
             ]);
 
-            $quotaAmount = (($newCredit->credit_value * $newCredit->total_interest / 100) + $newCredit->credit_value) / $newCredit->number_installments;
+            $quotaAmount = $newCredit->total_amount / $newCredit->number_installments;
 
             $excludedDayNames = json_decode($newCredit->excluded_days ?? '[]', true) ?? [];
 
@@ -444,7 +494,8 @@ class CreditService
             ]); */
 
             // 4. Registrar desembolso del nuevo crédito
-            $netDisbursement = $request->new_credit_value - $pendingAmount;
+            // Desembolso Neto = Nuevo Crédito - Saldo Pendiente - Microseguro
+            $netDisbursement = $request->new_credit_value - $pendingAmount - $microInsuranceAmount;
             /*        Payment::create([
                 'credit_id' => $newCredit->id,
                 'amount'    => $netDisbursement,
@@ -625,7 +676,13 @@ class CreditService
         $timezone = null,
         $notes = null,
         $newStartDate = null,
+<<<<<<< HEAD
         ?float $newCreditValue = null
+=======
+        ?float $newCreditValue = null,
+        bool $recalculatePaid = false,
+        PaymentService $paymentService = null
+>>>>>>> hotfix/reports/maintenance-credit12012026
     ) {
         try {
             DB::beginTransaction();
@@ -678,6 +735,7 @@ class CreditService
             }
 
             // 2. Recalcular montos financieros
+<<<<<<< HEAD
             // El costo total para las cuotas solo incluye Capital + Interés
             $newTotalCost = $creditValue * (1 + ($interestRate / 100));
             $remainingCost = $newTotalCost - $paidAmountSum;
@@ -690,6 +748,31 @@ class CreditService
                 $firstPending = $currentInstallments->whereNotIn('status', ['Pagado', 'Paid', 'Pagada'])->first();
                 $baseDateStr = $firstPending ? $firstPending->due_date : $credit->first_quota_date;
             }
+=======
+            // El costo total para las cuotas incluye Capital + Interés
+            $insuranceAmount = ($creditValue * $insurancePercentage) / 100;
+            $newTotalCost = ($creditValue * (1 + ($interestRate / 100)));
+            
+            if ($recalculatePaid) {
+                // Recalcular TODO desde la cuota 1
+                $newQuotaAmount = $newNumInstallments > 0 ? round($newTotalCost / $newNumInstallments, 2) : 0;
+                $pendingCount = $newNumInstallments;
+                $loopStart = 1;
+            } else {
+                // Solo recalcular pendientes, respetando lo ya pagado
+                $remainingCost = $newTotalCost - $paidAmountSum;
+                $pendingCount = $newNumInstallments - $paidCount;
+                $newQuotaAmount = $pendingCount > 0 ? round($remainingCost / $pendingCount, 2) : 0;
+                $loopStart = $paidCount + 1;
+            }
+
+            // 3. Determinar fecha de inicio para las pendientes
+            $baseDateStr = $newFirstQuotaDate;
+            if (!$baseDateStr) {
+                $firstPending = $currentInstallments->whereNotIn('status', ['Pagado', 'Paid', 'Pagada'])->first();
+                $baseDateStr = $firstPending ? $firstPending->due_date : $credit->first_quota_date;
+            }
+>>>>>>> hotfix/reports/maintenance-credit12012026
             $dueDate = Carbon::parse($baseDateStr, $tz);
             $dueDate = $adjustForExcludedDays($dueDate);
 
@@ -703,9 +786,38 @@ class CreditService
                 'quota_amount' => $currentInstallments->whereNotIn('status', ['Pagado', 'Paid', 'Pagada'])->first()?->quota_amount
             ];
 
+<<<<<<< HEAD
             // 4. Actualizar/Eliminar/Crear cuotas
             $affectedInstallments = [];
 
+=======
+            // 4. ALWAYS reset all payments to unapplied and installments to Pendiente BEFORE the loop
+            // This ensures that any change in structure (frequency, amounts) is correctly reflected in the schedule update.
+            
+            // Un-apply existing payments
+            $payments = \App\Models\Payment::where('credit_id', $credit->id)
+                ->where('status', '!=', 'Anulado')
+                ->get();
+            
+            foreach ($payments as $payment) {
+                \App\Models\PaymentInstallment::where('payment_id', $payment->id)->delete();
+                $payment->unapplied_amount = $payment->amount;
+                $payment->save();
+            }
+
+            // Reset all installments paid_amount and status to ensure they are picked up for potential date updates
+            \App\Models\Installment::where('credit_id', $credit->id)->update([
+                'paid_amount' => 0,
+                'status' => 'Pendiente'
+            ]);
+
+            // Refresh currentInstallments to reflect the reset status
+            $currentInstallments = \App\Models\Installment::where('credit_id', $credit->id)->get();
+
+            // 4b. Actualizar/Eliminar/Crear cuotas
+            $affectedInstallments = [];
+
+>>>>>>> hotfix/reports/maintenance-credit12012026
             // Eliminar excedentes si el número de cuotas disminuyó
             if ($newNumInstallments < $oldTotalInstallments) {
                 Installment::where('credit_id', $credit->id)
@@ -714,6 +826,7 @@ class CreditService
                     ->delete();
             }
 
+<<<<<<< HEAD
             for ($i = $paidCount + 1; $i <= $newNumInstallments; $i++) {
                 $inst = Installment::updateOrCreate(
                     ['credit_id' => $credit->id, 'quota_number' => $i],
@@ -737,15 +850,68 @@ class CreditService
                 $dueDate = $adjustForExcludedDays($dueDate);
             }
 
+=======
+            for ($i = $loopStart; $i <= $newNumInstallments; $i++) {
+                $instData = [
+                    'quota_amount' => $newQuotaAmount
+                ];
+
+                // Solo actualizar fecha y estado si es una cuota que NO estaba pagada o si estamos recalculando todo
+                // Para cuotas ya pagadas, respetamos su fecha original y estado
+                $existingInst = $currentInstallments->where('quota_number', $i)->first();
+                $isPaid = $existingInst && in_array(strtolower($existingInst->status), ['pagado', 'paid', 'pagada']);
+
+                if (!$isPaid) {
+                    $instData['due_date'] = $dueDate->format('Y-m-d');
+                    $instData['status'] = 'Pendiente';
+                }
+
+                $inst = Installment::updateOrCreate(
+                    ['credit_id' => $credit->id, 'quota_number' => $i],
+                    $instData
+                );
+                
+                $affectedInstallments[] = $inst->id;
+                
+                // Avanzar fecha de referencia (incluso si no se usó en esta iteración por estar pagada)
+                if (!$isPaid || $recalculatePaid) {
+                    switch ($newFrequency) {
+                        case 'Diaria': $dueDate->addDay(); break;
+                        case 'Semanal': $dueDate->addWeek(); break;
+                        case 'Quincenal': $dueDate->addDays(15); break;
+                        case 'Mensual': $dueDate->addMonth(); break;
+                        default: $dueDate->addMonth();
+                    }
+                    $dueDate = $adjustForExcludedDays($dueDate);
+                }
+            }
+
+            // 4c. Re-apply all unapplied amounts to the NEW schedule
+            if ($paymentService || app()->bound(\App\Services\PaymentService::class)) {
+                $ps = $paymentService ?: app(\App\Services\PaymentService::class);
+                $ps->reapplyPayments($credit->id);
+            }
+
+>>>>>>> hotfix/reports/maintenance-credit12012026
             // 5. Actualizar cabecera del crédito
             $credit->payment_frequency = $newFrequency;
             if ($newFirstQuotaDate) $credit->first_quota_date = $newFirstQuotaDate;
             $credit->number_installments = $newNumInstallments;
             $credit->total_interest = $interestRate;
+<<<<<<< HEAD
             $credit->micro_insurance_percentage = $insurancePercentage;
             $credit->micro_insurance_amount = ($creditValue * $insurancePercentage) / 100;
             if ($newStartDate) $credit->start_date = $newStartDate;
             if ($newCreditValue) $credit->credit_value = $newCreditValue;
+=======
+            $creditValue = $newCreditValue ?? (float)$credit->credit_value;
+            $credit->micro_insurance_percentage = $insurancePercentage;
+            $credit->micro_insurance_amount = ($creditValue * $insurancePercentage) / 100;
+            $credit->total_amount = $newTotalCost;
+            if ($newStartDate) $credit->start_date = $newStartDate;
+            if ($newCreditValue) $credit->credit_value = $newCreditValue;
+            $credit->remaining_amount = $credit->pendingAmount();
+>>>>>>> hotfix/reports/maintenance-credit12012026
 
             // Auditoría
             $credit->has_been_modified = true;
@@ -905,68 +1071,479 @@ class CreditService
         }
     }
 
-    public function delete($creditId, $timezone = null)
+    /**
+     * Simulate credit deletion impact
+     */
+    public function simulateDelete($creditId)
     {
         try {
-            DB::beginTransaction();
-
-            $credit = Credit::with(['seller', 'installments', 'payments'])->find($creditId);
-
-
+        $credit = Credit::with(['payments', 'seller', 'client'])->find($creditId);
             if (!$credit) {
-                DB::rollBack();
-                return $this->errorResponse('El crédito no existe.', 404);
+                return $this->errorResponse('Crédito no encontrado', 404);
             }
 
-            if ($credit->payments()->exists()) {
-                DB::rollBack();
-                return $this->errorResponse(
-                    'No se puede eliminar el crédito porque tiene pagos registrados.',
-                    403
-                );
-            }
-
-
-            $liquidationExists = Liquidation::where('seller_id', $credit->seller_id)
-                ->whereDate('created_at', Carbon::today())
-                ->where('status', operator: 'approved')
-                ->exists();
-
-            if ($liquidationExists) {
-                DB::rollBack();
-                return $this->errorResponse(
-                    'No se puede eliminar el crédito. El vendedor ya tiene una liquidación registrada para el día de hoy.',
-                    403
-                );
-            }
-
-            if ($timezone) {
-                $now = Carbon::now($timezone);
-                foreach ($credit->installments as $installment) {
-                    $installment->deleted_at = $now;
-                    $installment->save();
-                    $installment->delete();
+            // 1. Gather all direct impacts by date
+            $deltasByDate = [];
+            
+            // Payments removal
+            $payments = $credit->payments()->whereNotNull('business_date')->get();
+            foreach ($payments as $payment) {
+                // business_date is cast to date, so it's a Carbon object
+                $date = $payment->business_date->format('Y-m-d');
+                if (!isset($deltasByDate[$date])) {
+                    $deltasByDate[$date] = [
+                        'total_collected' => 0.0,
+                        'new_credits' => 0.0,
+                        'poliza' => 0.0,
+                        'total_renewal_disbursed' => 0.0,
+                        'total_pending_absorbed' => 0.0
+                    ];
                 }
-                $credit->deleted_at = $now;
-                $credit->save();
-                $credit->delete();
-            } else {
-                $credit->installments()->delete();
-                $credit->delete();
+                $deltasByDate[$date]['total_collected'] -= floatval($payment->amount);
+            }
+            
+            // Credit creation removal
+            $creationDate = $credit->created_at ? $credit->created_at->toDateString() : null;
+            if ($creationDate) {
+                if (!isset($deltasByDate[$creationDate])) {
+                    $deltasByDate[$creationDate] = [
+                        'total_collected' => 0.0,
+                        'new_credits' => 0.0,
+                        'poliza' => 0.0,
+                        'total_renewal_disbursed' => 0.0,
+                        'total_pending_absorbed' => 0.0
+                    ];
+                }
+                
+                if ($credit->renewed_from_id) {
+                    // It was a renewal
+                    $oldCredit = Credit::find($credit->renewed_from_id);
+                    $pendingAmount = 0.0;
+                    if ($oldCredit) {
+                         $oldCreditTotal = (floatval($oldCredit->credit_value) * floatval($oldCredit->total_interest) / 100) + floatval($oldCredit->credit_value);
+                         $oldCreditPaid = Payment::where('credit_id', $oldCredit->id)->sum('amount');
+                         $pendingAmount = max(0.0, floatval($oldCreditTotal) - floatval($oldCreditPaid));
+                    }
+                    $netDisbursement = floatval($credit->credit_value) - $pendingAmount;
+                    
+                    $deltasByDate[$creationDate]['total_renewal_disbursed'] -= $netDisbursement;
+                    $deltasByDate[$creationDate]['total_pending_absorbed'] -= $pendingAmount;
+                } else {
+                    // Normal credit
+                    $deltasByDate[$creationDate]['new_credits'] -= floatval($credit->credit_value);
+                }
+                
+                // Poliza removal
+                $polizaImpact = (floatval($credit->micro_insurance_percentage ?? 0) * floatval($credit->credit_value) / 100);
+                $deltasByDate[$creationDate]['poliza'] -= $polizaImpact;
             }
 
-            DB::commit();
+            if (empty($deltasByDate)) {
+                 return $this->successResponse([
+                    'success' => true,
+                    'data' => [
+                        'entity' => $credit,
+                        'affected_liquidations' => []
+                    ]
+                ]);
+            }
+
+            // 2. Propagate changes through liquidations
+            $tz = self::TIMEZONE;
+            $today = Carbon::now($tz)->toDateString();
+            $earliestDate = min(array_keys($deltasByDate));
+            
+            $liquidations = Liquidation::where('seller_id', $credit->seller_id)
+                ->where('date', '>=', $earliestDate)
+                ->orderBy('date', 'asc')
+                ->get();
+
+            // Ensure today is represented if we have a delta for it, even if no liquidation exists
+            if (!isset($deltasByDate[$today]) && $credit->created_at->setTimezone($tz)->toDateString() === $today) {
+                // Should already be in deltasByDate if it's creation date, but just in case
+            }
+
+            $liquidationDates = $liquidations->pluck('date')->map(fn($d) => $d->format('Y-m-d'))->toArray();
+            
+            // Re-build a list of dates to process
+            $allDates = array_unique(array_merge($liquidationDates, array_keys($deltasByDate)));
+            sort($allDates);
+
+            $simulationData = [];
+            $runningInitialCashDelta = 0.0;
+            $liquidationService = app(\App\Services\LiquidationService::class);
+
+            foreach ($allDates as $dateStr) {
+                $liquidation = $liquidations->where('date', $dateStr)->first();
+                $isVirtual = false;
+
+                if (!$liquidation) {
+                    if ($dateStr !== $today) continue; // Only "today" can be virtual for now
+                    
+                    // Create a virtual liquidation for today
+                    $dynamic = $liquidationService->getLiquidationData($credit->seller_id, $today, $credit->seller->user_id, $tz);
+                    $liquidation = (object)[
+                        'id' => null,
+                        'date' => Carbon::parse($dateStr),
+                        'total_collected' => $dynamic['total_collected'] ?? 0,
+                        'real_to_deliver' => $dynamic['real_to_deliver'] ?? 0,
+                        'initial_cash' => $dynamic['initial_cash'] ?? 0,
+                        'new_credits' => $dynamic['new_credits'] ?? 0,
+                        'poliza' => $dynamic['poliza'] ?? 0,
+                        'shortage' => 0,
+                        'surplus' => 0,
+                        'renewal_disbursed_total' => $dynamic['total_renewal_disbursed'] ?? 0,
+                        'total_pending_absorbed' => $dynamic['total_pending_absorbed'] ?? 0,
+                        'base_delivered' => $dynamic['base_delivered'] ?? 0
+                    ];
+                    $isVirtual = true;
+                }
+
+                $initialCashDelta = $runningInitialCashDelta;
+                
+                $direct = $deltasByDate[$dateStr] ?? [
+                    'total_collected' => 0.0,
+                    'new_credits' => 0.0,
+                    'poliza' => 0.0,
+                    'total_renewal_disbursed' => 0.0,
+                    'total_pending_absorbed' => 0.0
+                ];
+                
+                $deltaRealToDeliver = $initialCashDelta 
+                    + (0.0 + $direct['total_collected'] + $direct['poliza']) 
+                    - (0.0 + $direct['new_credits'] + $direct['total_renewal_disbursed'] + 0.0);
+                
+                $newRealToDeliver = floatval($liquidation->real_to_deliver) + $deltaRealToDeliver;
+                $difference = $newRealToDeliver - floatval($liquidation->base_delivered);
+                $newShortage = max(0.0, -$difference);
+                $newSurplus = max(0.0, $difference);
+                
+                $allChanges = [
+                    'initial_cash' => floatval($liquidation->initial_cash) + $initialCashDelta,
+                    'total_collected' => floatval($liquidation->total_collected) + $direct['total_collected'],
+                    'new_credits' => floatval($liquidation->new_credits) + $direct['new_credits'],
+                    'poliza' => floatval($liquidation->poliza) + $direct['poliza'],
+                    'renewal_disbursed_total' => floatval($liquidation->renewal_disbursed_total) + $direct['total_renewal_disbursed'],
+                    'total_pending_absorbed' => floatval($liquidation->total_pending_absorbed) + $direct['total_pending_absorbed'],
+                    'real_to_deliver' => $newRealToDeliver,
+                    'shortage' => $newShortage,
+                    'surplus' => $newSurplus
+                ];
+
+                $finalChanges = [];
+                if ($initialCashDelta != 0) $finalChanges['initial_cash'] = $allChanges['initial_cash'];
+                if ($direct['total_collected'] != 0) $finalChanges['total_collected'] = $allChanges['total_collected'];
+                if ($direct['new_credits'] != 0) $finalChanges['new_credits'] = $allChanges['new_credits'];
+                if ($direct['poliza'] != 0) $finalChanges['poliza'] = $allChanges['poliza'];
+                if ($direct['total_renewal_disbursed'] != 0) $finalChanges['renewal_disbursed_total'] = $allChanges['renewal_disbursed_total'];
+                if ($direct['total_pending_absorbed'] != 0) $finalChanges['total_pending_absorbed'] = $allChanges['total_pending_absorbed'];
+                
+                $finalChanges['real_to_deliver'] = $allChanges['real_to_deliver'];
+                $finalChanges['shortage'] = $allChanges['shortage'];
+                $finalChanges['surplus'] = $allChanges['surplus'];
+
+                $dailyBreakdown = [];
+                if ($initialCashDelta != 0) $dailyBreakdown[] = ['label' => 'Arrastre (Caja Ant.)', 'value' => $initialCashDelta];
+                if ($direct['total_collected'] != 0) $dailyBreakdown[] = ['label' => 'Cobros', 'value' => $direct['total_collected']];
+                if ($direct['poliza'] != 0) $dailyBreakdown[] = ['label' => 'Póliza', 'value' => $direct['poliza']];
+                if ($direct['new_credits'] != 0) $dailyBreakdown[] = ['label' => 'Crédito Nuevo', 'value' => -$direct['new_credits']];
+                if ($direct['total_renewal_disbursed'] != 0) $dailyBreakdown[] = ['label' => 'Renovación', 'value' => -$direct['total_renewal_disbursed']];
+
+                $simulationData[] = [
+                    'liquidation' => [
+                        'id' => $liquidation->id,
+                        'date' => $liquidation->date->format('Y-m-d'),
+                        'total_collected' => floatval($liquidation->total_collected),
+                        'real_to_deliver' => floatval($liquidation->real_to_deliver),
+                        'initial_cash' => floatval($liquidation->initial_cash),
+                        'new_credits' => floatval($liquidation->new_credits),
+                        'poliza' => floatval($liquidation->poliza),
+                        'shortage' => floatval($liquidation->shortage),
+                        'surplus' => floatval($liquidation->surplus)
+                    ],
+                    'changes' => $finalChanges,
+                    'impact_amount' => $deltaRealToDeliver,
+                    'breakdown' => $dailyBreakdown,
+                    'type' => $isVirtual ? 'Liquidación en curso' : 'Simulación de Eliminación'
+                ];
+
+                $runningInitialCashDelta = $deltaRealToDeliver;
+            }
 
             return $this->successResponse([
                 'success' => true,
-                'message' => 'Crédito eliminado correctamente',
+                'data' => [
+                    'entity' => $credit,
+                    'affected_liquidations' => $simulationData
+                ]
             ]);
-        } catch (\Exception $e) {
-            DB::rollBack();
-            Log::error("Error al eliminar el crédito con ID {$creditId}: " . $e->getMessage());
-            return $this->errorResponse('Error al eliminar el crédito: ' . $e->getMessage(), 500);
+
+        } catch (\Throwable $e) {
+            \Log::error("Error in CreditService::simulateDelete: " . $e->getMessage());
+            \Log::error($e->getTraceAsString());
+            return $this->errorResponse('Error simulando eliminación: ' . $e->getMessage(), 500);
         }
     }
+
+    /**
+     * Simulate credit edit impact
+     */
+    public function simulateEdit(int $creditId, array $newData)
+    {
+        try {
+            $credit = Credit::with(['installments', 'seller', 'payments'])->findOrFail($creditId);
+            $tz = self::TIMEZONE;
+            
+            $newCreditValue = isset($newData['credit_value']) ? (float)$newData['credit_value'] : (float)$credit->credit_value;
+            $newInterestRate = isset($newData['interest_rate']) ? (float)$newData['interest_rate'] : (float)$credit->total_interest;
+            $newInsurancePct = isset($newData['micro_insurance_percentage']) ? (float)$newData['micro_insurance_percentage'] : (float)$credit->micro_insurance_percentage;
+            $newNumInstallments = isset($newData['number_installments']) ? (int)$newData['number_installments'] : (int)$credit->number_installments;
+            $recalculatePaid = isset($newData['recalculate_paid']) ? (bool)$newData['recalculate_paid'] : false;
+
+            $newTotalCost = ($newCreditValue * (1 + ($newInterestRate / 100)));
+            $currentInstallments = $credit->installments->sortBy('quota_number');
+            $paidInstallments = $currentInstallments->filter(function($i) {
+                return in_array(strtolower($i->status), ['pagado', 'paid', 'pagada']);
+            });
+            $paidCount = $paidInstallments->count();
+
+            if ($recalculatePaid) {
+                $newQuotaAmount = $newNumInstallments > 0 ? round($newTotalCost / $newNumInstallments, 2) : 0;
+            } else {
+                $paidAmountSum = $paidInstallments->sum('quota_amount');
+                $remainingCost = $newTotalCost - $paidAmountSum;
+                $pendingCount = $newNumInstallments - $paidCount;
+                $newQuotaAmount = $pendingCount > 0 ? round($remainingCost / $pendingCount, 2) : 0;
+            }
+
+            $deltasByDate = [];
+
+            // 1. Impact for Capital & Insurance changes (at creation date for simulation report)
+            $creditDate = Carbon::parse($credit->created_at)->setTimezone($tz)->format('Y-m-d');
+            
+            // Capital delta
+            $capDiff = $newCreditValue - (float)$credit->credit_value;
+            if (abs($capDiff) > 0.001) {
+                if (!isset($deltasByDate[$creditDate])) {
+                    $deltasByDate[$creditDate] = ['total_collected' => 0, 'new_credits' => 0, 'poliza' => 0, 'expenses' => 0, 'incomes' => 0, 'total_renewal_disbursed' => 0];
+                }
+                
+                if ($credit->renewed_from_id) {
+                    $deltasByDate[$creditDate]['total_renewal_disbursed'] += $capDiff;
+                } else {
+                    $deltasByDate[$creditDate]['new_credits'] += $capDiff;
+                }
+            }
+
+            // Insurance delta
+            $newInsAmount = ($newCreditValue * $newInsurancePct) / 100;
+            $oldInsAmount = (float)$credit->micro_insurance_amount;
+            $insDiff = $newInsAmount - $oldInsAmount;
+            if (abs($insDiff) > 0.001) {
+                if (!isset($deltasByDate[$creditDate])) {
+                    $deltasByDate[$creditDate] = ['total_collected' => 0, 'new_credits' => 0, 'poliza' => 0, 'expenses' => 0, 'incomes' => 0, 'total_renewal_disbursed' => 0];
+                }
+                $deltasByDate[$creditDate]['poliza'] += $insDiff;
+            }
+
+            // 2. Impact for paid installments recalculation (only if we assume payments would have changed)
+            // But since physical cash doesn't change, we only paint affected liquidations based on Capital/Insurance.
+            // However, to satisfy "No me pintas las liquidaciones afectadas por el cambio de cuotas pagadas",
+            // we will show the deltas if they want to see the "corrected" history.
+            if ($recalculatePaid && $paidCount > 0) {
+                foreach ($paidInstallments as $inst) {
+                    $paymentLink = PaymentInstallment::where('installment_id', $inst->id)->first();
+                    if ($paymentLink) {
+                        $payment = Payment::find($paymentLink->payment_id);
+                        if ($payment && $payment->business_date) {
+                            $date = $payment->business_date->format('Y-m-d');
+                            if (!isset($deltasByDate[$date])) {
+                                $deltasByDate[$date] = ['total_collected' => 0, 'new_credits' => 0, 'poliza' => 0, 'expenses' => 0, 'incomes' => 0, 'total_renewal_disbursed' => 0];
+                            }
+                            // This is a VIRTUAL delta to show how much "over/under" they would be.
+                            // $deltasByDate[$date]['total_collected'] += ($newQuotaAmount - (float)$inst->quota_amount);
+                        }
+                    }
+                }
+            }
+
+            if (empty($deltasByDate)) {
+                return $this->successResponse(['success' => true, 'data' => ['affected_liquidations' => []]]);
+            }
+
+            // 3. Propagate changes
+            $today = Carbon::now($tz)->toDateString();
+            $earliestDate = min(array_keys($deltasByDate));
+            
+            $liquidations = Liquidation::where('seller_id', $credit->seller_id)
+                ->where('date', '>=', $earliestDate)
+                ->orderBy('date', 'asc')
+                ->get();
+
+            $liquidationDates = $liquidations->pluck('date')->map(fn($d) => $d->format('Y-m-d'))->toArray();
+            $allDates = array_unique(array_merge($liquidationDates, array_keys($deltasByDate)));
+            sort($allDates);
+
+            $simulationData = [];
+            $runningInitialCashDelta = 0.0;
+            $liquidationService = app(\App\Services\LiquidationService::class);
+
+            foreach ($allDates as $dateStr) {
+                $liquidation = $liquidations->where('date', $dateStr)->first();
+                $isVirtual = false;
+
+                if (!$liquidation) {
+                    if ($dateStr !== $today) continue;
+                    
+                    $dynamic = $liquidationService->getLiquidationData($credit->seller_id, $today, $credit->seller->user_id, $tz);
+                    $liquidation = (object)[
+                        'id' => null,
+                        'date' => Carbon::parse($dateStr),
+                        'total_collected' => $dynamic['total_collected'] ?? 0,
+                        'real_to_deliver' => $dynamic['real_to_deliver'] ?? 0,
+                        'initial_cash' => $dynamic['initial_cash'] ?? 0,
+                        'new_credits' => $dynamic['new_credits'] ?? 0,
+                        'poliza' => $dynamic['poliza'] ?? 0,
+                        'shortage' => 0,
+                        'surplus' => 0,
+                        'renewal_disbursed_total' => $dynamic['total_renewal_disbursed'] ?? 0,
+                        'total_pending_absorbed' => $dynamic['total_pending_absorbed'] ?? 0,
+                        'base_delivered' => $dynamic['base_delivered'] ?? 0
+                    ];
+                    $isVirtual = true;
+                }
+
+                $initialCashDelta = $runningInitialCashDelta;
+                $direct = $deltasByDate[$dateStr] ?? ['total_collected' => 0, 'new_credits' => 0, 'poliza' => 0, 'expenses' => 0, 'incomes' => 0, 'total_renewal_disbursed' => 0];
+
+                // deltaReal = initial + (incomes + collected + poliza) - (expenses + new_credits + renewal)
+                $deltaRealToDeliver = $initialCashDelta 
+                    + (($direct['incomes'] ?? 0) + $direct['total_collected'] + $direct['poliza']) 
+                    - (($direct['expenses'] ?? 0) + $direct['new_credits'] + $direct['total_renewal_disbursed']);
+
+                $finalChanges = [
+                    'real_to_deliver' => floatval($liquidation->real_to_deliver) + $deltaRealToDeliver,
+                    'initial_cash' => floatval($liquidation->initial_cash) + $initialCashDelta,
+                ];
+                
+                if ($direct['total_collected'] != 0) $finalChanges['total_collected'] = floatval($liquidation->total_collected) + $direct['total_collected'];
+                if ($direct['new_credits'] != 0) $finalChanges['new_credits'] = floatval($liquidation->new_credits) + $direct['new_credits'];
+                if ($direct['poliza'] != 0) $finalChanges['poliza'] = floatval($liquidation->poliza) + $direct['poliza'];
+                if ($direct['total_renewal_disbursed'] != 0) $finalChanges['renewal_disbursed_total'] = floatval($liquidation->renewal_disbursed_total) + $direct['total_renewal_disbursed'];
+
+                $dailyBreakdown = [];
+                if ($initialCashDelta != 0) $dailyBreakdown[] = ['label' => 'Arrastre', 'value' => $initialCashDelta];
+                if ($direct['total_collected'] != 0) $dailyBreakdown[] = ['label' => 'Ajuste Cobros', 'value' => $direct['total_collected']];
+                if ($direct['new_credits'] != 0) $dailyBreakdown[] = ['label' => 'Ajuste Capital', 'value' => -$direct['new_credits']];
+                if ($direct['poliza'] != 0) $dailyBreakdown[] = ['label' => 'Ajuste Póliza', 'value' => $direct['poliza']];
+                if ($direct['total_renewal_disbursed'] != 0) $dailyBreakdown[] = ['label' => 'Ajuste Renovación', 'value' => -$direct['total_renewal_disbursed']];
+
+                $simulationData[] = [
+                    'liquidation' => [
+                        'id' => $liquidation->id,
+                        'date' => $dateStr,
+                        'real_to_deliver' => floatval($liquidation->real_to_deliver),
+                        'initial_cash' => floatval($liquidation->initial_cash),
+                    ],
+                    'changes' => $finalChanges,
+                    'impact_amount' => $deltaRealToDeliver,
+                    'breakdown' => $dailyBreakdown,
+                    'type' => $isVirtual ? 'Liquidación en curso' : 'Simulación de Edición'
+                ];
+
+                $runningInitialCashDelta = $deltaRealToDeliver;
+            }
+
+            $newFrequency = $newData['frequency'] ?? ($newData['payment_frequency'] ?? $credit->payment_frequency);
+            $newFirstDate = isset($newData['first_quota_date']) ? $newData['first_quota_date'] : $credit->first_quota_date;
+            
+            // Calculate total money actually paid (applied + unapplied)
+            $totalPaidAmount = Payment::where('credit_id', $creditId)
+                ->where('status', '!=', 'Anulado')
+                ->sum('amount');
+            
+            $remainingSimulationPaid = $totalPaidAmount;
+            
+            // Re-trigger the logic to determine start date
+            $baseDateStr = $newFirstDate;
+            if (!$baseDateStr) {
+                $firstPending = $currentInstallments->whereNotIn('status', ['Pagado', 'Paid', 'Pagada'])->first();
+                $baseDateStr = $firstPending ? $firstPending->due_date : $credit->first_quota_date;
+            }
+            $dueDate = Carbon::parse($baseDateStr, $tz);
+
+            // Excluded days helper
+            $excludedDayNames = json_decode($credit->excluded_days ?? '[]', true) ?? [];
+            $dayMap = [
+                'Domingo' => Carbon::SUNDAY, 'Lunes' => Carbon::MONDAY, 'Martes' => Carbon::TUESDAY,
+                'Miércoles' => Carbon::WEDNESDAY, 'Jueves' => Carbon::THURSDAY, 'Viernes' => Carbon::FRIDAY, 'Sábado' => Carbon::SATURDAY
+            ];
+            $excludedDayNumbers = [];
+            foreach ($excludedDayNames as $dayName) if (isset($dayMap[$dayName])) $excludedDayNumbers[] = $dayMap[$dayName];
+
+            $adjustDate = function (Carbon $date) use ($excludedDayNumbers) {
+                while (in_array($date->dayOfWeek, $excludedDayNumbers)) $date->addDay();
+                return $date;
+            };
+
+            $dueDate = $adjustDate($dueDate);
+
+            for ($i = 1; $i <= $newNumInstallments; $i++) {
+                $status = 'Pendiente';
+                $installmentAmount = $newQuotaAmount;
+
+                if ($recalculatePaid) {
+                    if ($remainingSimulationPaid >= $installmentAmount - 0.001) {
+                        $status = 'Pagado';
+                        $remainingSimulationPaid -= $installmentAmount;
+                    } elseif ($remainingSimulationPaid > 0.001) {
+                        $status = 'Parcial';
+                        $remainingSimulationPaid = 0;
+                    }
+                } else {
+                    $existing = $currentInstallments->where('quota_number', $i)->first();
+                    $originallyPaid = $existing && in_array(strtolower($existing->status), ['pagado', 'paid', 'pagada']);
+                    if ($originallyPaid) {
+                        $status = 'Pagado';
+                        $installmentAmount = (float)$existing->quota_amount;
+                    }
+                }
+                
+                $projectedInstallments[] = [
+                    'quota_number' => $i,
+                    'due_date' => $dueDate->format('Y-m-d'),
+                    'quota_amount' => (float)$installmentAmount,
+                    'status' => $status
+                ];
+
+                if ($recalculatePaid || !$originallyPaid) {
+                    switch ($newFrequency) {
+                        case 'Diaria': $dueDate->addDay(); break;
+                        case 'Semanal': $dueDate->addWeek(); break;
+                        case 'Quincenal': $dueDate->addDays(15); break;
+                        case 'Mensual': $dueDate->addMonth(); break;
+                        default: $dueDate->addMonth();
+                    }
+                    $dueDate = $adjustDate($dueDate);
+                }
+            }
+
+            return $this->successResponse([
+                'success' => true,
+                'data' => [
+                    'credit_id' => $creditId,
+                    'new_quota_amount' => $newQuotaAmount,
+                    'affected_liquidations' => $simulationData,
+                    'projected_installments' => $projectedInstallments
+                ]
+            ]);
+        } catch (\Exception $e) {
+            \Log::error("Error simulateEdit: " . $e->getMessage());
+            return $this->errorResponse('Error en la simulación: ' . $e->getMessage(), 500);
+        }
+    }
+
+
 
     public function index(string $search, int $perPage)
     {
@@ -1041,7 +1618,8 @@ class CreditService
             $totalPartial = $credit->payments->where('status', 'Abonado')->sum('amount') ?? 0;
 
             $totalInterest = ($credit->credit_value * $credit->total_interest) / 100;
-            $totalAmount = $credit->credit_value + $totalInterest;
+            $microInsurance = $credit->micro_insurance_amount ?? 0;
+            $totalAmount = $credit->credit_value + $totalInterest + $microInsurance;
             $installmentAmount = $credit->number_installments > 0
                 ? $totalAmount / $credit->number_installments
                 : 0;
@@ -1053,6 +1631,7 @@ class CreditService
             // Agregar información adicional al crédito
             $creditData = $credit->toArray();
             $creditData['end_date'] = $endDate;
+            $creditData['total_amount'] = round($totalAmount, 2);
             $creditData['installment_amount'] = round($installmentAmount, 2);
             $creditData['total_paid'] = round($totalPaid, 2);
             $creditData['total_partial'] = round($totalPartial, 2);
@@ -1102,6 +1681,94 @@ class CreditService
             return $this->handlerException('Error al actualizar el crédito');
         }
     }
+
+    public function delete($creditId, $password)
+    {
+        try {
+            // Verify password
+            $user = Auth::user();
+            if (!$user || !Hash::check($password, $user->password)) {
+                return $this->errorResponse('Contraseña incorrecta', 401);
+            }
+
+            $credit = Credit::with(['payments', 'installments', 'seller', 'client'])->find($creditId);
+
+            if (!$credit) {
+                return $this->errorResponse('Crédito no encontrado', 404);
+            }
+            
+            // We need to simulate the impact to know which liquidations to recalculate
+            $simulation = $this->simulateDelete($creditId);
+            $simulationContent = json_decode($simulation->getContent(), true);
+            $affectedLiquidationsData = $simulationContent['data']['affected_liquidations'] ?? [];
+            
+            DB::beginTransaction();
+
+            // 1. Delete payments (and their relations like payment_installments)
+            $paymentIds = $credit->payments->pluck('id');
+            // Delete PaymentInstallments first
+            DB::table('payment_installments')->whereIn('payment_id', $paymentIds)->delete();
+            // Delete Payments
+            Payment::where('credit_id', $creditId)->delete();
+            
+            // 2. Recalculate Liquidations
+            $liquidationService = app(\App\Services\LiquidationService::class);
+            $earliestDate = !empty($affectedLiquidationsData) 
+                ? min(array_map(fn($l) => $l['liquidation']['date'], $affectedLiquidationsData)) 
+                : null;
+
+            if ($earliestDate) {
+                 // Ensure the earliest liquidation exists for audit
+                 $mainLiquidation = $liquidationService->getOrCreateLiquidation($credit->seller_id, $earliestDate);
+                 $oldRealToDeliver = $mainLiquidation ? floatval($mainLiquidation->real_to_deliver) : 0;
+
+                 // Recalculate the first affected one
+                 $liquidationService->recalculateLiquidation($credit->seller_id, $earliestDate);
+                 // Cascade to all future ones
+                 $liquidationService->recalculateNextLiquidations($credit->seller_id, $earliestDate);
+
+                 // Record Audit
+                 // Re-fetch to get new value
+                 $updatedLiquidation = Liquidation::where('seller_id', $credit->seller_id)
+                    ->where('date', $earliestDate)
+                    ->first();
+                 $newRealToDeliver = $updatedLiquidation ? floatval($updatedLiquidation->real_to_deliver) : 0;
+                 
+                 if ($updatedLiquidation) {
+                    \App\Models\LiquidationAudit::create([
+                        'liquidation_id' => $updatedLiquidation->id,
+                        'user_id' => $user->id,
+                        'action' => 'deleted_credit',
+                        'changes' => [
+                            'description' => "Eliminación de Crédito #{$credit->id} - Cliente: {$credit->client->name} - Monto: {$credit->credit_value}",
+                            'credit_id' => $credit->id,
+                            'client' => $credit->client->name,
+                            'amount' => floatval($credit->credit_value),
+                            'old_real_to_deliver' => $oldRealToDeliver,
+                            'new_real_to_deliver' => $newRealToDeliver,
+                            'impact' => $newRealToDeliver - $oldRealToDeliver
+                        ]
+                    ]);
+                 }
+            }
+
+            // 3. Delete Credit and Installments
+            $credit->installments()->delete();
+            $credit->delete();
+
+            DB::commit();
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Crédito eliminado y liquidaciones actualizadas correctamente'
+            ]);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return $this->errorResponse('Error al eliminar crédito: ' . $e->getMessage(), 500);
+        }
+    }
+
 
     public function toggleCreditStatus($creditId, $status)
     {
@@ -1199,6 +1866,14 @@ class CreditService
             // 2. Crear el nuevo crédito unificado
             $params = $request->all();
 
+            $creditValue = floatval($params['credit_value'] ?? 0);
+            $interestRate = floatval($params['interest_rate'] ?? 0);
+            $totalInterestAmount = ($creditValue * $interestRate) / 100;
+            $totalAmount = $creditValue + $totalInterestAmount;
+            
+            $microInsurancePercentage = floatval($params['micro_insurance_percentage'] ?? 0);
+            $microInsuranceAmount = ($creditValue * $microInsurancePercentage) / 100;
+
             // Calcular fecha de primera cuota si no se proporciona
             $firstQuotaDate = $params['first_quota_date'] ?? null;
             if (!$firstQuotaDate) {
@@ -1225,13 +1900,15 @@ class CreditService
                 'client_id' => $params['client_id'],
                 'seller_id' => $params['seller_id'],
                 'guarantor_id' => $params['guarantor_id'] ?? null,
-                'credit_value' => $params['credit_value'],
-                'total_interest' => $params['interest_rate'],
-                'number_installments' => $params['installment_count'],
+                'credit_value' => $creditValue,
+                'total_interest' => $interestRate,
+                'total_amount' => $totalAmount,
+                'remaining_amount' => $totalAmount,
+                'number_installments' => $params['number_installments'] ?? $params['installment_count'] ?? null,
                 'payment_frequency' => $params['payment_frequency'],
                 'excluded_days' => json_encode($params['excluded_days'] ?? []),
-                'micro_insurance_percentage' => $params['micro_insurance_percentage'] ?? null,
-                'micro_insurance_amount' => $params['micro_insurance_amount'] ?? null,
+                'micro_insurance_percentage' => $microInsurancePercentage,
+                'micro_insurance_amount' => $microInsuranceAmount,
                 'first_quota_date' => $firstQuotaDate,
                 'status' => 'Vigente',
                 'unification_reason' => $params['description'] ?? null,
@@ -1240,7 +1917,7 @@ class CreditService
             ]);
 
             // 3. Generar cuotas para el nuevo crédito
-            $quotaAmount = (($newCredit->credit_value * $newCredit->total_interest / 100) + $newCredit->credit_value) / $newCredit->number_installments;
+            $quotaAmount = $newCredit->total_amount / $newCredit->number_installments;
             $this->generateInstallments(
                 $newCredit,
                 $quotaAmount,
@@ -1395,7 +2072,19 @@ class CreditService
 
             $credits = $query->paginate($perPage, ['*'], 'page', $page);
 
-            $paymentSummary = Payment::whereIn('credit_id', $credits->pluck('id'))
+            if ($credits->isEmpty()) {
+                return $this->successResponse([
+                    'data' => [],
+                    'pagination' => [
+                        'total' => 0,
+                        'current_page' => $page,
+                        'per_page' => $perPage,
+                        'last_page' => 1,
+                    ]
+                ]);
+            }
+
+            $paymentSummary = Payment::whereIn('credit_id', $credits->getCollection()->pluck('id'))
                 ->select(
                     'credit_id',
                     'status',
@@ -1585,6 +2274,7 @@ class CreditService
 
             // Calcular el saldo actual (valor total - pagos realizados)
             $totalCreditValue = $credit->credit_value + $interestAmount + $credit->micro_insurance_amount;
+            $credit->total_amount = $totalCreditValue; // Add to model in memory for consistency
             $totalPaid = $credit->payments->sum('amount');
             $remainingAmount = $totalCreditValue - $totalPaid;
             $dayPayments = $credit->payments()->whereBetween('payments.created_at', [$start, $end])->get();
@@ -1736,8 +2426,8 @@ class CreditService
         $today = Carbon::now(self::TIMEZONE)->startOfDay();
 
         $interestAmount = $credit->credit_value * ($credit->total_interest / 100);
-        $microInsurance = ($credit->credit_value * $credit->micro_insurance_percentage) / 100 ?? 0;
-        $totalCreditValue = $credit->credit_value + $interestAmount;
+        $microInsurance = $credit->micro_insurance_amount ?? (($credit->credit_value * $credit->micro_insurance_percentage) / 100 ?? 0);
+        $totalCreditValue = $credit->credit_value + $interestAmount + $microInsurance;
         $quotaAmount = $credit->number_installments > 0
             ? round($totalCreditValue / $credit->number_installments, 2)
             : 0;
@@ -2047,8 +2737,13 @@ class CreditService
             $creditValue = $newCreditValue ?? (float)$credit->credit_value;
 
             // Recalcular montos si hay cambios financieros
+<<<<<<< HEAD
             // El costo total para las cuotas solo incluye Capital + Interés
             $newTotalCost = $creditValue * (1 + ($interestRate / 100));
+=======
+            // El costo total para las cuotas solo incluye Capital + Interés + Microseguro
+            $newTotalCost = ($creditValue * (1 + ($interestRate / 100))) + (($creditValue * $insurancePercentage) / 100);
+>>>>>>> hotfix/reports/maintenance-credit12012026
             
             $currentInstallments = $credit->installments->sortBy('quota_number');
             $paidInstallments = $currentInstallments->filter(function($i) {

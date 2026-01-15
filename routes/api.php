@@ -60,6 +60,11 @@ Route::middleware('auth:api')->group(function () {
     Route::delete('route/delete/{id}', [SellerController::class, 'delete']);
     Route::put('/routes/toggle-status/{routeId}', [SellerController::class, 'toggleStatus']);
 
+    Route::get('sellers/{sellerId}/cash-info', [SellerController::class, 'getCashInfo']);
+    Route::get('sellers/{sellerId}/liquidations', [SellerController::class, 'getLiquidations']);
+    Route::get('sellers/with-routes', [SellerController::class, 'getSellersWithRoutes']);
+
+
     Route::get('seller/{sellerId}/config', [SellerConfigController::class, 'show']);
     Route::put('seller/{sellerId}/config', [SellerConfigController::class, 'update']);
 
@@ -157,8 +162,10 @@ Route::middleware('auth:api')->group(function () {
     Route::get('/credits/seller/{sellerId}/by-date', [CreditController::class, 'getSellerCredits']);
     Route::put('credit/{creditId}/update-schedule', [CreditController::class, 'updateSchedule']);
     Route::put('credit/{creditId}/update-frequency', [CreditController::class, 'updateFrequency']);
+    Route::post('credit/{creditId}/simulate-edit', [CreditController::class, 'simulateEdit']);
     Route::post('credit/{creditId}/simulate-schedule', [CreditController::class, 'simulateSchedule']);
     Route::post('credit/{creditId}/simulate-frequency', [CreditController::class, 'simulateFrequency']);
+    Route::post('credit/{creditId}/simulate-delete', [CreditController::class, 'simulateDelete']);
     Route::get('credit/{creditId}/modifications', [CreditController::class, 'getModifications']);
     Route::put('credit/{creditId}/toggle-renewal-block', [CreditController::class, 'setRenewalBlocked']);
     Route::put('credit/{creditId}/renewal-blocked', [CreditController::class, 'setRenewalBlocked']);
@@ -173,6 +180,7 @@ Route::middleware('auth:api')->group(function () {
     Route::get('expense/{id}', [ExpenseController::class, 'show']);
     Route::put('expense/update/{id}', [ExpenseController::class, 'update']);
     Route::delete('expense/delete/{id}', [ExpenseController::class, 'destroy']);
+    Route::post('expense/{id}/simulate-delete', [ExpenseController::class, 'simulateDelete']);
     Route::get('expenses/summary', [ExpenseController::class, 'summary']);
     Route::get('expenses/report/monthly', [ExpenseController::class, 'monthlyReport']);
     Route::get('expenses/user/{userId}', [ExpenseController::class, 'getExpensesByUser']);
@@ -187,6 +195,7 @@ Route::middleware('auth:api')->group(function () {
     Route::get('income/{id}', [IncomeController::class, 'show']);
     Route::put('income/update/{id}', [IncomeController::class, 'update']);
     Route::delete('income/delete/{id}', [IncomeController::class, 'destroy']);
+    Route::post('income/{id}/simulate-delete', [IncomeController::class, 'simulateDelete']);
     Route::get('income/summary', [IncomeController::class, 'summary']);
     Route::get('income/report/monthly', [IncomeController::class, 'monthlyReport']);
     Route::get('income/seller/{sellerId}', [IncomeController::class, 'getSellerIncomeByDate']);
@@ -212,6 +221,8 @@ Route::middleware('auth:api')->group(function () {
         Route::put('update/{liquidationId}', [LiquidationController::class, 'updateLiquidation']);
 
         Route::post('reopen-route', [LiquidationController::class, 'reopenRoute']);
+        Route::post('adjust-box', [LiquidationController::class, 'adjustBox']);
+        Route::get('simulate-recalculation', [LiquidationController::class, 'simulateRecalculation']);
 
         Route::get('download-report/{id}', [LiquidationController::class, 'downloadReport']);
         Route::get('first-approved-by-seller', [LiquidationController::class, 'getFirstApprovedLiquidationBySeller']);
@@ -239,6 +250,11 @@ Route::middleware('auth:api')->group(function () {
     //route installment
     Route::get('installments', [InstallmentController::class, 'index']);
     Route::get('installment/{id}', [InstallmentController::class, 'show']);
+    Route::get('installments/seller/{sellerId}', [InstallmentController::class, 'getInstallmentsBySeller']);
+    Route::get('installments/credit/{creditId}', [InstallmentController::class, 'getCreditInstallments']);
+    Route::post('installments/{installmentId}/simulate-delete', [InstallmentController::class, 'simulateDelete']);
+    Route::delete('installments/{installmentId}', [InstallmentController::class, 'deleteInstallment']);
+
 
     //route payment
     Route::get('payments/daily-totals', [PaymentController::class, 'dailyPaymentTotals']);
