@@ -1148,6 +1148,15 @@ class CreditService
                 'liquidations_found' => $liquidations->count()
             ]);
 
+            // DEBUG: Log simulation data
+            \Log::info("simulateDelete DEBUG for credit #{$creditId}", [
+                'seller_id' => $credit->seller_id,
+                'payment_count' => $credit->payments()->count(),
+                'deltasByDate' => $deltasByDate,
+                'earliestDate' => $earliestDate,
+                'liquidations_found' => $liquidations->count()
+            ]);
+
             // Ensure today is represented if we have a delta for it, even if no liquidation exists
             if (!isset($deltasByDate[$today]) && $credit->created_at->setTimezone($tz)->toDateString() === $today) {
                 // Should already be in deltasByDate if it's creation date, but just in case
