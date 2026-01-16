@@ -1048,9 +1048,9 @@ class CreditService
 
             // 1. Gather all direct impacts by date
             $deltasByDate = [];
-
+            
             $tz = self::TIMEZONE;
-
+            
             // Payments removal - use ONLY business_date to match calculateLiquidationMetrics
             $payments = $credit->payments()->whereNotNull('business_date')->get();
             foreach ($payments as $payment) {
@@ -1066,7 +1066,7 @@ class CreditService
                 }
                 $deltasByDate[$date]['total_collected'] -= floatval($payment->amount);
             }
-
+            
             // Credit creation removal - MUST use the same timezone-aware logic as calculateLiquidationMetrics
             $creationDate = $credit->created_at ? $credit->created_at->setTimezone($tz)->toDateString() : null;
             if ($creationDate) {
@@ -1138,6 +1138,15 @@ class CreditService
                 ->where('date', '>=', $earliestDate)
                 ->orderBy('date', 'asc')
                 ->get();
+            
+            // DEBUG: Log simulation data
+            \Log::info("simulateDelete DEBUG for credit #{$creditId}", [
+                'seller_id' => $credit->seller_id,
+                'payment_count' => $credit->payments()->count(),
+                'deltasByDate' => $deltasByDate,
+                'earliestDate' => $earliestDate,
+                'liquidations_found' => $liquidations->count()
+            ]);
 
             // DEBUG: Log simulation data
             \Log::info("simulateDelete DEBUG for credit #{$creditId}", [
@@ -1163,7 +1172,7 @@ class CreditService
             }
 
             $liquidationDates = $liquidations->pluck('date')->map(fn($d) => $d->format('Y-m-d'))->toArray();
-
+            
             // Re-build a list of dates to process. Force inclusion of today's date so "En curso" shows impact.
             $allDates = array_unique(array_merge($liquidationDates, array_keys($deltasByDate), [$today]));
             sort($allDates);
@@ -1174,7 +1183,7 @@ class CreditService
 
             foreach ($allDates as $dateStr) {
                 // Find liquidation by comparing formatted date strings
-                $liquidation = $liquidations->first(function ($liq) use ($dateStr) {
+                $liquidation = $liquidations->first(function($liq) use ($dateStr) {
                     return $liq->date->format('Y-m-d') === $dateStr;
                 });
                 $isVirtual = false;
@@ -1395,7 +1404,7 @@ class CreditService
                 ->get();
 
             $liquidationDates = $liquidations->pluck('date')->map(fn($d) => $d->format('Y-m-d'))->toArray();
-
+            
             // Force inclusion of today's date so "En curso" shows impact
             $allDates = array_unique(array_merge($liquidationDates, array_keys($deltasByDate), [$today]));
             sort($allDates);
@@ -1405,7 +1414,7 @@ class CreditService
             $liquidationService = app(\App\Services\LiquidationService::class);
 
             foreach ($allDates as $dateStr) {
-                $liquidation = $liquidations->first(function ($liq) use ($dateStr) {
+                $liquidation = $liquidations->first(function($liq) use ($dateStr) {
                     return $liq->date->format('Y-m-d') === $dateStr;
                 });
                 $isVirtual = false;
@@ -1755,7 +1764,7 @@ class CreditService
             DB::table('payment_installments')->whereIn('payment_id', $paymentIds)->delete();
             // Delete Payments
             Payment::where('credit_id', $creditId)->delete();
-
+            
             // 2. Delete Credit and Installments (IMPORTANT: Do this BEFORE recalculating liquidations)
             $credit->installments()->delete();
             $credit->delete();

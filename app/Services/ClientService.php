@@ -1586,7 +1586,7 @@ class ClientService
         try {
             $client = Client::with([
                 'credits' => function ($cq) {
-                    $cq->select('id', 'client_id', 'seller_id', 'credit_value', 'total_interest', 'number_installments', 'status', 'created_at', 'payment_frequency', 'renewal_blocked', 'first_quota_date', 'has_been_modified', 'modification_count', 'last_modified_at')
+                    $cq->select('id', 'client_id', 'seller_id', 'credit_value', 'total_interest', 'number_installments', 'status', 'created_at', 'payment_frequency', 'renewal_blocked', 'first_quota_date', 'has_been_modified', 'modification_count', 'last_modified_at', 'micro_insurance_percentage', 'micro_insurance_amount')
                         ->with([
                             'payments' => function ($pq) {
                                 $pq->select('id', 'credit_id', 'amount', 'payment_date', 'created_at', 'payment_method', 'status', 'business_date');
