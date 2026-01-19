@@ -208,12 +208,11 @@ class CreditController extends Controller
     public function delete(Request $request, $id)
     {
         try {
+            \Log::info("Attempting to delete credit with ID: {$id}");
             $password = $request->input('password');
-            if (!$password) {
-                return $this->errorResponse('Contraseña requerida', 422);
-            }
             return $this->creditService->delete($id, $password);
         } catch (Exception $e) {
+            \Log::error("Error in CreditController@delete: " . $e->getMessage());
             return $this->errorResponse($e->getMessage(), 500);
         }
     }
