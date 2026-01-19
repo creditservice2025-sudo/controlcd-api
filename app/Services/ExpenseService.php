@@ -43,6 +43,18 @@ class ExpenseService
                 ? $validated['user_id']
                 : $user->id;
 
+            // Prevención de duplicados (mismo valor, descripción y categoría en los últimos 60 segundos)
+            $lastExpense = Expense::where('user_id', $userId)
+                ->where('value', $validated['value'])
+                ->where('description', $validated['description'])
+                ->where('category_id', $validated['category_id'])
+                ->where('created_at', '>=', Carbon::now()->subSeconds(60))
+                ->first();
+
+            if ($lastExpense) {
+                return $this->errorResponse('Ya existe un gasto idéntico creado recientemente. Por favor espere un momento.', 422);
+            }
+
             if (isset($validated['timezone']) && !empty($validated['timezone'])) {
                 $createdAt = Carbon::now($validated['timezone']);
                 $updatedAt = Carbon::now($validated['timezone']);
@@ -304,6 +316,14 @@ class ExpenseService
                 return $this->errorResponse('No se encontró el vendedor asociado a este gasto', 422);
             }
 
+            // Restricción para vendedores: solo pueden eliminar gastos del mismo día
+            if ($user->role_id == 5) {
+                $today = Carbon::now($timezone)->format('Y-m-d');
+                if ($businessDate !== $today) {
+                    return $this->errorResponse('Los vendedores solo pueden eliminar gastos del día actual. Por favor contacte al administrador.', 422);
+                }
+            }
+
             // Ensure liquidation record exists for auditing
             $liquidationService = app(LiquidationService::class);
             $liquidation = $liquidationService->getOrCreateLiquidation($seller->id, $businessDate);
@@ -414,8 +434,16 @@ class ExpenseService
             $user = Auth::user();
             $role = $user->role_id;
 
-            $expensesQuery = Expense::with(['user', 'category', 'images'])
-                ->where(function ($query) use ($search) {
+            $expensesQuery = Expense::with(['user', 'category', 'images']);
+
+            if ($request->has('include_deleted') && filter_var($request->include_deleted, FILTER_VALIDATE_BOOLEAN)) {
+                $expensesQuery->withTrashed();
+                if ($request->has('only_deleted') && filter_var($request->only_deleted, FILTER_VALIDATE_BOOLEAN)) {
+                    $expensesQuery->onlyTrashed();
+                }
+            }
+
+            $expensesQuery->where(function ($query) use ($search) {
                     $query->where('description', 'like', "%{$search}%")
                         ->orWhereHas('user', function ($q) use ($search) {
                             $q->where('name', 'like', "%{$search}%");
@@ -593,16 +621,21 @@ class ExpenseService
 
             $expensesQuery = Expense::query()
                 ->select('expenses.*', 'liquidations.id as liquidation_number')
-                ->with(['user', 'category', 'images'])
-                ->leftJoin('liquidations', function ($join) use ($seller) {
-                    $join->on(DB::raw('DATE(expenses.created_at)'), '=', DB::raw('DATE(liquidations.date)'))
-                        ->where('liquidations.seller_id', '=', $seller->id);
-                })
-                ->where('expenses.user_id', $seller->user_id)
-                ->where(function ($q) {
-                    $q->where('expenses.status', 'Aprobado')
-                        ->orWhere('expenses.description', 'like', '%AJUSTE%');
-                });
+                ->with(['user', 'category', 'images']);
+
+            if ($request->has('include_deleted') && filter_var($request->include_deleted, FILTER_VALIDATE_BOOLEAN)) {
+                $expensesQuery->withTrashed();
+            }
+
+            $expensesQuery->leftJoin('liquidations', function ($join) use ($seller) {
+                $join->on(DB::raw('DATE(expenses.created_at)'), '=', DB::raw('DATE(liquidations.date)'))
+                    ->where('liquidations.seller_id', '=', $seller->id);
+            })
+            ->where('expenses.user_id', $seller->user_id)
+            ->where(function ($q) {
+                $q->where('expenses.status', 'Aprobado')
+                    ->orWhere('expenses.description', 'like', '%AJUSTE%');
+            });
 
             $timezone = $request->input('timezone', 'America/Lima');
 

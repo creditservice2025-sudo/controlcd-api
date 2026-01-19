@@ -1736,12 +1736,13 @@ class CreditService
         }
     }
 
-    public function delete($creditId, $password)
+    public function delete($creditId, $password = null)
     {
         try {
-            // Verify password
             $user = Auth::user();
-            if (!$user || !Hash::check($password, $user->password)) {
+            
+            // Only verify password if provided (for Cash Adjustment context)
+            if ($password !== null && !Hash::check($password, $user->password)) {
                 return $this->errorResponse('Contraseña incorrecta', 401);
             }
 
@@ -1750,6 +1751,27 @@ class CreditService
             if (!$credit) {
                 return $this->errorResponse('Crédito no encontrado', 404);
             }
+
+            // ===== DATE VALIDATION START =====
+            // Check if credit is from today or requires special permissions
+            $timezone = 'America/Lima';
+            $today = Carbon::now($timezone)->startOfDay();
+            $creditDate = Carbon::parse($credit->created_at)->setTimezone($timezone)->startOfDay();
+            
+            $isToday = $creditDate->equalTo($today);
+            $hasAdjustmentPermission = $user->can('ajustar_caja') || $user->role_id === 1;
+            
+            // If credit is from a previous day and user doesn't have adjustment permission
+            if (!$isToday && !$hasAdjustmentPermission) {
+                $formattedDate = $creditDate->format('d/m/Y');
+                $formattedAmount = number_format($credit->credit_value, 2);
+                
+                return $this->errorResponse(
+                    "El crédito del {$formattedDate} por \${$formattedAmount} no puede ser eliminado, por favor contacte al administrador del sistema.",
+                    403
+                );
+            }
+            // ===== DATE VALIDATION END =====
 
             // We need to simulate the impact to know which liquidations to recalculate
             $simulation = $this->simulateDelete($creditId);
