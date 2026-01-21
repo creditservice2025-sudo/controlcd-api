@@ -74,6 +74,16 @@ class Credit extends Model
         return $this->hasMany(Image::class, 'credit_id');
     }
 
+    public function renewedFrom()
+    {
+        return $this->belongsTo(Credit::class, 'renewed_from_id');
+    }
+
+    public function renewedTo()
+    {
+        return $this->hasOne(Credit::class, 'renewed_to_id');
+    }
+
     public function paymentsToday()
     {
         return $this->hasMany(Payment::class)

@@ -2200,8 +2200,8 @@ class CreditService
     public function getSellerCreditsByDate(int $sellerId, Request $request, int $perpage)
     {
         try {
-            $creditsQuery = Credit::with(['client', 'client.images', 'installments', 'payments', 'images'])
-                ->whereNull('renewed_from_id')
+            $creditsQuery = Credit::with(['client', 'client.images', 'installments', 'payments', 'images', 'renewedFrom', 'renewedFrom.payments'])
+                // ->whereNull('renewed_from_id')
                 ->where('seller_id', $sellerId);
 
             $timezone = $request->input('timezone', 'America/Lima');

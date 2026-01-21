@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Cache;
 
 class ExpenseService
 {
@@ -43,6 +44,14 @@ class ExpenseService
                 ? $validated['user_id']
                 : $user->id;
 
+            // Bloqueo atómico para evitar condiciones de carrera (clics múltiples ultra rápidos)
+            $lockKey = "expense_create_lock_{$userId}";
+            $lock = Cache::lock($lockKey, 10); // Bloqueo de 10 segundos
+
+            if (!$lock->get()) {
+                return $this->errorResponse('Una operación se encuentra en curso. Por favor espere.', 422);
+            }
+
             // Prevención de duplicados (mismo valor, descripción y categoría en los últimos 60 segundos)
             $lastExpense = Expense::where('user_id', $userId)
                 ->where('value', $validated['value'])
@@ -52,6 +61,7 @@ class ExpenseService
                 ->first();
 
             if ($lastExpense) {
+                $lock->release();
                 return $this->errorResponse('Ya existe un gasto idéntico creado recientemente. Por favor espere un momento.', 422);
             }
 
@@ -131,6 +141,10 @@ class ExpenseService
         } catch (\Exception $e) {
             Log::error($e->getMessage());
             return $this->errorResponse('Error al crear el gasto', 500);
+        } finally {
+            if (isset($lock)) {
+                $lock->release();
+            }
         }
     }
 
