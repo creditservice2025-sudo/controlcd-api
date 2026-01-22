@@ -417,29 +417,21 @@ class ClientService
                         $oldPath = null;
 
                         $user = auth()->user();
-                        \Log::info("Depurando interceptor", [
-                            'user_id' => $user->id ?? 'null',
-                            'role_id' => $user->role_id ?? 'null',
-                            'image_type' => $imageType,
-                            'existing_image' => $existingImage ? 'si' : 'no'
-                        ]);
+                        $existingImage = $client->images()->where('type', $imageType)->first();
 
                         // Intercepción: Si es vendedor (rol 5) y la imagen ya existe, requerir aprobación
-                        if ($user && $user->role_id == 5 && $existingImage) {
-                            \Log::info("INTERCEPTADO: Creando solicitud de aprobación");
+                        if ($user && ((int)$user->role_id === 5) && $existingImage) {
                             $tempPath = Helper::uploadFile($imageFile, 'temp/approvals');
                             
                             \App\Models\ImageApprovalRequest::create([
                                 'user_id' => $user->id,
-                                'entity_type' => 'Client', // O 'Credit' según convenga, 'Client' es la entidad principal aquí
+                                'entity_type' => 'Client',
                                 'entity_id' => $client->id,
                                 'image_type' => $imageType,
                                 'new_image_path' => $tempPath,
                                 'status' => 'pending'
                             ]);
 
-                            // Continuamos el bucle sin aplicar el cambio a la tabla images
-                            \Log::info("Solicitud de cambio de imagen ({$imageType}) creada para cliente {$client->id}");
                             continue; 
                         }
 

@@ -17,42 +17,54 @@ if (!$vendedorUser) {
 }
 auth()->login($vendedorUser);
 
-// 2. Buscar un cliente con imagen para simular EDICIÓN
-$client = Client::has('images')->first();
+// 2. Buscar un cliente o crear uno para la prueba
+$client = Client::first();
 if (!$client) {
-    echo "No se encontró un cliente con imágenes para probar la edición.\n";
+    echo "No se encontró un cliente para la prueba.\n";
     return;
+}
+
+// Asegurarse de que el cliente tenga una imagen para que se dispare la EDICIÓN
+if (!$client->images()->where('type', 'document')->exists()) {
+    $client->images()->create([
+        'path' => 'clients/test_image.jpg',
+        'type' => 'document'
+    ]);
+    echo "Imagen de prueba creada para el cliente.\n";
 }
 
 echo "Probando interceptación en ClientService para el cliente: {$client->name} (ID: {$client->id})\n";
 
 // 3. Simular Request de actualización de imagen
-Storage::fake('public');
+// No usamos fake completo para evitar problemas con persistencia en Tinker si no se maneja bien
 $file = UploadedFile::fake()->image('documento_nuevo.jpg');
 
-$request = new Request();
-$request->files->set('images', [
-    0 => ['file' => $file, 'type' => 'document']
-]);
-$request->merge([
+$request = Request::create('/api/clients/update/' . $client->id, 'PUT', [
     'images' => [
         0 => ['type' => 'document']
     ]
+]);
+$request->files->set('images', [
+    0 => ['file' => $file]
 ]);
 
 // 4. Ejecutar Update
 try {
     $service = app(ClientService::class);
+    // Forzamos el usuario en el request también por si acaso
+    $request->setUserResolver(fn() => $vendedorUser);
+    
     $service->update($request, $client->id);
     echo "ERROR: El servicio no debería haber aplicado el cambio directamente.\n";
 } catch (\Exception $e) {
-    echo "Interceptado correctamente: " . $e->getMessage() . "\n";
+    echo "Interceptado correctamente (Exception): " . $e->getMessage() . "\n";
 }
 
-// 5. Verificar si se creó la solicitud
+// Verificar logs si no hubo excepción pero no se actualizó
 $approvalRequest = ImageApprovalRequest::where('user_id', $vendedorUser->id)
     ->where('entity_id', $client->id)
     ->where('status', 'pending')
+    ->orderBy('created_at', 'desc')
     ->first();
 
 if ($approvalRequest) {
@@ -60,9 +72,7 @@ if ($approvalRequest) {
     echo "Ruta temporal: {$approvalRequest->new_image_path}\n";
     
     // 6. Simular Aprobación por Admin
-    auth()->logout();
-    $admin = User::where('role_id', 1)->first();
-    auth()->login($admin);
+    auth()->login(User::where('role_id', 1)->first());
     
     $controller = app(\App\Http\Controllers\ApprovalRequestController::class);
     $response = $controller->approve($approvalRequest->id);
@@ -71,5 +81,5 @@ if ($approvalRequest) {
     echo "Token generado: {$approvalRequest->token}\n";
     echo "Estado tras aprobación: {$approvalRequest->status}\n";
 } else {
-    echo "FAIL: No se creó la solicitud de aprobación.\n";
+    echo "FAIL: No se creó la solicitud de aprobación. Revisa laravel.log.\n";
 }
