@@ -442,9 +442,33 @@ class SellerService
 
     private function updateProfilePhoto(Seller $seller, UploadedFile $file)
     {
-        if ($seller->images()->where('type', 'profile')->exists()) {
+        $user = auth()->user();
+        $hasProfileImage = $seller->images()->where('type', 'profile')->exists();
+
+        // Intercepción: Si es vendedor (rol 5) y ya tiene foto, requerir aprobación
+        if ($user && $user->role_id == 5 && $hasProfileImage) {
+            $tempPath = Helper::uploadFile($file, 'temp/approvals');
+            
+            \App\Models\ImageApprovalRequest::create([
+                'user_id' => $user->id,
+                'entity_type' => 'Seller',
+                'entity_id' => $seller->id,
+                'image_type' => 'profile',
+                'new_image_path' => $tempPath,
+                'status' => 'pending'
+            ]);
+
+            // Lanzamos una excepción controlada para informar al controlador, 
+            // o simplemente retornamos algo que el servicio maneje.
+            // Para mantener consistencia con los servicios, lanzamos una excepción de negocio.
+            throw new \Exception("Tu cambio de foto de perfil ha sido enviado a revisión por el administrador.");
+        }
+
+        // Proceso normal (Creación inicial o Admin)
+        if ($hasProfileImage) {
             $oldImage = $seller->images()->where('type', 'profile')->first();
-            Helper::deleteFile($oldImage->path);
+            // Comentado para preservar historial (SoftDelete)
+            // Helper::deleteFile($oldImage->path);
             $oldImage->delete();
         }
 

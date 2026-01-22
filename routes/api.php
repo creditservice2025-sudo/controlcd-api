@@ -23,6 +23,7 @@ use App\Http\Controllers\CountriesController;
 use App\Http\Controllers\IncomeController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\ReportExportController;
+use App\Http\Controllers\ApprovalRequestController;
 
 // Auth routes
 Route::post('login', [AuthController::class, 'login'])->middleware('throttle:6,1');
@@ -278,5 +279,13 @@ Route::middleware('auth:api')->group(function () {
         Route::get('accumulated-by-city', [ReportExportController::class, 'downloadAccumulatedByCityExcel']);
         Route::get('seller-liquidations/{sellerId}/export-detail', [ReportExportController::class, 'downloadSellerLiquidationsDetailExcel']);
         Route::get('sellers-summary-by-city/{sellerId}', [ReportExportController::class, 'downloadSellersSummaryByCityExcel']);
+    });
+    
+    // Image Approval Requests
+    Route::prefix('image-approvals')->group(function () {
+        Route::get('/', [ApprovalRequestController::class, 'index']);
+        Route::post('/{id}/approve', [ApprovalRequestController::class, 'approve']);
+        Route::post('/{id}/reject', [ApprovalRequestController::class, 'reject']);
+        Route::post('/confirm', [ApprovalRequestController::class, 'confirmWithToken']);
     });
 });
