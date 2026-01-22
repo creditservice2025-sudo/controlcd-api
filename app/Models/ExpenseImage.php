@@ -7,6 +7,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class ExpenseImage extends Model
 {
+    use SoftDeletes;
+
     protected $fillable = [
         'expense_id',
         'user_id',
