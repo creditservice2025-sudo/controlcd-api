@@ -1820,8 +1820,8 @@ class CreditService
 
             // 1. Delete payments (and their relations like payment_installments)
             $paymentIds = $credit->payments->pluck('id');
-            // Delete PaymentInstallments first
-            DB::table('payment_installments')->whereIn('payment_id', $paymentIds)->delete();
+            // Use Eloquent instead of DB::table to enable SoftDeletes
+            \App\Models\PaymentInstallment::whereIn('payment_id', $paymentIds)->delete();
             // Delete Payments
             Payment::where('credit_id', $creditId)->delete();
             

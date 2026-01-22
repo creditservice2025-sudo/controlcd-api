@@ -279,25 +279,26 @@ class IncomeService
 
             // Borrar archivo y registro anterior si existía
             if ($oldImage) {
+                /* Comentado para preservar historial de archivos (Borrado Lógico Total)
                 try {
-                    // Si tienes Helper::deleteFile
                     if (function_exists('Helper') && method_exists(Helper::class, 'deleteFile')) {
                         Helper::deleteFile($oldImage->path);
                     } else {
-                        // fallback usando Storage (ajusta disco si lo necesitas)
                         \Illuminate\Support\Facades\Storage::delete($oldImage->path);
                     }
                 } catch (\Exception $ex) {
                     Log::warning("No se pudo borrar archivo antiguo: " . $ex->getMessage());
                 }
+                */
 
-                // eliminar registro antiguo (si no quieres mantener histórico)
+                // eliminar registro antiguo (ahora será SoftDelete)
                 $oldImage->delete();
             }
         } else if (!empty($validated['remove_image']) && $validated['remove_image']) {
             // 2) Si viene flag remove_image = true: borrar imagen existente y registro
             $oldImage = IncomeImage::where('income_id', $income->id)->first();
             if ($oldImage) {
+                /* Comentado para preservar historial de archivos (Borrado Lógico Total)
                 try {
                     if (function_exists('Helper') && method_exists(Helper::class, 'deleteFile')) {
                         Helper::deleteFile($oldImage->path);
@@ -307,6 +308,7 @@ class IncomeService
                 } catch (\Exception $ex) {
                     Log::warning("No se pudo borrar archivo antiguo: " . $ex->getMessage());
                 }
+                */
                 $oldImage->delete();
             }
         }
