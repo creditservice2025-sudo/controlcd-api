@@ -16,11 +16,17 @@ class Income extends Model
         'description',
         'user_id',
         'created_at',
+        'client_timezone',
+        'business_timestamp',
+        'business_date',
+        'business_timezone',
     ];
 
     protected $casts = [
         'value' => 'decimal:2',
         'created_at' => 'datetime',
+        'business_timestamp' => 'datetime',
+        'business_date' => 'date:Y-m-d',
     ];
 
     public function user(): BelongsTo

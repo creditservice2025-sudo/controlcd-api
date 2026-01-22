@@ -65,14 +65,42 @@ class ExpenseService
                 return $this->errorResponse('Ya existe un gasto idéntico creado recientemente. Por favor espere un momento.', 422);
             }
 
-            if (isset($validated['timezone']) && !empty($validated['timezone'])) {
-                $createdAt = Carbon::now($validated['timezone']);
-                $updatedAt = Carbon::now($validated['timezone']);
-                unset($validated['timezone']);
+            $seller = Seller::where('user_id', $userId)->first();
+            
+            // 1. Determinar el Timezone de la operación (Prioridad: Request > Seller Config > Default)
+            $defaultTz = \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
+            $businessTimezone = $request->input('timezone');
+
+            // Validar si el timezone del request es válido
+            if (!$businessTimezone) {
+                $businessTimezone = $defaultTz;
             } else {
-                $createdAt = null;
-                $updatedAt = null;
+                 try {
+                    Carbon::now($businessTimezone);
+                } catch (\Exception $e) {
+                    $businessTimezone = $defaultTz;
+                }
             }
+
+            // Client Timezone (from request or default)
+            $clientTimezone = $validated['timezone'] ?? config('app.timezone');
+            unset($validated['timezone']);
+
+            // Business Timestamp Calculation
+            $nowInBusinessZone = Carbon::now($businessTimezone);
+            
+            // 2. Calcular timestamp local y fecha de negocio
+            if ($request->has('created_at')) {
+                // Asumimos que la fecha enviada es "local" para el usuario (en su timezone efectivo)
+                $userProvidedDate = Carbon::parse($validated['created_at'], $businessTimezone);
+                $businessTimestamp = $userProvidedDate; 
+                $createdAt = $userProvidedDate->copy()->setTimezone('UTC'); 
+            } else {
+                $businessTimestamp = $nowInBusinessZone;
+                $createdAt = $nowInBusinessZone->copy()->setTimezone('UTC');
+            }
+            
+            $businessDate = $businessTimestamp->toDateString();
 
             $expenseData = [
                 'value' => $validated['value'],
@@ -80,9 +108,14 @@ class ExpenseService
                 'user_id' => $userId,
                 'category_id' => $validated['category_id'],
                 'status' => 'Aprobado',
-                'created_at' => $createdAt ?? ($request->has('created_at') ? $validated['created_at'] : null),
-                'updated_at' => $updatedAt ?? null
+                'created_at' => $createdAt,
+                'updated_at' => $createdAt, 
+                'client_timezone' => $clientTimezone,
+                'business_timezone' => $businessTimezone, // Dynamic based on operation
+                'business_timestamp' => $businessTimestamp,
+                'business_date' => $businessDate
             ];
+
             if ($request->has('latitude')) {
                 $expenseData['latitude'] = $validated['latitude'];
             }
@@ -94,7 +127,7 @@ class ExpenseService
             $expense = Expense::create($expenseData);
 
             // Notificación si supera el límite
-            $seller = Seller::where('user_id', $userId)->first();
+            // $seller loaded above
             if ($seller) {
                 $config = \App\Models\SellerConfig::where('seller_id', $seller->id)->first();
                 $limit = $config ? floatval($config->notify_expense_limit) : null;
@@ -117,6 +150,11 @@ class ExpenseService
                         }
                     }
                 }
+
+                // Recalcular liquidaciones usando BUSINESS DATE
+                $liquidationService = app(\App\Services\LiquidationService::class);
+                $liquidationService->recalculateLiquidation($seller->id, $businessDate);
+                $liquidationService->recalculateNextLiquidations($seller->id, $businessDate);
             }
 
             if ($request->hasFile('image')) {
@@ -129,7 +167,7 @@ class ExpenseService
                     'user_id' => $userId,
                     'path' => $imagePath,
                     'created_at' => $createdAt ?? null,
-                    'updated_at' => $updatedAt ?? null
+                    'updated_at' => $createdAt ?? null
                 ]);
             }
 
@@ -164,8 +202,11 @@ class ExpenseService
                 return $this->errorResponse('Vendedor no encontrado para el gasto', 404);
             }
 
-            $timezone = self::TIMEZONE;
-            $expenseDate = $expense->created_at->setTimezone($timezone)->format('Y-m-d');
+            // [NUEVO] Usar Timezone correcto para consistencia
+            $expenseTimezone = $expense->business_timezone ?? TimezoneHelper::getSellerTimezone($seller);    
+            // [NUEVO] Usar Fecha correcta (prioridad: business_date > calc)
+            $expenseDate = $expense->business_date ?? Carbon::parse($expense->created_at)->setTimezone($expenseTimezone)->format('Y-m-d');
+
             $liquidation = Liquidation::whereDate('date', $expenseDate)
                 ->where('seller_id', $seller->id)
                 ->first();
@@ -250,9 +291,14 @@ class ExpenseService
             // Obtener el vendedor asociado al usuario del ingreso
             $seller = Seller::where('user_id', $expense->user_id)->first();
 
+            // Determinar fecha de negocio del gasto (para validación y recálculo)
+            $businessDate = $expense->business_date 
+                ? $expense->business_date->format('Y-m-d') 
+                : $expense->created_at->format('Y-m-d'); // Fallback para antiguos
+
             // Verificar si existe liquidación aprobada para la fecha del gasto
             $liquidation = Liquidation::where('seller_id', $seller->id)
-                ->whereDate('date', $expense->created_at->format('Y-m-d'))
+                ->whereDate('date', $businessDate)
                 ->first();
 
             if ($liquidation) {
@@ -269,23 +315,33 @@ class ExpenseService
                 'timezone' => 'nullable|string',
             ]);
 
-            if (isset($validated['timezone']) && !empty($validated['timezone'])) {
-                $validated['updated_at'] = Carbon::now($validated['timezone']);
-                unset($validated['timezone']);
+            // Actualizar updated_at respetando zona horaria de negocio si es posible
+            $businessTimezone = \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
+            $validated['updated_at'] = Carbon::now($businessTimezone)->setTimezone('UTC'); // DB stores UTC usually, or use business_timestamp 
+            // Better: update business_timestamp if we tracked modification time in business zone, but business_timestamp usually tracks creation/event time. 
+            // Let's just stick to standard updated_at in UTC but knowing we have logic.
+            // The previous code was: $validated['updated_at'] = Carbon::now($validated['timezone']); which is correct if the column is datetime.
+            // But if we want to be consistent with creating business logic:
+            if (isset($validated['timezone'])) {
+                 unset($validated['timezone']);
             }
+            // Force updated_at to now
+            $validated['updated_at'] = Carbon::now();
 
             $expense->update($validated);
 
-            // Notificación si supera el límite
-            $seller = Seller::where('user_id', $expense->user_id)->first();
+            // Notificación (mismo código...)
+            // ...
             if ($seller) {
+                // ... (notification logic)
                 $config = \App\Models\SellerConfig::where('seller_id', $seller->id)->first();
                 $limit = $config ? floatval($config->notify_expense_limit) : null;
                 if ($limit && $expense->value > $limit) {
-                    $admins = \App\Models\User::where('role_id', 1)->get();
-                    $userToNotify = Auth::user();
-                    $message = 'Alerta: El gasto editado "' . $expense->description . '" por ' . $userToNotify->name . ' supera el límite configurado ($' . $limit . ').';
-                    $link = '/dashboard/expenses';
+                   // ... notification code ...
+                   $userToNotify = Auth::user();
+                   $admins = \App\Models\User::where('role_id', 1)->get();
+                   $message = 'Alerta: El gasto editado "' . $expense->description . '" por ' . $userToNotify->name . ' supera el límite configurado ($' . $limit . ').';
+                   $link = '/dashboard/expenses';
                     $data = [
                         'expense_id' => $expense->id,
                         'value' => $expense->value,
@@ -298,6 +354,11 @@ class ExpenseService
                         $admin->notify(new \App\Notifications\GeneralNotification('Alerta de gasto', $message, $link, $data));
                     }
                 }
+
+                // Recalcular liquidaciones
+                $liquidationService = app(\App\Services\LiquidationService::class);
+                $liquidationService->recalculateLiquidation($seller->id, $businessDate);
+                $liquidationService->recalculateNextLiquidations($seller->id, $businessDate);
             }
 
             return $this->successResponse([
@@ -321,8 +382,7 @@ class ExpenseService
             }
 
             $timezone = self::TIMEZONE;
-            $businessDate = Carbon::parse($expense->created_at)->setTimezone($timezone)->format('Y-m-d');
-
+            
             // Obtener el vendedor asociado al usuario del gasto
             $seller = Seller::where('user_id', $expense->user_id)->first();
 
@@ -330,11 +390,18 @@ class ExpenseService
                 return $this->errorResponse('No se encontró el vendedor asociado a este gasto', 422);
             }
 
+            // [NUEVO] Usar Timezone correcto (prioridad: business_timezone > seller > default)
+            $expenseTimezone = $expense->business_timezone ?? TimezoneHelper::getSellerTimezone($seller);
+            
+            // [NUEVO] Usar Fecha correcta (prioridad: business_date > calc)
+            $businessDate = $expense->business_date ?? Carbon::parse($expense->created_at)->setTimezone($expenseTimezone)->format('Y-m-d');
+
             // Restricción para vendedores: solo pueden eliminar gastos del mismo día
+            // Ahora comparamos contra "HOY" en la zona horaria DEL GASTO (que debería ser la zona del usuario)
             if ($user->role_id == 5) {
-                $today = Carbon::now($timezone)->format('Y-m-d');
-                if ($businessDate !== $today) {
-                    return $this->errorResponse('Los vendedores solo pueden eliminar gastos del día actual. Por favor contacte al administrador.', 422);
+                $todayInExpenseZone = Carbon::now($expenseTimezone)->format('Y-m-d');
+                if ($businessDate !== $todayInExpenseZone) {
+                    return $this->errorResponse('Los vendedores solo pueden eliminar gastos del día actual (' . $businessDate . '). Hoy es ' . $todayInExpenseZone . ' en su zona.', 422);
                 }
             }
 
@@ -642,7 +709,7 @@ class ExpenseService
             }
 
             $expensesQuery->leftJoin('liquidations', function ($join) use ($seller) {
-                $join->on(DB::raw('DATE(expenses.created_at)'), '=', DB::raw('DATE(liquidations.date)'))
+                $join->on(DB::raw('COALESCE(expenses.business_date, DATE(expenses.created_at))'), '=', 'liquidations.date')
                     ->where('liquidations.seller_id', '=', $seller->id);
             })
             ->where('expenses.user_id', $seller->user_id)
@@ -655,20 +722,45 @@ class ExpenseService
 
             // Check if include_all_dates flag is present
             if (!$request->has('include_all_dates')) {
-                // Apply date filtering only if include_all_dates is NOT set
                 if ($request->has('start_date') && $request->has('end_date')) {
-                    $startDate = Carbon::parse($request->get('start_date'), $timezone)->startOfDay()->timezone('UTC');
-                    $endDate = Carbon::parse($request->get('end_date'), $timezone)->endOfDay()->timezone('UTC');
-                    $expensesQuery->whereBetween('expenses.created_at', [$startDate, $endDate]);
+                    $startDate = $request->get('start_date');
+                    $endDate = $request->get('end_date');
+                    // Filter by business_date if available, else created_at
+                    $expensesQuery->where(function($q) use ($startDate, $endDate, $timezone) {
+                         $q->whereBetween('business_date', [$startDate, $endDate])
+                           ->orWhere(function($q2) use ($startDate, $endDate, $timezone) {
+                               $q2->whereNull('business_date')
+                                  ->whereBetween('expenses.created_at', [
+                                      Carbon::parse($startDate, $timezone)->startOfDay()->utc(),
+                                      Carbon::parse($endDate, $timezone)->endOfDay()->utc()
+                                  ]);
+                           });
+                    });
                 } elseif ($request->has('date')) {
-                    $filterDate = Carbon::parse($request->get('date'), $timezone);
-                    $start = $filterDate->copy()->startOfDay()->timezone('UTC');
-                    $end = $filterDate->copy()->endOfDay()->timezone('UTC');
-                    $expensesQuery->whereBetween('expenses.created_at', [$start, $end]);
+                    $filterDate = $request->get('date'); // YYYY-MM-DD
+                    $expensesQuery->where(function($q) use ($filterDate, $timezone) {
+                        $q->where('business_date', $filterDate)
+                          ->orWhere(function($q2) use ($filterDate, $timezone) {
+                              $q2->whereNull('business_date')
+                                 ->whereBetween('expenses.created_at', [
+                                     Carbon::parse($filterDate, $timezone)->startOfDay()->utc(),
+                                     Carbon::parse($filterDate, $timezone)->endOfDay()->utc()
+                                 ]);
+                          });
+                    });
                 } else {
-                    $todayStart = Carbon::now($timezone)->startOfDay()->timezone('UTC');
-                    $todayEnd = Carbon::now($timezone)->endOfDay()->timezone('UTC');
-                    $expensesQuery->whereBetween('expenses.created_at', [$todayStart, $todayEnd]);
+                    // Default to today in Business Timezone
+                    $todayDate = \App\Helpers\TimezoneHelper::getBusinessNow($seller)->toDateString();
+                    $expensesQuery->where(function($q) use ($todayDate, $timezone) {
+                        $q->where('business_date', $todayDate)
+                          ->orWhere(function($q2) use ($todayDate, $timezone) {
+                              $q2->whereNull('business_date')
+                                 ->whereBetween('expenses.created_at', [
+                                     Carbon::parse($todayDate, $timezone)->startOfDay()->utc(),
+                                     Carbon::parse($todayDate, $timezone)->endOfDay()->utc()
+                                 ]);
+                          });
+                    });
                 }
             }
 
