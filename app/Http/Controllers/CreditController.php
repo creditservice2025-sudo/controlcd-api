@@ -191,6 +191,16 @@ class CreditController extends Controller
         }
     }
 
+    public function validateDeletion($id)
+    {
+        try {
+            return $this->creditService->validateDeletion($id);
+        } catch (Exception $e) {
+            \Log::error("Error in CreditController@validateDeletion ({$id}): " . $e->getMessage());
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
     public function getModifications($creditId)
     {
         try {
