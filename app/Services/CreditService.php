@@ -1761,15 +1761,53 @@ class CreditService
             $isToday = $creditDate->equalTo($today);
             $hasAdjustmentPermission = $user->can('ajustar_caja') || $user->role_id === 1;
             
+            // ===== PAYMENT AND LIQUIDATION VALIDATION =====
+            $hasPayments = $credit->payments()->where('status', '!=', 'Anulado')->exists();
+            $totalPaid = $credit->payments()->where('status', '!=', 'Anulado')->sum('amount');
+            $paymentCount = $credit->payments()->where('status', '!=', 'Anulado')->count();
+            $pendingInstallments = $credit->installments()->where('status', 'Pendiente')->count();
+
+            // Get associated liquidation
+            $liquidation = Liquidation::where('seller_id', $credit->seller_id)
+                ->whereDate('date', $creditDate->format('Y-m-d'))
+                ->first();
+
+            // Log warning for critical deletions
+            if ($hasPayments && $hasAdjustmentPermission) {
+                \Log::warning('Usuario con permisos eliminando crédito con pagos', [
+                    'user_id' => $user->id,
+                    'user_email' => $user->email,
+                    'credit_id' => $credit->id,
+                    'credit_date' => $creditDate->format('Y-m-d'),
+                    'credit_amount' => $credit->credit_value,
+                    'total_paid' => $totalPaid,
+                    'payment_count' => $paymentCount,
+                    'liquidation_id' => $liquidation ? $liquidation->id : null,
+                    'timestamp' => now()
+                ]);
+            }
+            
             // If credit is from a previous day and user doesn't have adjustment permission
             if (!$isToday && !$hasAdjustmentPermission) {
                 $formattedDate = $creditDate->format('d/m/Y');
                 $formattedAmount = number_format($credit->credit_value, 2);
                 
-                return $this->errorResponse(
-                    "El crédito del {$formattedDate} por \${$formattedAmount} no puede ser eliminado, por favor contacte al administrador del sistema.",
-                    403
-                );
+                $liquidationInfo = $liquidation 
+                    ? "Liquidación #{$liquidation->id} - Estado: {$liquidation->status}" 
+                    : "Sin liquidación asociada";
+                
+                $paymentsInfo = $hasPayments 
+                    ? "Pagos realizados: {$paymentCount} - Total abonado: $" . number_format($totalPaid, 2)
+                    : "Sin pagos realizados";
+                
+                return $this->errorResponse([
+                    "No se puede eliminar el crédito porque es de un día anterior.",
+                    "Fecha del crédito: {$formattedDate}",
+                    "Monto del crédito: $" . number_format($credit->credit_value, 2),
+                    $liquidationInfo,
+                    $paymentsInfo,
+                    "Para eliminar este crédito, debe usar la sección 'Ajuste de Caja' o contactar al administrador del sistema."
+                ], 403);
             }
             // ===== DATE VALIDATION END =====
 
@@ -1842,6 +1880,79 @@ class CreditService
         } catch (\Exception $e) {
             DB::rollBack();
             return $this->errorResponse('Error al eliminar crédito: ' . $e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Validate if a credit can be deleted and return detailed information
+     * This is used by frontend to show confirmation dialog
+     */
+    public function validateDeletion($creditId)
+    {
+        try {
+            $user = Auth::user();
+            $credit = Credit::with(['payments', 'installments', 'seller', 'client'])->find($creditId);
+
+            if (!$credit) {
+                return $this->errorResponse('Crédito no encontrado', 404);
+            }
+
+            $timezone = 'America/Lima';
+            $today = Carbon::now($timezone)->startOfDay();
+            $creditDate = Carbon::parse($credit->created_at)->setTimezone($timezone)->startOfDay();
+            
+            $isToday = $creditDate->equalTo($today);
+            $hasAdjustmentPermission = $user->can('ajustar_caja') || $user->role_id === 1;
+            
+            $hasPayments = $credit->payments()->where('status', '!=', 'Anulado')->exists();
+            $totalPaid = $credit->payments()->where('status', '!=', 'Anulado')->sum('amount');
+            $paymentCount = $credit->payments()->where('status', '!=', 'Anulado')->count();
+            $pendingInstallments = $credit->installments()->where('status', 'Pendiente')->count();
+            
+            $liquidation = Liquidation::where('seller_id', $credit->seller_id)
+                ->whereDate('date', $creditDate->format('Y-m-d'))
+                ->first();
+
+            $canDelete = $isToday || $hasAdjustmentPermission;
+            $requiresConfirmation = $hasPayments || !$isToday;
+            
+            $warnings = [];
+            if (!$isToday) {
+                $warnings[] = "Este crédito es de un día anterior y afectará liquidaciones históricas.";
+            }
+            if ($hasPayments) {
+                $warnings[] = "Este crédito tiene pagos realizados que serán eliminados.";
+            }
+            if ($liquidation && $liquidation->status === 'cerrada') {
+                $warnings[] = "Este crédito pertenece a una liquidación cerrada.";
+            }
+            
+            return $this->successResponse([
+                'can_delete' => $canDelete,
+                'requires_confirmation' => $requiresConfirmation,
+                'credit_details' => [
+                    'id' => $credit->id,
+                    'date' => $creditDate->format('d/m/Y'),
+                    'amount' => floatval($credit->credit_value),
+                    'total_amount' => floatval($credit->total_amount),
+                    'client_name' => $credit->client->name,
+                    'is_today' => $isToday,
+                ],
+                'payment_details' => [
+                    'has_payments' => $hasPayments,
+                    'total_paid' => $totalPaid,
+                    'payment_count' => $paymentCount,
+                    'pending_installments' => $pendingInstallments,
+                ],
+                'liquidation_details' => $liquidation ? [
+                    'id' => $liquidation->id,
+                    'date' => $liquidation->date,
+                    'status' => $liquidation->status,
+                ] : null,
+                'warnings' => $warnings,
+            ]);
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error al validar eliminación: ' . $e->getMessage(), 500);
         }
     }
 

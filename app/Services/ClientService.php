@@ -22,6 +22,7 @@ use Illuminate\Support\Facades\Auth;
 use Throwable;
 use App\Models\ClientHistory;
 use App\Models\Image;
+use App\Models\Liquidation;
 
 class ClientService
 {
@@ -679,40 +680,70 @@ class ClientService
             if (!$client)
                 return $this->errorNotFoundResponse('Cliente no encontrado');
 
-            if ($client->credits()->where('status', 'Vigente')->exists()) {
-                return $this->errorResponse(['No se puede eliminar el cliente con créditos vigentes'], 401);
+            $timezone = request()->input('timezone', 'America/Lima');
+            $today = Carbon::now($timezone)->toDateString();
+
+            // Regla de Negocio: Buscar créditos que bloqueen la eliminación (Vigentes o con abonos)
+            $blockingCredit = $client->credits()
+                ->where(function ($q) {
+                    $q->where('status', 'Vigente')
+                        ->orWhereHas('payments', function ($pq) {
+                            $pq->where('status', '!=', 'Anulado');
+                        });
+                })
+                ->orderBy('created_at', 'desc')
+                ->first();
+
+            if ($blockingCredit) {
+                $creditDateLocal = Carbon::parse($blockingCredit->created_at)->setTimezone($timezone);
+                $creditDate = $creditDateLocal->toDateString();
+                $isToday = $creditDate === $today;
+
+                // Buscar liquidación asociada por vendedor y fecha del crédito
+                $liquidation = Liquidation::where('seller_id', $blockingCredit->seller_id)
+                    ->whereDate('date', $creditDate)
+                    ->first();
+                $liqId = $liquidation ? $liquidation->id : 'N/A';
+
+                if (!$isToday) {
+                    // REGLA 3 & 4 (Créditos de días anteriores)
+                    return $this->errorResponse([
+                        "No podemos eliminar el cliente porque posee un crédito activado.",
+                        "Fecha: " . $creditDateLocal->format('d/m/Y'),
+                        "Monto: $" . number_format($blockingCredit->total_amount, 2),
+                        "Nro de liquidación: {$liqId}.",
+                        "Debe contactar al administrador del sistema."
+                    ], 422);
+                } else {
+                    // REGLA 2 & 4 (Créditos de hoy)
+                    if ($blockingCredit->payments()->where('status', '!=', 'Anulado')->exists()) {
+                        // REGLA 4 Hoy
+                        $activeInstallments = $blockingCredit->installments()->where('status', 'Pendiente')->count();
+                        return $this->errorResponse([
+                            "El cliente posee un crédito con cuotas abonadas hoy.",
+                            "Debe eliminar el crédito primero.",
+                            "Fecha: " . $creditDateLocal->format('d/m/Y'),
+                            "Nro de crédito: {$blockingCredit->id}",
+                            "Nro de liquidación: {$liqId}",
+                            "Cuotas activas: {$activeInstallments}"
+                        ], 422);
+                    } else {
+                        // REGLA 2 Hoy
+                        return $this->errorResponse([
+                            "El cliente posee un crédito vigente del día.",
+                            "Primero debe eliminar los créditos o liquidarlo.",
+                            "Crédito del día: " . $creditDateLocal->format('d/m/Y')
+                        ], 422);
+                    }
+                }
             }
 
             DB::transaction(function () use ($client) {
-                // Stage 1: Detach guarantors
-                try {
-                    $client->guarantors()->detach();
-                } catch (\Exception $e) {
-                    Log::error("Error detaching guarantors for client {$client->id}: {$e->getMessage()}");
-                    throw new \Exception("Error al desvincular los fiadores del cliente");
-                }
-
-                // Stage 2: Delete images
-                try {
-                    $client->images()->each(function ($image) {
-                        try {
-                            Helper::deleteFile($image->path);
-                        } catch (\Exception $e) {
-                            Log::warning("No se pudo eliminar el archivo de imagen: {$e->getMessage()}");
-                        }
-                        $image->delete();
-                    });
-                } catch (\Exception $e) {
-                    Log::error("Error deleting images for client {$client->id}: {$e->getMessage()}");
-                    throw new \Exception("Error al eliminar las imágenes del cliente");
-                }
-
-                // Stage 3: Delete client
-                try {
-                    $client->delete();
-                } catch (\Exception $e) {
-                    Log::error("Error deleting client {$client->id}: {$e->getMessage()}");
-                    throw new \Exception("Error al eliminar el cliente de la base de datos");
+                // Como es un eliminado lógico (Soft Deletes), simplemente llamamos a delete()
+                // Las imágenes y créditos permanecen vinculados en la base de datos para historial
+                // pero ya no serán accesibles en las vistas normales.
+                if (!$client->delete()) {
+                    throw new \Exception("Error al realizar la eliminación lógica del cliente");
                 }
             });
 

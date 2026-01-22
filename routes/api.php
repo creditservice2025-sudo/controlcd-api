@@ -153,6 +153,7 @@ Route::middleware('auth:api')->group(function () {
     Route::post('credit/create', [CreditController::class, 'create']);
     Route::put('credit/update/{id}', [CreditController::class, 'update']);
     Route::put('credit/{creditId}/change-client', [CreditController::class, 'changeCreditClient']); // <-- aquí
+    Route::get('credit/{id}/validate-deletion', [CreditController::class, 'validateDeletion']);
     Route::delete('credit/delete/{id}', [CreditController::class, 'delete']);
     Route::get('credit/{id}', [CreditController::class, 'show']);
     Route::get('credits/clients', [CreditController::class, 'getClientCredits']);
