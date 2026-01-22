@@ -40,24 +40,63 @@ class IncomeService
                 ? $validated['user_id']
                 : $user->id;
 
-            if (isset($validated['timezone']) && !empty($validated['timezone'])) {
-                $createdAt = Carbon::now($validated['timezone']);
-                $updatedAt = Carbon::now($validated['timezone']);
-                unset($validated['timezone']);
+            $seller = Seller::where('user_id', $userId)->first();
+            
+            // 1. Determinar el Timezone de la operación (Prioridad: Request > Seller Config > Default)
+            $defaultTz = \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
+            $businessTimezone = $request->input('timezone');
+
+            // Validar si el timezone del request es válido
+            if (!$businessTimezone) {
+                $businessTimezone = $defaultTz;
             } else {
-                $createdAt = null;
-                $updatedAt = null;
+                 try {
+                    Carbon::now($businessTimezone);
+                } catch (\Exception $e) {
+                    $businessTimezone = $defaultTz;
+                }
             }
+            
+            // Client Timezone (from request or default)
+            $clientTimezone = $validated['timezone'] ?? config('app.timezone');
+            unset($validated['timezone']);
+
+            // Business Timestamp Calculation
+            $nowInBusinessZone = Carbon::now($businessTimezone);
+            
+            // 2. Calcular timestamp local y fecha de negocio
+            if ($request->has('created_at')) {
+                // Asumimos que la fecha enviada es "local" para el usuario (en su timezone efectivo)
+                $userProvidedDate = Carbon::parse($validated['created_at'], $businessTimezone);
+                $businessTimestamp = $userProvidedDate; 
+                $createdAt = $userProvidedDate->copy()->setTimezone('UTC'); 
+            } else {
+                $businessTimestamp = $nowInBusinessZone;
+                $createdAt = $nowInBusinessZone->copy()->setTimezone('UTC');
+            }
+            
+            $businessDate = $businessTimestamp->toDateString();
 
             $incomeData = [
                 'value' => $validated['value'],
                 'description' => $validated['description'],
                 'user_id' => $userId,
-                'created_at' => $createdAt ?? ($request->has('created_at') ? $validated['created_at'] : null),
-                'updated_at' => $updatedAt ?? null
+                'created_at' => $createdAt,
+                'updated_at' => $createdAt,
+                'client_timezone' => $clientTimezone,
+                'business_timezone' => $businessTimezone, // Dynamic based on operation
+                'business_timestamp' => $businessTimestamp,
+                'business_date' => $businessDate
             ];
 
             $income = Income::create($incomeData);
+
+            if ($seller) {
+                // Recalcular liquidaciones
+                $liquidationService = app(\App\Services\LiquidationService::class);
+                $liquidationService->recalculateLiquidation($seller->id, $businessDate);
+                $liquidationService->recalculateNextLiquidations($seller->id, $businessDate);
+            }
 
             if ($request->hasFile('image')) {
                 $imageFile = $request->file('image');
@@ -67,7 +106,7 @@ class IncomeService
                     'user_id' => $userId,
                     'path' => $imagePath,
                     'created_at' => $createdAt ?? null,
-                    'updated_at' => $updatedAt ?? null
+                    'updated_at' => $createdAt ?? null
                 ]);
             }
 
@@ -96,8 +135,10 @@ class IncomeService
                  return $this->errorResponse('Vendedor no encontrado', 404);
             }
 
-            $timezone = self::TIMEZONE;
-            $incomeDate = $income->created_at->setTimezone($timezone)->format('Y-m-d');
+            $incomeDate = $income->business_date 
+                ? $income->business_date->format('Y-m-d') 
+                : ($income->created_at ? $income->created_at->setTimezone(self::TIMEZONE)->format('Y-m-d') : date('Y-m-d'));
+            
             $liquidation = Liquidation::whereDate('date', $incomeDate)
                 ->where('seller_id', $seller->id)
                 ->first();
@@ -216,10 +257,10 @@ class IncomeService
             }
         }
 
-        if ($seller && $income->created_at) {
-            $incomeDate = $income->created_at instanceof Carbon
-                ? $income->created_at->toDateString()
-                : Carbon::parse($income->created_at)->toDateString();
+        if ($seller) {
+            $incomeDate = $income->business_date 
+                ? $income->business_date->format('Y-m-d') 
+                : ($income->created_at ? Carbon::parse($income->created_at)->toDateString() : date('Y-m-d'));
 
             $liquidation = Liquidation::where('seller_id', $seller->id)
                 ->whereDate('date', $incomeDate)
@@ -235,9 +276,9 @@ class IncomeService
 
         // Manejo timezone => set updated_at
         if (isset($validated['timezone']) && !empty($validated['timezone'])) {
-            $validated['updated_at'] = Carbon::now($validated['timezone']);
             unset($validated['timezone']);
         }
+        $validated['updated_at'] = Carbon::now();
 
         // Preparar datos para update (solo los campos permitidos)
         $updateData = [];
@@ -315,6 +356,17 @@ class IncomeService
 
         // Refrescar modelo para devolver data actualizada
         $income->refresh();
+        
+        // RECALCULAR LIQUIDACION SI HUBO CAMBIOS DE VALOR
+        if ($seller && isset($updateData['value'])) {
+             $liquidationService = app(\App\Services\LiquidationService::class);
+             $incomeDateRecalc = $income->business_date 
+                 ? $income->business_date->format('Y-m-d') 
+                 : ($income->created_at ? Carbon::parse($income->created_at)->toDateString() : date('Y-m-d'));
+             
+             $liquidationService->recalculateLiquidation($seller->id, $incomeDateRecalc);
+             $liquidationService->recalculateNextLiquidations($seller->id, $incomeDateRecalc);
+        }
 
         return $this->successResponse([
             'success' => true,
@@ -338,17 +390,20 @@ class IncomeService
             }
 
             // Solo permitir eliminar ingresos del día actual
-            $timezone = 'America/Lima';
+            $timezone = 'America/Lima'; // Used for currentDate fallback if needed, but we prefer business time
 
-            $incomeDate = Carbon::parse($income->created_at)->timezone($timezone)->format('Y-m-d');
-            $currentDate = Carbon::now($timezone)->format('Y-m-d');
-
+            $incomeDate = $income->business_date 
+                ? $income->business_date->format('Y-m-d') 
+                : Carbon::parse($income->created_at)->timezone($timezone)->format('Y-m-d');
+            
             // Obtener el vendedor asociado al usuario del ingreso
             $seller = Seller::where('user_id', $income->user_id)->first();
-
+            
             if (!$seller) {
                 return $this->errorResponse('No se encontró el vendedor asociado a este ingreso', 422);
             }
+            
+            $currentDate = \App\Helpers\TimezoneHelper::getBusinessNow($seller)->format('Y-m-d');
 
             if ($incomeDate !== $currentDate && (!$user->can('ajustar_caja') && $user->role_id != 1)) {
                 return $this->errorResponse(
@@ -455,13 +510,17 @@ class IncomeService
                 })->pluck('id');
                 $incomeQuery->whereIn('user_id', $userIds);
             } else if ($role === 5) {
-                $timezone = 'America/Lima';
-                $today = Carbon::now($timezone)->startOfDay();
-                $todayEnd = Carbon::now($timezone)->endOfDay();
-                $incomeQuery->whereBetween('created_at', [
-                    $today->copy()->timezone('UTC'),
-                    $todayEnd->copy()->timezone('UTC')
-                ]);
+                // Vendedor: Ver ingresos de hoy (Negocio)
+                $seller = Seller::where('user_id', $user->id)->first();
+                $todayDate = \App\Helpers\TimezoneHelper::getBusinessNow($seller)->toDateString();
+                
+                $incomeQuery->where(function($q) use ($todayDate) {
+                     $q->where('business_date', $todayDate)
+                       ->orWhere(function($sub) use ($todayDate) {
+                           $sub->whereNull('business_date')
+                               ->whereDate('created_at', $todayDate); // Fallback aproximado
+                       });
+                });
             }
 
             if ($request->has('seller_id') && $request->seller_id) {
@@ -469,10 +528,20 @@ class IncomeService
             }
 
             if ($request->has('start_date') && $request->has('end_date')) {
-                $timezone = $request->input('timezone', 'America/Lima');
-                $start = Carbon::parse($request->start_date, $timezone)->startOfDay()->timezone('UTC');
-                $end = Carbon::parse($request->end_date, $timezone)->endOfDay()->timezone('UTC');
-                $incomeQuery->whereBetween('created_at', [$start, $end]);
+                $startDate = $request->start_date;
+                $endDate = $request->end_date;
+                $timezone = $request->input('timezone', 'America/Lima'); // Backup parameter
+                
+                $incomeQuery->where(function($q) use ($startDate, $endDate, $timezone) {
+                     $q->whereBetween('business_date', [$startDate, $endDate])
+                       ->orWhere(function($sub) use ($startDate, $endDate, $timezone) {
+                            $sub->whereNull('business_date')
+                                ->whereBetween('created_at', [
+                                     Carbon::parse($startDate, $timezone)->startOfDay()->utc(),
+                                     Carbon::parse($endDate, $timezone)->endOfDay()->utc()
+                                ]);
+                       });
+                });
             }
 
             $validOrderDirections = ['asc', 'desc'];
@@ -612,8 +681,8 @@ class IncomeService
                 ->select('incomes.*', 'liquidations.id as liquidation_number')
                 ->with(['user', 'images'])
                 ->leftJoin('liquidations', function($join) use ($seller) {
-                    $join->on(DB::raw('DATE(incomes.created_at)'), '=', DB::raw('DATE(liquidations.date)'))
-                         ->where('liquidations.seller_id', '=', $seller->id);
+                     $join->on(DB::raw('COALESCE(incomes.business_date, DATE(incomes.created_at))'), '=', 'liquidations.date')
+                          ->where('liquidations.seller_id', '=', $seller->id);
                 })
                 ->where('incomes.user_id', $seller->user_id);
 
@@ -625,30 +694,42 @@ class IncomeService
                 if ($request->has('start_date') && $request->has('end_date')) {
                     $startDate = $request->get('start_date');
                     $endDate = $request->get('end_date');
+                    
+                    $incomeQuery->where(function($q) use ($startDate, $endDate, $timezone) {
+                        $q->whereBetween('business_date', [$startDate, $endDate])
+                          ->orWhere(function($sub) use ($startDate, $endDate, $timezone) {
+                               $sub->whereNull('business_date')
+                                   ->whereBetween('incomes.created_at', [
+                                        Carbon::parse($startDate, $timezone)->startOfDay()->utc(),
+                                        Carbon::parse($endDate, $timezone)->endOfDay()->utc()
+                                   ]);
+                          });
+                    });
 
-                    $start = Carbon::parse($startDate, $timezone)
-                        ->startOfDay()
-                        ->timezone('UTC');
-                    $end = Carbon::parse($endDate, $timezone)
-                        ->endOfDay()
-                        ->timezone('UTC');
-
-                    $incomeQuery->whereBetween('incomes.created_at', [$start, $end]);
                 } elseif ($request->has('date')) {
                     $filterDate = $request->get('date');
-
-                    $start = Carbon::parse($filterDate, $timezone)
-                        ->startOfDay()
-                        ->timezone('UTC');
-                    $end = Carbon::parse($filterDate, $timezone)
-                        ->endOfDay()
-                        ->timezone('UTC');
-
-                    $incomeQuery->whereBetween('incomes.created_at', [$start, $end]);
+                    $incomeQuery->where(function($q) use ($filterDate, $timezone) {
+                        $q->where('business_date', $filterDate)
+                          ->orWhere(function($sub) use ($filterDate, $timezone) {
+                               $sub->whereNull('business_date')
+                                   ->whereBetween('incomes.created_at', [
+                                        Carbon::parse($filterDate, $timezone)->startOfDay()->utc(),
+                                        Carbon::parse($filterDate, $timezone)->endOfDay()->utc()
+                                   ]);
+                          });
+                    });
                 } else {
-                    $todayStart = Carbon::now($timezone)->startOfDay()->timezone('UTC');
-                    $todayEnd = Carbon::now($timezone)->endOfDay()->timezone('UTC');
-                    $incomeQuery->whereBetween('incomes.created_at', [$todayStart, $todayEnd]);
+                    $todayDate = \App\Helpers\TimezoneHelper::getBusinessNow($seller)->toDateString();
+                    $incomeQuery->where(function($q) use ($todayDate, $timezone) {
+                        $q->where('business_date', $todayDate)
+                          ->orWhere(function($sub) use ($todayDate, $timezone) {
+                               $sub->whereNull('business_date')
+                                   ->whereBetween('incomes.created_at', [
+                                       Carbon::parse($todayDate, $timezone)->startOfDay()->utc(),
+                                       Carbon::parse($todayDate, $timezone)->endOfDay()->utc()
+                                   ]);
+                          });
+                    });
                 }
             }
 
