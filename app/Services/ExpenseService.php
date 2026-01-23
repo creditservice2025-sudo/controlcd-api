@@ -205,7 +205,9 @@ class ExpenseService
             // [NUEVO] Usar Timezone correcto para consistencia
             $expenseTimezone = $expense->business_timezone ?? TimezoneHelper::getSellerTimezone($seller);    
             // [NUEVO] Usar Fecha correcta (prioridad: business_date > calc)
-            $expenseDate = $expense->business_date ?? Carbon::parse($expense->created_at)->setTimezone($expenseTimezone)->format('Y-m-d');
+            $expenseDate = $expense->business_date 
+                ? (is_string($expense->business_date) ? $expense->business_date : $expense->business_date->format('Y-m-d'))
+                : Carbon::parse($expense->created_at)->setTimezone($expenseTimezone)->format('Y-m-d');
 
             $liquidation = Liquidation::whereDate('date', $expenseDate)
                 ->where('seller_id', $seller->id)
@@ -394,7 +396,9 @@ class ExpenseService
             $expenseTimezone = $expense->business_timezone ?? TimezoneHelper::getSellerTimezone($seller);
             
             // [NUEVO] Usar Fecha correcta (prioridad: business_date > calc)
-            $businessDate = $expense->business_date ?? Carbon::parse($expense->created_at)->setTimezone($expenseTimezone)->format('Y-m-d');
+            $businessDate = $expense->business_date 
+                ? (is_string($expense->business_date) ? $expense->business_date : $expense->business_date->format('Y-m-d'))
+                : Carbon::parse($expense->created_at)->setTimezone($expenseTimezone)->format('Y-m-d');
 
             // Restricción para vendedores: solo pueden eliminar gastos del mismo día
             // Ahora comparamos contra "HOY" en la zona horaria DEL GASTO (que debería ser la zona del usuario)
@@ -710,7 +714,8 @@ class ExpenseService
 
             $expensesQuery->leftJoin('liquidations', function ($join) use ($seller) {
                 $join->on(DB::raw('COALESCE(expenses.business_date, DATE(expenses.created_at))'), '=', 'liquidations.date')
-                    ->where('liquidations.seller_id', '=', $seller->id);
+                    ->where('liquidations.seller_id', '=', $seller->id)
+                    ->whereNull('liquidations.deleted_at');
             })
             ->where('expenses.user_id', $seller->user_id)
             ->where(function ($q) {
