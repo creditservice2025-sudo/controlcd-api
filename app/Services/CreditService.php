@@ -2340,19 +2340,46 @@ class CreditService
 
             $credits = $credits->map(function ($credit) {
                 $startDate = $credit->start_date;
-                $lastInstallment = $credit->installments->sortByDesc('due_date')->first();
-                $endDate = $lastInstallment ? Carbon::parse($lastInstallment->due_date)->setTime(23, 59, 59)->format('Y-m-d H:i:s') : null;
+                $lastKey = $credit->installments->sortByDesc('due_date')->first();
+                $endDate = $lastKey ? Carbon::parse($lastKey->due_date)->setTime(23, 59, 59)->format('Y-m-d H:i:s') : null;
 
                 $credit->start_date = $startDate;
                 $credit->end_date = $endDate;
 
+                // FIX: Populate implicit previous credit if missing
+                if (!$credit->renewed_from) {
+                    $lastCredit = Credit::with(['payments', 'images', 'installments'])
+                        ->where('client_id', $credit->client_id)
+                        ->where('id', '<', $credit->id)
+                        ->orderBy('created_at', 'desc')
+                        ->first();
+
+                    if ($lastCredit) {
+                         // Attach as relation so it appears in JSON
+                        $credit->setRelation('renewed_from', $lastCredit);
+                    }
+                }
+
                 return $credit;
+            });
+
+            // Convert to array to ensure renewed_from is included in JSON
+            $creditsArray = $credits->map(function ($credit) {
+                $creditArray = $credit->toArray();
+                // Ensure renewed_from is included even if it was set dynamically
+                if ($credit->relationLoaded('renewed_from')) {
+                    $creditArray['renewed_from'] = $credit->renewed_from ? $credit->renewed_from->toArray() : null;
+                    \Log::info('Credit ID: ' . $credit->id . ' has renewed_from: ' . ($credit->renewed_from ? $credit->renewed_from->id : 'null'));
+                } else {
+                    \Log::info('Credit ID: ' . $credit->id . ' - renewed_from relation NOT loaded');
+                }
+                return $creditArray;
             });
 
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Créditos obtenidos correctamente para el vendedor y fecha(s) especificadas',
-                'data' => $credits
+                'data' => $creditsArray
             ]);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
