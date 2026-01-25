@@ -409,6 +409,24 @@ class LiquidationController extends Controller
             'updated_at' => $request->has('updated_at') ? Carbon::parse($request->updated_at, $timezone) : $now,
         ]);
 
+        if ($request->hasFile('path')) {
+            // Eliminar imagen anterior si existe
+            if ($liquidation->path) {
+                Helper::deleteFile($liquidation->path);
+            }
+            $imageFile = $request->file('path');
+            $imagePath = Helper::uploadFile($imageFile, 'liquidations');
+            $liquidation->update(['path' => $imagePath]);
+        }
+
+        if ($request->filled('observation')) {
+            $currentObservation = $liquidation->observation;
+            $newObservation = "Re-cierre (" . $now->toDateTimeString() . "): " . $request->observation;
+            $liquidation->update([
+                'observation' => $currentObservation ? $currentObservation . "\n" . $newObservation : $newObservation
+            ]);
+        }
+
         $liquidation->refresh();
         $changedData = $liquidation->getChanges();
 

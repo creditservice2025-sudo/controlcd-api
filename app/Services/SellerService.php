@@ -257,11 +257,13 @@ class SellerService
                 //     $q->whereDate('login_at', $today)
                 //         ->whereNull('logout_at');
                 // },
-                'user.sessionLogs' => function ($q) use ($today) {
-                    $q->whereDate('login_at', $today);
+                'user.sessionLogs' => function ($q) {
+                    // Fetch logs from last 48 hours to reliably cover "Today" across all timezones
+                    // without needing complex SQL timezone conversion.
+                    $q->where('login_at', '>=', Carbon::now()->subHours(48));
                 },
                 'city:id,name,country_id',
-                'city.country:id,name'
+                'city.country:id,name,timezone'
             ])
                 ->whereNull('deleted_at')
                 ->orderBy('created_at', 'desc');

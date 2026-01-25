@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 class Country extends Model
 {
 
-    protected $fillable = ['name', 'currency', 'status'];
+    protected $fillable = ['name', 'currency', 'status', 'timezone'];
 
     public function departments()
     {
