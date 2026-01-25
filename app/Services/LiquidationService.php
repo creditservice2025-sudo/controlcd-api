@@ -1615,8 +1615,27 @@ class LiquidationService
 
     public function reopenRoute($sellerId, $date, $request)
     {
+        // 1. Obtener la zona horaria real del vendedor
+        $seller = \App\Models\Seller::with('city.country')->find($sellerId);
+        $timezone = $seller->city->country->timezone ?? 'America/Lima';
 
-        $timezone = $request->input('timezone', 'America/Lima');
+        // 2. Verificar restricción de tiempo (23:59:59 del día de la liquidación)
+        // La fecha de la liquidación ($date)
+        $liquidationDate = Carbon::parse($date)->format('Y-m-d');
+        
+        // Hora actual en la zona del vendedor
+        $nowInSellerTimezone = Carbon::now($timezone);
+        $endOfLiquidationDay = Carbon::parse($liquidationDate, $timezone)->endOfDay();
+
+        // Validar: Si "ahora" es mayor que fin del día de la liquidación, bloquear.
+        if ($nowInSellerTimezone->gt($endOfLiquidationDay)) {
+            return [
+                'success' => false, // Importante para el frontend
+                'message' => 'No se puede reabrir la caja: El tiempo límite (23:59:59 hora local) ha expirado.',
+                'audits_deleted' => 0
+            ];
+        }
+
         $dateLocal = \Carbon\Carbon::parse($date, $timezone)->format('Y-m-d');
         $startUTC = \Carbon\Carbon::parse($dateLocal, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC = \Carbon\Carbon::parse($dateLocal, $timezone)->endOfDay()->setTimezone('UTC');
