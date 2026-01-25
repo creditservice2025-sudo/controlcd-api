@@ -641,6 +641,14 @@ class LiquidationService
             'poliza' => $poliza,
             'irrecoverable_credits' => $irrecoverableCredits,
             'total_pending_absorbed' => $dailyTotals['total_crossed_credits'],
+            'clients_paid_count' => $dailyTotals['clients_paid_count'] ?? 0,
+            'clients_without_credit_count' => $dailyTotals['clients_without_credit_count'] ?? 0,
+            'new_clients_count' => $dailyTotals['new_clients_count'] ?? 0,
+            'active_clients_with_credit_count' => $dailyTotals['active_clients_with_credit_count'] ?? 0,
+            'clients_liquidated_count' => $dailyTotals['clients_liquidated_count'] ?? 0,
+            'clients_full_payment_count' => $dailyTotals['clients_full_payment_count'] ?? 0,
+            'clients_partial_payment_count' => $dailyTotals['clients_partial_payment_count'] ?? 0,
+            'clients_liquidated_and_renewed_count' => $dailyTotals['clients_liquidated_and_renewed_count'] ?? 0,
         ];
     }
 
@@ -682,6 +690,14 @@ class LiquidationService
             'renewal_disbursed_total' => floatval($dynamicData['total_renewal_disbursed'] ?? 0),
             'total_pending_absorbed' => floatval($dynamicData['total_pending_absorbed'] ?? 0),
             'irrecoverable_credits_amount' => floatval($dynamicData['irrecoverable_credits'] ?? 0),
+            'clients_paid_count' => intval($dynamicData['clients_paid_count'] ?? 0),
+            'clients_without_credit_count' => intval($dynamicData['clients_without_credit_count'] ?? 0),
+            'new_clients_count' => intval($dynamicData['new_clients_count'] ?? 0),
+            'active_clients_with_credit_count' => intval($dynamicData['active_clients_with_credit_count'] ?? 0),
+            'clients_liquidated_count' => intval($dynamicData['clients_liquidated_count'] ?? 0),
+            'clients_full_payment_count' => intval($dynamicData['clients_full_payment_count'] ?? 0),
+            'clients_partial_payment_count' => intval($dynamicData['clients_partial_payment_count'] ?? 0),
+            'clients_liquidated_and_renewed_count' => intval($dynamicData['clients_liquidated_and_renewed_count'] ?? 0),
             'shortage' => 0,
             'surplus' => 0,
             'cash_delivered' => 0,
@@ -717,7 +733,15 @@ class LiquidationService
             $liquidation->surplus == $metrics['surplus'] &&
             $liquidation->poliza == $metrics['poliza'] &&
             $liquidation->renewal_disbursed_total == $metrics['renewal_disbursed_total'] &&
-            $liquidation->total_pending_absorbed == $metrics['total_pending_absorbed']
+            $liquidation->total_pending_absorbed == $metrics['total_pending_absorbed'] &&
+            $liquidation->clients_paid_count == $metrics['clients_paid_count'] &&
+            $liquidation->clients_without_credit_count == $metrics['clients_without_credit_count'] &&
+            $liquidation->new_clients_count == $metrics['new_clients_count'] &&
+            $liquidation->active_clients_with_credit_count == $metrics['active_clients_with_credit_count'] &&
+            $liquidation->clients_liquidated_count == $metrics['clients_liquidated_count'] &&
+            $liquidation->clients_full_payment_count == $metrics['clients_full_payment_count'] &&
+            $liquidation->clients_partial_payment_count == $metrics['clients_partial_payment_count'] &&
+            $liquidation->clients_liquidated_and_renewed_count == $metrics['clients_liquidated_and_renewed_count']
         );
 
         if (!$hasChanges) {
@@ -745,6 +769,8 @@ class LiquidationService
 
         $seller = Seller::find($sellerId);
         $userId = $seller ? $seller->user_id : null;
+
+        $dailyTotals = $this->getDailyTotals($sellerId, $date, $userId, $timezone);
 
         // Cálculos de la BD
         $totalExpenses = $userId
@@ -864,6 +890,14 @@ class LiquidationService
             'renewal_disbursed_total' => $total_renewal_disbursed,
             'irrecoverable_credits_amount' => $irrecoverableCredits,
             'total_pending_absorbed' => $total_pending_absorbed,
+            'clients_paid_count' => $dailyTotals['clients_paid_count'] ?? 0,
+            'clients_without_credit_count' => $dailyTotals['clients_without_credit_count'] ?? 0,
+            'new_clients_count' => $dailyTotals['new_clients_count'] ?? 0,
+            'active_clients_with_credit_count' => $dailyTotals['active_clients_with_credit_count'] ?? 0,
+            'clients_liquidated_count' => $dailyTotals['clients_liquidated_count'] ?? 0,
+            'clients_full_payment_count' => $dailyTotals['clients_full_payment_count'] ?? 0,
+            'clients_partial_payment_count' => $dailyTotals['clients_partial_payment_count'] ?? 0,
+            'clients_liquidated_and_renewed_count' => $dailyTotals['clients_liquidated_and_renewed_count'] ?? 0,
         ];
     }
 
@@ -1047,7 +1081,15 @@ class LiquidationService
             'transfer' => 0,
             'collected_total' => 0,
             'base_value' => 0,
-            'liquidation_start_date' => $firstPaymentDate
+            'liquidation_start_date' => $firstPaymentDate,
+            'clients_paid_count' => 0,
+            'clients_without_credit_count' => 0,
+            'new_clients_count' => 0,
+            'active_clients_with_credit_count' => 0,
+            'clients_liquidated_count' => 0,
+            'clients_full_payment_count' => 0,
+            'clients_partial_payment_count' => 0,
+            'clients_liquidated_and_renewed_count' => 0
         ];
 
         foreach ($paymentResults as $result) {
@@ -1121,6 +1163,107 @@ class LiquidationService
                     ->whereColumn('credits.client_id', 'clients.id')
                     ->where('credits.seller_id', $sellerId);
             })
+            ->count();
+
+        // 1. Cantidad de clientes con créditos y cuando pagaron durante del día
+        $totals['clients_paid_count'] = (int) DB::table('payments')
+            ->join('credits', 'payments.credit_id', '=', 'credits.id')
+            ->where('credits.seller_id', $sellerId)
+            ->where('payments.business_date', $date)
+            ->whereNull('payments.deleted_at')
+            ->distinct('credits.client_id')
+            ->count('credits.client_id');
+
+        // 2. Cuantos clientes sin créditos
+        $totals['clients_without_credit_count'] = (int) DB::table('clients')
+            ->where('seller_id', $sellerId)
+            ->whereNull('deleted_at')
+            ->whereNotExists(function ($query) {
+                $query->select(DB::raw(1))
+                    ->from('credits')
+                    ->whereColumn('credits.client_id', 'clients.id')
+                    ->whereNotIn('credits.status', ['Liquidado', 'Rechazado', 'Anulado', 'Finalizado']);
+            })
+            ->count();
+
+        // 3. Cantidad de clientes nuevos
+        $totals['new_clients_count'] = (int) DB::table('clients')
+            ->where('seller_id', $sellerId)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereNull('deleted_at')
+            ->count();
+
+        // 4. Cantidad de clientes activos con créditos (Vigentes/Atrasados/etc, NO Liquidados)
+        $totals['active_clients_with_credit_count'] = (int) DB::table('clients')
+            ->where('seller_id', $sellerId)
+            ->whereNull('deleted_at')
+            ->whereExists(function ($query) {
+                $query->select(DB::raw(1))
+                    ->from('credits')
+                    ->whereColumn('credits.client_id', 'clients.id')
+                    ->whereIn('credits.status', ['Vigente', 'Atrasado', 'Mora', 'Renovado']);
+            })
+            ->count();
+
+        // 5. Cantidad de clientes que liquidaron hoy (L)
+        // Clientes que hicieron un pago hoy y su crédito quedó en estado 'Liquidado'
+        $totals['clients_liquidated_count'] = (int) DB::table('payments')
+            ->join('credits', 'payments.credit_id', '=', 'credits.id')
+            ->where('credits.seller_id', $sellerId)
+            ->where('payments.business_date', $date)
+            ->where('credits.status', 'Liquidado')
+            ->whereNull('payments.deleted_at')
+            ->distinct('credits.client_id')
+            ->count('credits.client_id');
+
+        // 6. Cantidad de clientes con pagos completos vs parciales
+        $paymentsToday = DB::table('payments')
+            ->join('credits', 'payments.credit_id', '=', 'credits.id')
+            ->where('credits.seller_id', $sellerId)
+            ->where('payments.business_date', $date)
+            ->whereNull('payments.deleted_at')
+            ->select('credits.client_id', 'payments.status')
+            ->get();
+
+        $clientPayments = $paymentsToday->groupBy('client_id');
+        $fullPaymentClients = 0;
+        $partialPaymentClients = 0;
+
+        foreach ($clientPayments as $clientId => $payments) {
+            $hasFull = $payments->contains(function ($p) {
+                return in_array($p->status, ['Pagado', 'Aprobado']);
+            });
+
+            if ($hasFull) {
+                $fullPaymentClients++;
+            } else {
+                $partialPaymentClients++;
+            }
+        }
+
+        $totals['clients_full_payment_count'] = $fullPaymentClients;
+        $totals['clients_partial_payment_count'] = $partialPaymentClients;
+
+        // 7. Clientes que liquidaron Y renovaron hoy
+        // Clientes que tienen un crédito liquidado hoy Y un crédito nuevo creado hoy
+        $liquidatedClientIds = DB::table('payments')
+            ->join('credits', 'payments.credit_id', '=', 'credits.id')
+            ->where('credits.seller_id', $sellerId)
+            ->where('payments.business_date', $date)
+            ->where('credits.status', 'Liquidado')
+            ->whereNull('payments.deleted_at')
+            ->distinct('credits.client_id')
+            ->pluck('credits.client_id')
+            ->toArray();
+
+        $totals['clients_liquidated_and_renewed_count'] = (int) DB::table('credits')
+            ->where('seller_id', $sellerId)
+            ->whereIn('client_id', $liquidatedClientIds)
+            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereNull('renewed_from_id') // Crédito nuevo "puro" o primera compra tras liquidar
+            ->whereNull('unification_reason')
+            ->whereNull('deleted_at')
+            ->distinct('client_id')
             ->count();
 
         // Calcular saldos
