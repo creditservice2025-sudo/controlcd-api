@@ -324,4 +324,72 @@ class Helper
             throw $e;
         }
     }
+
+    /**
+     * Parsea un User-Agent para obtener información del dispositivo, OS y navegador.
+     *
+     * @param string $userAgent
+     * @return array
+     */
+    public static function parseUserAgent($userAgent)
+    {
+        if (!$userAgent) return ['device' => 'Desconocido', 'os' => 'Desconocido', 'browser' => 'Desconocido'];
+
+        $device = 'Escritorio';
+        $browser = 'Navegador';
+        $os = 'Desconocido';
+
+        // Procesar Dispositivo
+        if (preg_match('/(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i', $userAgent)) {
+            $device = 'Tablet';
+        } elseif (preg_match('/Mobile|Android|iPhone|iPod|BlackBerry|IEMobile|Opera Mini/i', $userAgent)) {
+            if (preg_match('/iPhone/i', $userAgent)) $device = 'iPhone';
+            elseif (preg_match('/Android/i', $userAgent)) $device = 'Android';
+            else $device = 'Móvil';
+        }
+
+        // Procesar OS
+        if (preg_match('/windows/i', $userAgent)) $os = 'Windows';
+        elseif (preg_match('/macintosh|mac os x/i', $userAgent)) $os = 'Mac OS';
+        elseif (preg_match('/linux/i', $userAgent)) $os = 'Linux';
+        elseif (preg_match('/android/i', $userAgent)) $os = 'Android';
+        elseif (preg_match('/iphone/i', $userAgent)) $os = 'iPhone';
+        elseif (preg_match('/ipad|ipod/i', $userAgent)) $os = 'iOS';
+
+        // Procesar Navegador
+        if (preg_match('/edge|edg/i', $userAgent)) $browser = 'Edge';
+        elseif (preg_match('/chrome/i', $userAgent)) $browser = 'Chrome';
+        elseif (preg_match('/firefox/i', $userAgent)) $browser = 'Firefox';
+        elseif (preg_match('/safari/i', $userAgent)) $browser = 'Safari';
+        elseif (preg_match('/msie|trident/i', $userAgent)) $browser = 'IE';
+
+        return [
+            'device' => $device,
+            'os' => $os,
+            'browser' => $browser
+        ];
+    }
+
+    /**
+     * Obtiene el país de una IP usando una API externa con caché.
+     *
+     * @param string $ip
+     * @return string
+     */
+    public static function getCountryFromIp($ip)
+    {
+        if (!$ip || $ip === '127.0.0.1' || $ip === '::1') return 'Local/VPN';
+
+        return \Illuminate\Support\Facades\Cache::remember("ip_country_{$ip}", 86400, function () use ($ip) {
+            try {
+                $response = \Illuminate\Support\Facades\Http::timeout(3)->get("http://ip-api.com/json/{$ip}?fields=status,country");
+                if ($response->successful() && $response->json('status') === 'success') {
+                    return $response->json('country');
+                }
+            } catch (\Exception $e) {
+                \Log::warning("GeoIP failed for {$ip}: " . $e->getMessage());
+            }
+            return 'Desconocido';
+        });
+    }
 }

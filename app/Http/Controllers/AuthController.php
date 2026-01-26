@@ -39,6 +39,15 @@ class AuthController extends Controller
         }
     }
 
+    public function logoutSession($sessionId)
+    {
+        try {
+            return $this->loginService->logoutSession($sessionId);
+        } catch (Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
     public function changePassword(Request $request)
     {
         try {

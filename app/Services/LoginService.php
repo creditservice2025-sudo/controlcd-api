@@ -47,31 +47,17 @@ class LoginService
             }
 
             $seller = $user->seller;
-            if ($seller) {
+            if ($seller && $user->role_id === 5) {
+                // Bloqueo estricto: Si existe CUALQUIER liquidaci├│n para hoy, el vendedor no entra.
+                // Se usa America/Lima como zona de referencia para consistencia con el resto del app.
+                $todayLima = \Carbon\Carbon::now('America/Lima')->toDateString();
+                
                 $liquidation = Liquidation::where('seller_id', $seller->id)
-                    ->where(DB::raw('DATE(date)'), Carbon::today()->toDateString())
+                    ->whereDate('date', $todayLima)
                     ->first();
 
                 if ($liquidation) {
-                    if ($liquidation->status !== 'pending') {
-
-                        return $this->errorResponse(['Ya has realizado una liquidación hoy. Intenta nuevamente mañana.'], 401);
-                    }
-
-                    \Log::info('Verificando auditoría para usuario: ' . $user->id);
-
-                    $auditExists = \App\Models\LiquidationAudit::where('liquidation_id', $liquidation->id)
-                        ->where('user_id', $user->id)
-                        ->whereIn('action', ['updated', 'created'])
-                        ->whereDate('created_at', Carbon::today())
-                        ->whereNull('deleted_at')
-                        ->exists();
-
-                        \Log::info('Auditoría encontrada: ' . ($auditExists ? 'Si' : 'No'));
-
-                    if ($auditExists) {
-                        return $this->errorResponse(['Ya has realizado una liquidación hoy. Intenta nuevamente mañana.'], 401);
-                    }
+                    return $this->errorResponse(['Ya cerro la liquidación del día. Si desea reabrir la caja debe contactar al administrador'], 401);
                 }
             }
 
@@ -98,6 +84,11 @@ class LoginService
                 'token_type' => 'Bearer',
                 'user' => $user,
                 'permissions' => $user->getAllPermissions()->pluck('name'),
+                'is_liquidated_today' => ($user->role_id === 5 && $user->seller)
+                    ? \App\Models\Liquidation::where('seller_id', $user->seller->id)
+                        ->whereDate('date', \Carbon\Carbon::now('America/Lima')->toDateString())
+                        ->exists()
+                    : false,
             ]);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
@@ -132,6 +123,24 @@ class LoginService
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             return $this->handlerException('Error al cerrar sesión');
+        }
+    }
+
+    public function logoutSession($sessionId)
+    {
+        try {
+            $session = SessionLog::findOrFail($sessionId);
+            $session->update([
+                'logout_at' => Carbon::now('America/Lima')
+            ]);
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Sesión cerrada correctamente por el administrador'
+            ]);
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->handlerException('Error al cerrar la sesión remota');
         }
     }
 

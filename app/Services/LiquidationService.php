@@ -1648,7 +1648,16 @@ class LiquidationService
         \Log::debug("Reopening route - Liquidation found:", ['liquidation' => $liquidation]);
 
         if (!$liquidation) {
-            return ['message' => 'No existe liquidación para ese vendedor y fecha', 'audits_deleted' => 0];
+            return ['success' => false, 'message' => 'No existe liquidación para ese vendedor y fecha', 'audits_deleted' => 0];
+        }
+
+        // Regla: No reabrir si ya fue aprobada por el superadministrador
+        if ($liquidation->status === 'approved') {
+            return [
+                'success' => false,
+                'message' => 'El superadministrador ya cerró esta liquidación y no se puede reabrir.',
+                'audits_deleted' => 0
+            ];
         }
 
         $seller = \App\Models\Seller::find($liquidation->seller_id);
@@ -1663,6 +1672,11 @@ class LiquidationService
             ->delete();
 
         \Log::debug("Reopening route - Audits deleted:", ['deleted' => $deleted]);
+
+        // Eliminar el registro de liquidaci├│n para permitir acceso y re-cierre
+        if ($liquidation) {
+            $liquidation->delete();
+        }
 
         return [
             'message' => 'Ruta reabierta correctamente',
@@ -1923,29 +1937,92 @@ class LiquidationService
         $perPage = $request->get('per_page', 10);
         $page = $request->get('page', 1);
 
-        // Créditos nuevos (de esta liquidación)
-        $creditosNuevosQuery = \App\Models\Credit::where('seller_id', $liquidation->seller_id)
-            ->whereNull('renewed_from_id')
+        // Créditos del día (Nuevos Y Renovaciones para el listado unificado)
+        $creditosNuevosQuery = \App\Models\Credit::with('client')
+            ->where('seller_id', $liquidation->seller_id)
             ->whereNull('renewed_to_id')
             ->whereNull('unification_reason')
             ->whereBetween('created_at', [
                     Carbon::parse($liquidation->date, self::TIMEZONE)->startOfDay()->setTimezone('UTC'),
                     Carbon::parse($liquidation->date, self::TIMEZONE)->endOfDay()->setTimezone('UTC')
                 ]);
-        $creditosNuevosPaginados = $creditosNuevosQuery->paginate($perPage, ['*'], 'creditos_page', $page);
+        
+        // Clonar para paginación sin afectar el query base
+        $creditosNuevosPaginados = (clone $creditosNuevosQuery)->paginate($perPage, ['*'], 'creditos_page', $page);
+        
+        // Lógica "Smart Classification": Detectar clientes recurrentes (que ya tuvieron créditos antes)
+        $creditosNuevosPaginados->getCollection()->transform(function ($credit) {
+            if (!$credit->renewed_from_id) {
+                // Si no es renovación estricta, verificamos historia previa
+                // Buscamos si existe al menos UN crédito anterior de este mismo cliente
+                $hasHistory = \App\Models\Credit::where('client_id', $credit->client_id)
+                    ->where('id', '<', $credit->id) // Anterior a este
+                    ->exists();
+                
+                $credit->setAttribute('is_returning', $hasHistory);
+            } else {
+                $credit->setAttribute('is_returning', false);
+            }
+            return $credit;
+        });
 
-        // Calcular la suma de la póliza de los créditos nuevos
-        $polizaTotal = (clone $creditosNuevosQuery)->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
+        // Obtener todos los registros para cálculos (clonando)
+        $allCredits = (clone $creditosNuevosQuery)->get();
+        
+        // Lógica "Smart Classification": Detectar clientes recurrentes (que ya tuvieron créditos antes)
+        // Aplicamos esto también a $allCredits para que los totales coincidan con la vista
+        $allCredits->transform(function ($credit) {
+            if (!$credit->renewed_from_id) {
+                // Buscamos si existe al menos UN crédito anterior de este mismo cliente
+                $hasHistory = \App\Models\Credit::where('client_id', $credit->client_id)
+                    ->where('id', '<', $credit->id)
+                    ->exists();
+                
+                $credit->setAttribute('is_returning', $hasHistory);
+            } else {
+                $credit->setAttribute('is_returning', false);
+            }
+            return $credit;
+        });
+
+        // Clasificación para métricas
+        $pureNewCredits = $allCredits->filter(function ($value) {
+            // Es "Puro Nuevo" si NO es renovación estricta Y NO es recurrente
+            return is_null($value->renewed_from_id) && !$value->is_returning;
+        });
+        
+        $renewedOrReturningCredits = $allCredits->filter(function ($value) {
+             // Es "Renovado/Recurrente" si ES renovación estricta O ES recurrente
+             return !is_null($value->renewed_from_id) || $value->is_returning;
+        });
+
+        $creditosNuevosRealCount = $pureNewCredits->count();
+        $creditosNuevosRealAmount = $pureNewCredits->sum('credit_value');
+
+        $renovadosCount = $renewedOrReturningCredits->count();
+        $renovadosAmount = $renewedOrReturningCredits->sum('credit_value');
+
+        // Calcular la suma de la póliza (de todos los del día mostrados)
+        $polizaTotal = $allCredits->sum(function($c) {
+            return ($c->credit_value * $c->micro_insurance_percentage) / 100;
+        });
 
         // Pagos (cobrados en esta liquidación)
+        // Join con clients para obtener el nombre del cliente
         $pagosQuery = \App\Models\Payment::join('credits', 'payments.credit_id', '=', 'credits.id')
+            ->join('clients', 'credits.client_id', '=', 'clients.id')
             ->where('credits.seller_id', $liquidation->seller_id)
             ->whereBetween('payments.created_at', [
                     Carbon::parse($liquidation->date, self::TIMEZONE)->startOfDay()->setTimezone('UTC'),
                     Carbon::parse($liquidation->date, self::TIMEZONE)->endOfDay()->setTimezone('UTC')
                 ])
-            ->select('payments.*');
-        $pagosPaginados = $pagosQuery->paginate($perPage, ['*'], 'pagos_page', $page);
+            ->select('payments.*', 'clients.name as client_name', 'credits.id as credit_id', 'credits.status as credit_status');
+            
+        // FIX: Especificar columnas en paginate para evitar ambigüedad por los joins
+        $pagosPaginados = (clone $pagosQuery)->paginate($perPage, ['payments.*', 'clients.name as client_name', 'credits.id as credit_id', 'credits.status as credit_status'], 'pagos_page', $page);
+        
+        // Total recaudo (suma real de los pagos listados) - clonar para evitar limites de paginación
+        $clientsPaidAmount = (clone $pagosQuery)->sum('payments.amount');
 
         // Gastos (egresos de esta liquidación)
         $gastosQuery = \App\Models\Expense::where('user_id', $liquidation->seller->user_id)
@@ -1976,12 +2053,22 @@ class LiquidationService
                 'ingresos_count' => $ingresosCount,
                 'egresos' => $egresos,
                 'egresos_count' => $egresosCount,
-                'creditos_nuevos' => $creditosNuevos,
-                'creditos_nuevos_count' => $creditosNuevosCount,
+                'creditos_nuevos' => $creditosNuevos, // Valor contable (pure new)
+                'creditos_nuevos_count' => $creditosNuevosCount, // Este era el count global, quizás debamos usar $creditosNuevosRealCount si el anterior filtraba? 
+                // El anterior $creditosNuevosQuery filtraba renewals.
+                // Aqui mantendremos la coherencia: 'creditos_nuevos' del modelo suele ser solo nuevos.
+                // Pero para la UI detallada enviamos los desgloses:
+                'creditos_nuevos_real_count' => $creditosNuevosRealCount,
+                'creditos_nuevos_real_amount' => $creditosNuevosRealAmount,
+                'renovados_count' => $renovadosCount,
+                'renovados_amount' => $renovadosAmount,
+                
                 'base_entregada' => $baseEntregada,
                 'collection_target' => $liquidation->collection_target,
                 'initial_cash' => $liquidation->initial_cash,
                 'total_collected' => $liquidation->total_collected,
+                'clients_paid_amount' => $clientsPaidAmount, // Nuevo campo visual
+                
                 'total_expenses' => $liquidation->total_expenses,
                 'total_income' => $liquidation->total_income,
                 'real_to_deliver' => $liquidation->real_to_deliver,

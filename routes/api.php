@@ -37,6 +37,7 @@ Route::middleware('auth:api')->group(function () {
 
     //change password
     Route::post('auth/change-password', [AuthController::class, 'changePassword']);
+    Route::post('auth/session/logout/{sessionId}', [AuthController::class, 'logoutSession']);
 
     // notification routes
     Route::get('/notifications', [NotificationController::class, 'index']);

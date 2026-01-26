@@ -367,7 +367,6 @@ class SellerService
 
                     $lastAudit = $liquidationToday->audits()
                         ->where('user_id', $route->user_id)
-                        ->whereDate('created_at', $today)
                         ->orderByDesc('created_at')
                         ->first();
                     $liquidationClosed = $liquidationToday->end_date ?? null;
@@ -383,7 +382,6 @@ class SellerService
                     $auditExists = \App\Models\LiquidationAudit::where('liquidation_id', $liquidationToday->id)
                         ->where('user_id', $route->user_id)
                         ->whereIn('action', ['updated', 'created'])
-                        ->whereDate('created_at', $today)
                         ->whereNull('deleted_at')
                         ->exists();
                 }
@@ -411,17 +409,28 @@ class SellerService
                     'seller_name' => $route->user->name ?? null,
                     'status' => $route->status,
                     'closed_today' => $closedBySellerToday,
-                    'liquidation_open' => $liquidationOpen,
+                    'liquidation_open' => $liquidationToday?->date ? \Carbon\Carbon::parse($liquidationToday->date)->format('Y-m-d') : null,
                     'liquidation_closed' => $liquidationClosed,
                     'liquidation_audit_id' => $liquidationAuditId,
                     'liquidation_status' => $liquidationStatus,
+                    'is_approved' => $liquidationStatus === 'approved',
+                    'seller_finished_at' => $liquidationToday?->created_at ? \Carbon\Carbon::parse($liquidationToday->created_at)->format('Y-m-d H:i:s') : null,
+                    'admin_finished_at' => ($liquidationStatus === 'approved') 
+                        ? ($liquidationToday?->end_date ? \Carbon\Carbon::parse($liquidationToday->end_date)->format('Y-m-d H:i:s') : \Carbon\Carbon::parse($liquidationToday->updated_at)->format('Y-m-d H:i:s')) 
+                        : null,
                     'is_open' => $isOpen,
-                    'created_at' => $route->user->sessionLogs[0]->created_at ?? null,
+                    'created_at' => $route->user->sessionLogs[0]->login_at ? \Carbon\Carbon::parse($route->user->sessionLogs[0]->login_at)->format('Y-m-d H:i:s') : null,
                     'session_logs' => $route->user && $route->user->sessionLogs ? $route->user->sessionLogs->map(function ($log) {
+                        $parsed = \App\Helpers\Helper::parseUserAgent($log->user_agent);
                         return [
                             'id' => $log->id,
-                            'login_at' => $log->login_at,
-                            'logout_at' => $log->logout_at,
+                            'login_at' => \Carbon\Carbon::parse($log->login_at)->format('Y-m-d H:i:s'),
+                            'logout_at' => $log->logout_at ? \Carbon\Carbon::parse($log->logout_at)->format('Y-m-d H:i:s') : null,
+                            'ip' => $log->ip,
+                            'connection_country' => \App\Helpers\Helper::getCountryFromIp($log->ip),
+                            'device' => $parsed['device'] . ' (' . $parsed['os'] . ')',
+                            'browser' => $parsed['browser'],
+                            'is_active' => is_null($log->logout_at),
                         ];
                     }) : [],
                 ];
