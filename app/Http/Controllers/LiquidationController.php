@@ -137,6 +137,7 @@ class LiquidationController extends Controller
 
         // === Calcular real_to_deliver incluyendo los nuevos campos ===
         $realToDeliver = $request->initial_cash +
+            $request->base_delivered +
             ($request->total_income + $request->total_collected + $poliza) -
             ($request->total_expenses + $request->new_credits + $irrecoverableCredits + $total_renewal_disbursed);
 
@@ -402,12 +403,15 @@ class LiquidationController extends Controller
             'shortage' => $shortage,
             'surplus' => $surplus,
             'cash_delivered' => $cash_delivered,
-            'status' => 'pending',
+            'status' => $user->role_id === 5 ? 'pending' : ($request->status ?? $liquidation->status),
             'irrecoverable_credits_amount' => $irrecoverableCredits,
             'renewal_disbursed_total' => $total_renewal_disbursed,
             'poliza' => $poliza,
             'updated_at' => $request->has('updated_at') ? Carbon::parse($request->updated_at, $timezone) : $now,
         ]);
+
+        // Propagar cambios a los días siguientes (Cerrar caja para mañana)
+        $this->liquidationService->recalculateNextLiquidations($sellerId, $date);
 
         if ($request->hasFile('path')) {
             // Eliminar imagen anterior si existe
@@ -419,16 +423,65 @@ class LiquidationController extends Controller
             $liquidation->update(['path' => $imagePath]);
         }
 
-        if ($request->filled('observation')) {
-            $currentObservation = $liquidation->observation;
-            $newObservation = "Re-cierre (" . $now->toDateTimeString() . "): " . $request->observation;
-            $liquidation->update([
-                'observation' => $currentObservation ? $currentObservation . "\n" . $newObservation : $newObservation
-            ]);
-        }
+        // Bloque de observación manual eliminado para integrarlo con el log de cambios abajo.
+        // if ($request->filled('observation')) { ... }
 
         $liquidation->refresh();
         $changedData = $liquidation->getChanges();
+
+        // --- Generar Observación Automática de Cambios (Diff) ---
+        // Excluir campos técnicos que no aportan valor al usuario
+        $ignoredFields = ['updated_at', 'created_at', 'id', 'seller_id', 'status', 'path', 'observation'];
+        $changesLog = [];
+
+        foreach ($changedData as $field => $newValue) {
+            if (in_array($field, $ignoredFields)) continue;
+            
+            $oldValue = $originalData[$field] ?? 'N/A';
+            // Formatear valores numéricos si es necesario
+            if (is_numeric($newValue) && is_numeric($oldValue)) {
+                $oldValue = (float)$oldValue; // Normalizar tipos
+                $newValue = (float)$newValue;
+                // Si la diferencia es insignificante, ignorar (floats)
+                if (abs($oldValue - $newValue) < 0.001) continue; 
+            }
+
+            $changesLog[] = "$field: $oldValue -> $newValue";
+        }
+
+        if (!empty($changesLog)) {
+            $userAction = "Ajuste por " . $user->name . " (" . $now->toDateTimeString() . ")";
+            $details = implode(", ", $changesLog);
+            
+            // Si el usuario envió una observación manual, la incluimos
+            $manualObservation = $request->filled('observation') ? " Nota: " . $request->observation : "";
+            
+            $autoObservation = "$userAction: $details.$manualObservation";
+
+            $currentObservation = $liquidation->observation;
+            // Evitamos duplicar si la observación manual ya se había agregado arriba
+            // Reemplazamos la lógica anterior de "solo observación manual" por esta combinada
+            
+            // Nota: Como ya hicimos update arriba con la manual, aquí actualizamos DE NUEVO con el log completo.
+            // Para hacerlo limpio, deberíamos haber calculado esto ANTES del primer update, pero getChanges() requiere el update.
+            // Asi que hacemos un segundo update solo al campo observation.
+            
+            $finalObservation = $currentObservation ? $currentObservation . "\n" . $autoObservation : $autoObservation;
+            
+            // Corrección: La lógica anterior (líneas 422-428) ya agregaba la manual. 
+            // Si queremos que quede "NombreUsuario: Cambios... Nota manual...", es mejor sobrescribir esa parte o anexar.
+            // Dado que el update anterior YA ocurrió, $liquidation->observation ya tiene la manual si se envió.
+            // Pero queremos insertar el log de cambios.
+            // Estrategia: Si hubo cambios logueables, anexamos el log.
+            
+            $liquidation->update(['observation' => $finalObservation]);
+        } else {
+             // Si no hubo cambios numéricos pero sí observación manual (manejado arriba), listo.
+        }
+
+        // --- Fin Observación Automática ---
+
+        // Registra la auditoría
 
         // Notificación de sobrante/faltante si está activo en SellerConfig
         $sellerConfig = \App\Models\SellerConfig::where('seller_id', $sellerId)->first();

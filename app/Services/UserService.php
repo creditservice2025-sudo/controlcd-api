@@ -217,6 +217,11 @@ public function me()
         'email' => $user->email,
         'roles' => $roles,
         'permissions' => $permissions,
+        'is_liquidated_today' => ($user->role_id === 5 && $user->seller)
+            ? \App\Models\Liquidation::where('seller_id', $user->seller->id)
+                ->whereDate('date', \Carbon\Carbon::now('America/Lima')->toDateString())
+                ->exists()
+            : false,
     ]);
 }
 
