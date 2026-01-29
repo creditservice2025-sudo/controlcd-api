@@ -183,6 +183,14 @@ class LiquidationService
                 return $this->errorResponse('La liquidación ya ha sido aprobada previamente.', 422);
             }
 
+            // Verificar que el vendedor haya cerrado la caja (status debe ser 'pending')
+            if ($liquidation->status !== 'pending') {
+                return $this->errorResponse(
+                    'No se puede aprobar esta liquidación porque el vendedor aún no ha cerrado su caja. El vendedor debe cerrar la liquidación primero.',
+                    422
+                );
+            }
+
             $previousUnapproved = Liquidation::where('seller_id', $liquidation->seller_id)
                 ->where('date', '<', $liquidation->date)
                 ->where('status', '!=', 'approved')

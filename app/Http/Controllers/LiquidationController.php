@@ -124,7 +124,7 @@ class LiquidationController extends Controller
             }
 
             // === TRANSACCIÓN ATÓMICA: Todo o nada ===
-            $liquidation = DB::transaction(function () use ($request, $user, $timezone) {
+            $liquidation = DB::transaction(function () use ($request, $user, $timezone, $currency) {
                 // === Calcular créditos irrecuperables ===
                 $irrecoverableCredits = DB::table('installments')
                     ->join('credits', 'installments.credit_id', '=', 'credits.id')
