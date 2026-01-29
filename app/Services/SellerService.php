@@ -249,6 +249,8 @@ class SellerService
             $company = $user->company;
             $timezone = $request->get('timezone', 'America/Lima');
             $today = Carbon::now($timezone)->format('Y-m-d');
+            $todayStartUTC = Carbon::now($timezone)->startOfDay()->utc();
+            $todayEndUTC = Carbon::now($timezone)->endOfDay()->utc();
 
             $routes = Seller::with([
                 'user:id,name',
@@ -257,10 +259,9 @@ class SellerService
                 //     $q->whereDate('login_at', $today)
                 //         ->whereNull('logout_at');
                 // },
-                'user.sessionLogs' => function ($q) {
-                    // Fetch logs from last 48 hours to reliably cover "Today" across all timezones
-                    // without needing complex SQL timezone conversion.
-                    $q->where('login_at', '>=', Carbon::now()->subHours(48));
+                'user.sessionLogs' => function ($q) use ($todayStartUTC, $todayEndUTC) {
+                    $q->whereBetween('login_at', [$todayStartUTC, $todayEndUTC])
+                        ->orderBy('login_at', 'asc');
                 },
                 'city:id,name,country_id',
                 'city.country:id,name,timezone'
@@ -323,8 +324,8 @@ class SellerService
             //         ->whereNull('logout_at');
             // })->get([
 
-            $routesList = $routes->whereHas('user.sessionLogs', function ($q) use ($today) {
-                $q->whereDate('login_at', $today);
+            $routesList = $routes->whereHas('user.sessionLogs', function ($q) use ($todayStartUTC, $todayEndUTC) {
+                $q->whereBetween('login_at', [$todayStartUTC, $todayEndUTC]);
             })->get([
                         'id',
                         'user_id',
@@ -334,7 +335,7 @@ class SellerService
                         'created_at'
                     ]);
 
-            $data = $routesList->map(function ($route) use ($today) {
+            $data = $routesList->map(function ($route) use ($today, $todayStartUTC, $todayEndUTC) {
                 $liquidationToday = Liquidation::where('seller_id', $route->id)
                     ->where(DB::raw('DATE(date)'), $today)
                     ->first();
@@ -345,14 +346,13 @@ class SellerService
                 $closedBySellerToday = false;
                 $liquidationStatus = null;
 
-                // Buscar el primer pago del día para este vendedor
                 $firstPayment = $route->credits()
-                    ->whereHas('payments', function ($q) use ($today) {
-                        $q->whereDate('created_at', $today);
+                    ->whereHas('payments', function ($q) use ($todayStartUTC, $todayEndUTC) {
+                        $q->whereBetween('created_at', [$todayStartUTC, $todayEndUTC]);
                     })
                     ->with([
-                        'payments' => function ($q) use ($today) {
-                            $q->whereDate('created_at', $today)->orderBy('created_at', 'asc');
+                        'payments' => function ($q) use ($todayStartUTC, $todayEndUTC) {
+                            $q->whereBetween('created_at', [$todayStartUTC, $todayEndUTC])->orderBy('created_at', 'asc');
                         }
                     ])
                     ->get()
@@ -402,6 +402,9 @@ class SellerService
 
                 \Log::info($route->toArray());
 
+                $sessionLogs = $route->user ? $route->user->sessionLogs : collect([]);
+                $firstLog = $sessionLogs->first();
+
                 return [
                     'route_id' => $route->id,
                     'country' => $route->city->country->name ?? null,
@@ -419,8 +422,8 @@ class SellerService
                         ? ($liquidationToday?->end_date ? \Carbon\Carbon::parse($liquidationToday->end_date)->format('Y-m-d H:i:s') : \Carbon\Carbon::parse($liquidationToday->updated_at)->format('Y-m-d H:i:s')) 
                         : null,
                     'is_open' => $isOpen,
-                    'created_at' => $route->user->sessionLogs[0]->login_at ? \Carbon\Carbon::parse($route->user->sessionLogs[0]->login_at)->format('Y-m-d H:i:s') : null,
-                    'session_logs' => $route->user && $route->user->sessionLogs ? $route->user->sessionLogs->map(function ($log) {
+                    'created_at' => $firstLog ? \Carbon\Carbon::parse($firstLog->login_at)->format('Y-m-d H:i:s') : null,
+                    'session_logs' => $sessionLogs->map(function ($log) {
                         $parsed = \App\Helpers\Helper::parseUserAgent($log->user_agent);
                         return [
                             'id' => $log->id,
@@ -432,7 +435,7 @@ class SellerService
                             'browser' => $parsed['browser'],
                             'is_active' => is_null($log->logout_at),
                         ];
-                    }) : [],
+                    }),
                 ];
             });
 

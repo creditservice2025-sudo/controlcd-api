@@ -63,214 +63,307 @@ class LiquidationController extends Controller
     {
         $user = Auth::user();
 
+        // ✅ MULTI-PAÍS: Obtener configuración del país del vendedor
+        $seller = Seller::with('city.country')->find($request->seller_id);
+        $country = $seller->city->country ?? null;
+        $currency = $country->currency ?? 'PEN'; // Fallback a PEN si no hay país
+        $timezone = $country->timezone ?? config('app.timezone'); // Fallback a config
 
-        $timezone = $request->input('timezone', 'America/Lima');
-        $todayDate = Carbon::now($timezone)->toDateString();
-
-        // Verificar si ya existe liquidación para este día
-        $existingLiquidation = Liquidation::where('seller_id', $request->seller_id)
-            ->whereDate('date', $request->date)
-            ->where('status', 'approved')
-            ->first();
-
-        if ($existingLiquidation && $user->role_id !== 1) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Ya existe una liquidación para este vendedor en la fecha seleccionada'
-            ], 422);
-        }
-
-        // Obtener el user_id del vendedor
-        $sellerForCheck = Seller::find($request->seller_id);
-        $sellerUserId = $sellerForCheck ? $sellerForCheck->user_id : $user->id;
-
-        $pendingExpenses = Expense::where('user_id', $sellerUserId)
-            ->whereDate('created_at', $request->date)
-            ->where('status', 'Pendiente')
-            ->where('description', 'not like', '%AJUSTE%')
-            ->exists();
-
-        if ($pendingExpenses) {
-            return response()->json([
-                'success' => false,
-                'message' => 'No se puede liquidar porque tienes gastos pendientes de aprobación en la fecha seleccionada'
-            ], 422);
-        }
-
-        // === Calcular créditos irrecuperables ===
-        $irrecoverableCredits = DB::table('installments')
-            ->join('credits', 'installments.credit_id', '=', 'credits.id')
-            ->where('credits.seller_id', $request->seller_id)
-            ->where('credits.status', 'Cartera Irrecuperable')
-            ->whereDate('credits.updated_at', $request->date)
-            ->where('installments.status', 'Pendiente')
-            ->sum('installments.quota_amount');
-
-        // === Calcular renovaciones desembolsadas ===
-        $startUTC = Carbon::parse($request->date, $timezone)->startOfDay()->setTimezone('UTC');
-        $endUTC = Carbon::parse($request->date, $timezone)->endOfDay()->setTimezone('UTC');
-
-        $renewalCredits = Credit::where('seller_id', $request->seller_id)
-            ->whereBetween('created_at', [$startUTC, $endUTC])
-            ->whereNotNull('renewed_from_id')
-            ->get();
-
-        $total_renewal_disbursed = 0;
-        foreach ($renewalCredits as $renewCredit) {
-            $oldCredit = Credit::find($renewCredit->renewed_from_id);
-            $pendingAmount = 0;
-            $oldCreditTotal = 0;
-            $oldCreditPaid = 0;
-            if ($oldCredit) {
-                $oldCreditTotal = ($oldCredit->credit_value * $oldCredit->total_interest / 100) + $oldCredit->credit_value;
-                $oldCreditPaid = Payment::where('credit_id', $oldCredit->id)->sum('amount');
-                $pendingAmount = $oldCreditTotal - $oldCreditPaid;
-            }
-            $netDisbursement = $renewCredit->credit_value - $pendingAmount;
-            $total_renewal_disbursed += $netDisbursement;
-        }
-
-        // === Calcular valor de póliza ===
-        $poliza = Credit::where('seller_id', $request->seller_id)
-            ->whereDate('created_at', $request->date)
-            ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
-
-        // === Calcular real_to_deliver incluyendo los nuevos campos ===
-        $realToDeliver = $request->initial_cash +
-            $request->base_delivered +
-            ($request->total_income + $request->total_collected + $poliza) -
-            ($request->total_expenses + $request->new_credits + $irrecoverableCredits + $total_renewal_disbursed);
-
-        $shortage = 0;
-        $surplus = 0;
-        $pendingDebt = 0;
-
-        if ($realToDeliver > 0) {
-            if ($request->cash_delivered < $realToDeliver) {
-                $shortage = $realToDeliver - $request->cash_delivered;
-            } else {
-                $surplus = $request->cash_delivered - $realToDeliver;
-            }
-        } else {
-            $debtAmount = abs($realToDeliver);
-
-            if ($request->cash_delivered > $debtAmount) {
-                $surplus = $request->cash_delivered - $debtAmount;
-                $pendingDebt = 0;
-            } else {
-                $pendingDebt = $debtAmount - $request->cash_delivered;
-                $shortage = $pendingDebt;
-            }
-        }
-
-        $liquidationData = [
-            'date' => $request->date,
-            'seller_id' => $request->seller_id,
-            'collection_target' => $request->collection_target,
-            'initial_cash' => $request->initial_cash,
-            'base_delivered' => $request->base_delivered,
-            'total_collected' => $request->total_collected,
-            'total_expenses' => $request->total_expenses,
-            'total_income' => $request->total_income,
-            'new_credits' => $request->new_credits,
-            'real_to_deliver' => $realToDeliver,
-            'shortage' => $shortage,
-            'surplus' => $surplus,
-            'path' => $request->path,
-            'cash_delivered' => $request->cash_delivered,
-            'status' => 'pending',
-            'irrecoverable_credits_amount' => $irrecoverableCredits,
-            'renewal_disbursed_total' => $total_renewal_disbursed,
-            'poliza' => $poliza,
-        ];
-
-
-        if ($request->has('created_at')) {
-            $liquidationData['created_at'] = $request->created_at;
-        } else {
-            if ($request->filled('timezone')) {
-                $liquidationData['created_at'] = Carbon::now($timezone);
-                $liquidationData['updated_at'] = Carbon::now($timezone);
-            }
-        }
-
-        if ($request->has('path')) {
-            $imageFile = $request->file('path');
-            $imagePath = Helper::uploadFile($imageFile, 'liquidations');
-            $liquidationData['path'] = $imagePath;
-        }
-
-        $liquidation = Liquidation::create($liquidationData);
-
-        LiquidationAudit::create([
-            'liquidation_id' => $liquidation->id,
+        Log::info('Liquidation creation started', [
             'user_id' => $user->id,
-            'action' => 'created',
-            'changes' => json_encode($liquidation->toArray()),
-            'created_at' => Carbon::now($timezone),
+            'seller_id' => $request->seller_id,
+            'date' => $request->date,
+            'country' => $country?->name ?? 'Unknown',
+            'currency' => $currency,
+            'timezone' => $timezone,
         ]);
 
-        // Notificación de sobrante/faltante si está activo en SellerConfig
-        $sellerConfig = \App\Models\SellerConfig::where('seller_id', $request->seller_id)->first();
-        if ($sellerConfig && $sellerConfig->notify_shortage_surplus) {
-            $seller = Seller::find($request->seller_id);
-            $admins = \App\Models\User::whereIn('role_id', [1, 2])->get();
-            $userToNotify = $seller->user;
-            if ($shortage > 0) {
-                $message = 'Alerta: El vendedor ' . $seller->user->name . ' tiene un faltante de $' . number_format($shortage, 2) . ' en la liquidación del ' . $request->date . '.';
-                $link = '/dashboard/liquidaciones/' . $liquidation->id;
-                $data = [
-                    'liquidation_id' => $liquidation->id,
-                    'seller_id' => $seller->id,
+        try {
+            $todayDate = Carbon::now($timezone)->toDateString();
+
+            // Verificar si ya existe liquidación para este día
+            $existingLiquidation = Liquidation::where('seller_id', $request->seller_id)
+                ->whereDate('date', $request->date)
+                ->where('status', 'approved')
+                ->first();
+
+            if ($existingLiquidation && $user->role_id !== 1) {
+                Log::warning('Duplicate liquidation attempt blocked', [
+                    'seller_id' => $request->seller_id,
+                    'date' => $request->date,
+                    'existing_id' => $existingLiquidation->id,
+                    'country' => $country?->name,
+                ]);
+                
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Ya existe una liquidación para este vendedor en la fecha seleccionada'
+                ], 422);
+            }
+
+            // Obtener el user_id del vendedor
+            $sellerForCheck = Seller::find($request->seller_id);
+            $sellerUserId = $sellerForCheck ? $sellerForCheck->user_id : $user->id;
+
+            $pendingExpenses = Expense::where('user_id', $sellerUserId)
+                ->whereDate('created_at', $request->date)
+                ->where('status', 'Pendiente')
+                ->where('description', 'not like', '%AJUSTE%')
+                ->exists();
+
+            if ($pendingExpenses) {
+                Log::warning('Liquidation blocked due to pending expenses', [
+                    'seller_id' => $request->seller_id,
+                    'date' => $request->date,
+                ]);
+                
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No se puede liquidar porque tienes gastos pendientes de aprobación en la fecha seleccionada'
+                ], 422);
+            }
+
+            // === TRANSACCIÓN ATÓMICA: Todo o nada ===
+            $liquidation = DB::transaction(function () use ($request, $user, $timezone) {
+                // === Calcular créditos irrecuperables ===
+                $irrecoverableCredits = DB::table('installments')
+                    ->join('credits', 'installments.credit_id', '=', 'credits.id')
+                    ->where('credits.seller_id', $request->seller_id)
+                    ->where('credits.status', 'Cartera Irrecuperable')
+                    ->whereDate('credits.updated_at', $request->date)
+                    ->where('installments.status', 'Pendiente')
+                    ->sum('installments.quota_amount');
+
+                // === Calcular renovaciones desembolsadas ===
+                $startUTC = Carbon::parse($request->date, $timezone)->startOfDay()->setTimezone('UTC');
+                $endUTC = Carbon::parse($request->date, $timezone)->endOfDay()->setTimezone('UTC');
+
+                $renewalCredits = Credit::where('seller_id', $request->seller_id)
+                    ->whereBetween('created_at', [$startUTC, $endUTC])
+                    ->whereNotNull('renewed_from_id')
+                    ->get();
+
+                $total_renewal_disbursed = 0;
+                foreach ($renewalCredits as $renewCredit) {
+                    $oldCredit = Credit::find($renewCredit->renewed_from_id);
+                    $pendingAmount = 0;
+                    if ($oldCredit) {
+                        $oldCreditTotal = ($oldCredit->credit_value * $oldCredit->total_interest / 100) + $oldCredit->credit_value;
+                        $oldCreditPaid = Payment::where('credit_id', $oldCredit->id)->sum('amount');
+                        $pendingAmount = $oldCreditTotal - $oldCreditPaid;
+                    }
+                    $netDisbursement = $renewCredit->credit_value - $pendingAmount;
+                    $total_renewal_disbursed += $netDisbursement;
+                }
+
+                // === Calcular valor de póliza ===
+                $poliza = Credit::where('seller_id', $request->seller_id)
+                    ->whereDate('created_at', $request->date)
+                    ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
+
+                // === Calcular real_to_deliver incluyendo los nuevos campos ===
+                $realToDeliver = $request->initial_cash +
+                    $request->base_delivered +
+                    ($request->total_income + $request->total_collected + $poliza) -
+                    ($request->total_expenses + $request->new_credits + $irrecoverableCredits + $total_renewal_disbursed);
+
+                $shortage = 0;
+                $surplus = 0;
+                $pendingDebt = 0;
+
+                if ($realToDeliver > 0) {
+                    if ($request->cash_delivered < $realToDeliver) {
+                        $shortage = $realToDeliver - $request->cash_delivered;
+                    } else {
+                        $surplus = $request->cash_delivered - $realToDeliver;
+                    }
+                } else {
+                    $debtAmount = abs($realToDeliver);
+
+                    if ($request->cash_delivered > $debtAmount) {
+                        $surplus = $request->cash_delivered - $debtAmount;
+                        $pendingDebt = 0;
+                    } else {
+                        $pendingDebt = $debtAmount - $request->cash_delivered;
+                        $shortage = $pendingDebt;
+                    }
+                }
+
+                $liquidationData = [
+                    'date' => $request->date,
+                    'seller_id' => $request->seller_id,
+                    'currency' => $currency, // ✅ Moneda del país
+                    'collection_target' => $request->collection_target,
+                    'initial_cash' => $request->initial_cash,
+                    'base_delivered' => $request->base_delivered,
+                    'total_collected' => $request->total_collected,
+                    'total_expenses' => $request->total_expenses,
+                    'total_income' => $request->total_income,
+                    'new_credits' => $request->new_credits,
+                    'real_to_deliver' => $realToDeliver,
                     'shortage' => $shortage,
-                    'date' => $request->date,
-                ];
-                $userToNotify->notify(new \App\Notifications\GeneralNotification('Alerta de faltante en liquidación', $message, $link, $data));
-                foreach ($admins as $admin) {
-                    $admin->notify(new \App\Notifications\GeneralNotification('Alerta de faltante en liquidación', $message, $link, $data));
-                }
-            }
-            if ($surplus > 0) {
-                $message = 'Alerta: El vendedor ' . $seller->user->name . ' tiene un sobrante de $' . number_format($surplus, 2) . ' en la liquidación del ' . $request->date . '.';
-                $link = '/dashboard/liquidaciones/' . $liquidation->id;
-                $data = [
-                    'liquidation_id' => $liquidation->id,
-                    'seller_id' => $seller->id,
                     'surplus' => $surplus,
-                    'date' => $request->date,
+                    'path' => $request->path,
+                    'cash_delivered' => $request->cash_delivered,
+                    'status' => 'pending',
+                    'irrecoverable_credits_amount' => $irrecoverableCredits,
+                    'renewal_disbursed_total' => $total_renewal_disbursed,
+                    'poliza' => $poliza,
                 ];
-                $userToNotify->notify(new \App\Notifications\GeneralNotification('Alerta de sobrante en liquidación', $message, $link, $data));
-                foreach ($admins as $admin) {
-                    $admin->notify(new \App\Notifications\GeneralNotification('Alerta de sobrante en liquidación', $message, $link, $data));
+
+                if ($request->has('created_at')) {
+                    $liquidationData['created_at'] = $request->created_at;
+                } else {
+                    if ($request->filled('timezone')) {
+                        $liquidationData['created_at'] = Carbon::now($timezone);
+                        $liquidationData['updated_at'] = Carbon::now($timezone);
+                    }
+                }
+
+                if ($request->has('path')) {
+                    $imageFile = $request->file('path');
+                    $imagePath = Helper::uploadFile($imageFile, 'liquidations');
+                    $liquidationData['path'] = $imagePath;
+                }
+
+                // Crear liquidación (dentro de transacción)
+                $liquidation = Liquidation::create($liquidationData);
+
+                // Crear auditoría (dentro de transacción)
+                LiquidationAudit::create([
+                    'liquidation_id' => $liquidation->id,
+                    'user_id' => $user->id,
+                    'action' => 'created',
+                    'changes' => json_encode($liquidation->toArray()),
+                    'created_at' => Carbon::now($timezone),
+                ]);
+
+                Log::info('Liquidation created successfully', [
+                    'liquidation_id' => $liquidation->id,
+                    'seller_id' => $request->seller_id,
+                    'currency' => $currency,
+                    'real_to_deliver' => $realToDeliver,
+                    'shortage' => $shortage,
+                    'surplus' => $surplus,
+                ]);
+
+                // Retornar datos para notificaciones (fuera de transacción)
+                return [
+                    'liquidation' => $liquidation,
+                    'shortage' => $shortage,
+                    'surplus' => $surplus,
+                ];
+            });
+
+            // === NOTIFICACIONES (Fuera de transacción, async) ===
+            $this->sendLiquidationNotifications(
+                $liquidation['liquidation'],
+                $liquidation['shortage'],
+                $liquidation['surplus'],
+                $request->seller_id,
+                $request->date,
+                $user
+            );
+
+            return response()->json([
+                'success' => true,
+                'data' => $liquidation['liquidation'],
+                'message' => 'Liquidación guardada correctamente'
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Liquidation creation failed', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+                'user_id' => $user->id,
+                'seller_id' => $request->seller_id,
+                'date' => $request->date,
+                'request_data' => $request->except(['path']), // Excluir archivo
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al crear la liquidación. El equipo técnico ha sido notificado.',
+                'error_id' => \Illuminate\Support\Str::uuid(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Envía notificaciones de liquidación (método auxiliar)
+     */
+    private function sendLiquidationNotifications($liquidation, $shortage, $surplus, $sellerId, $date, $user)
+    {
+        try {
+            // Notificación de sobrante/faltante si está activo en SellerConfig
+            $sellerConfig = \App\Models\SellerConfig::where('seller_id', $sellerId)->first();
+            
+            if ($sellerConfig && $sellerConfig->notify_shortage_surplus) {
+                $seller = Seller::with('user')->find($sellerId);
+                $admins = \App\Models\User::whereIn('role_id', [1, 2])->get();
+                $userToNotify = $seller->user;
+                
+                if ($shortage > 0) {
+                    $message = 'Alerta: El vendedor ' . $seller->user->name . ' tiene un faltante de $' . number_format($shortage, 2) . ' en la liquidación del ' . $date . '.';
+                    $link = '/dashboard/liquidaciones/' . $liquidation->id;
+                    $data = [
+                        'liquidation_id' => $liquidation->id,
+                        'seller_id' => $seller->id,
+                        'shortage' => $shortage,
+                        'date' => $date,
+                    ];
+                    $userToNotify->notify(new \App\Notifications\GeneralNotification('Alerta de faltante en liquidación', $message, $link, $data));
+                    foreach ($admins as $admin) {
+                        $admin->notify(new \App\Notifications\GeneralNotification('Alerta de faltante en liquidación', $message, $link, $data));
+                    }
+                }
+                
+                if ($surplus > 0) {
+                    $message = 'Alerta: El vendedor ' . $seller->user->name . ' tiene un sobrante de $' . number_format($surplus, 2) . ' en la liquidación del ' . $date . '.';
+                    $link = '/dashboard/liquidaciones/' . $liquidation->id;
+                    $data = [
+                        'liquidation_id' => $liquidation->id,
+                        'seller_id' => $seller->id,
+                        'surplus' => $surplus,
+                        'date' => $date,
+                    ];
+                    $userToNotify->notify(new \App\Notifications\GeneralNotification('Alerta de sobrante en liquidación', $message, $link, $data));
+                    foreach ($admins as $admin) {
+                        $admin->notify(new \App\Notifications\GeneralNotification('Alerta de sobrante en liquidación', $message, $link, $data));
+                    }
                 }
             }
-        }
 
-        if ($user->role_id === 5) {
-            $seller = Seller::find($request->seller_id);
+            if ($user->role_id === 5) {
+                $seller = Seller::with(['user', 'city.country'])->find($sellerId);
+                $adminUsers = User::whereIn('role_id', [1, 2])->get();
 
-            $adminUsers = User::whereIn('role_id', [1, 2])->get();
-
-            foreach ($adminUsers as $adminUser) {
-                $adminUser->notify(new GeneralNotification(
-                    'Solicitud de liquidación ',
-                    'El vendedor ' . $seller->user->name . ' de la ruta ' . $seller->city->country->name . ',' . $seller->city->name . ' ha creado una nueva liquidación para la fecha ' . $request->date,
-                    '/dashboard/liquidaciones',
-                    [
-                        'country_id' => $seller->city->country->id,
-                        'city_id' => $seller->city->id,
-                        'seller_id' => $seller->id,
-                        'date' => $request->date,
-                    ]
-                ));
+                foreach ($adminUsers as $adminUser) {
+                    $adminUser->notify(new GeneralNotification(
+                        'Solicitud de liquidación ',
+                        'El vendedor ' . $seller->user->name . ' de la ruta ' . $seller->city->country->name . ',' . $seller->city->name . ' ha creado una nueva liquidación para la fecha ' . $date,
+                        '/dashboard/liquidaciones',
+                        [
+                            'country_id' => $seller->city->country->id,
+                            'city_id' => $seller->city->id,
+                            'seller_id' => $seller->id,
+                            'date' => $date,
+                        ]
+                    ));
+                }
             }
-        }
 
-        return response()->json([
-            'success' => true,
-            'data' => $liquidation,
-            'message' => 'Liquidación guardada correctamente'
-        ]);
+            Log::info('Liquidation notifications sent', [
+                'liquidation_id' => $liquidation->id,
+            ]);
+
+        } catch (\Exception $e) {
+            // No fallar si las notificaciones fallan
+            Log::error('Liquidation notifications failed', [
+                'error' => $e->getMessage(),
+                'liquidation_id' => $liquidation->id,
+            ]);
+        }
     }
 
     public function updateLiquidation(UpdateLiquidationRequest $request, $id)
@@ -551,8 +644,6 @@ class LiquidationController extends Controller
             }
         }
 
-        // Recalcula todas las liquidaciones posteriores
-        $this->recalculateNextLiquidations($sellerId, $date);
 
         return response()->json([
             'success' => true,
@@ -570,7 +661,11 @@ class LiquidationController extends Controller
     // Tu función de recalculo debe estar en el mismo controlador:
     public function recalculateLiquidation($sellerId, $date)
     {
-        $timezone = 'America/Lima';
+        // Obtener timezone del vendedor dinámicamente
+        $seller = Seller::with('city.country')->find($sellerId);
+        $country = $seller?->city?->country ?? null;
+        $timezone = $country?->timezone ?? config('app.timezone', 'America/Lima');
+        
         $startUTC = Carbon::parse($date, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC = Carbon::parse($date, $timezone)->endOfDay()->setTimezone('UTC');
 
@@ -590,6 +685,7 @@ class LiquidationController extends Controller
         $totalExpenses = $userId
             ? Expense::where('user_id', $userId)
                 ->whereBetween('created_at', [$startUTC, $endUTC])
+                ->whereNull('deleted_at')
                 ->where(function ($q) {
                     $q->where('status', 'Aprobado')
                         ->orWhere('description', 'like', '%AJUSTE%');
@@ -600,22 +696,28 @@ class LiquidationController extends Controller
         $totalIncome = $userId
             ? Income::where('user_id', $userId)
                 ->whereBetween('created_at', [$startUTC, $endUTC])
+                ->whereNull('deleted_at')
                 ->sum('value')
             : 0;
 
         $newCredits = Credit::where('seller_id', $sellerId)
             ->whereBetween('created_at', [$startUTC, $endUTC])
             ->whereNull('renewed_from_id')
+            ->whereNull('deleted_at') // ✅ FIX: Excluir eliminados
+            ->whereNull('unification_reason') // ✅ FIX: Excluir unificados
             ->sum('credit_value');
 
         $totalCollected = Payment::join('credits', 'payments.credit_id', '=', 'credits.id')
             ->where('credits.seller_id', $sellerId)
-            ->whereBetween('payments.created_at', [$startUTC, $endUTC])
+            ->whereNull('payments.deleted_at')
+            ->where('payments.business_date', $date)
+            ->whereIn('payments.status', ['Pagado', 'Aprobado', 'Abonado'])
             ->sum('payments.amount');
 
         $renewalCredits = \App\Models\Credit::where('seller_id', $sellerId)
             ->whereBetween('created_at', [$startUTC, $endUTC])
             ->whereNotNull('renewed_from_id')
+            ->whereNull('deleted_at')
             ->get();
 
         $total_renewal_disbursed = 0;
@@ -627,7 +729,9 @@ class LiquidationController extends Controller
             $pendingAmount = 0;
             if ($oldCredit) {
                 $oldCreditTotal = ($oldCredit->credit_value * $oldCredit->total_interest / 100) + $oldCredit->credit_value;
-                $oldCreditPaid = Payment::where('credit_id', $oldCredit->id)->sum('amount');
+                $oldCreditPaid = Payment::where('credit_id', $oldCredit->id)
+                    ->whereNull('deleted_at')
+                    ->sum('amount');
                 $pendingAmount = $oldCreditTotal - $oldCreditPaid;
                 $total_pending_absorbed += $pendingAmount;
             }
@@ -638,31 +742,54 @@ class LiquidationController extends Controller
 
         $poliza = \App\Models\Credit::where('seller_id', $sellerId)
             ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereNull('deleted_at') // ✅ FIX: Excluir eliminados
+            ->whereNull('unification_reason') // ✅ FIX: Excluir unificados
             ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
+
+        // === Calcular créditos irrecuperables ===
+        $irrecoverableCredits = DB::table('installments')
+            ->join('credits', 'installments.credit_id', '=', 'credits.id')
+            ->where('credits.seller_id', $sellerId)
+            ->where('credits.status', 'Cartera Irrecuperable')
+            ->whereBetween('credits.updated_at', [$startUTC, $endUTC])
+            ->where('installments.status', 'Pendiente')
+            ->sum('installments.quota_amount');
 
         $realToDeliver = $liquidation->initial_cash
             + $liquidation->base_delivered
             + ($totalIncome + $totalCollected + $poliza)
             - $totalExpenses
             - $newCredits
-            - $total_renewal_disbursed;
+            - $total_renewal_disbursed
+            - $irrecoverableCredits;
 
         $cashDelivered = $liquidation->cash_delivered;
         $shortage = 0;
         $surplus = 0;
-        if ($realToDeliver > 0) {
+        if ($realToDeliver >= 0) {
+            // Escenario normal: Hay dinero para entregar
             if ($cashDelivered < $realToDeliver) {
+                // Faltante: Entregó menos de lo que debía
                 $shortage = $realToDeliver - $cashDelivered;
             } else {
+                // Sobrante: Entregó más de lo que debía
                 $surplus = $cashDelivered - $realToDeliver;
             }
         } else {
+            // Escenario de saldo a favor del vendedor (base negativa, muchos gastos, etc)
+            // Se trata como una "deuda" del sistema al vendedor
             $debtAmount = abs($realToDeliver);
-            if ($cashDelivered > $debtAmount) {
-                $surplus = $cashDelivered - $debtAmount;
-            } else {
-                $shortage = $debtAmount - $cashDelivered;
+            
+            // Si el vendedor entregó dinero (aunque no debía), es sobrante
+            // Si entregó 0, no hay faltante ni sobrante relativo a la entrega, 
+            // pero el saldo sigue siendo negativo (se reflejará en real_to_deliver)
+            
+             if ($cashDelivered > 0) {
+                $surplus = $cashDelivered;
+                 // Opcional: Si quisiéramos cubrir la deuda, sería lógica distinta, 
+                 // pero por ahora mantenemos simple: lo entregado es sobrante porque no debía entregar nada.
             }
+            // NOTA: No calculamos shortage en negativo, el real_to_deliver ya indica el saldo.
         }
 
         // Actualiza la liquidación con todos los campos recalculados
@@ -675,11 +802,26 @@ class LiquidationController extends Controller
             'real_to_deliver' => $realToDeliver,
             'shortage' => $shortage,
             'surplus' => $surplus,
+            'irrecoverable_credits_amount' => $irrecoverableCredits,
+            'renewal_disbursed_total' => $total_renewal_disbursed,
         ]);
     }
-    public function approveLiquidation($id)
+    public function approveLiquidation(Request $request, $id)
     {
         try {
+            $liquidation = Liquidation::findOrFail($id);
+
+            if ($request->filled('observation')) {
+                $liquidation->observation = $request->observation;
+            }
+
+            if ($request->hasFile('capture')) {
+                $path = $request->file('capture')->store('liquidations/captures', 'public');
+                $liquidation->capture_path = $path;
+            }
+
+            $liquidation->save();            
+
             return $this->liquidationService->approve($id);
         } catch (\Exception $e) {
             \Log::error("Error al aprobar liquidación: " . $e->getMessage());
@@ -822,7 +964,8 @@ class LiquidationController extends Controller
         \Log::debug("Solicitud de datos de liquidación para vendedor $sellerId en fecha $date por usuario {$user->id} ({$user->role_id})");
 
         // 1. Verificar si ya existe liquidación para esta fecha
-        $existingLiquidation = Liquidation::where('seller_id', $sellerId)
+        $existingLiquidation = Liquidation::with('seller.user')
+            ->where('seller_id', $sellerId)
             ->whereDate('date', $date)
             ->first();
         \Log::debug("Verificando liquidación para vendedor $sellerId en fecha desde $start hasta $end");
@@ -831,7 +974,8 @@ class LiquidationController extends Controller
 
             $this->liquidationService->recalculateLiquidation($sellerId, $date, $timezone);
             /*  \Log::debug('Datos de la liquidación encontrada: ' . json_encode($existingLiquidation->toArray())); */
-            $updatedLiquidation = Liquidation::where('seller_id', $sellerId)
+            $updatedLiquidation = Liquidation::with('seller.user')
+                ->where('seller_id', $sellerId)
                 ->whereDate('date', $date)
                 ->first();
 
@@ -1245,6 +1389,11 @@ class LiquidationController extends Controller
     // Método para formatear detalles de liquidación
     protected function formatLiquidationDetails($liquidation)
     {
+        // Cargar la relación seller.user si no está cargada
+        if (!$liquidation->relationLoaded('seller')) {
+            $liquidation->load('seller.user');
+        }
+
         return [
             'id' => $liquidation->id,
             'date' => $liquidation->date,
@@ -1258,8 +1407,18 @@ class LiquidationController extends Controller
             'cash_delivered' => $liquidation->cash_delivered,
             'status' => $liquidation->status,
             'created_at' => $liquidation->created_at,
+            'updated_at' => $liquidation->updated_at,
             'end_date' => $liquidation->end_date,
-            'poliza' => $liquidation->poliza
+            'poliza' => $liquidation->poliza,
+            'observation' => $liquidation->observation,
+            'capture_path' => $liquidation->capture_path,
+            'seller' => $liquidation->seller ? [
+                'id' => $liquidation->seller->id,
+                'user' => $liquidation->seller->user ? [
+                    'id' => $liquidation->seller->user->id,
+                    'name' => $liquidation->seller->user->name,
+                ] : null
+            ] : null
 
         ];
     }

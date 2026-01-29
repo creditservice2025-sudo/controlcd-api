@@ -59,9 +59,10 @@ class ClientService
                 $sellerConfig = \App\Models\SellerConfig::where('seller_id', $params['seller_id'])->first();
                 $limit = $sellerConfig ? floatval($sellerConfig->restrict_new_sales_amount ?? 0) : 0;
                 if ($limit > 0) {
-                    $today = \Carbon\Carbon::now('America/Lima')->toDateString();
+                    $todayStart = \Carbon\Carbon::now('America/Lima')->startOfDay()->utc();
+                    $todayEnd = \Carbon\Carbon::now('America/Lima')->endOfDay()->utc();
                     $newCreditsAmount = \App\Models\Credit::where('seller_id', $params['seller_id'])
-                        ->whereDate('created_at', $today)
+                        ->whereBetween('created_at', [$todayStart, $todayEnd])
                         ->sum('credit_value');
                     $totalWithNew = $newCreditsAmount + floatval($params['credit_value']);
                     if ($totalWithNew > $limit) {
@@ -2260,6 +2261,8 @@ class ClientService
             $uniqueClientCount = count(array_unique(array_map(function ($item) {
                 return $item['client_id'];
             }, $allClients)));
+            \Log::info('Liquidation Data BEFORE return:', ['liquidation' => $liquidationData]);
+
             return [
                 'liquidation' => $liquidationData,
                 'clients' => $allClients,
@@ -2343,7 +2346,7 @@ class ClientService
                     'client_code' => $client->id,
                     'credit_info' => $credit,
 
-                    'installment' => $credit->installments,
+                    'installment' => [], // Optimización: no enviamos todas las cuotas aquí
                     'client_code' => $client->id,
                     'credit_info' => $credit,
 
@@ -2379,7 +2382,9 @@ class ClientService
         // PAGOS DEL DÍA usando business_date
         $referenceDateStr = $referenceDate->format('Y-m-d');
         $todayPayments = $credit->payments->filter(function ($payment) use ($referenceDateStr) {
-            return $payment->business_date === $referenceDateStr;
+            // Fallback: Si no tiene business_date, usamos la fecha de creación en la zona horaria definida
+            $paymentDate = $payment->business_date ?? \Carbon\Carbon::parse($payment->created_at)->timezone(self::TIMEZONE)->format('Y-m-d');
+            return $paymentDate === $referenceDateStr;
         });
         $paidToday = $todayPayments->sum('amount');
 
@@ -2473,6 +2478,8 @@ class ClientService
             'number_installments' => $credit->number_installments,
             'status' => $credit->status,
             'installments' => [],
+            'total_installments_count' => $credit->installments->count(),
+            'paid_installments_count' => $credit->installments->where('status', 'Pagado')->count(),
             'payments' => [],
             'cuotas_pagadas_hoy' => $installmentsPaidToday,
             'meta_a_recaudar_hoy' => $metaRecaudarHoy,

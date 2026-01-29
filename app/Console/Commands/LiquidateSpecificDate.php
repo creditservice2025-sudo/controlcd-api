@@ -127,9 +127,14 @@ class LiquidateSpecificDate extends Command
             $real_to_deliver = $initialCash + ($total_income + $total_collected)
                 - ($total_expenses + $new_credits + $irrecoverableCredits + $total_renewal_disbursed);
 
+            // Obtener moneda
+            $seller->loadMissing('city.country');
+            $currency = $seller->city->country->currency ?? 'PEN';
+
             $liquidationData = [
                 'date' => $targetDate,
                 'seller_id' => $seller->id,
+                'currency' => $currency,
                 'collection_target' => 0,
                 'initial_cash' => $initialCash,
                 'base_delivered' => 0,

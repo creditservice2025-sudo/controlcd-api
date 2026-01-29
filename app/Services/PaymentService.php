@@ -718,9 +718,16 @@ class PaymentService
         $timezone = $request->input('timezone', 'America/Lima');
         $page = (int) $request->input('page', 1);
         $perPage = (int) $request->input('perPage', 10);
+        $includeDeleted = $request->has('include_deleted') && $request->include_deleted === 'true';
+        $flatStructure = $request->has('flat') && $request->flat === 'true';
 
         // 1. Filtra los pagos por fecha, estado y seller
         $paymentsFilterQuery = Payment::query();
+        
+        // Incluir pagos eliminados si se solicita
+        if ($includeDeleted) {
+            $paymentsFilterQuery->onlyTrashed();
+        }
 
         if ($request->has('start_date') && $request->has('end_date')) {
             $startDate = Carbon::parse($request->get('start_date'), $timezone)->toDateString();
@@ -744,8 +751,6 @@ class PaymentService
         });
 
         // OPTIMIZACIÓN: Calcular total antes de modificar el query con distinct/pluck
-        // Clonamos para no afectar el query builder si fuera necesario, aunque sum() es terminal.
-        // Pero pluck() abajo modificará el builder si encadenamos.
         $totalPaymentsAmount = (clone $paymentsFilterQuery)->sum('amount');
 
         // 2. Obtén los credit_id de esos pagos (Optimizado: pluck en lugar de get)
@@ -761,9 +766,13 @@ class PaymentService
         $pageCreditIds = $credits->pluck('id');
 
         // 5. Traer TODOS los pagos requeridos para estos créditos en UNA sola consulta
-        // Aplicando los mismos filtros de fecha que usamos arriba
         $paymentsQuery = Payment::whereIn('credit_id', $pageCreditIds)
             ->orderBy('created_at', 'desc');
+        
+        // Incluir pagos eliminados si se solicita
+        if ($includeDeleted) {
+            $paymentsQuery->onlyTrashed();
+        }
 
         if ($request->has('start_date') && $request->has('end_date')) {
             $startDate = Carbon::parse($request->get('start_date'), $timezone)->toDateString();
@@ -805,7 +814,64 @@ class PaymentService
         // 7. Agrupar pagos por crédito
         $paymentsByCredit = $allPayments->groupBy('credit_id');
 
-        // 8. Construir respuesta
+        // 8. Construir respuesta según el formato solicitado
+        if ($flatStructure) {
+            // ESTRUCTURA PLANA: Lista de pagos individuales
+            $flatPayments = collect();
+
+            foreach ($credits as $credit) {
+                $creditPayments = $paymentsByCredit->get($credit->id, collect());
+
+                foreach ($creditPayments as $payment) {
+                    $paymentInstallments = $installmentsDetails->get($payment->id, collect());
+                    $quotaNumbers = $paymentInstallments->pluck('quota_number')->sort()->values()->toArray();
+
+                    $flatPayments->push([
+                        'payment_id' => $payment->id,
+                        'credit_id' => $credit->id,
+                        'client_id' => $credit->client->id,
+                        'client_name' => $credit->client->name,
+                        'client_dni' => $credit->client->dni,
+                        'client' => $credit->client, // Incluir objeto completo
+                        'credit_info' => $credit->loadMissing(['installments', 'payments']), // Cargar relaciones necesarias para el historial
+                        'payment_date' => $payment->created_at, // Usar created_at para fecha y hora exacta
+                        'business_date' => $payment->business_date,
+                        'amount' => $payment->amount,
+                        'status' => $payment->status,
+                        'payment_method' => $payment->payment_method,
+                        'payment_reference' => $payment->payment_reference,
+                        'quota_numbers' => $quotaNumbers,
+                        'quota_numbers_text' => !empty($quotaNumbers) ? implode(', ', $quotaNumbers) : 'N/A',
+                        'installments_details' => $paymentInstallments->values(),
+                        'total_applied' => $paymentInstallments->sum('paid_amount'),
+                        'created_at' => $payment->created_at,
+                        'deleted_at' => $payment->deleted_at,
+                        'is_deleted' => $includeDeleted,
+                    ]);
+                }
+            }
+
+            // Ordenar por fecha de pago descendente
+            $flatPayments = $flatPayments->sortByDesc('payment_date')->values();
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Pagos obtenidos correctamente',
+                'data' => [
+                    'payments' => $flatPayments,
+                    'pagination' => [
+                        'total' => $creditsPaginator->total(),
+                        'per_page' => $creditsPaginator->perPage(),
+                        'current_page' => $creditsPaginator->currentPage(),
+                        'last_page' => $creditsPaginator->lastPage(),
+                    ],
+                    'total_payments_amount' => $totalPaymentsAmount,
+                    'include_deleted' => $includeDeleted
+                ]
+            ]);
+        }
+
+        // ESTRUCTURA AGRUPADA (comportamiento original)
         $groupedPayments = collect();
 
         foreach ($credits as $credit) {
@@ -863,31 +929,115 @@ class PaymentService
             ], 404);
         }
 
-        $timezone = 'America/Lima';
+        $timezone = $seller->city->country->timezone ?? 'America/Lima';
+        $flatStructure = $request->get('flat', 'false') === 'true';
+        $includeDeleted = $request->get('include_deleted', 'false') === 'true';
+        
         $paymentsQuery = Payment::query();
-
-        if ($request->has('start_date') && $request->has('end_date')) {
-            $startDate = Carbon::parse($request->get('start_date'), $timezone)->toDateString();
-            $endDate = Carbon::parse($request->get('end_date'), $timezone)->toDateString();
-            $paymentsQuery->whereBetween('business_date', [$startDate, $endDate]);
-        } elseif ($request->has('date')) {
-            $filterDate = Carbon::parse($request->get('date'), $timezone)->toDateString();
-            $paymentsQuery->where('business_date', $filterDate);
-        } else {
-            $filterDate = Carbon::now($timezone)->toDateString();
-            $paymentsQuery->where('business_date', $filterDate);
+        
+        if ($includeDeleted) {
+            $paymentsQuery->withTrashed();
         }
 
-        if ($request->has('status') && in_array($request->status, ['Abonado', 'Pagado'])) {
-            $paymentsQuery->where('status', $request->status);
+        if ($request->has('start_date') && $request->has('end_date')) {
+            $startDateStr = $request->get('start_date');
+            $endDateStr = $request->get('end_date');
+            
+            $startRange = Carbon::parse($startDateStr, $timezone)->startOfDay()->utc();
+            $endRange = Carbon::parse($endDateStr, $timezone)->endOfDay()->utc();
+
+            $paymentsQuery->where(function($q) use ($startDateStr, $endDateStr, $startRange, $endRange) {
+                $q->whereBetween('business_date', [$startDateStr, $endDateStr])
+                  ->orWhere(function($q2) use ($startRange, $endRange) {
+                      $q2->whereNull('business_date')
+                         ->whereBetween('created_at', [$startRange, $endRange]);
+                  });
+            });
+        } elseif ($request->has('date')) {
+            $filterDate = $request->get('date');
+            $startRange = Carbon::parse($filterDate, $timezone)->startOfDay()->utc();
+            $endRange = Carbon::parse($filterDate, $timezone)->endOfDay()->utc();
+
+            $paymentsQuery->where(function($q) use ($filterDate, $startRange, $endRange) {
+                $q->where('business_date', $filterDate)
+                  ->orWhere(function($q2) use ($startRange, $endRange) {
+                      $q2->whereNull('business_date')
+                         ->whereBetween('created_at', [$startRange, $endRange]);
+                  });
+            });
+        } else {
+            $nowInTz = Carbon::now($timezone);
+            $filterDate = $nowInTz->toDateString();
+            $startRange = $nowInTz->copy()->startOfDay()->utc();
+            $endRange = $nowInTz->copy()->endOfDay()->utc();
+
+            $paymentsQuery->where(function($q) use ($filterDate, $startRange, $endRange) {
+                $q->where('business_date', $filterDate)
+                  ->orWhere(function($q2) use ($startRange, $endRange) {
+                      $q2->whereNull('business_date')
+                         ->whereBetween('created_at', [$startRange, $endRange]);
+                  });
+            });
         }
 
         // Solo pagos de créditos del seller
-        $paymentsQuery->whereHas('credit', function ($q) use ($sellerId) {
+        $paymentsQuery->whereHas('credit', function ($q) use ($sellerId, $includeDeleted) {
+            if ($includeDeleted) {
+                $q->withTrashed();
+            }
             $q->where('seller_id', $sellerId);
         });
 
-        $payments = $paymentsQuery->with(['credit:id,client_id', 'credit.client:id,name,dni'])->orderBy('created_at', 'desc')->get();
+        // Cargar relaciones para el crédito
+        $paymentsQuery->with([
+            'credit' => function($q) {
+                $q->withTrashed()->with(['client', 'installments', 'payments']);
+            }
+        ]);
+
+        $payments = $paymentsQuery->orderBy('created_at', 'desc')->get();
+
+        if ($flatStructure) {
+            $flatPayments = $payments->map(function ($payment) use ($includeDeleted) {
+                $credit = $payment->credit;
+                $paymentInstallments = DB::table('payment_installments')
+                    ->join('installments', 'payment_installments.installment_id', '=', 'installments.id')
+                    ->where('payment_installments.payment_id', $payment->id)
+                    ->select('installments.quota_number')
+                    ->get();
+                
+                $quotaNumbers = $paymentInstallments->pluck('quota_number')->sort()->values()->toArray();
+
+                return [
+                    'payment_id' => $payment->id,
+                    'credit_id' => $credit->id ?? null,
+                    'client_id' => $credit->client->id ?? null,
+                    'client_name' => $credit->client->name ?? 'N/A',
+                    'client_dni' => $credit->client->dni ?? 'N/A',
+                    'client' => $credit->client ?? null,
+                    'credit_info' => $credit, // Objeto completo con relaciones cargadas
+                    'payment_date' => $payment->created_at, // Exact time
+                    'business_date' => $payment->business_date,
+                    'amount' => $payment->amount,
+                    'status' => $payment->status,
+                    'payment_method' => $payment->payment_method,
+                    'payment_reference' => $payment->payment_reference,
+                    'quota_numbers' => $quotaNumbers,
+                    'quota_numbers_text' => !empty($quotaNumbers) ? implode(', ', $quotaNumbers) : 'N/A',
+                    'created_at' => $payment->created_at,
+                    'deleted_at' => $payment->deleted_at,
+                    'is_deleted' => $includeDeleted,
+                ];
+            });
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Pagos obtenidos correctamente (flat)',
+                'data' => [
+                    'payments' => $flatPayments
+                ]
+            ]);
+        }
 
         return $this->successResponse([
             'success' => true,
@@ -1025,8 +1175,8 @@ class PaymentService
                 ->first();
 
             $user = Auth::user();
-            if ($liquidation && !$user->can('ajustar_caja') && $user->role_id !== 1) {
-                throw new \Exception('No se puede eliminar el pago. El vendedor ya tiene una liquidación registrada para el día de hoy y usted no tiene permisos para ajustar caja.');
+            if ($liquidation && $liquidation->status === 'cerrada' && !$user->can('ajustar_caja') && $user->role_id !== 1) {
+                throw new \Exception('No se puede eliminar el pago. El vendedor ya tiene una liquidación cerrada para el día de hoy y usted no tiene permisos para ajustar caja.');
             }
 
             // ... (rest of simple validations as before)

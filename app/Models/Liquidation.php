@@ -14,6 +14,7 @@ class Liquidation extends Model
     protected $fillable = [
         'date',
         'seller_id',
+        'currency', // ✅ Nuevo: Moneda del país
         'collection_target',
         'initial_cash',
         'base_delivered',
@@ -40,7 +41,9 @@ class Liquidation extends Model
         'clients_full_payment_count',
         'clients_partial_payment_count',
         'clients_liquidated_and_renewed_count',
-        'created_at'
+        'created_at',
+        'observation', // ✅ Nuevo
+        'capture_path' // ✅ Nuevo
     ];
 
     protected $casts = [

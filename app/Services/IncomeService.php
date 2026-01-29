@@ -518,7 +518,10 @@ class IncomeService
                      $q->where('business_date', $todayDate)
                        ->orWhere(function($sub) use ($todayDate) {
                            $sub->whereNull('business_date')
-                               ->whereDate('created_at', $todayDate); // Fallback aproximado
+                        ->whereBetween('created_at', [
+                            \App\Helpers\TimezoneHelper::getBusinessNow($seller)->startOfDay()->utc(),
+                            \App\Helpers\TimezoneHelper::getBusinessNow($seller)->endOfDay()->utc()
+                        ]); // Fallback aproximado con rango UTC
                        });
                 });
             }
