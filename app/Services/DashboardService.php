@@ -494,7 +494,7 @@ class DashboardService
 
                 $renewalCredits = DB::table('credits')
                     ->where('seller_id', $seller->id)
-                    ->whereDate('created_at', $todayDate)
+                    ->whereBetween('created_at', [$startUTC, $endUTC])
                     ->whereNotNull('renewed_from_id')
                     ->get();
 
@@ -568,7 +568,7 @@ class DashboardService
                     ->join('credits', 'installments.credit_id', '=', 'credits.id')
                     ->where('credits.seller_id', $seller->id)
                     ->where('credits.status', 'Cartera Irrecuperable')
-                    ->whereDate('credits.updated_at', $todayDate)
+                    ->whereBetween('credits.updated_at', [$startUTC, $endUTC])
                     ->where('installments.status', 'Pendiente')
                     ->sum('installments.quota_amount');
                 $currentCash = $initialCash + ($income + $cashPayments) - ($expenses + $newCredits + $total_renewal_disbursed + $irrecoverableCredits);
@@ -726,7 +726,7 @@ class DashboardService
                 ->join('credits', 'installments.credit_id', '=', 'credits.id')
                 ->whereIn('credits.seller_id', $sellerIds)
                 ->where('credits.status', 'Cartera Irrecuperable')
-                ->whereDate('credits.updated_at', $today)
+                ->whereBetween('credits.updated_at', [$startUTC, $endUTC])
                 ->where('installments.status', 'Pendiente')
                 ->sum('installments.quota_amount');
 

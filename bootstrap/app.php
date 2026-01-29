@@ -30,7 +30,7 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withExceptions(function (Exceptions $exceptions) {
     })
     ->withSchedule(function (Schedule $schedule) {
-        $schedule->command('liquidation:auto-daily')->dailyAt('23:55');
+        $schedule->command('liquidation:auto-daily')->hourly();
         $schedule->command('liquidation:historical')->dailyAt('23:55');
         $schedule->command('liquidation:notify-pending')->dailyAt('21:52');
         $schedule->command('credits:notify-renewal-pending')->dailyAt('21:00');

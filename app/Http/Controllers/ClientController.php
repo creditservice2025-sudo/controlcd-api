@@ -547,12 +547,31 @@ class ClientController extends Controller
             if ($inputDateLocal > $todayLocal) {
                 return $this->errorResponse('La fecha seleccionada no puede ser mayor que la fecha actual.', 422);
             }
+            // Buscar la liquidación PENDIENTE más ANTIGUA antes de la fecha consultada
             $previousLiquidation = Liquidation::where('seller_id', $sellerId)
                 ->whereDate('date', '<', $inputDateLocal)
-                ->orderByDesc('date')
+                ->where('status', '!=', 'approved')
+                ->orderBy('date', 'asc')
                 ->first();
-            if ($previousLiquidation && $previousLiquidation->status !== 'approved') {
-                return $this->errorResponse('No puede consultar la liquidación porque la anterior no está aprobada.', 422);
+
+            if ($previousLiquidation) {
+                // Buscar la última APROBADA antes de esa liquidación pendiente
+                $lastApproved = Liquidation::where('seller_id', $sellerId)
+                    ->where('status', 'approved')
+                    ->whereDate('date', '<', $previousLiquidation->date)
+                    ->orderByDesc('date')
+                    ->first();
+
+                return response()->json([
+                    'success' => false,
+                    'message' => "Se ha detectado una liquidación pendiente del día {$previousLiquidation->date}. La última liquidación aprobada fue el " . ($lastApproved ? $lastApproved->date : 'N/A') . ".",
+                    'error_code' => 'PREVIOUS_LIQUIDATION_PENDING',
+                    'data' => [
+                        'pending_date' => $previousLiquidation->date->format('Y-m-d H:i:s'),
+                        'last_approved_date' => $lastApproved ? $lastApproved->date->format('Y-m-d H:i:s') : null,
+                        'seller_name' => $seller->user->name
+                    ]
+                ], 422);
             }
             $result = $this->clientService->getLiquidationWithAllClients($sellerId, $date, $userId, $timezone);
             return response()->json([

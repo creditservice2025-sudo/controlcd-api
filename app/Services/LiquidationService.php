@@ -649,6 +649,10 @@ class LiquidationService
             'clients_full_payment_count' => $dailyTotals['clients_full_payment_count'] ?? 0,
             'clients_partial_payment_count' => $dailyTotals['clients_partial_payment_count'] ?? 0,
             'clients_liquidated_and_renewed_count' => $dailyTotals['clients_liquidated_and_renewed_count'] ?? 0,
+            // Claves faltantes para evitar errores en frontend
+            'audits' => [],
+            'path' => '',
+            'end_date' => null,
         ];
     }
 
@@ -669,14 +673,17 @@ class LiquidationService
         }
 
         // Create a draft liquidation
-        $seller = Seller::find($sellerId);
+        $seller = Seller::with('city.country')->find($sellerId);
         $userId = $seller ? $seller->user_id : null;
+        $country = $seller?->city?->country ?? null;
+        $currency = $country?->currency ?? 'PEN'; // Fallback a PEN si no hay país
 
         $dynamicData = $this->getLiquidationData($sellerId, $date, $userId, $tz);
 
         return Liquidation::create([
             'seller_id' => $sellerId,
             'date' => $date,
+            'currency' => $currency, // ✅ AGREGADO
             'status' => 'En curso',
             'initial_cash' => floatval($dynamicData['initial_cash'] ?? 0),
             'collection_target' => floatval($dynamicData['collection_target'] ?? 0),
