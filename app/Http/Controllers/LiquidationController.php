@@ -215,8 +215,8 @@ class LiquidationController extends Controller
                     $liquidationData['created_at'] = $request->created_at;
                 } else {
                     if ($request->filled('timezone')) {
-                        $liquidationData['created_at'] = Carbon::now($timezone);
-                        $liquidationData['updated_at'] = Carbon::now($timezone);
+                        $liquidationData['created_at'] = Carbon::now();
+                        $liquidationData['updated_at'] = Carbon::now();
                     }
                 }
 
@@ -820,9 +820,16 @@ class LiquidationController extends Controller
                 $liquidation->capture_path = $path;
             }
 
-            $liquidation->save();            
+            $liquidation->save();
 
-            return $this->liquidationService->approve($id);
+            // Registrar auditoría de aprobación administrativa
+            \App\Models\LiquidationAudit::create([
+                'liquidation_id' => $liquidation->id,
+                'user_id' => auth()->id(),
+                'action' => 'Aprobación administrativa',
+            ]);
+
+            return $this->liquidationService->approve($id, $request->input('timezone'));
         } catch (\Exception $e) {
             \Log::error("Error al aprobar liquidación: " . $e->getMessage());
             return $this->errorResponse('Error al aprobar la liquidación', 500);
