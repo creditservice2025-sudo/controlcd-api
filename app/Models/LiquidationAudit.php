@@ -28,4 +28,9 @@ class LiquidationAudit extends Model
     {
         return $this->belongsTo(User::class, 'user_id');
     }
+
+    public function liquidation()
+    {
+        return $this->belongsTo(Liquidation::class, 'liquidation_id');
+    }
 }

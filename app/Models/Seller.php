@@ -76,4 +76,9 @@ class Seller extends Model
     {
         return $this->hasOne(SellerConfig::class);
     }
+
+    public function liquidations()
+    {
+        return $this->hasMany(Liquidation::class);
+    }
 }

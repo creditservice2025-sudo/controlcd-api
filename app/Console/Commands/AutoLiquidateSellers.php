@@ -49,6 +49,9 @@ class AutoLiquidateSellers extends Command
                     $count++;
                 }
 
+                // Cierre automático de sesiones abiertas si estamos liquidando el día
+                $this->closeOpenSessions($seller, $now, $businessTimezone);
+
             } catch (\Exception $e) {
                 \Log::error("Error auto-liquidating seller {$seller->id}: " . $e->getMessage());
             }
@@ -180,5 +183,22 @@ class AutoLiquidateSellers extends Command
         Liquidation::create($liquidationData);
 
         $this->info("Liquidación automática creada para vendedor {$seller->id} (Zona: {$timezone}) Fecha: {$date}");
+    }
+
+    private function closeOpenSessions($seller, $now, $timezone)
+    {
+        // Buscamos sesiones abiertas (sin logout) para el usuario de este vendedor
+        $openSessions = \App\Models\SessionLog::where('user_id', $seller->user_id)
+            ->whereNull('logout_at')
+            ->get();
+
+        foreach ($openSessions as $session) {
+            // Si la sesión empezó antes de "ahora", la cerramos
+            // Usamos la hora actual o las 23:59:59 del día de la liquidación si es pasado
+            $session->update([
+                'logout_at' => $now->toDateTimeString()
+            ]);
+            \Log::info("Sesión #{$session->id} cerrada automáticamente para el vendedor {$seller->id}");
+        }
     }
 }

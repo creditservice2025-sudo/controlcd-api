@@ -108,3 +108,8 @@ auth.json
 
 .database-data
 !/resources/views/vendor
+
+# Diagnostic and testing scripts (DO NOT deploy to production)
+diag_*.php
+dump_*.php
+test_*.php
