@@ -331,15 +331,16 @@ class DashboardService
             $todayDate = Carbon::now($timezone)->toDateString();
 
             $sellersQuery = Seller::with([
-                'credits' => function ($query) use ($todayDate) {
-                    $query->whereNull('deleted_at');
+                'credits' => function ($query) {
+                    $query->select('id', 'seller_id', 'credit_value', 'total_interest', 'status', 'created_at', 'renewed_from_id', 'updated_at')
+                        ->whereNull('deleted_at');
                 },
-                'credits.installments.payments',
+                // 'credits.installments.payments', // Removed as it is unused and causes high memory consumption
                 'city:id,name,country_id',
                 'city.country:id,name',
                 'user:id,name',
             ])
-                ->whereHas('credits', function ($query) use ($todayDate) {
+                ->whereHas('credits', function ($query) {
                     $query->whereNull('deleted_at');
                 })
                 ->orderBy('created_at', 'desc');
@@ -371,9 +372,12 @@ class DashboardService
             $sellers = $sellersQuery->take(10)->get();
             $result = [];
 
-            $allCreditIds = $sellers->pluck('credits')->flatten()->pluck('id')->all();
+            $sellerIds = $sellers->pluck('id')->toArray();
+            // $allCreditIds logic replaced by direct query constraints to avoid memory issues
 
-            $totalPaidByCredit = Payment::whereIn('credit_id', $allCreditIds)
+            $totalPaidByCredit = Payment::whereIn('credit_id', function ($query) use ($sellerIds) {
+                $query->select('id')->from('credits')->whereIn('seller_id', $sellerIds)->whereNull('deleted_at');
+            })
                 ->select('credit_id', DB::raw('SUM(amount) as total'))
                 ->groupBy('credit_id')
                 ->get()
@@ -383,7 +387,9 @@ class DashboardService
                 })
                 ->all();
 
-            $paidTodayByCredit = Payment::whereIn('credit_id', $allCreditIds)
+            $paidTodayByCredit = Payment::whereIn('credit_id', function ($query) use ($sellerIds) {
+                $query->select('id')->from('credits')->whereIn('seller_id', $sellerIds)->whereNull('deleted_at');
+            })
                 ->whereBetween('created_at', [$startUTC, $endUTC])
                 ->select('credit_id', DB::raw('SUM(amount) as total'))
                 ->groupBy('credit_id')
@@ -885,8 +891,9 @@ class DashboardService
             $newCredits = (float) Credit::whereIn('seller_id', $sellerIds)
                 ->whereBetween('created_at', [$start, $end])->whereNull('renewed_from_id')->sum('credit_value');
 
-            $installmentIds = Installment::whereIn('credit_id', $creditIds)->pluck('id')->all();
-            $totalCapitalPaid = (float) PaymentInstallment::whereIn('installment_id', $installmentIds)
+            $totalCapitalPaid = (float) PaymentInstallment::whereIn('installment_id', function ($query) use ($creditIds) {
+                $query->select('id')->from('installments')->whereIn('credit_id', $creditIds);
+            })
                 ->whereBetween('created_at', [$start, $end])->sum('applied_amount');
 
             $totalPayments = (float) Payment::whereIn('credit_id', $creditIds)
