@@ -183,10 +183,10 @@ class LiquidationService
                 return $this->errorResponse('La liquidación ya ha sido aprobada previamente.', 422);
             }
 
-            // Verificar que el vendedor haya cerrado la caja (status debe ser 'pending')
-            if ($liquidation->status !== 'pending') {
+            // Verificar que el vendedor haya cerrado la caja (status debe ser 'pending' o 'auto')
+            if (!in_array($liquidation->status, ['pending', 'auto'])) {
                 return $this->errorResponse(
-                    'No se puede aprobar esta liquidación porque el vendedor aún no ha cerrado su caja. El vendedor debe cerrar la liquidación primero.',
+                    'No se puede aprobar esta liquidación porque no está en estado pendiente o automático.',
                     422
                 );
             }
