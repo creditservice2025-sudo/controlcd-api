@@ -260,8 +260,14 @@ class SellerService
                 //         ->whereNull('logout_at');
                 // },
                 'user.sessionLogs' => function ($q) use ($todayStartUTC, $todayEndUTC) {
-                    $q->whereBetween('login_at', [$todayStartUTC, $todayEndUTC])
-                        ->orderBy('login_at', 'asc');
+                    $yesterday = \Carbon\Carbon::now()->subRealDay();
+                    $q->where(function($query) use ($todayStartUTC, $todayEndUTC) {
+                        $query->whereBetween('login_at', [$todayStartUTC, $todayEndUTC]);
+                    })->orWhere(function($query) use ($yesterday) {
+                        $query->whereNull('logout_at')
+                            ->where('login_at', '>', $yesterday);
+                    })
+                    ->orderBy('login_at', 'asc');
                 },
                 'city:id,name,country_id',
                 'city.country:id,name,timezone'
@@ -325,7 +331,13 @@ class SellerService
             // })->get([
 
             $routesList = $routes->whereHas('user.sessionLogs', function ($q) use ($todayStartUTC, $todayEndUTC) {
-                $q->whereBetween('login_at', [$todayStartUTC, $todayEndUTC]);
+                $yesterday = \Carbon\Carbon::now()->subRealDay();
+                $q->where(function($query) use ($todayStartUTC, $todayEndUTC) {
+                    $query->whereBetween('login_at', [$todayStartUTC, $todayEndUTC]);
+                })->orWhere(function($query) use ($yesterday) {
+                    $query->whereNull('logout_at')
+                        ->where('login_at', '>', $yesterday);
+                });
             })->get([
                         'id',
                         'user_id',

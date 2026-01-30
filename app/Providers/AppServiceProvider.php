@@ -25,8 +25,8 @@ class AppServiceProvider extends ServiceProvider
             return config('app.frontend_url')."/password-reset/$token?email={$notifiable->getEmailForPasswordReset()}";
         });
 
-        Passport::tokensExpireIn(now()->addDays(1));
-        Passport::refreshTokensExpireIn(now()->addDays(1));
-        Passport::personalAccessTokensExpireIn(now()->addMonths(1));
+        Passport::tokensExpireIn(now()->addHour());
+        Passport::refreshTokensExpireIn(now()->addHour());
+        Passport::personalAccessTokensExpireIn(now()->addHour());
     }
 }
