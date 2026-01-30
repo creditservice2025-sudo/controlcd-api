@@ -248,9 +248,21 @@ class SellerService
             $user = Auth::user();
             $company = $user->company;
             $timezone = $request->get('timezone', 'America/Lima');
-            $today = Carbon::now($timezone)->format('Y-m-d');
-            $todayStartUTC = Carbon::now($timezone)->startOfDay()->utc();
-            $todayEndUTC = Carbon::now($timezone)->endOfDay()->utc();
+            $targetDateInput = $request->get('date');
+            $targetDate = $targetDateInput ? Carbon::parse($targetDateInput, $timezone) : Carbon::now($timezone);
+            
+            $targetDay = $targetDate->format('Y-m-d');
+            $targetStartUTC = $targetDate->copy()->startOfDay()->utc();
+            $targetEndUTC = $targetDate->copy()->endOfDay()->utc();
+            $isToday = $targetDay === Carbon::now($timezone)->format('Y-m-d');
+
+            \Log::info("Rutas Activas Consulted", [
+                'target_day' => $targetDay,
+                'is_today' => $isToday,
+                'start_utc' => $targetStartUTC->toDateTimeString(),
+                'end_utc' => $targetEndUTC->toDateTimeString(),
+                'timezone' => $timezone
+            ]);
 
             $routes = Seller::with([
                 'user:id,name',
@@ -259,15 +271,10 @@ class SellerService
                 //     $q->whereDate('login_at', $today)
                 //         ->whereNull('logout_at');
                 // },
-                'user.sessionLogs' => function ($q) use ($todayStartUTC, $todayEndUTC) {
-                    $yesterday = \Carbon\Carbon::now()->subRealDay();
-                    $q->where(function($query) use ($todayStartUTC, $todayEndUTC) {
-                        $query->whereBetween('login_at', [$todayStartUTC, $todayEndUTC]);
-                    })->orWhere(function($query) use ($yesterday) {
-                        $query->whereNull('logout_at')
-                            ->where('login_at', '>', $yesterday);
-                    })
-                    ->orderBy('login_at', 'asc');
+                'user.sessionLogs' => function ($q) use ($targetStartUTC, $targetEndUTC) {
+                    // Filtramos estrictamente por sesiones que INICIARON en el día consultado
+                    $q->whereBetween('login_at', [$targetStartUTC, $targetEndUTC])
+                      ->orderBy('login_at', 'asc');
                 },
                 'city:id,name,country_id',
                 'city.country:id,name,timezone'
@@ -330,14 +337,8 @@ class SellerService
             //         ->whereNull('logout_at');
             // })->get([
 
-            $routesList = $routes->whereHas('user.sessionLogs', function ($q) use ($todayStartUTC, $todayEndUTC) {
-                $yesterday = \Carbon\Carbon::now()->subRealDay();
-                $q->where(function($query) use ($todayStartUTC, $todayEndUTC) {
-                    $query->whereBetween('login_at', [$todayStartUTC, $todayEndUTC]);
-                })->orWhere(function($query) use ($yesterday) {
-                    $query->whereNull('logout_at')
-                        ->where('login_at', '>', $yesterday);
-                });
+            $routesList = $routes->whereHas('user.sessionLogs', function ($q) use ($targetStartUTC, $targetEndUTC) {
+                $q->whereBetween('login_at', [$targetStartUTC, $targetEndUTC]);
             })->get([
                         'id',
                         'user_id',
@@ -347,9 +348,9 @@ class SellerService
                         'created_at'
                     ]);
 
-            $data = $routesList->map(function ($route) use ($today, $todayStartUTC, $todayEndUTC) {
+            $data = $routesList->map(function ($route) use ($targetDay, $targetStartUTC, $targetEndUTC) {
                 $liquidationToday = Liquidation::where('seller_id', $route->id)
-                    ->where(DB::raw('DATE(date)'), $today)
+                    ->where(DB::raw('DATE(date)'), $targetDay)
                     ->first();
 
                 $liquidationOpen = null;
@@ -359,12 +360,12 @@ class SellerService
                 $liquidationStatus = null;
 
                 $firstPayment = $route->credits()
-                    ->whereHas('payments', function ($q) use ($todayStartUTC, $todayEndUTC) {
-                        $q->whereBetween('created_at', [$todayStartUTC, $todayEndUTC]);
+                    ->whereHas('payments', function ($q) use ($targetStartUTC, $targetEndUTC) {
+                        $q->whereBetween('created_at', [$targetStartUTC, $targetEndUTC]);
                     })
                     ->with([
-                        'payments' => function ($q) use ($todayStartUTC, $todayEndUTC) {
-                            $q->whereBetween('created_at', [$todayStartUTC, $todayEndUTC])->orderBy('created_at', 'asc');
+                        'payments' => function ($q) use ($targetStartUTC, $targetEndUTC) {
+                            $q->whereBetween('created_at', [$targetStartUTC, $targetEndUTC])->orderBy('created_at', 'asc');
                         }
                     ])
                     ->get()
