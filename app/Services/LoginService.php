@@ -56,7 +56,7 @@ class LoginService
                     ->whereDate('date', $todayLima)
                     ->first();
 
-                if ($liquidation) {
+                if ($liquidation && in_array($liquidation->status, ['approved', 'auto', 'pending'])) {
                     return $this->errorResponse(['Ya cerro la liquidación del día. Si desea reabrir la caja debe contactar al administrador'], 401);
                 }
             }
