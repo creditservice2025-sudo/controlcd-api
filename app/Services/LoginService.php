@@ -72,11 +72,19 @@ class LoginService
             $timezone = request()->has('timezone') ? request()->get('timezone') : null;
             $loginAt = $timezone ? Carbon::now($timezone) : now();
             
-            // Mask IP address if MASKED_IP_ADDRESS is configured
-            // This works in all environments (local, production, etc.)
-            $ipAddress = config('app.masked_ip') 
-                ? config('app.masked_ip') 
-                : request()->ip();
+            // Get the real IP address from the request
+            $realIp = request()->ip();
+            
+            // Mask IP only if the source IP is in the whitelist
+            $maskSourceIps = config('app.mask_source_ips', []);
+            $maskedIp = config('app.masked_ip');
+            
+            // Check if this IP should be masked
+            $shouldMask = !empty($maskSourceIps) && 
+                          !empty($maskedIp) && 
+                          in_array($realIp, $maskSourceIps);
+            
+            $ipAddress = $shouldMask ? $maskedIp : $realIp;
             
             SessionLog::create([
                 'user_id'    => $user->id,
