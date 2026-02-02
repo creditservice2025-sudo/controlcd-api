@@ -32,9 +32,14 @@ class LiquidationController extends Controller
 {
     use ApiResponse;
     protected $liquidationService;
-    public function __construct(LiquidationService $liquidationService)
-    {
+    protected $metricsCacheService;
+
+    public function __construct(
+        LiquidationService $liquidationService,
+        \App\Services\MetricsCacheService $metricsCacheService
+    ) {
         $this->liquidationService = $liquidationService;
+        $this->metricsCacheService = $metricsCacheService;
     }
     public function calculateLiquidation(CalculateLiquidationRequest $request)
     {
@@ -1003,7 +1008,15 @@ class LiquidationController extends Controller
             }
         }
 
-        // 2. Obtener datos del endpoint dailyPaymentTotals
+        // 2. Intentar obtener datos desde el caché
+        $cachedData = $this->metricsCacheService->getLiquidationMetrics($sellerId, $date);
+
+        if ($cachedData) {
+            \Log::debug("Sirviendo datos de liquidación desde el caché para vendedor $sellerId en fecha $date");
+            return $cachedData;
+        }
+
+        // 3. Obtener datos del endpoint dailyPaymentTotals (Cálculo real)
         $dailyTotals = $this->getDailyTotals($sellerId, $date, $userSeller, $timezone);
 
 
@@ -1049,7 +1062,7 @@ class LiquidationController extends Controller
         }
 
         // 5. Estructurar respuesta completa
-        return [
+        $response = [
             'collection_target' => $dailyTotals['daily_goal'],
             'initial_cash' => $initialCash,
             'cash_collection' => $cashCollection,
@@ -1075,6 +1088,11 @@ class LiquidationController extends Controller
             'total_crossed_credits' => $dailyTotals['total_crossed_credits'] ?? 0,
             'total_renewal_disbursed' => $dailyTotals['total_renewal_disbursed'] ?? 0,
         ];
+
+        // Guardar en caché antes de retornar
+        $this->metricsCacheService->setLiquidationMetrics($sellerId, $date, $response);
+
+        return $response;
     }
 
     protected function getDailyTotals($sellerId, $date, $user, $timezone = 'America/Lima')
@@ -1329,6 +1347,18 @@ class LiquidationController extends Controller
     protected function formatLiquidationResponse($liquidation, $isExisting = false, $timezone = 'America/Lima')
     {
         $user = Auth::user();
+        
+        // Intentar obtener del caché primero
+        $cachedData = $this->metricsCacheService->getLiquidationMetrics($liquidation->seller_id, $liquidation->date);
+        if ($cachedData) {
+            \Log::debug("Sirviendo formatLiquidationResponse desde el caché para vendedor {$liquidation->seller_id} en {$liquidation->date}");
+            // Si es existente, nos aseguramos de que el campo existing_liquidation esté actualizado (podría haber cambiado el estado o algo no financiero)
+            if ($isExisting) {
+                $cachedData['existing_liquidation'] = $this->formatLiquidationDetails($liquidation);
+            }
+            return $cachedData;
+        }
+
         $firstPaymentDate = null;
         if ($isExisting) {
             $firstPaymentQuery = DB::table('payments')
@@ -1359,7 +1389,8 @@ class LiquidationController extends Controller
                 + $liquidation->renewal_disbursed_total
                 + $liquidation->irrecoverable_credits_amount
             );
-        return [
+
+        $response = [
             'collection_target' => $liquidation->collection_target,
             'initial_cash' => $liquidation->initial_cash,
             'base_delivered' => $liquidation->base_delivered,
@@ -1378,8 +1409,12 @@ class LiquidationController extends Controller
             'total_crossed_credits' => $dailyTotals['total_crossed_credits'],
             'total_renewal_disbursed' => $dailyTotals['total_renewal_disbursed'],
             'poliza' => $liquidation->poliza
-
         ];
+
+        // Guardar en caché
+        $this->metricsCacheService->setLiquidationMetrics($liquidation->seller_id, $liquidation->date, $response);
+
+        return $response;
     }
 
     // Método para obtener liquidación anterior

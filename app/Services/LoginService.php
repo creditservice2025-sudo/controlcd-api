@@ -71,10 +71,16 @@ class LoginService
 
             $timezone = request()->has('timezone') ? request()->get('timezone') : null;
             $loginAt = $timezone ? Carbon::now($timezone) : now();
+            
+            // Mask IP address in development environment
+            $ipAddress = config('app.env') === 'local' 
+                ? config('app.masked_ip', '190.237.45.123') 
+                : request()->ip();
+            
             SessionLog::create([
                 'user_id'    => $user->id,
                 'login_at'   => $loginAt,
-                'ip'         => request()->ip(),
+                'ip'         => $ipAddress,
                 'user_agent' => request()->header('User-Agent'),
             ]);
 
@@ -109,6 +115,8 @@ class LoginService
 
             $timezone = request()->has('timezone') ? request()->get('timezone') : null;
             $logoutAt = $timezone ? Carbon::now($timezone) : now();
+            
+            // Note: IP is already stored from login, but logout_at is updated
             SessionLog::where('user_id', $user->id)
                 ->whereNull('logout_at')
                 ->latest()

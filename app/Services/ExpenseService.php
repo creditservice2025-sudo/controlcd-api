@@ -21,6 +21,12 @@ class ExpenseService
     use ApiResponse;
 
     const TIMEZONE = 'America/Lima';
+    protected $metricsCacheService;
+
+    public function __construct(\App\Services\MetricsCacheService $metricsCacheService)
+    {
+        $this->metricsCacheService = $metricsCacheService;
+    }
 
     public function create(Request $request)
     {
@@ -155,6 +161,9 @@ class ExpenseService
                 $liquidationService = app(\App\Services\LiquidationService::class);
                 $liquidationService->recalculateLiquidation($seller->id, $businessDate);
                 $liquidationService->recalculateNextLiquidations($seller->id, $businessDate);
+
+                // Invalidate Liquidation Cache
+                $this->metricsCacheService->invalidateLiquidationMetrics($seller->id, $businessDate);
             }
 
             if ($request->hasFile('image')) {
@@ -361,6 +370,9 @@ class ExpenseService
                 $liquidationService = app(\App\Services\LiquidationService::class);
                 $liquidationService->recalculateLiquidation($seller->id, $businessDate);
                 $liquidationService->recalculateNextLiquidations($seller->id, $businessDate);
+
+                // Invalidate Liquidation Cache
+                $this->metricsCacheService->invalidateLiquidationMetrics($seller->id, $businessDate);
             }
 
             return $this->successResponse([
@@ -426,36 +438,11 @@ class ExpenseService
                 $expense->save();
                 $expense->delete();
             } else {
-                $expense->delete();
-            }
+            $expense->delete();
+        }
 
-            if ($liquidation) {
-                $oldRealToDeliver = floatval($liquidation->real_to_deliver);
-
-                // Recalcular liquidaciones
-                $liquidationService = app(LiquidationService::class);
-                $liquidationService->recalculateLiquidation($seller->id, $businessDate);
-                $liquidationService->recalculateNextLiquidations($seller->id, $businessDate);
-
-                // Re-fetch liquidation
-                $updatedLiquidation = Liquidation::find($liquidation->id);
-                $newRealToDeliver = $updatedLiquidation ? floatval($updatedLiquidation->real_to_deliver) : 0;
-
-                // Record Audit
-                \App\Models\LiquidationAudit::create([
-                    'liquidation_id' => $liquidation->id,
-                    'user_id' => $user->id,
-                    'action' => 'deleted_expense',
-                    'changes' => [
-                        'description' => "Eliminación de Gasto #{$expense->id} - Desc: {$expense->description} - Monto: {$expense->value}",
-                        'expense_id' => $expense->id,
-                        'amount' => floatval($expense->value),
-                        'old_real_to_deliver' => $oldRealToDeliver,
-                        'new_real_to_deliver' => $newRealToDeliver,
-                        'impact' => $newRealToDeliver - $oldRealToDeliver
-                    ]
-                ]);
-            }
+        // Invalidate Liquidation Cache
+        $this->metricsCacheService->invalidateLiquidationMetrics($seller->id, $businessDate);
 
             return $this->successResponse([
                 'success' => true,
@@ -492,6 +479,17 @@ class ExpenseService
                 'reviewed_by' => $user->id,
                 'reviewed_at' => now(),
             ]);
+
+            // Invalidate Liquidation Cache
+            $seller = Seller::where('user_id', $expense->user_id)->first();
+            if ($seller) {
+                $expenseTimezone = $expense->business_timezone ?? \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
+                $businessDate = $expense->business_date 
+                    ? (is_string($expense->business_date) ? $expense->business_date : $expense->business_date->format('Y-m-d'))
+                    : Carbon::parse($expense->created_at)->setTimezone($expenseTimezone)->format('Y-m-d');
+                
+                $this->metricsCacheService->invalidateLiquidationMetrics($seller->id, $businessDate);
+            }
 
             $actionMessage = $status === 'approved' ? 'aprobado' : 'rechazado';
 
