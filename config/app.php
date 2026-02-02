@@ -125,15 +125,15 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | IP Masking for Development
+    | IP Masking Configuration
     |--------------------------------------------------------------------------
     |
-    | When running in local environment, this IP address will be used instead
-    | of the real IP address for session logging. This helps protect developer
-    | privacy. Default is a Peru-based IP address.
+    | When this value is set, it will be used instead of the real IP address
+    | for session logging in ALL environments (local, production, etc.).
+    | This helps protect privacy. Set to null to use real IP addresses.
     |
     */
 
-    'masked_ip' => env('MASKED_IP_ADDRESS', '190.237.45.123'),
+    'masked_ip' => env('MASKED_IP_ADDRESS', null),
 
 ];

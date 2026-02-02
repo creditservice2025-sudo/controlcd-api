@@ -72,9 +72,10 @@ class LoginService
             $timezone = request()->has('timezone') ? request()->get('timezone') : null;
             $loginAt = $timezone ? Carbon::now($timezone) : now();
             
-            // Mask IP address in development environment
-            $ipAddress = config('app.env') === 'local' 
-                ? config('app.masked_ip', '190.237.45.123') 
+            // Mask IP address if MASKED_IP_ADDRESS is configured
+            // This works in all environments (local, production, etc.)
+            $ipAddress = config('app.masked_ip') 
+                ? config('app.masked_ip') 
                 : request()->ip();
             
             SessionLog::create([
