@@ -139,8 +139,8 @@ return [
 
     'masked_ip' => env('MASKED_IP_ADDRESS', null),
     
-    'mask_source_ips' => array_filter(
-        array_map('trim', explode(',', env('MASK_SOURCE_IPS', '')))
-    ),
+    'mask_source_ips' => !empty(env('MASK_SOURCE_IPS')) 
+        ? array_filter(array_map('trim', explode(',', env('MASK_SOURCE_IPS')))) 
+        : [],
 
 ];
