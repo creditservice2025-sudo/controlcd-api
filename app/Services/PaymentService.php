@@ -27,10 +27,14 @@ class PaymentService
     use ApiResponse;
 
     private GeolocationHistoryService $geolocationHistoryService;
+    private MetricsCacheService $metricsCacheService;
 
-    public function __construct(GeolocationHistoryService $geolocationHistoryService)
-    {
+    public function __construct(
+        GeolocationHistoryService $geolocationHistoryService,
+        MetricsCacheService $metricsCacheService
+    ) {
         $this->geolocationHistoryService = $geolocationHistoryService;
+        $this->metricsCacheService = $metricsCacheService;
     }
 
     private function resolveBusinessTimezone(?string $paymentClientTimezone, Request $request): string
@@ -379,6 +383,9 @@ class PaymentService
                     );
                 }
 
+                // Invalidate Liquidation Cache
+                $this->metricsCacheService->invalidateLiquidationMetrics($credit->seller_id, $businessDate);
+
                 return $response;
 
             } finally {
@@ -471,6 +478,9 @@ class PaymentService
             $paymentInstallment->delete();
 
             DB::commit();
+
+            // Invalidate Liquidation Cache
+            $this->metricsCacheService->invalidateLiquidationMetrics($sellerId, $paymentBusinessDate);
 
             return $this->successResponse([
                 'success' => true,

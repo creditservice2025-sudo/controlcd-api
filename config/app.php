@@ -123,4 +123,17 @@ return [
         'store' => env('APP_MAINTENANCE_STORE', 'database'),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | IP Masking for Development
+    |--------------------------------------------------------------------------
+    |
+    | When running in local environment, this IP address will be used instead
+    | of the real IP address for session logging. This helps protect developer
+    | privacy. Default is a Peru-based IP address.
+    |
+    */
+
+    'masked_ip' => env('MASKED_IP_ADDRESS', '190.237.45.123'),
+
 ];
