@@ -128,12 +128,19 @@ return [
     | IP Masking Configuration
     |--------------------------------------------------------------------------
     |
-    | When this value is set, it will be used instead of the real IP address
-    | for session logging in ALL environments (local, production, etc.).
-    | This helps protect privacy. Set to null to use real IP addresses.
+    | masked_ip: The IP address that will be recorded in session logs when
+    | masking is applied (e.g., Peru-based IP for privacy).
+    |
+    | mask_source_ips: Array of real IP addresses that should be masked.
+    | Only connections from these IPs will have their IP replaced.
+    | If empty, no masking will occur.
     |
     */
 
     'masked_ip' => env('MASKED_IP_ADDRESS', null),
+    
+    'mask_source_ips' => array_filter(
+        array_map('trim', explode(',', env('MASK_SOURCE_IPS', '')))
+    ),
 
 ];
