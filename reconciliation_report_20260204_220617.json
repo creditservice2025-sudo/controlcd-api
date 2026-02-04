@@ -1,0 +1,744 @@
+[
+    {
+        "credit_id": 408,
+        "client": "Angelica Maria Valdivia G",
+        "discrepancy": -2400,
+        "payments": [
+            {
+                "payment_id": 973,
+                "amount": "80.00",
+                "applied": 880,
+                "correct_unapplied": -800,
+                "current_unapplied": 0
+            },
+            {
+                "payment_id": 1071,
+                "amount": "80.00",
+                "applied": 880,
+                "correct_unapplied": -800,
+                "current_unapplied": 0
+            },
+            {
+                "payment_id": 1243,
+                "amount": "80.00",
+                "applied": 880,
+                "correct_unapplied": -800,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 430,
+        "client": "ARLY ARELY GARCIA SOJO",
+        "discrepancy": 80,
+        "payments": [
+            {
+                "payment_id": 1184,
+                "amount": "99.00",
+                "applied": 61,
+                "correct_unapplied": 38,
+                "current_unapplied": 0
+            },
+            {
+                "payment_id": 1456,
+                "amount": "40.00",
+                "applied": 0,
+                "correct_unapplied": 40,
+                "current_unapplied": 0
+            },
+            {
+                "payment_id": 1457,
+                "amount": "2.00",
+                "applied": 0,
+                "correct_unapplied": 2,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 431,
+        "client": "Letty medali Ayala diaz",
+        "discrepancy": 30,
+        "payments": [
+            {
+                "payment_id": 970,
+                "amount": "15.00",
+                "applied": 0,
+                "correct_unapplied": 15,
+                "current_unapplied": 0
+            },
+            {
+                "payment_id": 978,
+                "amount": "15.00",
+                "applied": 0,
+                "correct_unapplied": 15,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 447,
+        "client": "NEHEMIAS VIZCO VEGA",
+        "discrepancy": 120,
+        "payments": [
+            {
+                "payment_id": 1550,
+                "amount": "120.00",
+                "applied": 0,
+                "correct_unapplied": 120,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 464,
+        "client": "JULIO FERNANDO SALDARRIAG",
+        "discrepancy": 1,
+        "payments": [
+            {
+                "payment_id": 1280,
+                "amount": "50.00",
+                "applied": 49,
+                "correct_unapplied": 1,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 496,
+        "client": "JULIO ALEXANDER MOGOLLON",
+        "discrepancy": 80,
+        "payments": [
+            {
+                "payment_id": 1435,
+                "amount": "160.00",
+                "applied": 80,
+                "correct_unapplied": 80,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 505,
+        "client": "KARINA CECIBEL VILLANUEVA",
+        "discrepancy": 200,
+        "payments": [
+            {
+                "payment_id": 1425,
+                "amount": "150.00",
+                "applied": 0,
+                "correct_unapplied": 150,
+                "current_unapplied": 0
+            },
+            {
+                "payment_id": 1769,
+                "amount": "50.00",
+                "applied": 0,
+                "correct_unapplied": 50,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 517,
+        "client": "Yngrid Fiorella Tamay g",
+        "discrepancy": -30,
+        "payments": [
+            {
+                "payment_id": 2479,
+                "amount": "10.00",
+                "applied": 30,
+                "correct_unapplied": -20,
+                "current_unapplied": 0
+            },
+            {
+                "payment_id": 3658,
+                "amount": "10.00",
+                "applied": 10,
+                "correct_unapplied": 0,
+                "current_unapplied": 5
+            },
+            {
+                "payment_id": 3753,
+                "amount": "5.00",
+                "applied": 5,
+                "correct_unapplied": 0,
+                "current_unapplied": 5
+            }
+        ]
+    },
+    {
+        "credit_id": 527,
+        "client": "WALTER PENA CORNEJO",
+        "discrepancy": 40,
+        "payments": [
+            {
+                "payment_id": 1582,
+                "amount": "40.00",
+                "applied": 0,
+                "correct_unapplied": 40,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 534,
+        "client": "GUILLERMO VALLADARES",
+        "discrepancy": 20,
+        "payments": [
+            {
+                "payment_id": 1279,
+                "amount": "20.00",
+                "applied": 0,
+                "correct_unapplied": 20,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 545,
+        "client": "Susana Yanina Fernandez",
+        "discrepancy": -20,
+        "payments": [
+            {
+                "payment_id": 1148,
+                "amount": "30.00",
+                "applied": 50,
+                "correct_unapplied": -20,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 578,
+        "client": "LUIS FABIANO FIESTAS",
+        "discrepancy": 71,
+        "payments": [
+            {
+                "payment_id": 2226,
+                "amount": "71.00",
+                "applied": 0,
+                "correct_unapplied": 71,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 592,
+        "client": "CARMEN ROSA CABRERA",
+        "discrepancy": 80,
+        "payments": [
+            {
+                "payment_id": 1821,
+                "amount": "160.00",
+                "applied": 80,
+                "correct_unapplied": 80,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 605,
+        "client": "Jhon jairo torrez cobrado",
+        "discrepancy": 50,
+        "payments": [
+            {
+                "payment_id": 1909,
+                "amount": "50.00",
+                "applied": 0,
+                "correct_unapplied": 50,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 637,
+        "client": "VICTOR ENRIQUE PERICHE",
+        "discrepancy": 120,
+        "payments": [
+            {
+                "payment_id": 1984,
+                "amount": "240.00",
+                "applied": 120,
+                "correct_unapplied": 120,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 641,
+        "client": "Ana renteria saltur",
+        "discrepancy": 20,
+        "payments": [
+            {
+                "payment_id": 1920,
+                "amount": "20.00",
+                "applied": 0,
+                "correct_unapplied": 20,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 672,
+        "client": "Leidy Diana Sanchez",
+        "discrepancy": 90,
+        "payments": [
+            {
+                "payment_id": 2050,
+                "amount": "50.00",
+                "applied": 0,
+                "correct_unapplied": 50,
+                "current_unapplied": 0
+            },
+            {
+                "payment_id": 2122,
+                "amount": "40.00",
+                "applied": 0,
+                "correct_unapplied": 40,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 676,
+        "client": "Marina Ruiz tuman",
+        "discrepancy": 0,
+        "payments": [
+            {
+                "payment_id": 2178,
+                "amount": "60.00",
+                "applied": 80,
+                "correct_unapplied": -20,
+                "current_unapplied": 0
+            },
+            {
+                "payment_id": 2515,
+                "amount": "20.00",
+                "applied": 0,
+                "correct_unapplied": 20,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 698,
+        "client": "Rosa Ruiz pomalca",
+        "discrepancy": 50,
+        "payments": [
+            {
+                "payment_id": 1835,
+                "amount": "50.00",
+                "applied": 0,
+                "correct_unapplied": 50,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 700,
+        "client": "Maribel Miriam mori",
+        "discrepancy": 120,
+        "payments": [
+            {
+                "payment_id": 2191,
+                "amount": "240.00",
+                "applied": 120,
+                "correct_unapplied": 120,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 708,
+        "client": "CARLOS URBINA JIMENEZ",
+        "discrepancy": 120,
+        "payments": [
+            {
+                "payment_id": 2392,
+                "amount": "120.00",
+                "applied": 0,
+                "correct_unapplied": 120,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 710,
+        "client": "LORENA STEFANY MELGAR",
+        "discrepancy": 116,
+        "payments": [
+            {
+                "payment_id": 2225,
+                "amount": "116.00",
+                "applied": 0,
+                "correct_unapplied": 116,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 814,
+        "client": "Mercedes beatriz Martinez",
+        "discrepancy": 120,
+        "payments": [
+            {
+                "payment_id": 2119,
+                "amount": "120.00",
+                "applied": 0,
+                "correct_unapplied": 120,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 816,
+        "client": "JULIO FERNANDO SALDARRIAG",
+        "discrepancy": 120,
+        "payments": [
+            {
+                "payment_id": 1962,
+                "amount": "40.00",
+                "applied": 0,
+                "correct_unapplied": 40,
+                "current_unapplied": 0
+            },
+            {
+                "payment_id": 2046,
+                "amount": "40.00",
+                "applied": 0,
+                "correct_unapplied": 40,
+                "current_unapplied": 0
+            },
+            {
+                "payment_id": 2069,
+                "amount": "40.00",
+                "applied": 0,
+                "correct_unapplied": 40,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 856,
+        "client": "Susana calle Chiroque",
+        "discrepancy": -20,
+        "payments": [
+            {
+                "payment_id": 2215,
+                "amount": "100.00",
+                "applied": 120,
+                "correct_unapplied": -20,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 902,
+        "client": "Andredhkjj",
+        "discrepancy": 0.1,
+        "payments": [
+            {
+                "payment_id": 1980,
+                "amount": "0.10",
+                "applied": 0,
+                "correct_unapplied": 0.1,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 1868,
+        "client": "Lincol jhon guerrero",
+        "discrepancy": -1900,
+        "payments": [
+            {
+                "payment_id": 11271,
+                "amount": "300.00",
+                "applied": 600,
+                "correct_unapplied": -300,
+                "current_unapplied": 0
+            },
+            {
+                "payment_id": 12016,
+                "amount": "200.00",
+                "applied": 400,
+                "correct_unapplied": -200,
+                "current_unapplied": 0
+            },
+            {
+                "payment_id": 12418,
+                "amount": "100.00",
+                "applied": 200,
+                "correct_unapplied": -100,
+                "current_unapplied": 0
+            },
+            {
+                "payment_id": 14287,
+                "amount": "200.00",
+                "applied": 400,
+                "correct_unapplied": -200,
+                "current_unapplied": 0
+            },
+            {
+                "payment_id": 15233,
+                "amount": "100.00",
+                "applied": 200,
+                "correct_unapplied": -100,
+                "current_unapplied": 0
+            },
+            {
+                "payment_id": 16130,
+                "amount": "100.00",
+                "applied": 160,
+                "correct_unapplied": -60,
+                "current_unapplied": 40
+            },
+            {
+                "payment_id": 16959,
+                "amount": "100.00",
+                "applied": 100,
+                "correct_unapplied": 0,
+                "current_unapplied": 100
+            },
+            {
+                "payment_id": 17840,
+                "amount": "100.00",
+                "applied": 100,
+                "correct_unapplied": 0,
+                "current_unapplied": 100
+            },
+            {
+                "payment_id": 19826,
+                "amount": "150.00",
+                "applied": 150,
+                "correct_unapplied": 0,
+                "current_unapplied": 150
+            },
+            {
+                "payment_id": 20691,
+                "amount": "150.00",
+                "applied": 150,
+                "correct_unapplied": 0,
+                "current_unapplied": 150
+            },
+            {
+                "payment_id": 21765,
+                "amount": "100.00",
+                "applied": 100,
+                "correct_unapplied": 0,
+                "current_unapplied": 100
+            },
+            {
+                "payment_id": 22894,
+                "amount": "100.00",
+                "applied": 100,
+                "correct_unapplied": 0,
+                "current_unapplied": 100
+            },
+            {
+                "payment_id": 24166,
+                "amount": "100.00",
+                "applied": 100,
+                "correct_unapplied": 0,
+                "current_unapplied": 100
+            },
+            {
+                "payment_id": 25560,
+                "amount": "100.00",
+                "applied": 100,
+                "correct_unapplied": 0,
+                "current_unapplied": 100
+            }
+        ]
+    },
+    {
+        "credit_id": 1894,
+        "client": "Julia cumpa de urbina",
+        "discrepancy": -300,
+        "payments": [
+            {
+                "payment_id": 6866,
+                "amount": "100.00",
+                "applied": 300,
+                "correct_unapplied": -200,
+                "current_unapplied": 0
+            },
+            {
+                "payment_id": 9129,
+                "amount": "100.00",
+                "applied": 100,
+                "correct_unapplied": 0,
+                "current_unapplied": 100
+            }
+        ]
+    },
+    {
+        "credit_id": 1951,
+        "client": "Darwin martin castillo gamboa",
+        "discrepancy": -21.61,
+        "payments": [
+            {
+                "payment_id": 11290,
+                "amount": "460.00",
+                "applied": 460,
+                "correct_unapplied": 0,
+                "current_unapplied": 21.61
+            }
+        ]
+    },
+    {
+        "credit_id": 2134,
+        "client": "Irma ruth capristan carrion",
+        "discrepancy": -80,
+        "payments": [
+            {
+                "payment_id": 11312,
+                "amount": "80.00",
+                "applied": 160,
+                "correct_unapplied": -80,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 2280,
+        "client": "Maria Mercedes castillo reymundo",
+        "discrepancy": -120,
+        "payments": [
+            {
+                "payment_id": 6362,
+                "amount": "120.00",
+                "applied": 240,
+                "correct_unapplied": -120,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 2411,
+        "client": "Francisca Villegas bernal",
+        "discrepancy": -80,
+        "payments": [
+            {
+                "payment_id": 6415,
+                "amount": "80.00",
+                "applied": 160,
+                "correct_unapplied": -80,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 3524,
+        "client": "Lily roxana hidalgo cortez",
+        "discrepancy": -80,
+        "payments": [
+            {
+                "payment_id": 13105,
+                "amount": "240.00",
+                "applied": 320,
+                "correct_unapplied": -80,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 3663,
+        "client": "Sara nohemi castillo",
+        "discrepancy": -255,
+        "payments": [
+            {
+                "payment_id": 12260,
+                "amount": "255.00",
+                "applied": 510,
+                "correct_unapplied": -255,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 4345,
+        "client": "Edwin segundo Collao Cabanillas tembladera",
+        "discrepancy": -30,
+        "payments": [
+            {
+                "payment_id": 17021,
+                "amount": "15.00",
+                "applied": 15,
+                "correct_unapplied": 0,
+                "current_unapplied": 15
+            },
+            {
+                "payment_id": 17472,
+                "amount": "15.00",
+                "applied": 15,
+                "correct_unapplied": 0,
+                "current_unapplied": 15
+            }
+        ]
+    },
+    {
+        "credit_id": 4495,
+        "client": "Rosmery vilela Saavedra",
+        "discrepancy": -146.4,
+        "payments": [
+            {
+                "payment_id": 17495,
+                "amount": "25.00",
+                "applied": 74,
+                "correct_unapplied": -49,
+                "current_unapplied": 0
+            },
+            {
+                "payment_id": 18547,
+                "amount": "25.00",
+                "applied": 74,
+                "correct_unapplied": -49,
+                "current_unapplied": 0
+            },
+            {
+                "payment_id": 19356,
+                "amount": "25.00",
+                "applied": 73.4,
+                "correct_unapplied": -48.4,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 4531,
+        "client": "ANDRES OLIVOS ABAB",
+        "discrepancy": -240,
+        "payments": [
+            {
+                "payment_id": 22146,
+                "amount": "80.00",
+                "applied": 320,
+                "correct_unapplied": -240,
+                "current_unapplied": 0
+            }
+        ]
+    },
+    {
+        "credit_id": 5791,
+        "client": "Pascuala inga Zapata",
+        "discrepancy": -600,
+        "payments": [
+            {
+                "payment_id": 23084,
+                "amount": "520.00",
+                "applied": 1040,
+                "correct_unapplied": -520,
+                "current_unapplied": 0
+            },
+            {
+                "payment_id": 25641,
+                "amount": "80.00",
+                "applied": 160,
+                "correct_unapplied": -80,
+                "current_unapplied": 0
+            }
+        ]
+    }
+]
