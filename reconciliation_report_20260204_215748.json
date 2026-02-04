@@ -1,0 +1,30 @@
+[
+    {
+        "credit_id": 816,
+        "client": "JULIO FERNANDO SALDARRIAG",
+        "discrepancy": 120,
+        "payments": [
+            {
+                "payment_id": 1962,
+                "amount": "40.00",
+                "applied": 0,
+                "correct_unapplied": 40,
+                "current_unapplied": 0
+            },
+            {
+                "payment_id": 2046,
+                "amount": "40.00",
+                "applied": 0,
+                "correct_unapplied": 40,
+                "current_unapplied": 0
+            },
+            {
+                "payment_id": 2069,
+                "amount": "40.00",
+                "applied": 0,
+                "correct_unapplied": 40,
+                "current_unapplied": 0
+            }
+        ]
+    }
+]
