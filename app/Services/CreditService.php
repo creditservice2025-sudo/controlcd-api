@@ -1683,8 +1683,7 @@ class CreditService
             $totalPartial = $credit->payments->where('status', 'Abonado')->sum('amount') ?? 0;
 
             $totalInterest = ($credit->credit_value * $credit->total_interest) / 100;
-            $microInsurance = $credit->micro_insurance_amount ?? 0;
-            $totalAmount = $credit->credit_value + $totalInterest + $microInsurance;
+            $totalAmount = $credit->credit_value + $totalInterest;
             $installmentAmount = $credit->number_installments > 0
                 ? $totalAmount / $credit->number_installments
                 : 0;
@@ -2495,10 +2494,10 @@ class CreditService
 
         foreach ($credits as $index => $credit) {
             $interestAmount = $credit->credit_value * ($credit->total_interest / 100);
-            $quotaAmount = ($credit->credit_value + $interestAmount + $credit->micro_insurance_amount) / $credit->number_installments;
+            $quotaAmount = ($credit->credit_value + $interestAmount) / $credit->number_installments;
 
             // Calcular el saldo actual (valor total - pagos realizados)
-            $totalCreditValue = $credit->credit_value + $interestAmount + $credit->micro_insurance_amount;
+            $totalCreditValue = $credit->credit_value + $interestAmount;
             $credit->total_amount = $totalCreditValue; // Add to model in memory for consistency
             $totalPaid = $credit->payments->sum('amount');
             $remainingAmount = $totalCreditValue - $totalPaid;
@@ -2524,7 +2523,7 @@ class CreditService
             $totalMicroInsurance += $credit->micro_insurance_amount;
 
             // Calcular distribución del pago entre capital, interés y microseguro
-            $totalCreditAmount = $credit->credit_value + $interestAmount + $credit->micro_insurance_amount;
+            $totalCreditAmount = $credit->credit_value + $interestAmount;
 
             if ($totalCreditAmount > 0) {
                 $capitalRatio = $credit->credit_value / $totalCreditAmount;
@@ -2651,8 +2650,7 @@ class CreditService
         $today = Carbon::now(self::TIMEZONE)->startOfDay();
 
         $interestAmount = $credit->credit_value * ($credit->total_interest / 100);
-        $microInsurance = $credit->micro_insurance_amount ?? (($credit->credit_value * $credit->micro_insurance_percentage) / 100 ?? 0);
-        $totalCreditValue = $credit->credit_value + $interestAmount + $microInsurance;
+        $totalCreditValue = $credit->credit_value + $interestAmount;
         $quotaAmount = $credit->number_installments > 0
             ? round($totalCreditValue / $credit->number_installments, 2)
             : 0;
