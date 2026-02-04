@@ -1,6 +1,6 @@
 #!/bin/bash
 
-DB_NAME="control-cd-20260203"
+DB_NAME="control-cd-20260204"
 SSH_KEY="/home/mario-d-az/.ssh/id_rsa_mario_controlcd"
 REMOTE_HOST="root@146.190.147.164"
 USER="staging-controlcd"
