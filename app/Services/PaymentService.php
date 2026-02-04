@@ -1327,6 +1327,7 @@ class PaymentService
             // 1. Get all payments with unapplied amount > 0 (FIFO)
             $stackPayments = Payment::where('credit_id', $creditId)
                 ->where('unapplied_amount', '>', 0)
+                ->orderBy('payment_date', 'asc')
                 ->orderBy('created_at', 'asc')
                 ->get();
 
@@ -1343,10 +1344,11 @@ class PaymentService
 
             if ($installments->isEmpty()) {
                 DB::commit();
-                return $this->successResponse(['success' => true, 'message' => 'No hay cuotas pendientes.', 'applied_total' => 0]);
+                return $this->successResponse(['success' => true, 'message' => 'No hay cuotas pendientes.', 'applied_total' => 0, 'installments_covered' => 0]);
             }
 
             $appliedTotal = 0;
+            $installmentsCovered = 0;
 
             foreach ($installments as $installment) {
                 $quotaAmount = (float) $installment->quota_amount;
@@ -1357,24 +1359,22 @@ class PaymentService
                     if ($installment->status !== 'Pagado') {
                         $installment->status = 'Pagado';
                         $installment->save();
+                        $installmentsCovered++;
                     }
                     continue;
                 }
 
                 // Check total stack available BEFORE applying anything to THIS installment
-                // We only apply if we can FULLY cover the remaining amount of this quota.
-                // This is consistent with PaymentService@create logic.
                 $totalStack = $stackPayments->sum('unapplied_amount');
                 if ($totalStack < $targetAmount) {
-                    // Not enough money to fill THIS quota. 
-                    // Per user request, we leave it "Sin Aplicar" (unapplied) as a favor balance.
+                    // Not enough money to fill THIS quota.
                     break;
                 }
 
                 $amountNeeded = $targetAmount;
 
                 foreach ($stackPayments as $stackPayment) {
-                    if ($amountNeeded <= 0)
+                    if ($amountNeeded <= 0.001)
                         break;
 
                     if ($stackPayment->unapplied_amount <= 0.001)
@@ -1388,6 +1388,10 @@ class PaymentService
                     $amountNeeded -= $toTake;
                     $appliedTotal += $toTake;
                 }
+
+                if ($amountNeeded <= 0.001) {
+                    $installmentsCovered++;
+                }
             }
 
             // Update Credit Status
@@ -1395,16 +1399,21 @@ class PaymentService
                 ->where('status', '<>', 'Pagado')
                 ->exists();
 
-            if (!$pendingInstallmentsExists && $credit->remaining_amount <= 0.001) {
+            if (!$pendingInstallmentsExists && (float) $credit->remaining_amount <= 0.001) {
                 $credit->status = 'Liquidado';
             }
             $credit->save();
+
+            $remainingUnapplied = Payment::where('credit_id', $creditId)->sum('unapplied_amount');
 
             DB::commit();
 
             return $this->successResponse([
                 'success' => true,
-                'message' => 'Abonos aplicados correctamente. Total aplicado: $' . number_format($appliedTotal, 2),
+                'message' => 'Abonos aplicados correctamente.',
+                'applied_total' => $appliedTotal,
+                'installments_covered' => $installmentsCovered,
+                'remaining_unapplied' => $remainingUnapplied,
                 'data' => $credit
             ]);
 

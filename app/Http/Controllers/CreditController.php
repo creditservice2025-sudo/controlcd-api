@@ -107,7 +107,7 @@ class CreditController extends Controller
                 $notes,
                 $request->input('new_start_date', null),
                 $newCreditValue ? (float) $newCreditValue : null,
-                (bool) $request->input('recalculate_paid', false)
+                (bool) $request->input('recalculate_paid', true)
             );
         } catch (\Exception $e) {
             \Log::error("Error updateFrequency ({$creditId}): " . $e->getMessage());
@@ -147,7 +147,13 @@ class CreditController extends Controller
                 return $this->errorResponse('El campo first_quota_date es requerido', 400);
             }
 
-            return $this->creditService->simulateScheduleChange((int) $creditId, $newDate, 'schedule');
+            return $this->creditService->simulateScheduleChange(
+                (int) $creditId, 
+                $newDate, 
+                'schedule',
+                null, null, null, null, null, null,
+                (bool) $request->input('recalculate_paid', false)
+            );
         } catch (\Exception $e) {
             \Log::error("Error simulateSchedule ({$creditId}): " . $e->getMessage());
             return $this->errorResponse($e->getMessage(), 500);
@@ -173,7 +179,8 @@ class CreditController extends Controller
                 $newInterestRate ? (float) $newInterestRate : null,
                 $newInsurance ? (float) $newInsurance : null,
                 $request->input('new_start_date', null),
-                $newCreditValue ? (float) $newCreditValue : null // Nuevo
+                $newCreditValue ? (float) $newCreditValue : null,
+                (bool) $request->input('recalculate_paid', true)
             );
         } catch (\Exception $e) {
             \Log::error("Error simulateFrequency ({$creditId}): " . $e->getMessage());
