@@ -1805,8 +1805,8 @@ class LiquidationService
 
         foreach ($credits as $index => $credit) {
             $interestAmount = $credit->credit_value * ($credit->total_interest / 100);
-            $quotaAmount = ($credit->credit_value + $interestAmount + $credit->micro_insurance_amount) / $credit->number_installments;
-            $totalCreditValue = $credit->credit_value + $interestAmount + $credit->micro_insurance_amount;
+            $quotaAmount = ($credit->credit_value + $interestAmount) / $credit->number_installments;
+            $totalCreditValue = $credit->credit_value + $interestAmount;
             $totalPaid = $credit->payments->sum('amount');
             $remainingAmount = $totalCreditValue - $totalPaid;
             $dayPayments = $credit->payments()->whereBetween('payments.created_at', [$start, $end])->get();
@@ -1824,7 +1824,7 @@ class LiquidationService
             $totalInterest += $interestAmount;
             $totalMicroInsurance += $credit->micro_insurance_amount;
 
-            $totalCreditAmount = $credit->credit_value + $interestAmount + $credit->micro_insurance_amount;
+            $totalCreditAmount = $credit->credit_value + $interestAmount;
             if ($totalCreditAmount > 0) {
                 $capitalRatio = $credit->credit_value / $totalCreditAmount;
                 $interestRatio = $interestAmount / $totalCreditAmount;
