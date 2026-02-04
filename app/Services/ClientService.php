@@ -1107,6 +1107,21 @@ class ClientService
         return $result;
     }
 
+    private function unappliedSumByCredit(array $creditIds): array
+    {
+        if (empty($creditIds))
+            return [];
+        $rows = Payment::whereIn('credit_id', $creditIds)
+            ->select('credit_id', DB::raw('SUM(unapplied_amount) as total'))
+            ->groupBy('credit_id')
+            ->get();
+
+        $result = [];
+        foreach ($rows as $r)
+            $result[$r->credit_id] = (float) $r->total;
+        return $result;
+    }
+
     public function getClientsBySeller($sellerId, $search = '', $companyId = null, $status = null)
     {
         try {
@@ -1621,7 +1636,7 @@ class ClientService
                     $cq->select('id', 'client_id', 'seller_id', 'credit_value', 'total_interest', 'number_installments', 'status', 'created_at', 'payment_frequency', 'renewal_blocked', 'first_quota_date', 'has_been_modified', 'modification_count', 'last_modified_at', 'micro_insurance_percentage', 'micro_insurance_amount')
                         ->with([
                             'payments' => function ($pq) {
-                                $pq->select('id', 'credit_id', 'amount', 'payment_date', 'created_at', 'payment_method', 'status', 'business_date');
+                                $pq->select('id', 'credit_id', 'amount', 'payment_date', 'created_at', 'payment_method', 'status', 'business_date', 'unapplied_amount');
                             },
                             'installments' => function ($iq) {
                                 $iq->select('id', 'credit_id', 'quota_number', 'due_date', 'quota_amount', 'paid_amount', 'status')
@@ -1725,6 +1740,19 @@ class ClientService
                 MAX(CASE WHEN installments.due_date >= '{$todayLocal}' THEN 1 ELSE 0 END) as has_pending
             ")
                 ->groupBy('clients.id');
+
+            // OPTIMIZATION: Apply filters inside subquery to prevent full-scan
+            if ($user->role_id == 5 && $seller) {
+                $paymentPrioritySubquery->where('clients.seller_id', $seller->id);
+            }
+            if (!empty($search)) {
+                $paymentPrioritySubquery->where(function ($q) use ($search) {
+                    $q->where('clients.name', 'like', "%{$search}%")
+                      ->orWhere('clients.dni', 'like', "%{$search}%")
+                      ->orWhere('clients.email', 'like', "%{$search}%")
+                      ->orWhere('clients.phone', 'like', "%{$search}%"); // Added generic phone search just in case
+                });
+            }
 
             // Base credits query
 
@@ -1837,7 +1865,7 @@ class ClientService
             $credits = $creditsPaginator->getCollection();
 
             // Obtener configuración del vendedor
-            $config = \App\Models\SellerConfig::where('seller_id', $seller->id)->first();
+            $config = $seller ? \App\Models\SellerConfig::where('seller_id', $seller->id)->first() : null;
             $renewalQuota = $config ? ($config->notify_renewal_quota ?? 4) : 4;
 
             // If no credits return empty structure quickly
@@ -1859,6 +1887,7 @@ class ClientService
 
             // Historical paid sum per credit (all dates). Needed to compute correct pending balance.
             $paymentsSumAllByCredit = $this->paymentsSumByCredit($creditIds);
+            $unappliedSumAllByCredit = $this->unappliedSumByCredit($creditIds);
 
             $paymentSummaryRows = Payment::whereIn('credit_id', $creditIds)
                 ->where('business_date', $todayLocal)
@@ -1879,6 +1908,7 @@ class ClientService
                     'payments.created_at',
                     'payments.payment_method',
                     'payments.status',
+                    'payments.unapplied_amount',
                     'payments.latitude',
                     'payments.longitude',
                     'payment_images.path as image_path'
@@ -1892,7 +1922,7 @@ class ClientService
 
             // Transform credits exactly preserving the output shape expected by the front
 
-            $transformedItems = $credits->map(function ($credit) use ($paymentSummary, $nowLocal, $renewalQuota, $paymentsTodayRows, $paymentsSumAllByCredit) {
+            $transformedItems = $credits->map(function ($credit) use ($paymentSummary, $nowLocal, $renewalQuota, $paymentsTodayRows, $paymentsSumAllByCredit, $unappliedSumAllByCredit) {
                 $summary = $paymentSummary->get($credit->id, collect());
                 foreach ($summary as $item) {
                     $credit->{$item->status} = $item->total_amount;
@@ -1900,6 +1930,7 @@ class ClientService
 
                 // Sum of all payments (historical) for this credit.
                 $credit->payments_sum_all = (float) ($paymentsSumAllByCredit[$credit->id] ?? 0);
+                $credit->unapplied_sum_all = (float) ($unappliedSumAllByCredit[$credit->id] ?? 0);
 
                 // For performance: only include payments for the selected date ("pagos de hoy")
                 // The frontend uses payments_total to detect and manipulate today's payments.

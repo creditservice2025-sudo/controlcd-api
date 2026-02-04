@@ -598,6 +598,11 @@ class CreditService
 
             $oldValue = [
                 'first_quota_date' => $credit->first_quota_date,
+                'start_date' => $credit->start_date,
+                'credit_value' => (float)$credit->credit_value,
+                'number_installments' => (int)$credit->number_installments,
+                'micro_insurance_percentage' => (float)$credit->micro_insurance_percentage,
+                'payment_frequency' => $credit->payment_frequency
             ];
 
             // Ordenar cuotas por número de cuota y actualizar due_date secuencialmente
@@ -605,11 +610,6 @@ class CreditService
             $affectedInstallments = [];
 
             foreach ($installments as $inst) {
-                // Proteger pagadas
-                if (in_array(strtolower($inst->status), ['pagado', 'paid', 'pagada'])) {
-                    continue;
-                }
-
                 $inst->due_date = $dueDate->format('Y-m-d');
                 $inst->save();
 
@@ -651,9 +651,13 @@ class CreditService
                 'user_id' => Auth::id() ?? 1,
                 'modification_type' => 'initial_date',
                 'old_value' => $oldValue,
-                'new_value' => ['first_quota_date' => $newFirstQuotaDate, 'start_date' => $newStartDate],
+                'new_value' => [
+                    'first_quota_date' => $newFirstQuotaDate, 
+                    'start_date' => $newStartDate ?? $credit->start_date
+                ],
                 'affected_installments' => $affectedInstallments,
-                'notes' => $notes ?: 'Cambio de fecha inicial de cuotas'
+                'notes' => $notes ?: 'Cambio de fecha inicial de cuotas',
+                'ip_address' => request()->ip()
             ]);
 
             DB::commit();
@@ -736,7 +740,7 @@ class CreditService
             $paidCount = $paidInstallments->count();
             $paidAmountSum = $paidInstallments->sum('quota_amount');
 
-            if ($newNumInstallments < $paidCount) {
+            if (!$recalculatePaid && $newNumInstallments < $paidCount) {
                 throw new \Exception("El nuevo número de cuotas ($newNumInstallments) no puede ser menor a las ya pagadas ($paidCount).");
             }
 
@@ -748,15 +752,13 @@ class CreditService
             if ($recalculatePaid) {
                 // Recalcular TODO desde la cuota 1
                 $newQuotaAmount = $newNumInstallments > 0 ? round($newTotalCost / $newNumInstallments, 2) : 0;
-                $pendingCount = $newNumInstallments;
-                $loopStart = 1;
             } else {
                 // Solo recalcular pendientes, respetando lo ya pagado
                 $remainingCost = $newTotalCost - $paidAmountSum;
                 $pendingCount = $newNumInstallments - $paidCount;
                 $newQuotaAmount = $pendingCount > 0 ? round($remainingCost / $pendingCount, 2) : 0;
-                $loopStart = $paidCount + 1;
             }
+            $loopStart = 1;
 
             // 3. Determinar fecha de inicio para las pendientes
             $baseDateStr = $newFirstQuotaDate;
@@ -774,6 +776,8 @@ class CreditService
                 'micro_insurance_percentage' => $credit->micro_insurance_percentage,
                 'micro_insurance_amount' => $credit->micro_insurance_amount,
                 'credit_value' => $credit->credit_value,
+                'start_date' => $credit->start_date,
+                'first_quota_date' => $credit->first_quota_date,
                 'quota_amount' => $currentInstallments->whereNotIn('status', ['Pagado', 'Paid', 'Pagada'])->first()?->quota_amount
             ];
 
@@ -811,20 +815,17 @@ class CreditService
                     ->delete();
             }
 
-            for ($i = $loopStart; $i <= $newNumInstallments; $i++) {
+            for ($i = 1; $i <= $newNumInstallments; $i++) {
+                // Identificar si la cuota original estaba pagada
+                $wasPaid = $paidInstallments->contains('quota_number', $i);
+
                 $instData = [
-                    'quota_amount' => $newQuotaAmount
+                    'quota_amount' => ($wasPaid && !$recalculatePaid) 
+                        ? $paidInstallments->where('quota_number', $i)->first()->quota_amount 
+                        : $newQuotaAmount,
+                    'due_date' => $dueDate->format('Y-m-d'),
+                    'status' => 'Pendiente'
                 ];
-
-                // Solo actualizar fecha y estado si es una cuota que NO estaba pagada o si estamos recalculando todo
-                // Para cuotas ya pagadas, respetamos su fecha original y estado
-                $existingInst = $currentInstallments->where('quota_number', $i)->first();
-                $isPaid = $existingInst && in_array(strtolower($existingInst->status), ['pagado', 'paid', 'pagada']);
-
-                if (!$isPaid) {
-                    $instData['due_date'] = $dueDate->format('Y-m-d');
-                    $instData['status'] = 'Pendiente';
-                }
 
                 $inst = Installment::updateOrCreate(
                     ['credit_id' => $credit->id, 'quota_number' => $i],
@@ -833,8 +834,8 @@ class CreditService
 
                 $affectedInstallments[] = $inst->id;
 
-                // Avanzar fecha de referencia (incluso si no se usó en esta iteración por estar pagada)
-                if (!$isPaid || $recalculatePaid) {
+                // Avanzar fecha de referencia
+                if (true) { // Siempre avanzar para mantener el nuevo cronograma
                     switch ($newFrequency) {
                         case 'Diaria':
                             $dueDate->addDay();
@@ -856,9 +857,17 @@ class CreditService
             }
 
             // 4c. Re-apply all unapplied amounts to the NEW schedule
-            if ($paymentService || app()->bound(\App\Services\PaymentService::class)) {
+            $redistributionSummary = "";
+            if ($paymentService || class_exists(\App\Services\PaymentService::class)) {
                 $ps = $paymentService ?: app(\App\Services\PaymentService::class);
-                $ps->reapplyPayments($credit->id);
+                $resp = $ps->reapplyPayments($credit->id);
+                $resData = json_decode($resp->getContent(), true);
+                if ($resData['success'] ?? false) {
+                    $appTot = number_format($resData['applied_total'] ?? 0, 2);
+                    $instCov = $resData['installments_covered'] ?? 0;
+                    $remUn = number_format($resData['remaining_unapplied'] ?? 0, 2);
+                    $redistributionSummary = " | Pagos redistribuidos: \${$appTot} cubriendo {$instCov} cuotas. Saldo disponible: \${$remUn}.";
+                }
             }
 
             // 5. Actualizar cabecera del crédito
@@ -978,10 +987,12 @@ class CreditService
                     'micro_insurance_percentage' => $insurancePercentage,
                     'credit_value' => $creditValue,
                     'quota_amount' => $newQuotaAmount,
-                    'start_date' => $newStartDate
+                    'start_date' => $newStartDate,
+                    'first_quota_date' => $newFirstQuotaDate ?? $credit->first_quota_date
                 ],
                 'affected_installments' => $affectedInstallments,
-                'notes' => $notes ?: 'Modificación integral de condiciones financieras'
+                'notes' => ($notes ?: 'Modificación integral de condiciones financieras') . $redistributionSummary,
+                'ip_address' => request()->ip()
             ]);
 
             DB::commit();
@@ -2937,7 +2948,8 @@ class CreditService
         ?float $newInterestRate = null,
         ?float $newInsurancePercentage = null,
         ?string $newStartDate = null,
-        ?float $newCreditValue = null
+        ?float $newCreditValue = null,
+        bool $recalculatePaid = true
     ) {
         try {
             $credit = Credit::with(['installments'])->findOrFail($creditId);
@@ -2951,27 +2963,32 @@ class CreditService
             $creditValue = $newCreditValue ?? (float) $credit->credit_value;
 
             // Recalcular montos si hay cambios financieros
-            // El costo total para las cuotas solo incluye Capital + Interés + Microseguro
-            $newTotalCost = ($creditValue * (1 + ($interestRate / 100))) + (($creditValue * $insurancePercentage) / 100);
+            // El costo total se basa en el interés. El seguro generalmente ya está contemplado o es informativo en el total a pagar.
+            $newTotalCost = ($creditValue * (1 + ($interestRate / 100)));
 
             $currentInstallments = $credit->installments->sortBy('quota_number');
-            $paidInstallments = $currentInstallments->filter(function ($i) {
-                return in_array(strtolower($i->status), ['pagado', 'paid', 'pagada']);
-            });
+            $paidAmountSum = \App\Models\Payment::where('credit_id', $creditId)->where('status', '!=', 'Anulado')->sum('amount');
+            
+            // Si recalculamos todo desde la cuota 1 (FIFO real)
+            if ($recalculatePaid) {
+                $newQuotaAmount = $totalInstallments > 0 ? round($newTotalCost / $totalInstallments, 2) : 0;
+            } else {
+                $paidInstallments = $currentInstallments->filter(function ($i) {
+                    return in_array(strtolower($i->status), ['pagado', 'paid', 'pagada']);
+                });
+                $paidAmountSumLegacy = $paidInstallments->sum('quota_amount');
+                $paidCount = $paidInstallments->count();
 
-            $paidAmountSum = $paidInstallments->sum('quota_amount');
-            $paidCount = $paidInstallments->count();
+                if (!$recalculatePaid && $totalInstallments < $paidCount) {
+                    throw new \Exception("El nuevo número de cuotas ($totalInstallments) no puede ser menor a las ya pagadas ($paidCount).");
+                }
 
-            if ($totalInstallments < $paidCount) {
-                throw new \Exception("El nuevo número de cuotas ($totalInstallments) no puede ser menor a las ya pagadas ($paidCount).");
+                $pendingCount = $totalInstallments - $paidCount;
+                $remainingCost = $newTotalCost - $paidAmountSumLegacy;
+                $newQuotaAmount = $pendingCount > 0 ? round($remainingCost / $pendingCount, 2) : 0;
             }
 
-            $pendingCount = $totalInstallments - $paidCount;
-            $remainingCost = $newTotalCost - $paidAmountSum;
-            $newQuotaAmount = $pendingCount > 0 ? round($remainingCost / $pendingCount, 2) : 0;
-
-            // Generar nuevas fechas (solo para las pendientes)
-            // Si no se pasó newDate, usamos la primera fecha de cuota original o la fecha de la primera pendiente
+            // Generar nuevas fechas
             $startDateStr = $newDate;
             if (!$startDateStr) {
                 $firstPending = $currentInstallments->whereNotIn('status', ['Pagado', 'Paid', 'Pagada'])->first();
@@ -2979,51 +2996,99 @@ class CreditService
             }
             $startDate = Carbon::parse($startDateStr, $tz);
 
-            $newDates = $this->getNewScheduleDates($totalInstallments, $startDate, $frequency, $adjustForExcludedDays, $paidCount);
+            // Si recalculamos todo, empezamos fechas de cuota 1. Si no, después de las pagadas.
+            $startAtQuota = $recalculatePaid ? 0 : ($paidCount ?? 0);
+            $newDates = $this->getNewScheduleDates($totalInstallments, $startDate, $frequency, $adjustForExcludedDays, $startAtQuota);
 
             $simulatedInstallments = [];
             $changesCount = 0;
 
-            // 1. Agregar las pagadas (Inmutables)
-            foreach ($paidInstallments as $inst) {
-                $simulatedInstallments[] = [
-                    'id' => $inst->id,
-                    'quota_number' => $inst->quota_number,
-                    'current_date' => $inst->due_date,
-                    'simulated_date' => $inst->due_date,
-                    'current_amount' => (float) $inst->quota_amount,
-                    'simulated_amount' => (float) $inst->quota_amount,
-                    'status' => $inst->status,
-                    'is_paid' => true,
-                    'changed' => false
-                ];
-            }
+            // En lugar de una suma global, obtenemos los pagos individuales ordenados por fecha
+            $paymentsStack = \App\Models\Payment::where('credit_id', $creditId)
+                ->where('status', '!=', 'Anulado')
+                ->orderBy('payment_date', 'asc')
+                ->orderBy('created_at', 'asc')
+                ->get()
+                ->map(function($p) {
+                    return [
+                        'amount' => (float)$p->amount, 
+                        'unapplied' => (float)$p->amount,
+                        'payment_date' => $p->payment_date instanceof \Carbon\Carbon ? $p->payment_date->format('Y-m-d') : $p->payment_date
+                    ];
+                })
+                ->toArray();
 
-            // 2. Generar/Actualizar Pendientes
-            for ($i = $paidCount + 1; $i <= $totalInstallments; $i++) {
+            for ($i = 1; $i <= $totalInstallments; $i++) {
                 $existing = $currentInstallments->where('quota_number', $i)->first();
                 $simDate = $newDates[$i] ?? ($existing ? $existing->due_date : null);
+                
+                $status = 'Pendiente';
+                $isPaid = false;
+                $simAmount = $newQuotaAmount;
+
+                if ($recalculatePaid) {
+                    $needed = $simAmount;
+                    $coveredAmount = 0;
+                    $lastPaymentDate = null;
+
+                    foreach ($paymentsStack as &$p) {
+                        if ($needed <= 0.001) break;
+                        if ($p['unapplied'] <= 0.001) continue;
+
+                        $take = min($p['unapplied'], $needed);
+                        $p['unapplied'] -= $take;
+                        $needed -= $take;
+                        $coveredAmount += $take;
+                        $lastPaymentDate = $p['payment_date'];
+                    }
+
+                    if ($coveredAmount >= $simAmount - 0.001) {
+                        $status = 'Pagado';
+                        $isPaid = true;
+                        $paymentDate = $lastPaymentDate;
+                    } elseif ($coveredAmount > 0.001) {
+                        $status = 'Abonado';
+                        $paymentDate = $lastPaymentDate;
+                    }
+                } else {
+                    if ($i <= ($paidCount ?? 0)) {
+                        $status = 'Pagado';
+                        $isPaid = true;
+                        $simAmount = (float)($existing->quota_amount ?? 0);
+                        $simDate = $existing->due_date;
+                        // Para cuotas ya pagadas originalmente, buscar la fecha del último abono aplicado
+                        $paymentDate = $existing ? \App\Models\PaymentInstallment::where('installment_id', $existing->id)->latest()->first()?->payment?->payment_date : null;
+                    }
+                }
 
                 $item = [
                     'id' => $existing ? $existing->id : null,
                     'quota_number' => $i,
                     'current_date' => $existing ? $existing->due_date : null,
                     'simulated_date' => $simDate,
+                    'payment_date' => $paymentDate ?? null,
                     'current_amount' => $existing ? (float) $existing->quota_amount : null,
-                    'simulated_amount' => $newQuotaAmount,
-                    'status' => $existing ? $existing->status : 'Pendiente',
-                    'is_paid' => false,
+                    'simulated_amount' => (float)$simAmount,
+                    'status' => $status,
+                    'is_paid' => $isPaid,
                     'changed' => true
                 ];
 
                 if ($existing) {
-                    $item['changed'] = ($existing->due_date !== $simDate) || (abs((float) $existing->quota_amount - $newQuotaAmount) > 0.01);
+                    $item['changed'] = ($existing->due_date !== $simDate) || (abs((float) $existing->quota_amount - $simAmount) > 0.01);
                 }
 
                 if ($item['changed'])
                     $changesCount++;
+                
                 $simulatedInstallments[] = $item;
             }
+
+            $simPaidCount = collect($simulatedInstallments)->where('is_paid', true)->count();
+            $simPendingCount = $totalInstallments - $simPaidCount;
+            
+            // Saldos actuales para información del simulador
+            $unappliedTotal = \App\Models\Payment::where('credit_id', $creditId)->where('status', '!=', 'Anulado')->sum('unapplied_amount');
 
             return $this->successResponse([
                 'success' => true,
@@ -3037,11 +3102,13 @@ class CreditService
                     'installments' => $simulatedInstallments,
                     'summary' => [
                         'total_installments' => $totalInstallments,
-                        'paid_installments' => $paidCount,
-                        'pending_installments' => $pendingCount,
+                        'paid_installments' => $simPaidCount,
+                        'pending_installments' => $simPendingCount,
                         'modified_installments' => $changesCount,
                         'new_quota_amount' => $newQuotaAmount,
-                        'new_final_date' => !empty($simulatedInstallments) ? end($simulatedInstallments)['simulated_date'] : null
+                        'new_final_date' => !empty($simulatedInstallments) ? end($simulatedInstallments)['simulated_date'] : null,
+                        'total_paid' => (float)$paidAmountSum,
+                        'unapplied_total' => (float)array_sum(array_column($paymentsStack, 'unapplied'))
                     ]
                 ]
             ]);

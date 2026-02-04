@@ -18,6 +18,7 @@ class CreditModification extends Model
         'new_value',
         'affected_installments',
         'notes',
+        'ip_address',
     ];
 
     protected $casts = [
