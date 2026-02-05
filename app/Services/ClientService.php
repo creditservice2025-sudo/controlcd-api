@@ -466,6 +466,18 @@ class ClientService
                 }
             }
 
+            // Stage 4: Check if needs_update should be cleared
+            if ($client->needs_update) {
+                $hasAddress = !empty($client->address);
+                $hasGeolocation = !empty($client->geolocation) || !empty($client->gps_geolocalization);
+                $hasImages = $client->images()->count() > 0;
+
+                if ($hasAddress && $hasGeolocation && $hasImages) {
+                    $client->needs_update = false;
+                    $client->save();
+                }
+            }
+
             DB::commit();
             return $this->successResponse(['success' => true, 'message' => 'Cliente actualizado con éxito', 'data' => $client->fresh()]);
         } catch (\Exception $e) {
@@ -1789,19 +1801,20 @@ class ClientService
                                 });
                         });
                 })
-                ->where(function ($query) use ($todayLocal) {
-                    $query->where(function ($q) use ($todayLocal) {
+                ->where(function ($query) use ($todayLocal, $endUTC) {
+                    $query->where(function ($q) use ($todayLocal, $endUTC) {
                         $q->whereDate('credits.first_quota_date', $todayLocal)
-                            ->whereDate('credits.created_at', '<=', $todayLocal);
+                            ->where('credits.created_at', '<=', $endUTC);
                     })
                         ->orWhere(function ($q) use ($todayLocal) {
                             $q->whereDate('credits.first_quota_date', '<', $todayLocal);
                         })
-                        ->orWhere(function ($q) use ($todayLocal) {
-                            $q->whereDate('credits.created_at', '<=', $todayLocal)
+                        ->orWhere(function ($q) use ($todayLocal, $endUTC) {
+                            $q->where('credits.created_at', '<=', $endUTC)
                                 ->whereDate('credits.first_quota_date', '>', $todayLocal);
                         });
                 });
+
 
             // Apply filters (same behavior)
             if (!empty($frequency)) {
