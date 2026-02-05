@@ -30,6 +30,7 @@ class Client extends Model
         'seller_id',
         'routing_order',
         'capacity',
+        'needs_update',
     ];
 
     protected $casts = [

@@ -2550,6 +2550,7 @@ class CreditService
                 'remaining_amount' => $remainingAmount,
                 'paid_today' => $paidToday,
                 'payment_time' => $paymentTime,
+                'client_needs_update' => (bool)$credit->client->needs_update,
             ];
         }
 
