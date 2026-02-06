@@ -152,7 +152,7 @@ class CreditController extends Controller
                 $newDate, 
                 'schedule',
                 null, null, null, null, null, null,
-                (bool) $request->input('recalculate_paid', false)
+                (bool) $request->input('recalculate_paid', true)
             );
         } catch (\Exception $e) {
             \Log::error("Error simulateSchedule ({$creditId}): " . $e->getMessage());
