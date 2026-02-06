@@ -95,7 +95,8 @@ class PaymentService
 
             // ======= LOCKING =======
             // Increased TTL to 60 seconds to handle slow uploads
-            $lockKey = "payment:create:credit:{$credit->id}:user:{$user->id}";
+            // Changed to GLOBAL CREDIT LOCK to prevent race conditions between users/processes
+            $lockKey = "payment:create:credit:{$credit->id}";
             $lock = Cache::lock($lockKey, 60);
 
             if (!$lock->get()) {
