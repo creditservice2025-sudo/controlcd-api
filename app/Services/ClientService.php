@@ -1682,7 +1682,7 @@ class ClientService
                     $q->select('guarantors.id as id', 'guarantors.name', 'guarantors.dni', 'guarantors.phone');
                 },
                 'images' => function ($q) {
-                    $q->select('id', 'client_id', 'path', 'type');
+                    $q->select('id', 'client_id', 'path', 'type', 'latitude', 'longitude', 'accuracy', 'address', 'location_timestamp');
                 }
             ])
                 ->when(Auth::user()->role_id == 1 && $companyId, function ($q) use ($companyId) {
