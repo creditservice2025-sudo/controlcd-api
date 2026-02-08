@@ -1,0 +1,3 @@
+cliente_nombre,cliente_dni,cliente_telefono,monto_credito,tasa_interes,cuotas_numero,frecuencia,fecha_entrega,fecha_primera_cuota,vendedor_id,pagos_realizados,poliza_monto
+"Juan Importado 1","900111","5550001",100,20,24,"Diaria","2025-02-01","2025-02-02",16,0,0
+"Maria Importada 2","900222","5550002",200,20,20,"Semanal","2025-01-01","2025-01-08",16,50,5

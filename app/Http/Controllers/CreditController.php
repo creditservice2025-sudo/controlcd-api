@@ -107,7 +107,8 @@ class CreditController extends Controller
                 $notes,
                 $request->input('new_start_date', null),
                 $newCreditValue ? (float) $newCreditValue : null,
-                (bool) $request->input('recalculate_paid', true)
+                (bool) $request->input('recalculate_paid', true),
+                $request->input('excluded_days', null)
             );
         } catch (\Exception $e) {
             \Log::error("Error updateFrequency ({$creditId}): " . $e->getMessage());
@@ -148,11 +149,17 @@ class CreditController extends Controller
             }
 
             return $this->creditService->simulateScheduleChange(
-                (int) $creditId, 
-                $newDate, 
+                (int) $creditId,
+                $newDate,
                 'schedule',
-                null, null, null, null, null, null,
-                (bool) $request->input('recalculate_paid', true)
+                null,
+                null,
+                null,
+                null,
+                $request->input('new_start_date', null),
+                $request->input('credit_value', null),
+                (bool) $request->input('recalculate_paid', true),
+                $request->input('excluded_days', null)
             );
         } catch (\Exception $e) {
             \Log::error("Error simulateSchedule ({$creditId}): " . $e->getMessage());
@@ -180,7 +187,8 @@ class CreditController extends Controller
                 $newInsurance ? (float) $newInsurance : null,
                 $request->input('new_start_date', null),
                 $newCreditValue ? (float) $newCreditValue : null,
-                (bool) $request->input('recalculate_paid', true)
+                (bool) $request->input('recalculate_paid', true),
+                $request->input('excluded_days', null)
             );
         } catch (\Exception $e) {
             \Log::error("Error simulateFrequency ({$creditId}): " . $e->getMessage());

@@ -23,13 +23,13 @@ class ClientRequest extends FormRequest
     {
         $rules = [
             'name' => 'required|string|max:255',
-            'address' => 'required|string',
+            'address' => 'nullable|string',
             'gps_address' => 'nullable|string',
             'gps_geolocalization' => 'nullable|array',
             'dni' => 'required|numeric', // Unique per seller validated in ClientService
-            'geolocation' => 'required|array',
-            'geolocation.latitude' => 'required|numeric',
-            'geolocation.longitude' => 'required|numeric',
+            'geolocation' => 'nullable|array',
+            'geolocation.latitude' => 'nullable|numeric',
+            'geolocation.longitude' => 'nullable|numeric',
             'phone' => 'required|numeric',
             'email' => 'nullable|email|unique:clients',
             'company_name' => 'nullable|string',
@@ -105,7 +105,6 @@ class ClientRequest extends FormRequest
     {
         return [
             'name.required' => 'El nombre es requerido',
-            'address.required' => 'La dirección es requerida',
             'dni.required' => 'El DNI es requerido',
             'dni.numeric' => 'El DNI debe ser un número',
             'dni.unique' => 'El DNI ya está registrado en esta ruta',

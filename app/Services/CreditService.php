@@ -51,23 +51,30 @@ class CreditService
             } elseif ($params['is_advance_payment'] ?? false) {
                 $firstQuotaDate = now()->format('Y-m-d');
             } else {
-                $today = now();
-                switch ($params['payment_frequency']) {
-                    case 'Diaria':
-                        $firstQuotaDate = $today->addDay()->format('Y-m-d');
-                        break;
-                    case 'Semanal':
-                        $firstQuotaDate = $today->addWeek()->format('Y-m-d');
-                        break;
-                    case 'Quincenal':
-                        $firstQuotaDate = $today->addDays(15)->format('Y-m-d');
-                        break;
-                    case 'Mensual':
-                        $firstQuotaDate = $today->addMonth()->format('Y-m-d');
-                        break;
-                    default:
-                        $firstQuotaDate = $today->addDay()->format('Y-m-d');
+                // Offset de 1 día por defecto (según requerimiento)
+                $date = Carbon::parse($params['start_date'] ?? now()->format('Y-m-d'));
+                $date->addDay();
+                
+                // Ajustar si el día está excluido
+                $excludedDayNames = $params['excluded_days'] ?? [];
+                $dayMap = [
+                    'Domingo' => Carbon::SUNDAY,
+                    'Lunes' => Carbon::MONDAY,
+                    'Martes' => Carbon::TUESDAY,
+                    'Miércoles' => Carbon::WEDNESDAY,
+                    'Jueves' => Carbon::THURSDAY,
+                    'Viernes' => Carbon::FRIDAY,
+                    'Sábado' => Carbon::SATURDAY
+                ];
+                $excludedDayNumbers = [];
+                foreach ($excludedDayNames as $dayName) {
+                    if (isset($dayMap[$dayName])) $excludedDayNumbers[] = $dayMap[$dayName];
                 }
+
+                while (in_array($date->dayOfWeek, $excludedDayNumbers)) {
+                    $date->addDay();
+                }
+                $firstQuotaDate = $date->format('Y-m-d');
             }
 
             // Restricción por monto total de ventas nuevas en el día
@@ -555,7 +562,7 @@ class CreditService
         }
     }
 
-    public function updateCreditSchedule(int $creditId, string $newFirstQuotaDate, $timezone = null, $notes = null, $newStartDate = null)
+    public function updateCreditSchedule(int $creditId, string $newFirstQuotaDate, $timezone = null, $notes = null, $newStartDate = null, ?array $excludedDays = null)
     {
         try {
             DB::beginTransaction();
@@ -565,6 +572,10 @@ class CreditService
 
             if ($newStartDate) {
                 $credit->start_date = $newStartDate;
+            }
+
+            if ($excludedDays !== null) {
+                $credit->excluded_days = json_encode($excludedDays);
             }
 
             // Días excluidos del crédito
@@ -692,13 +703,18 @@ class CreditService
         $newStartDate = null,
         ?float $newCreditValue = null,
         bool $recalculatePaid = false,
-        PaymentService $paymentService = null
+        PaymentService $paymentService = null,
+        ?array $excludedDays = null
     ) {
         try {
             DB::beginTransaction();
 
             $tz = $timezone ?: self::TIMEZONE;
             $credit = Credit::with(['installments'])->findOrFail($creditId);
+
+            if ($excludedDays !== null) {
+                $credit->excluded_days = json_encode($excludedDays);
+            }
 
             // Días excluidos del crédito
             $excludedDayNames = json_decode($credit->excluded_days ?? '[]', true) ?? [];
@@ -2948,11 +2964,18 @@ class CreditService
         ?float $newInsurancePercentage = null,
         ?string $newStartDate = null,
         ?float $newCreditValue = null,
-        bool $recalculatePaid = true
+        bool $recalculatePaid = true,
+        ?array $excludedDays = null
     ) {
         try {
             $credit = Credit::with(['installments'])->findOrFail($creditId);
             $tz = self::TIMEZONE;
+
+            if ($excludedDays !== null) {
+                // Durante la simulación, usamos los días excluidos proporcionados temporalmente
+                $credit->excluded_days = json_encode($excludedDays);
+            }
+
             $adjustForExcludedDays = $this->getExcludedDaysAdjuster($credit);
 
             $frequency = $newFrequency ?? $credit->payment_frequency;
@@ -2989,6 +3012,12 @@ class CreditService
 
             // Generar nuevas fechas
             $startDateStr = $newDate;
+            if ($newStartDate) {
+                // Si se cambia la fecha de entrega, la primera cuota es el día siguiente (ajustado por días excluidos)
+                $tempDate = Carbon::parse($newStartDate, $tz)->addDay();
+                $startDateStr = $adjustForExcludedDays($tempDate)->format('Y-m-d');
+            }
+
             if (!$startDateStr) {
                 $firstPending = $currentInstallments->whereNotIn('status', ['Pagado', 'Paid', 'Pagada'])->first();
                 $startDateStr = $firstPending ? $firstPending->due_date : $credit->first_quota_date;
