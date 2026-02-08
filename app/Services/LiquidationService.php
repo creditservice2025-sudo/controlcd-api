@@ -21,6 +21,13 @@ class LiquidationService
 {
     const TIMEZONE = 'America/Lima';
 
+    protected $metricsCacheService;
+
+    public function __construct(MetricsCacheService $metricsCacheService)
+    {
+        $this->metricsCacheService = $metricsCacheService;
+    }
+
     use ApiResponse;
     /**
      * Crea una nueva liquidación con validación y cálculos automáticos.
@@ -42,7 +49,11 @@ class LiquidationService
             $this->calculateFields($validated);
             $liquidation = Liquidation::create($validated);
 
-            // Notificación de sobrante/faltante si está activo en SellerConfig
+            // Recalcular esta liquidación y las siguientes para asegurar integridad
+            $this->recalculateLiquidation($liquidation->seller_id, $liquidation->date->toDateString());
+            $this->recalculateNextLiquidations($liquidation->seller_id, $liquidation->date->toDateString());
+
+            // Notificación de sobrante/faltante
             $sellerConfig = \App\Models\SellerConfig::where('seller_id', $validated['seller_id'])->first();
             if ($sellerConfig && $sellerConfig->notify_shortage_surplus) {
                 $seller = Seller::find($validated['seller_id']);
@@ -101,6 +112,13 @@ class LiquidationService
         return DB::transaction(function () use ($liquidation, $validated) {
             $this->calculateFields($validated);
             $liquidation->update($validated);
+
+            // Invalida el caché después de actualizar
+            $this->metricsCacheService->invalidateLiquidationMetrics($liquidation->seller_id, $liquidation->date->toDateString());
+
+            // Recalcular esta liquidación y las siguientes
+            $this->recalculateLiquidation($liquidation->seller_id, $liquidation->date->toDateString());
+            $this->recalculateNextLiquidations($liquidation->seller_id, $liquidation->date->toDateString());
 
             $liquidation->refresh();
             $changedData = $liquidation->getChanges();
@@ -764,6 +782,10 @@ class LiquidationService
         }
 
         $liquidation->update($metrics);
+
+        // Invalida el caché después de recalcular (formatea a Y-m-d)
+        $dateStr = ($date instanceof \Carbon\Carbon) ? $date->toDateString() : (string) $date;
+        $this->metricsCacheService->invalidateLiquidationMetrics($sellerId, $dateStr);
     }
 
     /**
@@ -2159,6 +2181,9 @@ class LiquidationService
             : $newObservation;
 
         $liquidation->save();
+
+        // Invalida el caché después de un ajuste manual
+        $this->metricsCacheService->invalidateLiquidationMetrics($liquidation->seller_id, $liquidation->date->toDateString());
 
         // Recalcular esta liquidación y las siguientes
         $this->recalculateLiquidation($liquidation->seller_id, $liquidation->date->toDateString());

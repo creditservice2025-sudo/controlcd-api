@@ -387,6 +387,11 @@ class PaymentService
                 // Invalidate Liquidation Cache
                 $this->metricsCacheService->invalidateLiquidationMetrics($credit->seller_id, $businessDate);
 
+                // Recalcular liquidaciones para asegurar integridad
+                $liquidationService = app(\App\Services\LiquidationService::class);
+                $liquidationService->recalculateLiquidation($credit->seller_id, $businessDate);
+                $liquidationService->recalculateNextLiquidations($credit->seller_id, $businessDate);
+
                 return $response;
 
             } finally {
@@ -482,6 +487,11 @@ class PaymentService
 
             // Invalidate Liquidation Cache
             $this->metricsCacheService->invalidateLiquidationMetrics($sellerId, $paymentBusinessDate);
+
+            // Recalcular liquidaciones
+            $liquidationService = app(\App\Services\LiquidationService::class);
+            $liquidationService->recalculateLiquidation($sellerId, $paymentBusinessDate);
+            $liquidationService->recalculateNextLiquidations($sellerId, $paymentBusinessDate);
 
             return $this->successResponse([
                 'success' => true,

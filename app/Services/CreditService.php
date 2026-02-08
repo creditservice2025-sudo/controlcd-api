@@ -298,11 +298,12 @@ class CreditService
                 );
             }
 
-            // Start Fix: Actualizar liquidación inmediatamente
+            // Actualizar liquidación inmediatamente para asegurar integridad
             try {
+                $businessDate = $credit->created_at->setTimezone(self::TIMEZONE)->toDateString();
                 $liquidationService = app(\App\Services\LiquidationService::class);
-                $liquidationCbDate = $credit->created_at ? $credit->created_at->format('Y-m-d') : now()->format('Y-m-d');
-                $liquidationService->recalculateLiquidation($credit->seller_id, $liquidationCbDate);
+                $liquidationService->recalculateLiquidation($credit->seller_id, $businessDate);
+                $liquidationService->recalculateNextLiquidations($credit->seller_id, $businessDate);
                 \Log::info("Liquidación recalculada tras creación de crédito " . $credit->id);
             } catch (\Exception $e) {
                 \Log::error("Error recalculando liquidación al crear crédito: " . $e->getMessage());
