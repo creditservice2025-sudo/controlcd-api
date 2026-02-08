@@ -477,9 +477,8 @@ class DashboardService
                     $sellerData['collected']['T'] += $totalPaid;
 
                     if (
-                        Carbon::parse($credit->created_at)->toDateString() == $todayDate
+                        $credit->created_at->setTimezone(self::TIMEZONE)->toDateString() == $todayDate
                         && $credit->renewed_from_id === null
-
                     ) {
                         $sellerData['credits_today']['C'] += $capitalInitial;
                         $sellerData['credits_today']['U'] += $utilityInitial;
@@ -686,16 +685,16 @@ class DashboardService
 
             // Flujos del día
             $cashPayments = (float) Payment::whereIn('credit_id', $creditIds)
-                ->whereBetween('created_at', [$startUTC, $endUTC])->sum('amount');
+                ->where('business_date', $today)->sum('amount');
             $expenses = (float) Expense::whereIn('user_id', $userIds)
-                ->whereBetween('created_at', [$startUTC, $endUTC])
+                ->where('business_date', $today)
                 ->where(function ($q) {
                     $q->where('status', 'Aprobado')
                         ->orWhere('description', 'like', '%AJUSTE%');
                 })
                 ->sum('value');
             $income = (float) Income::whereIn('user_id', $userIds)
-                ->whereBetween('created_at', [$startUTC, $endUTC])->sum('value');
+                ->where('business_date', $today)->sum('value');
 
             $newCredits = (float) Credit::whereIn('seller_id', $sellerIds)
                 ->whereBetween('created_at', [$startUTC, $endUTC])

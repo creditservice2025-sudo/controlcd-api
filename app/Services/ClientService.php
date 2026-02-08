@@ -2950,11 +2950,11 @@ class ClientService
         }
         $pendingToday = $pendingTodayQuery->value('pending_today') ?? 0;
 
-        // 9. CRÉDITOS ACTIVOS CREADOS HOY (considerando soft deletes)
+        // 9. CRÉDITOS ACTIVOS CREADOS HOY (usando rango UTC dinámico por zona horaria)
         $activeCreditsTodayQuery = DB::table('credits')
             ->selectRaw('COUNT(credits.id) as total_active_credits_today')
             ->whereNull('credits.deleted_at')
-            ->whereDate('credits.created_at', $date)
+            ->whereBetween('credits.created_at', [$startUTC, $endUTC])
             ->where('credits.status', 'Vigente');
 
         if ($sellerId) {
@@ -2962,11 +2962,11 @@ class ClientService
         }
         $activeCreditsToday = $activeCreditsTodayQuery->first();
 
-        // 10. GASTOS DEL DÍA (considerando soft deletes)
+        // 10. GASTOS DEL DÍA (usando business_date)
         $dailyExpensesQuery = DB::table('expenses')
             ->selectRaw('COALESCE(SUM(expenses.value), 0) as total_expenses_today')
             ->whereNull('expenses.deleted_at')
-            ->whereDate('expenses.created_at', $date);
+            ->where('expenses.business_date', $date);
 
         if ($sellerId) {
             $dailyExpensesQuery->where('expenses.user_id', $userId);

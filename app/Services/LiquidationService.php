@@ -812,7 +812,7 @@ class LiquidationService
         // Cálculos de la BD
         $totalExpenses = $userId
             ? Expense::where('user_id', $userId)
-                ->whereBetween('created_at', [$startUTC, $endUTC])
+                ->where('business_date', $date)
                 ->whereNull('deleted_at')
                 ->where(function ($q) {
                     $q->where('status', 'Aprobado')
@@ -823,7 +823,7 @@ class LiquidationService
 
         $totalIncome = $userId
             ? Income::where('user_id', $userId)
-                ->whereBetween('created_at', [$startUTC, $endUTC])
+                ->where('business_date', $date)
                 ->whereNull('deleted_at')
                 ->sum('value')
             : 0;

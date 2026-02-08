@@ -1073,7 +1073,7 @@ class PaymentService
             'credit:id,client_id,credit_value,status',
             'credit.client:id,name,dni,address'
         ])
-            ->whereDate('created_at', $date);
+            ->where('business_date', $date);
 
         Log::info($query->toSql());
         Log::info($query->getBindings());
