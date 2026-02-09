@@ -1179,7 +1179,7 @@ class LiquidationService
 
         // Obtener gastos
         $totals['total_expenses'] = (float) Expense::where('user_id', $targetUserId)
-            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->where('business_date', $date)
             ->whereNull('deleted_at')
             ->where(function ($q) {
                 $q->where('status', 'Aprobado')
@@ -1188,7 +1188,7 @@ class LiquidationService
             ->sum('value');
 
         $totals['total_income'] = (float) Income::where('user_id', $targetUserId)
-            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->where('business_date', $date)
             ->whereNull('deleted_at')
             ->sum('value');
 
