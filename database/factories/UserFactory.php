@@ -30,11 +30,9 @@ class UserFactory extends Factory
             'password' => static::$password ??= Hash::make('password'),
             'remember_token' => Str::random(10),
             'address' => fake()->address(),
-            'geolocation' => json_encode([
-                'latitude' => fake()->latitude(),
-                'longitude' => fake()->longitude(),
-            ]),
-            
+            'dni' => fake()->unique()->numerify('#########'),
+            'phone' => fake()->phoneNumber(),
+            'status' => 'active',
         ];
     }
 

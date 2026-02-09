@@ -146,10 +146,10 @@ class PaymentService
                         'user_id' => $user->id,
                         'amount' => $request->amount,
                         'status' => 'No pagado',
-                        'payment_method' => $params['payment_method'] ?: null,
-                        'payment_reference' => $params['payment_reference'] ?: 'No pagó',
-                        'latitude' => $params['latitude'],
-                        'longitude' => $params['longitude'],
+                        'payment_method' => $params['payment_method'] ?? null,
+                        'payment_reference' => $params['payment_reference'] ?? 'No pagó',
+                        'latitude' => $params['latitude'] ?? null,
+                        'longitude' => $params['longitude'] ?? null,
 
                         // TIMESTAMPS TÉCNICOS (auditoría)
                         'created_at' => $serverNow,
@@ -223,10 +223,10 @@ class PaymentService
                     'user_id' => $user->id,
                     'amount' => $request->amount,
                     'status' => $isAbono ? 'Abonado' : 'Pagado',
-                    'payment_method' => $params['payment_method'],
-                    'payment_reference' => $params['payment_reference'] ?: '',
-                    'latitude' => $params['latitude'],
-                    'longitude' => $params['longitude'],
+                    'payment_method' => $params['payment_method'] ?? null,
+                    'payment_reference' => $params['payment_reference'] ?? '',
+                    'latitude' => $params['latitude'] ?? null,
+                    'longitude' => $params['longitude'] ?? null,
 
                     // TIMESTAMPS TÉCNICOS (auditoría)
                     'created_at' => $serverNow,

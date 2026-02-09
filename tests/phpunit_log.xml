@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="Tests\Feature\QA\FinancialIntegrityTest" file="C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\tests\Feature\QA\FinancialIntegrityTest.php" tests="2" assertions="0" errors="2" failures="0" skipped="0" time="0.000000">
+    <testcase name="test_complete_business_flow_integrity" file="C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\tests\Feature\QA\FinancialIntegrityTest.php" line="61" class="Tests\Feature\QA\FinancialIntegrityTest" classname="Tests.Feature.QA.FinancialIntegrityTest" assertions="0" time="0.000000">
+      <error type="Illuminate\Database\QueryException">Tests\Feature\QA\FinancialIntegrityTest::test_complete_business_flow_integrity&#13;
+Illuminate\Database\QueryException: SQLSTATE[42S22]: Column not found: 1054 Unknown column 'geolocation' in 'field list' (Connection: mysql, SQL: insert into `users` (`name`, `email`, `email_verified_at`, `password`, `remember_token`, `address`, `geolocation`, `role_id`, `uuid`, `updated_at`, `created_at`) values (Alexandra Kemmer, mateo48@example.com, 2026-02-08 15:27:31, $2y$04$lVkR4BpU2yHvTpiDXXunw.LU8nVpHKgbx.09.Hi/nzmwsZdF.giYO, 5UOAIMaNO5, 94376 Salvador Ramp
+New Maidatown, NY 52640-9975, {"latitude":77.646247,"longitude":-115.00443}, 1, 8c19803d-de51-43c9-85fc-80bb37b5dbb3, 2026-02-08 15:27:31, 2026-02-08 15:27:31))
+&#13;
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Connection.php:825
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Connection.php:779
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\MySqlConnection.php:42
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Query\Processors\MySqlProcessor.php:35
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Query\Builder.php:3766
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Eloquent\Builder.php:2120
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Eloquent\Model.php:1359
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Eloquent\Model.php:1324
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Eloquent\Model.php:1163
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Eloquent\Factories\Factory.php:352
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Collections\Traits\EnumeratesValues.php:261
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Eloquent\Factories\Factory.php:347
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Eloquent\Factories\Factory.php:303
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Eloquent\Factories\Factory.php:297
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\tests\Feature\QA\FinancialIntegrityTest.php:40</error>
+    </testcase>
+    <testcase name="test_nocturnal_records_fall_into_correct_business_date" file="C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\tests\Feature\QA\FinancialIntegrityTest.php" line="153" class="Tests\Feature\QA\FinancialIntegrityTest" classname="Tests.Feature.QA.FinancialIntegrityTest" assertions="0" time="0.000000">
+      <error type="Illuminate\Database\QueryException">Tests\Feature\QA\FinancialIntegrityTest::test_nocturnal_records_fall_into_correct_business_date&#13;
+Illuminate\Database\QueryException: SQLSTATE[42S22]: Column not found: 1054 Unknown column 'geolocation' in 'field list' (Connection: mysql, SQL: insert into `users` (`name`, `email`, `email_verified_at`, `password`, `remember_token`, `address`, `geolocation`, `role_id`, `uuid`, `updated_at`, `created_at`) values (Rodrick Hermiston, cole.eileen@example.com, 2026-02-08 15:27:31, $2y$04$lVkR4BpU2yHvTpiDXXunw.LU8nVpHKgbx.09.Hi/nzmwsZdF.giYO, dOwluPafbX, 8209 Batz Ridges
+Lake Austinmouth, PA 17310, {"latitude":78.917177,"longitude":80.811265}, 1, 6eb34420-7df6-4a41-90f1-98883aa13c53, 2026-02-08 15:27:31, 2026-02-08 15:27:31))
+&#13;
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Connection.php:825
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Connection.php:779
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\MySqlConnection.php:42
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Query\Processors\MySqlProcessor.php:35
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Query\Builder.php:3766
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Eloquent\Builder.php:2120
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Eloquent\Model.php:1359
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Eloquent\Model.php:1324
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Eloquent\Model.php:1163
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Eloquent\Factories\Factory.php:352
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Collections\Traits\EnumeratesValues.php:261
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Eloquent\Factories\Factory.php:347
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Eloquent\Factories\Factory.php:303
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\vendor\laravel\framework\src\Illuminate\Database\Eloquent\Factories\Factory.php:297
+C:\Program Files\Proyectos\controlCD-MARANDCONSULTORES\controlcd-api\tests\Feature\QA\FinancialIntegrityTest.php:40</error>
+    </testcase>
+  </testsuite>
+</testsuites>
