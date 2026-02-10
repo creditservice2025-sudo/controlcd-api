@@ -193,16 +193,45 @@ class ImportService
 
     public function downloadExcelTemplate()
     {
+        // Column headers matching the expected format
         $headers = [
-            'cliente_nombre', 'cliente_dni', 'cliente_telefono', 'monto_credito',
-            'tasa_interes', 'cuotas_numero', 'frecuencia', 'fecha_primera_cuota',
-            'fecha_entrega', 'poliza_monto', 'pagos_realizados', 'excluir_domingos'
+            'cliente_nombre', 
+            'cliente_dni', 
+            'cliente_telefono', 
+            'monto_credito',
+            'tasa_interes', 
+            'cuotas_numero', 
+            'frecuencia',
+            'fecha_entrega', 
+            'fecha_primera_cuota',
+            'poliza_monto',
+            'pagos_realizados', 
+            'excluir_domingos'
         ];
         
+        // Example row with realistic data
+        // Frecuencia = Diaria, entrega hoy, primera cuota = mañana (assuming Sundays excluded)
+        $today = Carbon::now();
+        $tomorrow = Carbon::now()->addDay();
+        
+        // If tomorrow is Sunday and excluding Sundays, move to Monday
+        if ($tomorrow->dayOfWeek === Carbon::SUNDAY) {
+            $tomorrow->addDay();
+        }
+        
         $exampleRow = [
-            'Juan Pérez', '12345678', '0987654321', 1000, 20, 24, 'Diaria', 
-            Carbon::now()->addDay()->format('Y-m-d'), 
-            Carbon::now()->format('Y-m-d'), 0, 0, 'SI'
+            'Juan Pérez',                           // cliente_nombre
+            '12345678',                             // cliente_dni
+            '0987654321',                           // cliente_telefono
+            1000,                                   // monto_credito
+            20,                                     // tasa_interes (%)
+            24,                                     // cuotas_numero
+            'Diaria',                               // frecuencia (Diaria/Semanal/Quincenal/Mensual)
+            $today->format('Y-m-d'),               // fecha_entrega
+            $tomorrow->format('Y-m-d'),            // fecha_primera_cuota (se calcula automáticamente si se deja vacío)
+            50,                                     // poliza_monto (microseguro en monto exacto, no porcentaje)
+            0,                                      // pagos_realizados (pagos históricos)
+            'SI'                                    // excluir_domingos (SI/NO)
         ];
 
         return Excel::download(new class($headers, $exampleRow) implements \Maatwebsite\Excel\Concerns\FromCollection, \Maatwebsite\Excel\Concerns\WithHeadings {
