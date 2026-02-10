@@ -289,3 +289,4 @@ Route::middleware('auth:api')->group(function () {
     // Import Routes (Admin restricted via Controller)
     Route::post('/import/clients', [\App\Http\Controllers\ImportController::class, 'store']);
 });
+Route::get('/import/template', [\App\Http\Controllers\ImportController::class, 'downloadTemplate']);

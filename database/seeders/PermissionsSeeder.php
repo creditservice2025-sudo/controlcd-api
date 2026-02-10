@@ -32,6 +32,8 @@ class PermissionsSeeder extends Seeder
             'ver_egresos', 'crear_egresos', 'editar_egresos', 'eliminar_egresos',
             // Ajuste de caja
             'ajustar_caja',
+            // Carga masiva
+            'realizar_carga_masiva',
         ];
 
         foreach ($permissions as $permission) {
