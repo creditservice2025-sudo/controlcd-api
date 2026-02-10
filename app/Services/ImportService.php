@@ -359,29 +359,20 @@ class ImportService
     {
         $sellerId = $seller->id;
 
-        // 1. Find or Create Client
-        // If client exists with this DNI for this seller, use it
-        // If not, create a new client
-        $client = Client::where('dni', $row['cliente_dni'])
-                        ->where('seller_id', $sellerId)
-                        ->first();
-
-        if (!$client) {
-            // Client does not exist, create it
-            $client = Client::create([
-                'uuid' => (string) Str::uuid(),
-                'name' => $row['cliente_nombre'],
-                'dni' => $row['cliente_dni'],
-                'phone' => $row['cliente_telefono'] ?? '0',
-                'seller_id' => $sellerId,
-                'status' => 'active',
-                'needs_update' => true, // Mark for update (Address, GPS, Photos might be missing)
-                'address' => '',
-                'geolocation' => ['latitude' => 0, 'longitude' => 0],
-                'routing_order' => Client::where('seller_id', $sellerId)->max('routing_order') + 1,
-            ]);
-        }
-        // If client already exists, we just use it and create a new credit for them
+        // Create Client (Always create new client per row)
+        // Note: Since production DB might not have 'dni' column, we create all clients as new
+        // Each row in Excel = one new client + one new credit
+        $client = Client::create([
+            'uuid' => (string) Str::uuid(),
+            'name' => $row['cliente_nombre'],
+            'phone' => $row['cliente_telefono'] ?? '0',
+            'seller_id' => $sellerId,
+            'status' => 'active',
+            'needs_update' => true, // Mark for update (Address, GPS, Photos missing)
+            'address' => '',
+            'geolocation' => ['latitude' => 0, 'longitude' => 0],
+            'routing_order' => Client::where('seller_id', $sellerId)->max('routing_order') + 1,
+        ]);
 
         // 2. Create Credit
         $creditValue = floatval($row['monto_credito']);
