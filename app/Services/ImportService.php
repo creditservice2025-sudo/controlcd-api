@@ -191,10 +191,26 @@ class ImportService
         return $results;
     }
 
-    public function downloadExcelTemplate()
+    public function downloadExcelTemplate($sellerId = null)
     {
         $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
         $sheet = $spreadsheet->getActiveSheet();
+        
+        // Generate dynamic filename
+        $filename = 'plantilla_importacion';
+        if ($sellerId) {
+            $seller = Seller::with('user')->find($sellerId);
+            if ($seller && $seller->user) {
+                $sellerName = str_replace(' ', '_', $seller->user->name);
+                $date = Carbon::now()->format('Ymd');
+                
+                // Get download counter (you can implement a database counter if needed)
+                // For simplicity, using timestamp as counter
+                $counter = Carbon::now()->format('His');
+                
+                $filename = "{$sellerName}_{$date}_{$counter}";
+            }
+        }
         
         // Define headers in logical order
         $headers = [
@@ -309,6 +325,16 @@ class ImportService
             '- Si excluir_domingos = SI, la fórmula salta domingos automáticamente',
             '- Para agregar más filas, copie la fila 2 y pegue abajo (mantendrá fórmulas y validaciones)',
             '- NO modifique los encabezados de la primera fila',
+            '',
+            'VALIDACIÓN DE DUPLICADOS:',
+            '- NO se permite duplicar cédula (DNI) para un mismo vendedor',
+            '- El sistema validará y rechazará filas con DNI duplicados',
+            '',
+            'MÚLTIPLES CRÉDITOS POR CLIENTE:',
+            '- Si un cliente tiene varios créditos, agregue UNA FILA POR CADA CRÉDITO',
+            '- Use la MISMA cédula y nombre en cada fila',
+            '- Cada fila representa UN crédito diferente con sus propios parámetros',
+            '- Ejemplo: Juan (DNI 12345678) tiene 3 créditos = 3 filas con el mismo DNI',
         ];
         
         $row = 2;
@@ -326,7 +352,7 @@ class ImportService
         $temp_file = tempnam(sys_get_temp_dir(), 'template_');
         $writer->save($temp_file);
         
-        return response()->download($temp_file, 'plantilla_importacion.xlsx')->deleteFileAfterSend(true);
+        return response()->download($temp_file, $filename . '.xlsx')->deleteFileAfterSend(true);
     }
 
     protected function processRow($row, $seller)

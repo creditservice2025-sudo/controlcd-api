@@ -75,8 +75,9 @@ class ImportController extends Controller
         }
     }
 
-    public function downloadTemplate()
+    public function downloadTemplate(Request $request)
     {
-        return $this->importService->downloadExcelTemplate();
+        $sellerId = $request->query('seller_id');
+        return $this->importService->downloadExcelTemplate($sellerId);
     }
 }
