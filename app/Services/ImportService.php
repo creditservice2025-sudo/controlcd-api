@@ -193,54 +193,140 @@ class ImportService
 
     public function downloadExcelTemplate()
     {
-        // Column headers matching the expected format
+        $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
+        $sheet = $spreadsheet->getActiveSheet();
+        
+        // Define headers in logical order
         $headers = [
-            'cliente_nombre', 
-            'cliente_dni', 
-            'cliente_telefono', 
-            'monto_credito',
-            'tasa_interes', 
-            'cuotas_numero', 
-            'frecuencia',
-            'fecha_entrega', 
-            'fecha_primera_cuota',
-            'poliza_monto',
-            'pagos_realizados', 
-            'excluir_domingos'
+            'A' => 'cliente_nombre',
+            'B' => 'cliente_dni',
+            'C' => 'cliente_telefono',
+            'D' => 'monto_credito',
+            'E' => 'tasa_interes',
+            'F' => 'cuotas_numero',
+            'G' => 'fecha_entrega',
+            'H' => 'frecuencia',
+            'I' => 'fecha_primera_cuota',
+            'J' => 'microseguro_porcentaje',
+            'K' => 'pagos_realizados',
+            'L' => 'excluir_domingos'
         ];
         
-        // Example row with realistic data
-        // Frecuencia = Diaria, entrega hoy, primera cuota = mañana (assuming Sundays excluded)
-        $today = Carbon::now();
-        $tomorrow = Carbon::now()->addDay();
-        
-        // If tomorrow is Sunday and excluding Sundays, move to Monday
-        if ($tomorrow->dayOfWeek === Carbon::SUNDAY) {
-            $tomorrow->addDay();
+        // Set headers
+        foreach ($headers as $col => $header) {
+            $sheet->setCellValue($col . '1', $header);
+            $sheet->getStyle($col . '1')->getFont()->setBold(true);
+            $sheet->getStyle($col . '1')->getFill()
+                ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
+                ->getStartColor()->setRGB('4A90E2');
+            $sheet->getStyle($col . '1')->getFont()->getColor()->setRGB('FFFFFF');
         }
         
-        $exampleRow = [
-            'Juan Pérez',                           // cliente_nombre
-            '12345678',                             // cliente_dni
-            '0987654321',                           // cliente_telefono
-            1000,                                   // monto_credito
-            20,                                     // tasa_interes (%)
-            24,                                     // cuotas_numero
-            'Diaria',                               // frecuencia (Diaria/Semanal/Quincenal/Mensual)
-            $today->format('Y-m-d'),               // fecha_entrega
-            $tomorrow->format('Y-m-d'),            // fecha_primera_cuota (se calcula automáticamente si se deja vacío)
-            50,                                     // poliza_monto (microseguro en monto exacto, no porcentaje)
-            0,                                      // pagos_realizados (pagos históricos)
-            'SI'                                    // excluir_domingos (SI/NO)
+        // Add example data in row 2
+        $today = Carbon::now()->format('Y-m-d');
+        $sheet->setCellValue('A2', 'Juan Pérez');
+        $sheet->setCellValue('B2', '12345678');
+        $sheet->setCellValue('C2', '0987654321');
+        $sheet->setCellValue('D2', 1000);
+        $sheet->setCellValue('E2', 20);
+        $sheet->setCellValue('F2', 24);
+        $sheet->setCellValue('G2', $today);
+        $sheet->setCellValue('H2', 'Diaria');
+        // I2 will have formula
+        $sheet->setCellValue('J2', 5); // 5% microseguro
+        $sheet->setCellValue('K2', 0);
+        $sheet->setCellValue('L2', 'SI');
+        
+        // Data validation for FRECUENCIA (column H)
+        $frequencyValidation = $sheet->getCell('H2')->getDataValidation();
+        $frequencyValidation->setType(\PhpOffice\PhpSpreadsheet\Cell\DataValidation::TYPE_LIST);
+        $frequencyValidation->setErrorStyle(\PhpOffice\PhpSpreadsheet\Cell\DataValidation::STYLE_STOP);
+        $frequencyValidation->setAllowBlank(false);
+        $frequencyValidation->setShowInputMessage(true);
+        $frequencyValidation->setShowErrorMessage(true);
+        $frequencyValidation->setShowDropDown(true);
+        $frequencyValidation->setErrorTitle('Error');
+        $frequencyValidation->setError('Debe seleccionar una frecuencia válida');
+        $frequencyValidation->setPromptTitle('Frecuencia de Pago');
+        $frequencyValidation->setPrompt('Seleccione la frecuencia de pago del crédito');
+        $frequencyValidation->setFormula1('"Diaria,Semanal,Quincenal,Mensual"');
+        
+        // Data validation for EXCLUIR_DOMINGOS (column L)
+        $sundayValidation = $sheet->getCell('L2')->getDataValidation();
+        $sundayValidation->setType(\PhpOffice\PhpSpreadsheet\Cell\DataValidation::TYPE_LIST);
+        $sundayValidation->setErrorStyle(\PhpOffice\PhpSpreadsheet\Cell\DataValidation::STYLE_STOP);
+        $sundayValidation->setAllowBlank(false);
+        $sundayValidation->setShowInputMessage(true);
+        $sundayValidation->setShowErrorMessage(true);
+        $sundayValidation->setShowDropDown(true);
+        $sundayValidation->setErrorTitle('Error');
+        $sundayValidation->setError('Debe seleccionar SI o NO');
+        $sundayValidation->setPromptTitle('Excluir Domingos');
+        $sundayValidation->setPrompt('¿Excluir domingos del calendario de pagos?');
+        $sundayValidation->setFormula1('"SI,NO"');
+        
+        // Formula for fecha_primera_cuota (column I2)
+        // This formula adds days based on frequency and skips Sundays if needed
+        // =IF(H2="Diaria",G2+1,IF(H2="Semanal",G2+7,IF(H2="Quincenal",G2+15,IF(H2="Mensual",G2+30,G2+1))))
+        // We'll create a simpler version that the user can adjust
+        $formula = '=IF(L2="SI",IF(WEEKDAY(IF(H2="Diaria",G2+1,IF(H2="Semanal",G2+7,IF(H2="Quincenal",G2+15,G2+30))))=1,IF(H2="Diaria",G2+2,IF(H2="Semanal",G2+8,IF(H2="Quincenal",G2+16,G2+31))),IF(H2="Diaria",G2+1,IF(H2="Semanal",G2+7,IF(H2="Quincenal",G2+15,G2+30)))),IF(H2="Diaria",G2+1,IF(H2="Semanal",G2+7,IF(H2="Quincenal",G2+15,G2+30))))';
+        $sheet->setCellValue('I2', $formula);
+        
+        // Format date columns
+        $sheet->getStyle('G2')->getNumberFormat()
+            ->setFormatCode(\PhpOffice\PhpSpreadsheet\Style\NumberFormat::FORMAT_DATE_YYYYMMDD2);
+        $sheet->getStyle('I2')->getNumberFormat()
+            ->setFormatCode(\PhpOffice\PhpSpreadsheet\Style\NumberFormat::FORMAT_DATE_YYYYMMDD2);
+        
+        // Auto-size columns
+        foreach (range('A', 'L') as $col) {
+            $sheet->getColumnDimension($col)->setAutoSize(true);
+        }
+        
+        // Add instructions in a separate sheet
+        $instructionsSheet = $spreadsheet->createSheet();
+        $instructionsSheet->setTitle('Instrucciones');
+        $instructionsSheet->setCellValue('A1', 'INSTRUCCIONES DE LLENADO');
+        $instructionsSheet->getStyle('A1')->getFont()->setBold(true)->setSize(14);
+        
+        $instructions = [
+            '',
+            '1. cliente_nombre: Nombre completo del cliente',
+            '2. cliente_dni: Documento de identidad (solo números)',
+            '3. cliente_telefono: Teléfono de contacto',
+            '4. monto_credito: Monto del crédito en números',
+            '5. tasa_interes: Tasa de interés (%) del crédito',
+            '6. cuotas_numero: Cantidad de cuotas del crédito',
+            '7. fecha_entrega: Fecha de entrega del crédito (YYYY-MM-DD)',
+            '8. frecuencia: Usar lista desplegable (Diaria/Semanal/Quincenal/Mensual)',
+            '9. fecha_primera_cuota: SE CALCULA AUTOMÁTICAMENTE con fórmula',
+            '10. microseguro_porcentaje: Porcentaje de microseguro (ej: 5 para 5%)',
+            '11. pagos_realizados: Monto de pagos históricos ya realizados',
+            '12. excluir_domingos: Usar lista desplegable (SI/NO)',
+            '',
+            'NOTAS IMPORTANTES:',
+            '- La fecha_primera_cuota se calcula automáticamente basándose en fecha_entrega + frecuencia',
+            '- Si excluir_domingos = SI, la fórmula salta domingos automáticamente',
+            '- Para agregar más filas, copie la fila 2 y pegue abajo (mantendrá fórmulas y validaciones)',
+            '- NO modifique los encabezados de la primera fila',
         ];
-
-        return Excel::download(new class($headers, $exampleRow) implements \Maatwebsite\Excel\Concerns\FromCollection, \Maatwebsite\Excel\Concerns\WithHeadings {
-            protected $headers;
-            protected $row;
-            public function __construct($headers, $row) { $this->headers = $headers; $this->row = $row; }
-            public function collection() { return collect([$this->row]); }
-            public function headings(): array { return $this->headers; }
-        }, 'plantilla_importacion.xlsx');
+        
+        $row = 2;
+        foreach ($instructions as $instruction) {
+            $instructionsSheet->setCellValue('A' . $row, $instruction);
+            $row++;
+        }
+        $instructionsSheet->getColumnDimension('A')->setWidth(100);
+        
+        // Set active sheet back to data
+        $spreadsheet->setActiveSheetIndex(0);
+        
+        // Create writer and download
+        $writer = new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($spreadsheet);
+        $temp_file = tempnam(sys_get_temp_dir(), 'template_');
+        $writer->save($temp_file);
+        
+        return response()->download($temp_file, 'plantilla_importacion.xlsx')->deleteFileAfterSend(true);
     }
 
     protected function processRow($row, $seller)
@@ -301,7 +387,10 @@ class ImportService
             }
             $firstQuotaDate = $date->format('Y-m-d');
         }
-        $microInsuranceAmount = floatval($row['poliza_monto'] ?? 0);
+        
+        // Calculate microseguro amount from percentage
+        $microInsurancePercentage = floatval($row['microseguro_porcentaje'] ?? 0);
+        $microInsuranceAmount = ($creditValue * $microInsurancePercentage) / 100;
 
         $interestAmount = ($creditValue * $interestRate) / 100;
         $totalAmount = $creditValue + $interestAmount;
