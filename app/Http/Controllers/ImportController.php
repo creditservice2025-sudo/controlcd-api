@@ -46,9 +46,21 @@ class ImportController extends Controller
             $originalName = $file->getClientOriginalName();
             $extension = $file->getClientOriginalExtension();
             
-            // Store temporarily
-            $path = $file->storeAs('temp_imports', 'import_' . time() . '_' . $originalName);
+            // Sanitize filename: remove spaces and special characters
+            $sanitizedName = preg_replace('/[^A-Za-z0-9_\-.]/', '_', $originalName);
+            $sanitizedName = preg_replace('/_+/', '_', $sanitizedName); // Replace multiple underscores with single
+            
+            // Store temporarily with sanitized name
+            $path = $file->storeAs('temp_imports', 'import_' . time() . '_' . $sanitizedName);
             $fullPath = storage_path('app/' . $path);
+            
+            // Verify file exists before processing
+            if (!file_exists($fullPath)) {
+                return response()->json([
+                    'success' => false, 
+                    'message' => 'Error: El archivo no se pudo guardar correctamente.'
+                ], 500);
+            }
 
             // Execute service based on extension
             if (in_array(strtolower($extension), ['xlsx', 'xls'])) {
