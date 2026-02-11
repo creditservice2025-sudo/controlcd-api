@@ -47,7 +47,9 @@ class LiquidationController extends Controller
         $sellerId = $request->seller_id;
         $date = $request->date;
 
-        $timezone = 'America/Lima';
+        // ✅ MULTI-PAÍS: Obtener timezone del vendedor
+        $seller = Seller::with('city.country')->find($sellerId);
+        $timezone = \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
         $dateLocal = Carbon::parse($date, $timezone)->format('Y-m-d');
 
         // Verificar permisos
@@ -967,8 +969,9 @@ class LiquidationController extends Controller
     {
         $user = Auth::user();
 
-        // Zona horaria Venezuela
-        $timezone = $request->query('timezone', 'America/Lima');
+        // ✅ MULTI-PAÍS: Obtener timezone del vendedor
+        $seller = Seller::with('city.country')->find($sellerId);
+        $timezone = $request->query('timezone') ?: \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
         $start = Carbon::createFromFormat('Y-m-d', $date, $timezone)->startOfDay()->setTimezone('UTC');
         $end = Carbon::createFromFormat('Y-m-d', $date, $timezone)->endOfDay()->setTimezone('UTC');
         $todayDate = Carbon::now($timezone)->toDateString();
@@ -1096,8 +1099,12 @@ class LiquidationController extends Controller
         return $response;
     }
 
-    protected function getDailyTotals($sellerId, $date, $user, $timezone = 'America/Lima')
+    protected function getDailyTotals($sellerId, $date, $user, $timezone = null)
     {
+        if (is_null($timezone)) {
+            $seller = Seller::with('city.country')->find($sellerId);
+            $timezone = \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
+        }
         $targetDate = Carbon::parse($date, $timezone);
         $formattedDate = $targetDate->format('Y-m-d');
 

@@ -943,15 +943,14 @@ class LiquidationService
     public function getDailyMovements($sellerId, $date = null, $timezone = null)
     {
         try {
-            $tz = $timezone ?: self::TIMEZONE;
-            $dateLocal = $date ?: Carbon::now($tz)->toDateString();
+            // ✅ MULTI-PAÍS: Obtener user_id y timezone del seller
+            $seller = Seller::with('city.country')->find($sellerId);
+            $tz = $timezone ?: \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
+            $userId = $seller ? $seller->user_id : null;
 
+            $dateLocal = $date ?: Carbon::now($tz)->toDateString();
             $startUTC = Carbon::parse($dateLocal, $tz)->startOfDay()->setTimezone('UTC');
             $endUTC = Carbon::parse($dateLocal, $tz)->endOfDay()->setTimezone('UTC');
-
-            // Obtener user_id del seller (para gastos e ingresos)
-            $seller = Seller::find($sellerId);
-            $userId = $seller ? $seller->user_id : null;
 
             $sellerName = $seller && $seller->user ? $seller->user->name : null;
             // Movimientos: pagos (de créditos del vendedor) - todos los campos relevantes
@@ -978,6 +977,8 @@ class LiquidationService
                         'seller_id' => $p->seller_id ?? null,
                         'seller_name' => $sellerName,
                         'note' => $p->note ?? null,
+                        'business_timestamp' => $p->business_timestamp ? $p->business_timestamp->format('Y-m-d H:i:s') : null,
+                        'business_timezone' => $p->business_timezone ?? $tz,
                         'raw' => $p,
                     ];
                 });
@@ -997,6 +998,8 @@ class LiquidationService
                             'created_at' => (string) $e->created_at,
                             'category_id' => $e->category_id ?? null,
                             'description' => $e->description ?? null,
+                            'business_timestamp' => $e->business_timestamp ? $e->business_timestamp->format('Y-m-d H:i:s') : null,
+                            'business_timezone' => $e->business_timezone ?? $tz,
                             'raw' => $e,
                         ];
                     });
@@ -1016,6 +1019,8 @@ class LiquidationService
                             'amount' => (float) $i->value,
                             'created_at' => (string) $i->created_at,
                             'description' => $i->description ?? null,
+                            'business_timestamp' => $i->business_timestamp ? $i->business_timestamp->format('Y-m-d H:i:s') : null,
+                            'business_timezone' => $i->business_timezone ?? $tz,
                             'raw' => $i,
                         ];
                     });
@@ -1044,6 +1049,7 @@ class LiquidationService
                         'seller_name' => $sellerName,
                         'interest_percent' => $c->total_interest ?? 0,
                         'micro_insurance' => $c->micro_insurance_amount ?? 0,
+                        'business_timezone' => $tz, // Usar el timezone resuelto del vendedor
                         'raw' => $c,
                     ];
                 });
