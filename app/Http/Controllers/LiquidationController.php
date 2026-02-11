@@ -975,10 +975,11 @@ class LiquidationController extends Controller
 
         \Log::debug("Solicitud de datos de liquidación para vendedor $sellerId en fecha $date por usuario {$user->id} ({$user->role_id})");
 
-        // 1. Verificar si ya existe liquidación para esta fecha
+        // 1. Verificar si ya existe liquidación para esta fecha (Ignorar 'En curso' que son borradores/auditoría)
         $existingLiquidation = Liquidation::with('seller.user')
             ->where('seller_id', $sellerId)
             ->whereDate('date', $date)
+            ->where('status', '!=', 'En curso')
             ->first();
         \Log::debug("Verificando liquidación para vendedor $sellerId en fecha desde $start hasta $end");
         if ($existingLiquidation) {
