@@ -2829,6 +2829,66 @@ class ClientService
         }
         $todayAbonos = $todayAbonosQuery->first();
 
+        // 4.5. DISTRIBUCIÓN DE PAGOS POR TIPO (CUOTA COMPLETA vs ABONO)
+        // Lógica robusta: 
+        // 1. Suma montos aplicados a cuotas completas
+        // 2. Suma montos aplicados a abonos parciales
+        // 3. Captura el excedente (remainders) de los pagos que no se aplicó a nada
+        $paymentDistribution = DB::select("
+            WITH payment_totals AS (
+                SELECT 
+                    p.id,
+                    p.amount,
+                    COALESCE(SUM(pi.applied_amount), 0) as total_applied
+                FROM payments p
+                JOIN credits c ON p.credit_id = c.id
+                LEFT JOIN payment_installments pi ON p.id = pi.payment_id AND pi.deleted_at IS NULL
+                WHERE p.business_date = ?
+                    AND p.deleted_at IS NULL
+                    AND c.deleted_at IS NULL
+                    " . ($sellerId ? "AND c.seller_id = ?" : "") . "
+                GROUP BY p.id, p.amount
+            ),
+            installment_distribution AS (
+                SELECT 
+                    pi.payment_id,
+                    SUM(CASE WHEN pi.applied_amount >= i.quota_amount THEN pi.applied_amount ELSE 0 END) as full_amount,
+                    SUM(CASE WHEN pi.applied_amount < i.quota_amount THEN pi.applied_amount ELSE 0 END) as partial_amount,
+                    COUNT(CASE WHEN pi.applied_amount >= i.quota_amount THEN 1 END) as full_count,
+                    COUNT(CASE WHEN pi.applied_amount < i.quota_amount THEN 1 END) as partial_count
+                FROM payment_installments pi
+                JOIN installments i ON pi.installment_id = i.id
+                JOIN payments p ON pi.payment_id = p.id
+                JOIN credits c ON p.credit_id = c.id
+                WHERE p.business_date = ?
+                    AND pi.deleted_at IS NULL
+                    AND i.deleted_at IS NULL
+                    AND p.deleted_at IS NULL
+                    AND c.deleted_at IS NULL
+                    " . ($sellerId ? "AND c.seller_id = ?" : "") . "
+                GROUP BY pi.payment_id
+            )
+            SELECT 
+                COALESCE(SUM(idist.full_amount), 0) as full_quota_amount,
+                COALESCE(SUM(idist.partial_amount), 0) as partial_quota_amount,
+                COALESCE(SUM(ptot.amount - ptot.total_applied), 0) as unlinked_amount,
+                COALESCE(SUM(idist.full_count), 0) as full_quota_count,
+                COALESCE(SUM(idist.partial_count), 0) as partial_quota_count,
+                COUNT(CASE WHEN (ptot.amount - ptot.total_applied) > 0.01 THEN 1 END) as unlinked_count
+            FROM payment_totals ptot
+            LEFT JOIN installment_distribution idist ON ptot.id = idist.payment_id
+        ", $sellerId ? [$date, $sellerId, $date, $sellerId] : [$date, $date]);
+
+        $paymentDistribution = $paymentDistribution[0] ?? (object)[
+            'full_quota_amount' => 0,
+            'partial_quota_amount' => 0,
+            'unlinked_amount' => 0,
+            'full_quota_count' => 0,
+            'partial_quota_count' => 0,
+            'unlinked_count' => 0,
+        ];
+
+
         // 5. RECAUDACIÓN DE CUOTAS VENCIDAS HOY (considerando soft deletes)
         $todayDueCollectedQuery = DB::table('payment_installments')
             ->selectRaw('
@@ -3022,6 +3082,13 @@ class ClientService
             'totalUnpaidClients' => $clientCounts->defaulted_clients ?? 0,
             'totalActiveCreditsToday' => $activeCreditsToday->total_active_credits_today ?? 0,
             'totalExpensesToday' => $dailyExpenses->total_expenses_today ?? 0,
+            // NEW: Payment distribution by payment status / installments
+            'fullQuotaAmount' => $paymentDistribution->full_quota_amount ?? 0,
+            'partialQuotaAmount' => $paymentDistribution->partial_quota_amount ?? 0,
+            'fullQuotaCount' => $paymentDistribution->full_quota_count ?? 0,
+            'partialQuotaCount' => $paymentDistribution->partial_quota_count ?? 0,
+            'unlinkedAmount' => $paymentDistribution->unlinked_amount ?? 0,
+            'unlinkedCount' => $paymentDistribution->unlinked_count ?? 0,
         ];
 
         return response()->json([
