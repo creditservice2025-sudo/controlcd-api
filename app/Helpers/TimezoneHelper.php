@@ -44,6 +44,11 @@ class TimezoneHelper
             $seller->loadMissing('city.country');
             
             if ($seller->city && $seller->city->country) {
+                // Priorizar el campo 'timezone' de la tabla countries si existe
+                if (!empty($seller->city->country->timezone)) {
+                    return $seller->city->country->timezone;
+                }
+
                 $countryName = $seller->city->country->name;
                 
                 if (isset(self::COUNTRY_TIMEZONES[$countryName])) {
