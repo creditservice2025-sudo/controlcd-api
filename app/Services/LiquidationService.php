@@ -618,14 +618,14 @@ class LiquidationService
 
         $realToDeliver = $initialCash
             + (
-            $dailyTotals['total_income']
-            + $dailyTotals['collected_total']
-            + $baseDelivered + $poliza
-        )
+                $dailyTotals['total_income']
+                + $dailyTotals['collected_total']
+                + $baseDelivered + $poliza
+            )
             - (
-            $dailyTotals['created_credits_value']
-            + $dailyTotals['total_expenses'] + $dailyTotals['total_renewal_disbursed'] + $irrecoverableCredits
-        );
+                $dailyTotals['created_credits_value']
+                + $dailyTotals['total_expenses'] + $dailyTotals['total_renewal_disbursed'] + $irrecoverableCredits
+            );
 
         $cashcollection = (
             $dailyTotals['total_income']
@@ -633,9 +633,9 @@ class LiquidationService
             + $baseDelivered + $poliza
         )
             - (
-            $dailyTotals['created_credits_value']
-            + $dailyTotals['total_expenses'] + $dailyTotals['total_renewal_disbursed'] + $irrecoverableCredits
-        );
+                $dailyTotals['created_credits_value']
+                + $dailyTotals['total_expenses'] + $dailyTotals['total_renewal_disbursed'] + $irrecoverableCredits
+            );
 
         \Log::debug("cashcollection: " . $cashcollection);
 
@@ -891,9 +891,9 @@ class LiquidationService
             + $liquidation->base_delivered
             + ($totalIncome + $totalCollected + $poliza)
             - ($totalExpenses
-            + $newCredits
-            + $total_renewal_disbursed
-            + $irrecoverableCredits);
+                + $newCredits
+                + $total_renewal_disbursed
+                + $irrecoverableCredits);
 
         $cashDelivered = $liquidation->cash_delivered;
         $shortage = 0;
@@ -985,8 +985,9 @@ class LiquidationService
             // Movimientos: gastos (expenses) del user vinculado al seller
             $expenses = collect();
             if ($userId) {
+                // Modificado para usar business_date en lugar de created_at UTC
                 $expenses = Expense::where('user_id', $userId)
-                    ->whereBetween('created_at', [$startUTC, $endUTC])
+                    ->where('business_date', $dateLocal) // <-- Cambio clave
                     ->whereNull('deleted_at')
                     ->get()
                     ->map(function ($e) {
@@ -995,6 +996,7 @@ class LiquidationService
                             'id' => $e->id,
                             'amount' => (float) $e->value,
                             'created_at' => (string) $e->created_at,
+                            'business_date' => $e->business_date,
                             'category_id' => $e->category_id ?? null,
                             'description' => $e->description ?? null,
                             'raw' => $e,
@@ -1005,8 +1007,9 @@ class LiquidationService
             // Movimientos: ingresos (incomes) del user vinculado al seller
             $incomes = collect();
             if ($userId) {
+                // Modificado para usar business_date en lugar de created_at UTC
                 $incomes = Income::where('user_id', $userId)
-                    ->whereBetween('created_at', [$startUTC, $endUTC])
+                    ->where('business_date', $dateLocal) // <-- Cambio clave
                     ->whereNull('deleted_at')
                     ->get()
                     ->map(function ($i) {
@@ -1015,6 +1018,7 @@ class LiquidationService
                             'id' => $i->id,
                             'amount' => (float) $i->value,
                             'created_at' => (string) $i->created_at,
+                            'business_date' => $i->business_date,
                             'description' => $i->description ?? null,
                             'raw' => $i,
                         ];
@@ -1154,15 +1158,15 @@ class LiquidationService
             ->whereNull('renewed_from_id')
             ->whereNull('unification_reason')
             ->select([
-                    DB::raw('COALESCE(SUM(credit_value), 0) as value'),
-                    DB::raw('COALESCE(SUM(
+                DB::raw('COALESCE(SUM(credit_value), 0) as value'),
+                DB::raw('COALESCE(SUM(
                     CASE
                         WHEN total_interest IS NOT NULL AND total_interest > 0
                         THEN credit_value * (total_interest / 100)
                         ELSE 0
                     END
                 ), 0) as interest')
-                ])
+            ])
             ->first();
 
         $totals['created_credits_value'] = (float) $credits->value;
@@ -1398,11 +1402,11 @@ class LiquidationService
             + $liquidation->poliza
         )
             - (
-            $liquidation->new_credits
-            + $liquidation->total_expenses
-            + $liquidation->renewal_disbursed_total
-            + $liquidation->irrecoverable_credits_amount
-        );
+                $liquidation->new_credits
+                + $liquidation->total_expenses
+                + $liquidation->renewal_disbursed_total
+                + $liquidation->irrecoverable_credits_amount
+            );
         \Log::debug('Liquidation object:', ['liquidation' => json_decode(json_encode($liquidation), true)]);
 
         return [
@@ -1659,7 +1663,7 @@ class LiquidationService
         // 2. Verificar restricción de tiempo (23:59:59 del día de la liquidación)
         // La fecha de la liquidación ($date)
         $liquidationDate = Carbon::parse($date)->format('Y-m-d');
-        
+
         // Hora actual en la zona del vendedor
         $nowInSellerTimezone = Carbon::now($timezone);
         $endOfLiquidationDay = Carbon::parse($liquidationDate, $timezone)->endOfDay();
@@ -1980,13 +1984,13 @@ class LiquidationService
             ->whereNull('renewed_to_id')
             ->whereNull('unification_reason')
             ->whereBetween('created_at', [
-                    Carbon::parse($liquidation->date, self::TIMEZONE)->startOfDay()->setTimezone('UTC'),
-                    Carbon::parse($liquidation->date, self::TIMEZONE)->endOfDay()->setTimezone('UTC')
-                ]);
-        
+                Carbon::parse($liquidation->date, self::TIMEZONE)->startOfDay()->setTimezone('UTC'),
+                Carbon::parse($liquidation->date, self::TIMEZONE)->endOfDay()->setTimezone('UTC')
+            ]);
+
         // Clonar para paginación sin afectar el query base
         $creditosNuevosPaginados = (clone $creditosNuevosQuery)->paginate($perPage, ['*'], 'creditos_page', $page);
-        
+
         // Lógica "Smart Classification": Detectar clientes recurrentes (que ya tuvieron créditos antes)
         $creditosNuevosPaginados->getCollection()->transform(function ($credit) {
             if (!$credit->renewed_from_id) {
@@ -1995,7 +1999,7 @@ class LiquidationService
                 $hasHistory = \App\Models\Credit::where('client_id', $credit->client_id)
                     ->where('id', '<', $credit->id) // Anterior a este
                     ->exists();
-                
+
                 $credit->setAttribute('is_returning', $hasHistory);
             } else {
                 $credit->setAttribute('is_returning', false);
@@ -2005,7 +2009,7 @@ class LiquidationService
 
         // Obtener todos los registros para cálculos (clonando)
         $allCredits = (clone $creditosNuevosQuery)->get();
-        
+
         // Lógica "Smart Classification": Detectar clientes recurrentes (que ya tuvieron créditos antes)
         // Aplicamos esto también a $allCredits para que los totales coincidan con la vista
         $allCredits->transform(function ($credit) {
@@ -2014,7 +2018,7 @@ class LiquidationService
                 $hasHistory = \App\Models\Credit::where('client_id', $credit->client_id)
                     ->where('id', '<', $credit->id)
                     ->exists();
-                
+
                 $credit->setAttribute('is_returning', $hasHistory);
             } else {
                 $credit->setAttribute('is_returning', false);
@@ -2027,10 +2031,10 @@ class LiquidationService
             // Es "Puro Nuevo" si NO es renovación estricta Y NO es recurrente
             return is_null($value->renewed_from_id) && !$value->is_returning;
         });
-        
+
         $renewedOrReturningCredits = $allCredits->filter(function ($value) {
-             // Es "Renovado/Recurrente" si ES renovación estricta O ES recurrente
-             return !is_null($value->renewed_from_id) || $value->is_returning;
+            // Es "Renovado/Recurrente" si ES renovación estricta O ES recurrente
+            return !is_null($value->renewed_from_id) || $value->is_returning;
         });
 
         $creditosNuevosRealCount = $pureNewCredits->count();
@@ -2040,7 +2044,7 @@ class LiquidationService
         $renovadosAmount = $renewedOrReturningCredits->sum('credit_value');
 
         // Calcular la suma de la póliza (de todos los del día mostrados)
-        $polizaTotal = $allCredits->sum(function($c) {
+        $polizaTotal = $allCredits->sum(function ($c) {
             return ($c->credit_value * $c->micro_insurance_percentage) / 100;
         });
 
@@ -2050,31 +2054,31 @@ class LiquidationService
             ->join('clients', 'credits.client_id', '=', 'clients.id')
             ->where('credits.seller_id', $liquidation->seller_id)
             ->whereBetween('payments.created_at', [
-                    Carbon::parse($liquidation->date, self::TIMEZONE)->startOfDay()->setTimezone('UTC'),
-                    Carbon::parse($liquidation->date, self::TIMEZONE)->endOfDay()->setTimezone('UTC')
-                ])
+                Carbon::parse($liquidation->date, self::TIMEZONE)->startOfDay()->setTimezone('UTC'),
+                Carbon::parse($liquidation->date, self::TIMEZONE)->endOfDay()->setTimezone('UTC')
+            ])
             ->select('payments.*', 'clients.name as client_name', 'credits.id as credit_id', 'credits.status as credit_status');
-            
+
         // FIX: Especificar columnas en paginate para evitar ambigüedad por los joins
         $pagosPaginados = (clone $pagosQuery)->paginate($perPage, ['payments.*', 'clients.name as client_name', 'credits.id as credit_id', 'credits.status as credit_status'], 'pagos_page', $page);
-        
+
         // Total recaudo (suma real de los pagos listados) - clonar para evitar limites de paginación
         $clientsPaidAmount = (clone $pagosQuery)->sum('payments.amount');
 
         // Gastos (egresos de esta liquidación)
         $gastosQuery = \App\Models\Expense::where('user_id', $liquidation->seller->user_id)
             ->whereBetween('created_at', [
-                    Carbon::parse($liquidation->date, self::TIMEZONE)->startOfDay()->setTimezone('UTC'),
-                    Carbon::parse($liquidation->date, self::TIMEZONE)->endOfDay()->setTimezone('UTC')
-                ]);
+                Carbon::parse($liquidation->date, self::TIMEZONE)->startOfDay()->setTimezone('UTC'),
+                Carbon::parse($liquidation->date, self::TIMEZONE)->endOfDay()->setTimezone('UTC')
+            ]);
         $gastosPaginados = $gastosQuery->paginate($perPage, ['*'], 'gastos_page', $page);
 
         // Ingresos de esta liquidación
         $ingresosQuery = \App\Models\Income::where('user_id', $liquidation->seller->user_id)
             ->whereBetween('created_at', [
-                    Carbon::parse($liquidation->date, self::TIMEZONE)->startOfDay()->setTimezone('UTC'),
-                    Carbon::parse($liquidation->date, self::TIMEZONE)->endOfDay()->setTimezone('UTC')
-                ]);
+                Carbon::parse($liquidation->date, self::TIMEZONE)->startOfDay()->setTimezone('UTC'),
+                Carbon::parse($liquidation->date, self::TIMEZONE)->endOfDay()->setTimezone('UTC')
+            ]);
         $ingresosPaginados = $ingresosQuery->paginate($perPage, ['*'], 'ingresos_page', $page);
         $ingresosCount = $ingresosQuery->count();
         $egresosCount = $gastosQuery->count();
@@ -2091,7 +2095,7 @@ class LiquidationService
                 'egresos' => $egresos,
                 'egresos_count' => $egresosCount,
                 'creditos_nuevos' => $creditosNuevos, // Valor contable (pure new)
-                'creditos_nuevos_count' => $creditosNuevosCount, // Este era el count global, quizás debamos usar $creditosNuevosRealCount si el anterior filtraba? 
+                'creditos_nuevos_count' => $creditosNuevosCount, // Este era el count global, quizás debamos usar $creditosNuevosRealCount si el anterior filtraba?
                 // El anterior $creditosNuevosQuery filtraba renewals.
                 // Aqui mantendremos la coherencia: 'creditos_nuevos' del modelo suele ser solo nuevos.
                 // Pero para la UI detallada enviamos los desgloses:
@@ -2099,13 +2103,13 @@ class LiquidationService
                 'creditos_nuevos_real_amount' => $creditosNuevosRealAmount,
                 'renovados_count' => $renovadosCount,
                 'renovados_amount' => $renovadosAmount,
-                
+
                 'base_entregada' => $baseEntregada,
                 'collection_target' => $liquidation->collection_target,
                 'initial_cash' => $liquidation->initial_cash,
                 'total_collected' => $liquidation->total_collected,
                 'clients_paid_amount' => $clientsPaidAmount, // Nuevo campo visual
-                
+
                 'total_expenses' => $liquidation->total_expenses,
                 'total_income' => $liquidation->total_income,
                 'real_to_deliver' => $liquidation->real_to_deliver,
