@@ -284,32 +284,28 @@ class PaymentService
                     }
 
                     // --- STEP 2: STACK CHECK (Fallback to FIFO) ---
-                    // Calculate Total Available Surplus (All payments for this credit with unapplied > 0)
                     $stackPayments = Payment::where('credit_id', $credit->id)
                         ->where('unapplied_amount', '>', 0)
-                        ->orderBy('created_at', 'asc') // FIFO
+                        ->orderBy('business_date', 'asc')
+                        ->orderBy('created_at', 'asc')
                         ->get();
 
-                    $totalStack = $stackPayments->sum('unapplied_amount');
+                    if ($stackPayments->isEmpty()) break;
 
-                    if ($totalStack >= $targetAmount) {
-                        // We have enough in the stack! Consume FIFO.
-                        $amountNeeded = $targetAmount;
+                    $amountNeeded = $targetAmount;
+                    foreach ($stackPayments as $stackPayment) {
+                        if ($amountNeeded <= 0.001) break;
 
-                        foreach ($stackPayments as $stackPayment) {
-                            if ($amountNeeded <= 0)
-                                break;
+                        $available = $stackPayment->unapplied_amount;
+                        $toTake = min($available, $amountNeeded);
 
-                            $available = $stackPayment->unapplied_amount;
-                            $toTake = min($available, $amountNeeded);
+                        $this->applyPaymentToInstallment($stackPayment, $installment, $toTake);
 
-                            $this->applyPaymentToInstallment($stackPayment, $installment, $toTake);
+                        $amountNeeded -= $toTake;
+                    }
 
-                            $amountNeeded -= $toTake;
-                        }
-                    } else {
-                        // Not enough money even with the stack. Stop distribution.
-                        // The money stays in unapplied_amount of the payments.
+                    // If we still need money for this installment, it means we exhausted the stack
+                    if ($amountNeeded > 0.001) {
                         break;
                     }
                 }
@@ -1310,11 +1306,8 @@ class PaymentService
         if ($installment->quota_amount - $installment->paid_amount <= 0.001) {
             $installment->status = 'Pagado';
         } else {
-            // It remains 'Pendiente' (or 'Parcial' if we used that status, but user wants 'Pendiente')
-            // We ensure it's not 'Pagado' if it was somehow marked before
-            if ($installment->status === 'Pagado') {
-                $installment->status = 'Pendiente';
-            }
+            // Updated to 'Parcial' when some payment is applied but not full
+            $installment->status = 'Parcial';
         }
         $installment->save();
 
@@ -1375,12 +1368,12 @@ class PaymentService
                     continue;
                 }
 
-                // Check total stack available BEFORE applying anything to THIS installment
-                $totalStack = $stackPayments->sum('unapplied_amount');
-                if ($totalStack < $targetAmount) {
-                    // Not enough money to fill THIS quota.
-                    break;
-                }
+                // --- MODIFICADO: Permitir pagos parciales incluso si no cubren la cuota completa ---
+                // Eliminamos el break que impedía aplicar saldos pequeños a cuotas más grandes.
+                // $totalStack = $stackPayments->sum('unapplied_amount');
+                // if ($totalStack < $targetAmount) {
+                //     break;
+                // }
 
                 $amountNeeded = $targetAmount;
 

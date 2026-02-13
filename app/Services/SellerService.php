@@ -441,7 +441,7 @@ class SellerService
                 // Considerar cerrado si tiene status correcto o auditoria
                 $isClosed = $liquidationToday && (in_array($liquidationStatus, ['pending', 'auto', 'approved']) || $auditExists);
 
-                \Log::info($route->toArray());
+                // \Log::info($route->toArray());
 
                 $sessionLogs = $route->user ? $route->user->sessionLogs : collect([]);
                 
@@ -487,7 +487,7 @@ class SellerService
                             'login_at' => \Carbon\Carbon::parse($log->login_at)->format('Y-m-d H:i:s'),
                             'logout_at' => $log->logout_at ? \Carbon\Carbon::parse($log->logout_at)->format('Y-m-d H:i:s') : null,
                             'ip' => $log->ip,
-                            'connection_country' => \App\Helpers\Helper::getCountryFromIp($log->ip),
+                            'connection_country' => 'Desconocido', // \App\Helpers\Helper::getCountryFromIp($log->ip),
                             'device' => $parsed['device'] . ' (' . $parsed['os'] . ')',
                             'browser' => $parsed['browser'],
                             'is_active' => is_null($log->logout_at),
@@ -771,9 +771,15 @@ class SellerService
     public function getRoutesSelect()
     {
         try {
-            $routes = Seller::with('user:id,name')
-                ->select('id', 'uuid', 'user_id')
-                ->get();
+            $routes = Seller::with('user:id,name,dni')
+                ->withCount([
+                    'clients',
+                    'credits' => function ($query) {
+                        $query->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
+                              ->whereNull('deleted_at');
+                    }
+                ])
+                ->get(['id', 'uuid', 'user_id']); // get() with columns is safer than select() followed by get() for counts
 
             return $this->successResponse([
                 'success' => true,

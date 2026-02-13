@@ -2265,7 +2265,7 @@ class CreditService
         try {
             $query = Credit::query()
                 ->where('client_id', $clientId)
-                ->with(['client', 'seller', 'installments', 'payments'])
+                ->with(['client', 'seller', 'installments', 'payments', 'images'])
                 ->orderBy('created_at', 'desc');
 
             $credits = $query->paginate($perPage, ['*'], 'page', $page);
@@ -2292,12 +2292,17 @@ class CreditService
                 ->get()
                 ->groupBy('credit_id');
 
-            $creditsWithSummary = $credits->getCollection()->map(function ($credit) use ($paymentSummary) {
+            // Find the ID of the first credit created for this client
+            $firstCreditId = Credit::where('client_id', $clientId)->min('id');
+
+            $creditsWithSummary = $credits->getCollection()->map(function ($credit) use ($paymentSummary, $firstCreditId) {
                 $summary = $paymentSummary->get($credit->id, collect());
 
                 foreach ($summary as $item) {
                     $credit->{$item->status} = $item->total_amount;
                 }
+
+                $credit->is_initial_credit = ($credit->id === $firstCreditId);
 
                 return $credit;
             });

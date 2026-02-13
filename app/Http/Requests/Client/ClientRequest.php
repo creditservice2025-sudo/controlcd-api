@@ -87,7 +87,7 @@ class ClientRequest extends FormRequest
                 'address' => 'nullable|string',
                 'gps_address' => 'nullable|string',
                 'gps_geolocalization' => 'nullable|array',
-                'dni' => 'nullable|numeric|unique:clients,dni,' . $clientId . ',id,seller_id,' . $sellerId,
+                'dni' => 'nullable|numeric|unique:clients,dni,' . $clientId . ',id,seller_id,' . $sellerId . ',deleted_at,NULL',
                 'phone' => 'nullable|numeric',
                 'email' => 'nullable|email|unique:clients,email,' . $clientId,
                 'geolocation' => 'nullable|array',

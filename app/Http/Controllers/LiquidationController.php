@@ -86,10 +86,9 @@ class LiquidationController extends Controller
         try {
             $todayDate = Carbon::now($timezone)->toDateString();
 
-            // Verificar si ya existe liquidación para este día
+            // Verificar si ya existe liquidación para este día (cualquier estado excepto eliminadas)
             $existingLiquidation = Liquidation::where('seller_id', $request->seller_id)
                 ->whereDate('date', $request->date)
-                ->where('status', 'approved')
                 ->first();
 
             if ($existingLiquidation && $user->role_id !== 1) {
