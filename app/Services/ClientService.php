@@ -364,9 +364,9 @@ class ClientService
             $params = $request->validated();
 
             // Validate DNI uniqueness per seller if DNI is being changed
-            if (isset($params['dni']) && $params['dni'] !== $client->dni) {
+            if (isset($params['dni']) && (string)$params['dni'] !== (string)$client->dni) {
                 $sellerId = $params['seller_id'] ?? $client->seller_id;
-                $existingClient = Client::where('dni', $params['dni'])
+                $existingClient = Client::where('dni', (string)$params['dni'])
                     ->where('seller_id', $sellerId)
                     ->where('id', '!=', $clientId)
                     ->first();
@@ -468,6 +468,7 @@ class ClientService
 
             // Stage 4: Check if needs_update should be cleared
             if ($client->needs_update) {
+                // Strictly require Address, GPS and at least one image
                 $hasAddress = !empty($client->address);
                 $hasGeolocation = !empty($client->geolocation) || !empty($client->gps_geolocalization);
                 $hasImages = $client->images()->count() > 0;
@@ -475,6 +476,14 @@ class ClientService
                 if ($hasAddress && $hasGeolocation && $hasImages) {
                     $client->needs_update = false;
                     $client->save();
+                    
+                    Log::info("Clearing needs_update for client {$clientId} - All requirements met.");
+                } else {
+                    Log::info("Client {$clientId} still needs update. Missing: " . 
+                        (!$hasAddress ? 'Address ' : '') . 
+                        (!$hasGeolocation ? 'GPS ' : '') . 
+                        (!$hasImages ? 'Images' : '')
+                    );
                 }
             }
 
@@ -794,7 +803,7 @@ class ClientService
             }
 
             $clientsQuery = Client::query()
-                ->select('id', 'uuid', 'name', 'dni', 'email', 'phone', 'address', 'company_name', 'status', 'seller_id', 'geolocation', 'gps_geolocalization', 'gps_address', 'routing_order', 'capacity', 'created_at')
+                ->select('id', 'uuid', 'name', 'dni', 'email', 'phone', 'address', 'company_name', 'status', 'seller_id', 'geolocation', 'gps_geolocalization', 'gps_address', 'routing_order', 'capacity', 'needs_update', 'created_at')
                 ->with([
                     'seller' => function ($q) {
                         $q->select('id', 'user_id', 'city_id', 'company_id');
@@ -1138,7 +1147,7 @@ class ClientService
             Log::info('status: ' . $status);
 
             $clientsQuery = Client::query()
-                ->select('id', 'uuid', 'name', 'dni', 'email', 'address', 'seller_id', 'routing_order', 'geolocation', 'gps_geolocalization', 'gps_address', 'phone', 'capacity', 'created_at')
+                ->select('id', 'uuid', 'name', 'dni', 'email', 'address', 'seller_id', 'routing_order', 'geolocation', 'gps_geolocalization', 'gps_address', 'phone', 'capacity', 'needs_update', 'created_at')
                 ->with([
                     'seller' => function ($q) {
                         $q->select('id', 'user_id', 'city_id', 'company_id');
@@ -1220,7 +1229,7 @@ class ClientService
 
 
             $clients = Client::query()
-                ->select('id', 'uuid', 'name', 'dni', 'address', 'seller_id', 'routing_order', 'geolocation', 'gps_geolocalization', 'gps_address', 'phone', 'capacity')
+                ->select('id', 'uuid', 'name', 'dni', 'address', 'seller_id', 'routing_order', 'geolocation', 'gps_geolocalization', 'gps_address', 'phone', 'capacity', 'needs_update')
                 ->with([
                     'guarantors' => function ($q) {
                         $q->select('guarantors.id as id', 'guarantors.name', 'guarantors.dni', 'guarantors.phone');

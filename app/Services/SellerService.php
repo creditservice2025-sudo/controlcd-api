@@ -250,10 +250,10 @@ class SellerService
             $timezone = $request->get('timezone', 'America/Lima');
             $targetDateInput = $request->get('date');
             $targetDate = $targetDateInput ? Carbon::parse($targetDateInput, $timezone) : Carbon::now($timezone);
-            
+
             $targetDay = $targetDate->format('Y-m-d');
             $todayLima = Carbon::now($timezone)->format('Y-m-d');
-            
+
             // 1. Bloqueo de fechas futuras
             if ($targetDay > $todayLima) {
                 return $this->errorResponse('No se pueden consultar rutas de fechas futuras.', 422);
@@ -280,7 +280,7 @@ class SellerService
                 // },
                 'user.sessionLogs' => function ($q) use ($targetDay, $timezone) {
                     $q->whereDate('login_at', $targetDay)
-                      ->orderBy('login_at', 'asc');
+                        ->orderBy('login_at', 'asc');
                 },
                 'city:id,name,country_id',
                 'city.country:id,name,timezone'
@@ -344,13 +344,13 @@ class SellerService
             // })->get([
 
             $routesList = $routes->get([
-                        'id',
-                        'user_id',
-                        'city_id',
-                        'company_id',
-                        'status',
-                        'created_at'
-                    ]);
+                'id',
+                'user_id',
+                'city_id',
+                'company_id',
+                'status',
+                'created_at'
+            ]);
 
             // ─── PRE-LOAD BATCH DATA (elimina queries N+1) ───────────────
             $routeIds = $routesList->pluck('id');
@@ -454,22 +454,23 @@ class SellerService
                 // Considerar cerrado si tiene status correcto o auditoria
                 $isClosed = $liquidationToday && (in_array($liquidationStatus, ['pending', 'auto', 'approved']) || $auditExists);
 
+                // \Log::info($route->toArray());
 
                 $sessionLogs = $route->user ? $route->user->sessionLogs : collect([]);
-                
+
                 // Encontrar el log de inicio de ruta:
                 // 1. Un log que haya iniciado hoy (rango UTC)
                 // 2. O el log activo más reciente si empezó antes de hoy
                 // 3. O simplemente el log más reciente disponible
                 $firstLog = $sessionLogs->whereBetween('login_at', [$targetStartUTC, $targetEndUTC])->sortBy('login_at')->first()
-                          ?? $sessionLogs->where('login_at', '<', $targetStartUTC)->whereNull('logout_at')->sortByDesc('login_at')->first()
-                          ?? $sessionLogs->sortByDesc('login_at')->first();
+                    ?? $sessionLogs->where('login_at', '<', $targetStartUTC)->whereNull('logout_at')->sortByDesc('login_at')->first()
+                    ?? $sessionLogs->sortByDesc('login_at')->first();
 
                 // Si aún así no hay log, usamos la fecha de la liquidación de hoy como último recurso
-                $fallbackDate = $liquidationToday?->created_at 
-                             ?? ($liquidationToday?->date ? Carbon::parse($liquidationToday->date) : null);
-                
-                // PRIORIDAD: 
+                $fallbackDate = $liquidationToday?->created_at
+                    ?? ($liquidationToday?->date ? Carbon::parse($liquidationToday->date) : null);
+
+                // PRIORIDAD:
                 // 1. Si hay una liquidación para hoy (Apertura), esa es la hora de inicio oficial.
                 // 2. Si no, usamos el log de sesión detectado.
                 $firstLog = $sessionLogs
@@ -502,8 +503,8 @@ class SellerService
                     'liquidation_status' => $liquidationStatus,
                     'is_approved' => $liquidationStatus === 'approved',
                     'seller_finished_at' => $liquidationToday?->created_at ? \Carbon\Carbon::parse($liquidationToday->created_at)->format('Y-m-d H:i:s') : null,
-                    'admin_finished_at' => ($liquidationStatus === 'approved') 
-                        ? ($liquidationToday?->end_date ? \Carbon\Carbon::parse($liquidationToday->end_date)->format('Y-m-d H:i:s') : \Carbon\Carbon::parse($liquidationToday->updated_at)->format('Y-m-d H:i:s')) 
+                    'admin_finished_at' => ($liquidationStatus === 'approved')
+                        ? ($liquidationToday?->end_date ? \Carbon\Carbon::parse($liquidationToday->end_date)->format('Y-m-d H:i:s') : \Carbon\Carbon::parse($liquidationToday->updated_at)->format('Y-m-d H:i:s'))
                         : null,
                     'is_open' => $isOpen,
                     'created_at' => $routeStartDate ? \Carbon\Carbon::parse($routeStartDate)->format('Y-m-d H:i:s') : null,
@@ -514,7 +515,7 @@ class SellerService
                             'login_at' => \Carbon\Carbon::parse($log->login_at)->format('Y-m-d H:i:s'),
                             'logout_at' => $log->logout_at ? \Carbon\Carbon::parse($log->logout_at)->format('Y-m-d H:i:s') : null,
                             'ip' => $log->ip,
-                            'connection_country' => 'Desconocido', // Obtenido por Jobs o DB si fuese necesario para no saturar timeouts
+                            'connection_country' => 'Desconocido', // \App\Helpers\Helper::getCountryFromIp($log->ip),
                             'device' => $parsed['device'] . ' (' . $parsed['os'] . ')',
                             'browser' => $parsed['browser'],
                             'is_active' => is_null($log->logout_at),
@@ -540,7 +541,8 @@ class SellerService
                                     $arrival = Carbon::parse($p->client_created_at);
                                     $finish = Carbon::parse($p->business_timestamp);
                                     $duration = $finish->diffInSeconds($arrival);
-                                } catch (\Exception $e) {}
+                                } catch (\Exception $e) {
+                                }
                             }
                             return [
                                 'lat' => $p->latitude,
@@ -842,9 +844,15 @@ class SellerService
     public function getRoutesSelect()
     {
         try {
-            $routes = Seller::with('user:id,name')
-                ->select('id', 'uuid', 'user_id')
-                ->get();
+            $routes = Seller::with('user:id,name,dni')
+                ->withCount([
+                    'clients',
+                    'credits' => function ($query) {
+                        $query->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
+                            ->whereNull('deleted_at');
+                    }
+                ])
+                ->get(['id', 'uuid', 'user_id']); // get() with columns is safer than select() followed by get() for counts
 
             return $this->successResponse([
                 'success' => true,
@@ -940,9 +948,11 @@ class SellerService
             $timezone = 'America/Lima';
             $today = Carbon::now($timezone)->toDateString();
 
-            $liquidations = Liquidation::with(['audits.user' => function($q) {
+            $liquidations = Liquidation::with([
+                'audits.user' => function ($q) {
                     $q->select('id', 'name');
-                }])
+                }
+            ])
                 ->where('seller_id', $sellerId)
                 ->orderBy('date', 'DESC')
                 ->limit($limit)
@@ -958,7 +968,7 @@ class SellerService
                 $seller = Seller::find($sellerId);
                 if ($seller) {
                     $dynamicData = $liquidationService->getLiquidationData($sellerId, $today, $seller->user_id, $timezone);
-                    
+
                     // Create a virtual liquidation object for the list
                     $virtualToday = new Liquidation([
                         'id' => null, // null ID indicates it's virtual/in-progress
@@ -987,11 +997,11 @@ class SellerService
                         'shortage' => 0,
                         'surplus' => 0,
                     ]);
-                    
+
                     // Explicitly set date and status just in case
                     $virtualToday->date = Carbon::now($timezone);
                     $virtualToday->status = 'En curso';
-                    
+
                     // For virtual records, audits will naturally be empty as there's no ID to link them to
                     $virtualToday->setRelation('audits', collect());
 
@@ -1003,7 +1013,7 @@ class SellerService
             $formattedLiquidations = $liquidations->map(function ($liq) use ($liquidationService) {
                 // We use setRelation or manual mapping to ensure audits are present
                 $data = $liq->toArray();
-                
+
                 // Ensure audits use the standardized format the frontend expects
                 if ($liq->relationLoaded('audits')) {
                     $data['audits'] = $liq->audits->map(function ($audit) {
@@ -1019,7 +1029,7 @@ class SellerService
                 } else {
                     $data['audits'] = [];
                 }
-                
+
                 return $data;
             });
 

@@ -15,7 +15,9 @@ class AutoLiquidateSellers extends Command
 
     public function handle()
     {
-        $sellers = Seller::all();
+        $sellers = Seller::whereHas('config', function ($q) {
+            $q->where('auto_closures_collectors', true);
+        })->get();
         $count = 0;
         $dateParam = $this->option('date');
 

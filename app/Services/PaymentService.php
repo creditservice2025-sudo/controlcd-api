@@ -289,32 +289,30 @@ class PaymentService
                     }
 
                     // --- STEP 2: STACK CHECK (Fallback to FIFO) ---
-                    // Calculate Total Available Surplus (All payments for this credit with unapplied > 0)
                     $stackPayments = Payment::where('credit_id', $credit->id)
                         ->where('unapplied_amount', '>', 0)
-                        ->orderBy('created_at', 'asc') // FIFO
+                        ->orderBy('business_date', 'asc')
+                        ->orderBy('created_at', 'asc')
                         ->get();
 
-                    $totalStack = $stackPayments->sum('unapplied_amount');
+                    if ($stackPayments->isEmpty())
+                        break;
 
-                    if ($totalStack >= $targetAmount) {
-                        // We have enough in the stack! Consume FIFO.
-                        $amountNeeded = $targetAmount;
+                    $amountNeeded = $targetAmount;
+                    foreach ($stackPayments as $stackPayment) {
+                        if ($amountNeeded <= 0.001)
+                            break;
 
-                        foreach ($stackPayments as $stackPayment) {
-                            if ($amountNeeded <= 0)
-                                break;
+                        $available = $stackPayment->unapplied_amount;
+                        $toTake = min($available, $amountNeeded);
 
-                            $available = $stackPayment->unapplied_amount;
-                            $toTake = min($available, $amountNeeded);
+                        $this->applyPaymentToInstallment($stackPayment, $installment, $toTake);
 
-                            $this->applyPaymentToInstallment($stackPayment, $installment, $toTake);
+                        $amountNeeded -= $toTake;
+                    }
 
-                            $amountNeeded -= $toTake;
-                        }
-                    } else {
-                        // Not enough money even with the stack. Stop distribution.
-                        // The money stays in unapplied_amount of the payments.
+                    // If we still need money for this installment, it means we exhausted the stack
+                    if ($amountNeeded > 0.001) {
                         break;
                     }
                 }
@@ -759,7 +757,7 @@ class PaymentService
 
         // 1. Filtra los pagos por fecha, estado y seller
         $paymentsFilterQuery = Payment::query();
-        
+
         // Incluir pagos eliminados si se solicita
         if ($includeDeleted) {
             $paymentsFilterQuery->onlyTrashed();
@@ -804,7 +802,7 @@ class PaymentService
         // 5. Traer TODOS los pagos requeridos para estos créditos en UNA sola consulta
         $paymentsQuery = Payment::whereIn('credit_id', $pageCreditIds)
             ->orderBy('created_at', 'desc');
-        
+
         // Incluir pagos eliminados si se solicita
         if ($includeDeleted) {
             $paymentsQuery->onlyTrashed();
@@ -970,9 +968,9 @@ class PaymentService
         $timezone = $seller->city->country->timezone ?? 'America/Lima';
         $flatStructure = $request->get('flat', 'false') === 'true';
         $includeDeleted = $request->get('include_deleted', 'false') === 'true';
-        
+
         $paymentsQuery = Payment::query();
-        
+
         if ($includeDeleted) {
             $paymentsQuery->withTrashed();
         }
@@ -980,28 +978,28 @@ class PaymentService
         if ($request->has('start_date') && $request->has('end_date')) {
             $startDateStr = $request->get('start_date');
             $endDateStr = $request->get('end_date');
-            
+
             $startRange = Carbon::parse($startDateStr, $timezone)->startOfDay()->utc();
             $endRange = Carbon::parse($endDateStr, $timezone)->endOfDay()->utc();
 
-            $paymentsQuery->where(function($q) use ($startDateStr, $endDateStr, $startRange, $endRange) {
+            $paymentsQuery->where(function ($q) use ($startDateStr, $endDateStr, $startRange, $endRange) {
                 $q->whereBetween('business_date', [$startDateStr, $endDateStr])
-                  ->orWhere(function($q2) use ($startRange, $endRange) {
-                      $q2->whereNull('business_date')
-                         ->whereBetween('created_at', [$startRange, $endRange]);
-                  });
+                    ->orWhere(function ($q2) use ($startRange, $endRange) {
+                        $q2->whereNull('business_date')
+                            ->whereBetween('created_at', [$startRange, $endRange]);
+                    });
             });
         } elseif ($request->has('date')) {
             $filterDate = $request->get('date');
             $startRange = Carbon::parse($filterDate, $timezone)->startOfDay()->utc();
             $endRange = Carbon::parse($filterDate, $timezone)->endOfDay()->utc();
 
-            $paymentsQuery->where(function($q) use ($filterDate, $startRange, $endRange) {
+            $paymentsQuery->where(function ($q) use ($filterDate, $startRange, $endRange) {
                 $q->where('business_date', $filterDate)
-                  ->orWhere(function($q2) use ($startRange, $endRange) {
-                      $q2->whereNull('business_date')
-                         ->whereBetween('created_at', [$startRange, $endRange]);
-                  });
+                    ->orWhere(function ($q2) use ($startRange, $endRange) {
+                        $q2->whereNull('business_date')
+                            ->whereBetween('created_at', [$startRange, $endRange]);
+                    });
             });
         } else {
             $nowInTz = Carbon::now($timezone);
@@ -1009,12 +1007,12 @@ class PaymentService
             $startRange = $nowInTz->copy()->startOfDay()->utc();
             $endRange = $nowInTz->copy()->endOfDay()->utc();
 
-            $paymentsQuery->where(function($q) use ($filterDate, $startRange, $endRange) {
+            $paymentsQuery->where(function ($q) use ($filterDate, $startRange, $endRange) {
                 $q->where('business_date', $filterDate)
-                  ->orWhere(function($q2) use ($startRange, $endRange) {
-                      $q2->whereNull('business_date')
-                         ->whereBetween('created_at', [$startRange, $endRange]);
-                  });
+                    ->orWhere(function ($q2) use ($startRange, $endRange) {
+                        $q2->whereNull('business_date')
+                            ->whereBetween('created_at', [$startRange, $endRange]);
+                    });
             });
         }
 
@@ -1028,7 +1026,7 @@ class PaymentService
 
         // Cargar relaciones para el crédito
         $paymentsQuery->with([
-            'credit' => function($q) {
+            'credit' => function ($q) {
                 $q->withTrashed()->with(['client', 'installments', 'payments']);
             }
         ]);
@@ -1043,7 +1041,7 @@ class PaymentService
                     ->where('payment_installments.payment_id', $payment->id)
                     ->select('installments.quota_number')
                     ->get();
-                
+
                 $quotaNumbers = $paymentInstallments->pluck('quota_number')->sort()->values()->toArray();
 
                 return [
@@ -1257,8 +1255,8 @@ class PaymentService
                 $userName = $user->name;
                 $amountFormated = number_format($payment->amount, 2);
                 $newObservation = "Eliminación de pago #{$payment->id} por \${$amountFormated} realizada por {$userName} el " . now()->toDateTimeString();
-                $liquidation->observation = $liquidation->observation 
-                    ? $liquidation->observation . "\n" . $newObservation 
+                $liquidation->observation = $liquidation->observation
+                    ? $liquidation->observation . "\n" . $newObservation
                     : $newObservation;
                 $liquidation->save();
             }
@@ -1329,11 +1327,8 @@ class PaymentService
         if ($installment->quota_amount - $installment->paid_amount <= 0.001) {
             $installment->status = 'Pagado';
         } else {
-            // It remains 'Pendiente' (or 'Parcial' if we used that status, but user wants 'Pendiente')
-            // We ensure it's not 'Pagado' if it was somehow marked before
-            if ($installment->status === 'Pagado') {
-                $installment->status = 'Pendiente';
-            }
+            // Updated to 'Parcial' when some payment is applied but not full
+            $installment->status = 'Parcial';
         }
         $installment->save();
 
@@ -1394,12 +1389,12 @@ class PaymentService
                     continue;
                 }
 
-                // Check total stack available BEFORE applying anything to THIS installment
-                $totalStack = $stackPayments->sum('unapplied_amount');
-                if ($totalStack < ($targetAmount - 0.001)) {
-                    // Not enough money to fill THIS quota.
-                    break;
-                }
+                // --- MODIFICADO: Permitir pagos parciales incluso si no cubren la cuota completa ---
+                // Eliminamos el break que impedía aplicar saldos pequeños a cuotas más grandes.
+                // $totalStack = $stackPayments->sum('unapplied_amount');
+                // if ($totalStack < $targetAmount) {
+                //     break;
+                // }
 
                 $amountNeeded = $targetAmount;
 

@@ -86,7 +86,7 @@ class LiquidationController extends Controller
         try {
             $todayDate = Carbon::now($timezone)->toDateString();
 
-            // Verificar si ya existe liquidación para este día (cualquier estado)
+            // Verificar si ya existe liquidación para este día (cualquier estado excepto eliminadas)
             $existingLiquidation = Liquidation::where('seller_id', $request->seller_id)
                 ->whereDate('date', $request->date)
                 ->first();
@@ -98,7 +98,7 @@ class LiquidationController extends Controller
                     'existing_id' => $existingLiquidation->id,
                     'country' => $country?->name,
                 ]);
-                
+
                 return response()->json([
                     'success' => false,
                     'message' => 'Ya existe una liquidación aprobada para este vendedor en la fecha seleccionada'
@@ -120,7 +120,7 @@ class LiquidationController extends Controller
                     'seller_id' => $request->seller_id,
                     'date' => $request->date,
                 ]);
-                
+
                 return response()->json([
                     'success' => false,
                     'message' => 'No se puede liquidar porque tienes gastos pendientes de aprobación en la fecha seleccionada'
@@ -308,12 +308,12 @@ class LiquidationController extends Controller
         try {
             // Notificación de sobrante/faltante si está activo en SellerConfig
             $sellerConfig = \App\Models\SellerConfig::where('seller_id', $sellerId)->first();
-            
+
             if ($sellerConfig && $sellerConfig->notify_shortage_surplus) {
                 $seller = Seller::with('user')->find($sellerId);
                 $admins = \App\Models\User::whereIn('role_id', [1, 2])->get();
                 $userToNotify = $seller->user;
-                
+
                 if ($shortage > 0) {
                     $message = 'Alerta: El vendedor ' . $seller->user->name . ' tiene un faltante de $' . number_format($shortage, 2) . ' en la liquidación del ' . $date . '.';
                     $link = '/dashboard/liquidaciones/' . $liquidation->id;
@@ -328,7 +328,7 @@ class LiquidationController extends Controller
                         $admin->notify(new \App\Notifications\GeneralNotification('Alerta de faltante en liquidación', $message, $link, $data));
                     }
                 }
-                
+
                 if ($surplus > 0) {
                     $message = 'Alerta: El vendedor ' . $seller->user->name . ' tiene un sobrante de $' . number_format($surplus, 2) . ' en la liquidación del ' . $date . '.';
                     $link = '/dashboard/liquidaciones/' . $liquidation->id;
@@ -381,12 +381,12 @@ class LiquidationController extends Controller
     {
         $user = Auth::user();
         $timezone = $request->input('timezone', 'America/Lima');
-        
+
         // Resolver modelo explícitamente para coincidir con la firma del servicio
         $liquidation = $id instanceof Liquidation ? $id : Liquidation::findOrFail($id);
 
         $data = $request->all();
-        
+
         // Asegurar que observation esté presente si se envía
         if ($request->has('observation')) {
             $data['observation'] = $request->input('observation');
@@ -405,10 +405,10 @@ class LiquidationController extends Controller
         // NOTA: El servicio espera (Liquidation $liquidation, array $data)
         // Eliminamos $user y $timezone de los argumentos si el servicio no los pide en esa firma
         // Revisando LiquidationService::updateLiquidation(Liquidation $liquidation, array $data)
-        
+
         try {
             $resultLiquidation = $this->liquidationService->updateLiquidation($liquidation, $data);
-            
+
             return response()->json([
                 'success' => true,
                 'data' => $resultLiquidation,
@@ -436,7 +436,7 @@ class LiquidationController extends Controller
         $seller = Seller::with('city.country')->find($sellerId);
         $country = $seller?->city?->country ?? null;
         $timezone = $country?->timezone ?? config('app.timezone', 'America/Lima');
-        
+
         $startUTC = Carbon::parse($date, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC = Carbon::parse($date, $timezone)->endOfDay()->setTimezone('UTC');
 
@@ -550,15 +550,15 @@ class LiquidationController extends Controller
             // Escenario de saldo a favor del vendedor (base negativa, muchos gastos, etc)
             // Se trata como una "deuda" del sistema al vendedor
             $debtAmount = abs($realToDeliver);
-            
+
             // Si el vendedor entregó dinero (aunque no debía), es sobrante
-            // Si entregó 0, no hay faltante ni sobrante relativo a la entrega, 
+            // Si entregó 0, no hay faltante ni sobrante relativo a la entrega,
             // pero el saldo sigue siendo negativo (se reflejará en real_to_deliver)
-            
-             if ($cashDelivered > 0) {
+
+            if ($cashDelivered > 0) {
                 $surplus = $cashDelivered;
-                 // Opcional: Si quisiéramos cubrir la deuda, sería lógica distinta, 
-                 // pero por ahora mantenemos simple: lo entregado es sobrante porque no debía entregar nada.
+                // Opcional: Si quisiéramos cubrir la deuda, sería lógica distinta,
+                // pero por ahora mantenemos simple: lo entregado es sobrante porque no debía entregar nada.
             }
             // NOTA: No calculamos shortage en negativo, el real_to_deliver ya indica el saldo.
         }
@@ -795,9 +795,9 @@ class LiquidationController extends Controller
         }
 
         $totals['total_expenses'] = (float) Expense::where('user_id', $targetUserId)
-            ->where(function($q) use ($formattedDate, $startUTC, $endUTC) {
+            ->where(function ($q) use ($formattedDate, $startUTC, $endUTC) {
                 $q->where('business_date', $formattedDate)
-                  ->orWhereBetween('created_at', [$startUTC, $endUTC]);
+                    ->orWhereBetween('created_at', [$startUTC, $endUTC]);
             })
             ->where(function ($q) {
                 $q->where('status', 'Aprobado')
@@ -806,9 +806,9 @@ class LiquidationController extends Controller
             ->sum('value');
 
         $totals['total_income'] = (float) Income::where('user_id', $targetUserId)
-            ->where(function($q) use ($formattedDate, $startUTC, $endUTC) {
+            ->where(function ($q) use ($formattedDate, $startUTC, $endUTC) {
                 $q->where('business_date', $formattedDate)
-                  ->orWhereBetween('created_at', [$startUTC, $endUTC]);
+                    ->orWhereBetween('created_at', [$startUTC, $endUTC]);
             })
             ->sum('value');
 

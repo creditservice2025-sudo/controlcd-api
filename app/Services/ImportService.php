@@ -18,12 +18,107 @@ class ImportService
 {
     protected $paymentService;
 
+    public function analyzeFile($filePath, $sellerId, $extension)
+    {
+        if (!file_exists($filePath) || !is_readable($filePath)) {
+            throw new \Exception("El archivo no existe o no se puede leer.");
+        }
+
+        if (in_array(strtolower($extension), ['xlsx', 'xls'])) {
+            $rows = Excel::toArray([], $filePath)[0];
+            $headers = array_shift($rows);
+        } else {
+            $handle = fopen($filePath, 'r');
+            $headers = fgetcsv($handle, 0, ',');
+            $rows = [];
+            while (($data = fgetcsv($handle, 0, ',')) !== false) {
+                if (!empty(array_filter($data))) {
+                    $rows[] = $data;
+                }
+            }
+            fclose($handle);
+        }
+
+        $headers = array_map(function($h) {
+            return trim(preg_replace('/\x{FEFF}/u', '', $h));
+        }, $headers);
+
+        $dniIndex = array_search('cliente_dni', $headers);
+        $nameIndex = array_search('cliente_nombre', $headers);
+        $amountIndex = array_search('monto_credito', $headers);
+        
+        if ($dniIndex === false) {
+            throw new \Exception("El archivo no contiene la columna 'cliente_dni'.");
+        }
+
+        $summary = [
+            'total_rows' => count($rows),
+            'existing_clients' => 0,
+            'new_clients' => 0,
+            'duplicate_entries_in_file' => 0,
+            'client_details' => [] // Detailed info for each unique client in file
+        ];
+
+        $clientsInFile = [];
+        foreach ($rows as $rowData) {
+            if (count($rowData) <= $dniIndex) continue;
+            
+            $dni = trim($rowData[$dniIndex] ?? '');
+            if (empty($dni)) continue;
+
+            $name = ($nameIndex !== false && isset($rowData[$nameIndex])) ? trim($rowData[$nameIndex]) : 'S/N';
+            $amount = ($amountIndex !== false && isset($rowData[$amountIndex])) ? floatval($rowData[$amountIndex]) : 0;
+
+            if (!isset($clientsInFile[$dni])) {
+                $clientsInFile[$dni] = [
+                    'dni' => $dni,
+                    'name' => $name,
+                    'is_new' => true,
+                    'credits' => [],
+                    'total_amount' => 0
+                ];
+            }
+
+            $clientsInFile[$dni]['credits'][] = $amount;
+            $clientsInFile[$dni]['total_amount'] += $amount;
+        }
+
+        foreach ($clientsInFile as $dni => $data) {
+            $client = Client::where('dni', $dni)
+                            ->where('seller_id', $sellerId)
+                            ->first();
+
+            if ($client) {
+                $summary['existing_clients']++;
+                $data['is_new'] = false;
+                $data['name'] = $client->name; // Use DB name if exists
+                $data['active_credits'] = Credit::where('client_id', $client->id)->where('status', 'Vigente')->count();
+                
+                // Check if they need update based on current DB state OR missing data
+                $hasAddress = !empty($client->address);
+                $hasGPS = !empty($client->gps_address) || (!empty($client->geolocation['latitude']) && $client->geolocation['latitude'] != 0);
+                $hasImages = $client->images()->count() > 0;
+                $data['needs_update'] = $client->needs_update || !$hasAddress || !$hasGPS || !$hasImages;
+            } else {
+                $summary['new_clients']++;
+                $data['needs_update'] = true; // NEW clients will need update
+            }
+            
+            $summary['client_details'][] = $data;
+        }
+
+        // We no longer count them as "duplicates" if they are multiple credits for the same client
+        $summary['duplicate_entries_in_file'] = 0; 
+
+        return $summary;
+    }
+
     public function __construct(PaymentService $paymentService)
     {
         $this->paymentService = $paymentService;
     }
 
-    public function importFromCsv($filePath, $sellerIdInput)
+    public function importFromCsv($filePath, $sellerIdInput, $selectedDnis = null)
     {
         if (!file_exists($filePath) || !is_readable($filePath)) {
             throw new \Exception("El archivo no existe o no se puede leer: $filePath");
@@ -54,81 +149,138 @@ class ImportService
         $results = [
             'success' => 0,
             'errors' => [],
+            'records' => [],
             'row' => 1
         ];
 
         while (($data = fgetcsv($handle, 0, ',')) !== false) {
             $results['row']++;
             
-            // Check if row is empty
-            if (empty(array_filter($data))) {
-                continue;
-            }
+            if (empty(array_filter($data))) continue;
 
-            // Check column count mismatch
             if (count($headers) !== count($data)) {
-                 $results['errors'][] = [
+                $results['errors'][] = [
                     'line' => $results['row'],
                     'field' => 'Estructura',
-                    'error' => "La fila tiene " . count($data) . " columnas, se esperaban " . count($headers)
+                    'error' => "La fila tiene " . count($data) . " columnas, pero se esperaban " . count($headers) . ". Por favor revise que no haya comas extras."
                 ];
                 continue;
             }
 
             $row = array_combine($headers, $data);
-
-            // Validation Rules
-            $validator = \Illuminate\Support\Facades\Validator::make($row, [
-                'cliente_nombre' => 'required|string|max:255',
-                'cliente_dni' => 'required',
-                'monto_credito' => 'required|numeric|min:0',
-                'fecha_primera_cuota' => 'nullable|date_format:Y-m-d', // Made nullable/optional
-                'cuotas_numero' => 'nullable|integer|min:1',
-                'tasa_interes' => 'nullable|numeric|min:0',
-                'frecuencia' => 'nullable|in:Diaria,Semanal,Quincenal,Mensual',
-                'fecha_entrega' => 'nullable|date_format:Y-m-d'
-            ], [
-                'cliente_nombre.required' => 'El nombre del cliente es obligatorio',
-                'cliente_dni.required' => 'El DNI es obligatorio',
-                'monto_credito.numeric' => 'El monto del crédito debe ser un número',
-                'fecha_primera_cuota.date_format' => 'La fecha de primera cuota debe ser YYYY-MM-DD',
-                'frecuencia.in' => 'La frecuencia debe ser: Diaria, Semanal, Quincenal o Mensual'
-            ]);
-
-            if ($validator->fails()) {
-                foreach ($validator->errors()->messages() as $field => $messages) {
-                    foreach ($messages as $msg) {
-                        $results['errors'][] = [
-                            'line' => $results['row'],
-                            'field' => $field,
-                            'error' => $msg
-                        ];
-                    }
+            
+            // Filter by selected DNIs if provided (even if empty)
+            if (is_array($selectedDnis)) {
+                $dni = trim($row['cliente_dni'] ?? '');
+                if (!in_array($dni, $selectedDnis)) {
+                    continue; // Skip if not selected
                 }
-                continue; // Skip this row
             }
 
-            DB::beginTransaction();
-            try {
-                $this->processRow($row, $seller);
-                DB::commit();
-                $results['success']++;
-            } catch (\Exception $e) {
-                DB::rollBack();
-                $results['errors'][] = [
-                    'line' => $results['row'],
-                    'field' => 'Procesamiento',
-                    'error' => $e->getMessage()
-                ];
-                Log::error("Error importando fila {$results['row']}: " . $e->getMessage());
-            }
+            $this->validateAndProcess($row, $seller, $results);
         }
 
         fclose($handle);
         return $results;
     }
 
-    public function importFromExcel($filePath, $sellerIdInput)
+    protected function validateAndProcess($row, $seller, &$results)
+    {
+        $friendlyNames = [
+            'cliente_nombre' => 'Nombre del Cliente',
+            'cliente_dni' => 'DNI/Cédula',
+            'cliente_telefono' => 'Teléfono',
+            'monto_credito' => 'Monto del Crédito',
+            'tasa_interes' => 'Tasa de Interés',
+            'cuotas_numero' => 'Número de Cuotas',
+            'fecha_entrega' => 'Fecha de Entrega',
+            'frecuencia' => 'Frecuencia de Pago',
+            'fecha_primera_cuota' => 'Fecha de Primera Cuota',
+            'microseguro_porcentaje' => 'Microseguro (%)',
+            'pagos_realizados' => 'Pagos Realizados',
+            'excluir_domingos' => 'Excluir Domingos'
+        ];
+
+        $validator = \Illuminate\Support\Facades\Validator::make($row, [
+            'cliente_nombre' => 'required|string|max:255',
+            'cliente_dni' => 'required',
+            'monto_credito' => 'required|numeric|min:0',
+            'fecha_primera_cuota' => 'nullable', // Validation handled manually for formulas
+            'cuotas_numero' => 'nullable|integer|min:1',
+            'tasa_interes' => 'nullable|numeric|min:0',
+            'frecuencia' => 'nullable|in:Diaria,Semanal,Quincenal,Mensual',
+            'fecha_entrega' => 'nullable'
+        ], [
+            'required' => 'El campo :attribute es obligatorio.',
+            'numeric' => 'El campo :attribute debe ser un número válido.',
+            'integer' => 'El campo :attribute debe ser un número entero.',
+            'in' => 'La :attribute seleccionada no es válida.',
+            'min' => 'El valor de :attribute no puede ser menor a :min.'
+        ], $friendlyNames);
+
+        if ($validator->fails()) {
+            foreach ($validator->errors()->messages() as $field => $messages) {
+                $results['errors'][] = [
+                    'line' => $results['row'],
+                    'field' => $friendlyNames[$field] ?? $field,
+                    'error' => $messages[0]
+                ];
+            }
+            return false;
+        }
+
+        DB::beginTransaction();
+        try {
+            $processed = $this->processRow($row, $seller);
+            $credit = $processed['credit'];
+            $warnings = $processed['warnings'] ?? [];
+            
+            DB::commit();
+            $results['success']++;
+            $results['records'][] = [
+                'name' => $row['cliente_nombre'],
+                'dni' => $row['cliente_dni'],
+                'amount' => $row['monto_credito'],
+                'credit_id' => $credit->id,
+                'is_new' => $processed['is_new_client'],
+                'needs_update' => $processed['needs_update'],
+                'warnings' => $warnings
+            ];
+            return true;
+        } catch (\Exception $e) {
+            DB::rollBack();
+            $errorMessage = $this->translateToFriendlyError($e->getMessage(), $row);
+            $results['errors'][] = [
+                'line' => $results['row'],
+                'field' => 'Procesamiento',
+                'error' => $errorMessage
+            ];
+            Log::error("Error importando fila {$results['row']}: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    protected function translateToFriendlyError($technicalError, $row)
+    {
+        if (str_contains($technicalError, 'Incorrect date value')) {
+            if (str_contains($technicalError, 'first_quota_date')) {
+                return "La 'Fecha de Primera Cuota' contiene un formato no válido o una fórmula sin calcular. Por favor, asegúrese de ingresar una fecha real (ej: 2025-01-30).";
+            }
+            return "Una de las fechas ingresadas no tiene el formato correcto (YYYY-MM-DD).";
+        }
+
+        if (str_contains($technicalError, 'Duplicate entry')) {
+            return "Ya existe un registro con el DNI {$row['cliente_dni']} para este vendedor.";
+        }
+
+        if (str_contains($technicalError, 'Integrity constraint violation')) {
+            return "No se pudo guardar la información debido a una restricción de datos. Verifique que los valores sean correctos.";
+        }
+
+        return "Hubo un problema al procesar esta fila. Verifique que los montos y fechas tengan el formato correcto.";
+    }
+
+    public function importFromExcel($filePath, $sellerIdInput, $selectedDnis = null)
     {
         if (!file_exists($filePath) || !is_readable($filePath)) {
             throw new \Exception("El archivo no existe o no se puede leer: $filePath");
@@ -152,15 +304,14 @@ class ImportService
         $results = [
             'success' => 0,
             'errors' => [],
+            'records' => [],
             'row' => 1
         ];
 
         foreach ($rows as $data) {
             $results['row']++;
             
-            if (empty(array_filter($data))) {
-                continue;
-            }
+            if (empty(array_filter($data))) continue;
 
             if (count($headers) !== count($data)) {
                  $results['errors'][] = [
@@ -173,19 +324,15 @@ class ImportService
 
             $row = array_combine($headers, $data);
 
-            DB::beginTransaction();
-            try {
-                $this->processRow($row, $seller);
-                DB::commit();
-                $results['success']++;
-            } catch (\Exception $e) {
-                DB::rollBack();
-                $results['errors'][] = [
-                    'line' => $results['row'],
-                    'field' => 'Procesamiento',
-                    'error' => $e->getMessage()
-                ];
+            // Filter by selected DNIs if provided (even if empty)
+            if (is_array($selectedDnis)) {
+                $dni = trim($row['cliente_dni'] ?? '');
+                if (!in_array($dni, $selectedDnis)) {
+                    continue; // Skip if not selected
+                }
             }
+
+            $this->validateAndProcess($row, $seller, $results);
         }
 
         return $results;
@@ -357,14 +504,27 @@ class ImportService
 
     protected function processRow($row, $seller)
     {
+        Log::info("ImportService: Processing row", ['dni' => $row['cliente_dni'] ?? 'N/A']);
         $sellerId = $seller->id;
 
         // 1. Find or Create Client
-        // If client exists with this DNI for this seller, use it
-        // If not, create a new client
+        $warnings = [];
         $client = Client::where('dni', $row['cliente_dni'])
                         ->where('seller_id', $sellerId)
                         ->first();
+
+        $existingClientId = $client?->id;
+
+        if ($client) {
+            // Check for existing credits
+            $activeCredits = Credit::where('client_id', $client->id)
+                ->where('status', 'Vigente')
+                ->get();
+            
+            if ($activeCredits->count() > 0) {
+                $warnings[] = "El cliente ya tiene " . $activeCredits->count() . " crédito(s) vigente(s).";
+            }
+        }
 
         if (!$client) {
             // Client does not exist, create it
@@ -375,11 +535,20 @@ class ImportService
                 'phone' => $row['cliente_telefono'] ?? '0',
                 'seller_id' => $sellerId,
                 'status' => 'active',
-                'needs_update' => true, // Mark for update (Address, GPS, Photos might be missing)
+                'needs_update' => true, // Mark NEW clients for update
                 'address' => '',
                 'geolocation' => ['latitude' => 0, 'longitude' => 0],
                 'routing_order' => Client::where('seller_id', $sellerId)->max('routing_order') + 1,
             ]);
+        } else {
+            // If client exists, check if they are missing mandatory data
+            $hasAddress = !empty($client->address);
+            $hasGPS = !empty($client->gps_address) || (!empty($client->geolocation['latitude']) && $client->geolocation['latitude'] != 0);
+            $hasImages = $client->images()->count() > 0;
+
+            if (!$hasAddress || !$hasGPS || !$hasImages) {
+                $client->update(['needs_update' => true]);
+            }
         }
         // If client already exists, we just use it and create a new credit for them
 
@@ -392,19 +561,34 @@ class ImportService
         
         // Automated First Quota Date logic if missing
         $firstQuotaDate = $row['fecha_primera_cuota'] ?? null;
+        
+        // If it starts with "=", it's an uncalculated formula from Excel
+        if (is_string($firstQuotaDate) && str_starts_with($firstQuotaDate, '=')) {
+            Log::warning("ImportService: Formula detected in fecha_primera_cuota, ignoring to let system calculate", ['formula' => $firstQuotaDate]);
+            $firstQuotaDate = null;
+        }
+
+        // Validate basic date format if present
+        if (!empty($firstQuotaDate)) {
+            try {
+                Carbon::parse($firstQuotaDate);
+            } catch (\Exception $e) {
+                Log::warning("ImportService: Invalid date string in fecha_primera_cuota, ignoring", ['value' => $firstQuotaDate]);
+                $firstQuotaDate = null; // Let the system calculate it if invalid
+            }
+        }
+
         $excludeSundays = ($row['excluir_domingos'] ?? 'SI') === 'SI';
 
         if (empty($firstQuotaDate)) {
-            $date = Carbon::parse($payoutDate);
-            $date->addDay(); // Default to tomorrow for all frequencies initially, or add frequency?
-            // User requested "mañana" for daily, but let's be robust:
-            /*
-            switch ($frequency) {
-                case 'Diaria': $date->addDay(); break;
-                case 'Semanal': $date->addWeek(); break;
-                default: $date->addDay();
+            $rawPayoutDate = $row['fecha_entrega'] ?? null;
+            // Handle possible formula in payout date too
+            if (is_string($rawPayoutDate) && str_starts_with($rawPayoutDate, '=')) {
+                $rawPayoutDate = null;
             }
-            */
+            
+            $date = Carbon::parse($rawPayoutDate ?? now());
+            $date->addDay();
             
             // Skip Sundays if requested
             if ($excludeSundays) {
@@ -413,6 +597,11 @@ class ImportService
                 }
             }
             $firstQuotaDate = $date->format('Y-m-d');
+        }
+
+        $payoutDate = $row['fecha_entrega'] ?? Carbon::now()->format('Y-m-d');
+        if (is_string($payoutDate) && str_starts_with($payoutDate, '=')) {
+            $payoutDate = Carbon::now()->format('Y-m-d');
         }
         
         // Calculate microseguro amount from percentage
@@ -438,10 +627,12 @@ class ImportService
         ]);
 
         // 3. Generate Installments
+        Log::info("ImportService: Generating installments for credit", ['credit_id' => $credit->id]);
         $this->generateInstallments($credit);
 
         // 4. Handle Historical Payments
         $paidAmount = floatval($row['pagos_realizados'] ?? 0);
+        Log::info("ImportService: Handling historical payments", ['paid_amount' => $paidAmount]);
         if ($paidAmount > 0) {
             $payment = Payment::create([
                 'credit_id' => $credit->id,
@@ -459,7 +650,12 @@ class ImportService
             $this->paymentService->reapplyPayments($credit->id);
         }
 
-        return $credit;
+        return [
+            'credit' => $credit,
+            'warnings' => $warnings,
+            'is_new_client' => !isset($existingClientId),
+            'needs_update' => $client->needs_update
+        ];
     }
 
     protected function generateInstallments($credit)
