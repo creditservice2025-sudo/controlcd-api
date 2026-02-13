@@ -190,17 +190,34 @@ class CreditService
             $dueDate = $adjustForExcludedDays(Carbon::parse($credit->first_quota_date));
 
 
+            $cumulativeAmount = 0;
+
             for ($i = 1; $i <= $credit->number_installments; $i++) {
+
+                $currentQuotaAmount = $quotaAmount;
+
+                // Adjust the last installment to ensure the total matches exactly
+                if ($i == $credit->number_installments) {
+                    $currentQuotaAmount = round($credit->total_amount - $cumulativeAmount, 2);
+                    
+                    // Sanity check: ensure last quota isn't negative or zero due to weird rounding
+                    if ($currentQuotaAmount <= 0) {
+                        \Log::warning("Adjusted last installment was <= 0 for Credit {$credit->id}. Reverting to standard quota.");
+                        $currentQuotaAmount = $quotaAmount;
+                    }
+                }
 
                 Installment::create([
                     'credit_id' => $credit->id,
                     'quota_number' => $i,
                     'due_date' => $dueDate->format('Y-m-d'),
-                    'quota_amount' => round($quotaAmount, 2),
+                    'quota_amount' => $currentQuotaAmount,
                     'status' => 'Pendiente',
                     'created_at' => $createdAt,
                     'updated_at' => $updatedAt
                 ]);
+                
+                $cumulativeAmount += $currentQuotaAmount;
 
                 if ($i < $credit->number_installments) {
                     switch ($credit->payment_frequency) {
