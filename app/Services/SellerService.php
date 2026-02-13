@@ -276,10 +276,22 @@ class SellerService
                     $q->orderBy('login_at', 'desc')->limit(20);
                 },
                 'city:id,name,country_id',
-                'city.country:id,name,timezone'
+                'city.country:id,name,timezone',
+                // OPTIMIZATION: Eager load liquidations for the target day
+                'liquidations' => function ($q) use ($targetDay) {
+                    $q->whereDate('date', $targetDay)
+                      ->with(['audits' => function ($q) {
+                          $q->whereNull('deleted_at')->orderByDesc('created_at')->with('user');
+                      }]);
+                }
             ])
                 ->whereNull('deleted_at')
-                ->orderBy('created_at', 'desc');
+                ->orderBy('created_at', 'desc')
+                // OPTIMIZATION: Eager load previous pending liquidations check (aggregated)
+                ->withCount(['liquidations as has_previous_pending' => function ($q) use ($targetDay) {
+                    $q->whereDate('date', '<', $targetDay)
+                      ->whereIn('status', ['pending', 'auto', 'En curso']);
+                }]);
 
             // Filtro para rol 11: solo sellers asociados en UserRoute
             if ($user->role_id == 11) {
@@ -360,9 +372,8 @@ class SellerService
                     ]);
 
             $data = $routesList->map(function ($route) use ($targetDay, $targetStartUTC, $targetEndUTC) {
-                $liquidationToday = Liquidation::where('seller_id', $route->id)
-                    ->where(DB::raw('DATE(date)'), $targetDay)
-                    ->first();
+                // OPTIMIZATION: Use eager loaded liquidation
+                $liquidationToday = $route->liquidations->first();
 
                 $liquidationOpen = null;
                 $liquidationClosed = null;
@@ -370,29 +381,17 @@ class SellerService
                 $closedBySellerToday = false;
                 $liquidationStatus = null;
 
-                $firstPayment = $route->credits()
-                    ->whereHas('payments', function ($q) use ($targetStartUTC, $targetEndUTC) {
-                        $q->whereBetween('created_at', [$targetStartUTC, $targetEndUTC]);
-                    })
-                    ->with([
-                        'payments' => function ($q) use ($targetStartUTC, $targetEndUTC) {
-                            $q->whereBetween('created_at', [$targetStartUTC, $targetEndUTC])->orderBy('created_at', 'asc');
-                        }
-                    ])
-                    ->get()
-                    ->pluck('payments')
-                    ->flatten()
-                    ->sortBy('created_at')
-                    ->first();
+                // DEAD CODE REMOVED: $firstPayment calculation was expensive and unused.
 
-                if ($liquidationToday) {
+                if ($liquidationToday instanceof \App\Models\Liquidation) {
                     $liquidationStatus = $liquidationToday->status;
                     $liquidationOpen = $liquidationToday->date;
+                    
+                    // Safe access to audits
+                    $audits = $liquidationToday->relationLoaded('audits') ? $liquidationToday->audits : collect();
+                    
+                    $lastAudit = $audits->where('user_id', $route->user_id)->first();
 
-                    $lastAudit = $liquidationToday->audits()
-                        ->where('user_id', $route->user_id)
-                        ->orderByDesc('created_at')
-                        ->first();
                     $liquidationClosed = $liquidationToday->end_date ?? null;
                     if ($lastAudit) {
                         $liquidationAuditId = $lastAudit->id;
@@ -404,12 +403,12 @@ class SellerService
                 $auditExists = false;
                 $closedByAdmin = false;
                 $closingRoleId = null;
-                if ($liquidationToday) {
-                    $lastClosureAudit = \App\Models\LiquidationAudit::with('user')
-                        ->where('liquidation_id', $liquidationToday->id)
+                if ($liquidationToday instanceof \App\Models\Liquidation) {
+                     // OPTIMIZATION: Filter audits in memory
+                    $audits = $liquidationToday->relationLoaded('audits') ? $liquidationToday->audits : collect();
+                    
+                    $lastClosureAudit = $audits
                         ->whereIn('action', ['updated', 'created', 'Aprobación administrativa'])
-                        ->whereNull('deleted_at')
-                        ->orderByDesc('created_at')
                         ->first();
 
                     if ($lastClosureAudit) {
@@ -433,15 +432,13 @@ class SellerService
                 }
 
                 // Verificar si hay liquidaciones pendientes de días anteriores
-                $hasPreviousPending = Liquidation::where('seller_id', $route->id)
-                    ->whereDate('date', '<', $targetDay)
-                    ->whereIn('status', ['pending', 'auto', 'En curso'])
-                    ->exists();
+                // OPTIMIZATION: Use withCount attribute
+                $hasPreviousPending = $route->has_previous_pending > 0;
 
                 // Considerar cerrado si tiene status correcto o auditoria
                 $isClosed = $liquidationToday && (in_array($liquidationStatus, ['pending', 'auto', 'approved']) || $auditExists);
 
-                \Log::info($route->toArray());
+                // \Log::info($route->toArray());
 
                 $sessionLogs = $route->user ? $route->user->sessionLogs : collect([]);
                 
