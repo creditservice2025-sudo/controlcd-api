@@ -29,7 +29,8 @@ class Payment extends Model
         'business_date',
         'business_timezone',
         'created_at',
-        'updated_at'
+        'updated_at',
+        'unapplied_amount'
     ];
 
     /**

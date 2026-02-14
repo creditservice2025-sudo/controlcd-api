@@ -535,7 +535,7 @@ class ImportService
                 'phone' => $row['cliente_telefono'] ?? '0',
                 'seller_id' => $sellerId,
                 'status' => 'active',
-                'needs_update' => true, // Mark NEW clients for update
+                // 'needs_update' => true, // Column missing in DB
                 'address' => '',
                 'geolocation' => ['latitude' => 0, 'longitude' => 0],
                 'routing_order' => Client::where('seller_id', $sellerId)->max('routing_order') + 1,
@@ -547,7 +547,7 @@ class ImportService
             $hasImages = $client->images()->count() > 0;
 
             if (!$hasAddress || !$hasGPS || !$hasImages) {
-                $client->update(['needs_update' => true]);
+                // $client->update(['needs_update' => true]); // Column missing in DB
             }
         }
         // If client already exists, we just use it and create a new credit for them
