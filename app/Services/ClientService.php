@@ -803,7 +803,7 @@ class ClientService
             }
 
             $clientsQuery = Client::query()
-                ->select('id', 'uuid', 'name', 'dni', 'email', 'phone', 'address', 'company_name', 'status', 'seller_id', 'geolocation', 'gps_geolocalization', 'gps_address', 'routing_order', 'capacity', 'needs_update', 'created_at')
+                ->select('id', 'uuid', 'name', 'dni', 'email', 'phone', 'address', 'company_name', 'status', 'seller_id', 'geolocation', 'gps_geolocalization', 'gps_address', 'routing_order', 'capacity', 'created_at')
                 ->with([
                     'seller' => function ($q) {
                         $q->select('id', 'user_id', 'city_id', 'company_id');
@@ -954,6 +954,24 @@ class ClientService
                     ->whereIn('status', ['Activo', 'Vigente'])
                     ->sum('credit_value');
                 $client->total_credits_value = $totalCreditsValue;
+
+                // Calculate needs_update on the fly
+                $hasAddress = !empty($client->address);
+                $hasGpsAddress = !empty($client->gps_address);
+                $hasGpsGeo = !empty($client->gps_geolocalization) && (
+                    (!empty($client->gps_geolocalization['latitude']) && $client->gps_geolocalization['latitude'] != 0) || 
+                    (!empty($client->gps_geolocalization['lat']) && $client->gps_geolocalization['lat'] != 0)
+                );
+                $hasGeo = !empty($client->geolocation) && (
+                    (!empty($client->geolocation['latitude']) && $client->geolocation['latitude'] != 0) ||
+                    (!empty($client->geolocation['lat']) && $client->geolocation['lat'] != 0)
+                );
+                
+                $hasGeolocation = $hasGpsAddress || $hasGpsGeo || $hasGeo;
+                $hasImages = $client->images->count() > 0;
+
+                $client->needs_update = !($hasAddress && $hasGeolocation && $hasImages);
+
                 return $client;
             });
 
