@@ -946,6 +946,13 @@ class LiquidationService
             $tz = $timezone ?: self::TIMEZONE;
             $dateLocal = $date ?: Carbon::now($tz)->toDateString();
 
+            if (!is_numeric($sellerId)) {
+                $resolvedSeller = Seller::where('uuid', $sellerId)->first();
+                $sellerId = $resolvedSeller ? $resolvedSeller->id : null;
+            }
+
+            if (!$sellerId) return ['success' => false, 'message' => 'Vendedor no encontrado'];
+
             $startUTC = Carbon::parse($dateLocal, $tz)->startOfDay()->setTimezone('UTC');
             $endUTC = Carbon::parse($dateLocal, $tz)->endOfDay()->setTimezone('UTC');
 
@@ -959,6 +966,7 @@ class LiquidationService
                 ->where('credits.seller_id', $sellerId)
                 ->whereNull('payments.deleted_at')
                 ->where('payments.business_date', $dateLocal)
+                ->where('payments.amount', '>', 0)
                 ->select('payments.*', 'credits.client_id as client_id')
                 ->get()
                 ->map(function ($p) use ($sellerName) {
@@ -986,15 +994,20 @@ class LiquidationService
             $expenses = collect();
             if ($userId) {
                 $expenses = Expense::where('user_id', $userId)
-                    ->whereBetween('created_at', [$startUTC, $endUTC])
+                    ->where(function($q) use ($dateLocal, $startUTC, $endUTC) {
+                        $q->where('business_date', $dateLocal)
+                          ->orWhereBetween('created_at', [$startUTC, $endUTC]);
+                    })
                     ->whereNull('deleted_at')
                     ->get()
                     ->map(function ($e) {
                         return [
                             'type' => 'expense',
+                            'movement_kind' => 'Egreso',
                             'id' => $e->id,
                             'amount' => (float) $e->value,
                             'created_at' => (string) $e->created_at,
+                            'business_date' => $e->business_date ? (is_string($e->business_date) ? $e->business_date : $e->business_date->format('Y-m-d')) : null,
                             'category_id' => $e->category_id ?? null,
                             'description' => $e->description ?? null,
                             'raw' => $e,
@@ -1006,15 +1019,20 @@ class LiquidationService
             $incomes = collect();
             if ($userId) {
                 $incomes = Income::where('user_id', $userId)
-                    ->whereBetween('created_at', [$startUTC, $endUTC])
+                    ->where(function($q) use ($dateLocal, $startUTC, $endUTC) {
+                        $q->where('business_date', $dateLocal)
+                          ->orWhereBetween('created_at', [$startUTC, $endUTC]);
+                    })
                     ->whereNull('deleted_at')
                     ->get()
                     ->map(function ($i) {
                         return [
                             'type' => 'income',
+                            'movement_kind' => 'Ingreso',
                             'id' => $i->id,
                             'amount' => (float) $i->value,
                             'created_at' => (string) $i->created_at,
+                            'business_date' => $i->business_date ? (is_string($i->business_date) ? $i->business_date : $i->business_date->format('Y-m-d')) : null,
                             'description' => $i->description ?? null,
                             'raw' => $i,
                         ];

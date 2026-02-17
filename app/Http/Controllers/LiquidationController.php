@@ -1209,7 +1209,10 @@ class LiquidationController extends Controller
         }
 
         $totals['total_expenses'] = (float) Expense::where('user_id', $targetUserId)
-            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->where(function($q) use ($formattedDate, $startUTC, $endUTC) {
+                $q->where('business_date', $formattedDate)
+                  ->orWhereBetween('created_at', [$startUTC, $endUTC]);
+            })
             ->where(function ($q) {
                 $q->where('status', 'Aprobado')
                     ->orWhere('description', 'like', '%AJUSTE%');
@@ -1217,7 +1220,10 @@ class LiquidationController extends Controller
             ->sum('value');
 
         $totals['total_income'] = (float) Income::where('user_id', $targetUserId)
-            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->where(function($q) use ($formattedDate, $startUTC, $endUTC) {
+                $q->where('business_date', $formattedDate)
+                  ->orWhereBetween('created_at', [$startUTC, $endUTC]);
+            })
             ->sum('value');
 
 
