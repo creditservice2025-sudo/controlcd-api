@@ -34,7 +34,7 @@ class PaymentController extends Controller
     public function index(Request $request, $creditId)
     {
         try {
-            $perPage = $request->get('perPage') ?? 5;
+            $perPage = $request->get('perPage') ?? $request->get('rowsPerPage') ?? 100;
 
             return $this->paymentService->index($creditId, $request, $perPage);
         } catch (\Exception $e) {
@@ -47,7 +47,7 @@ class PaymentController extends Controller
     public function paymentsToday(Request $request, $creditId)
     {
         try {
-            $perPage = $request->get('perPage') ?? 5;
+            $perPage = $request->get('perPage') ?? $request->get('rowsPerPage') ?? 100;
 
             return $this->paymentService->paymentsToday($creditId, $request, $perPage);
         } catch (\Exception $e) {
@@ -66,7 +66,7 @@ class PaymentController extends Controller
                 $sellerId = $seller->id;
             }
 
-            $perPage = $request->get('perPage', 10);
+            $perPage = $request->get('perPage') ?? $request->get('rowsPerPage') ?? 10;
 
             return $this->paymentService->getPaymentsBySeller($sellerId, $request, $perPage);
         } catch (\Exception $e) {
