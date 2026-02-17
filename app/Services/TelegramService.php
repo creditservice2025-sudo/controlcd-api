@@ -19,7 +19,7 @@ class TelegramService
     /**
      * Send a message to the configured admin chat ID
      */
-    public function sendMessage($message)
+    public function sendMessage($message, $type = 'notification')
     {
         if (!$this->token || !$this->adminChatId) {
             Log::warning('Telegram configuration missing (Token or Chat ID).');
@@ -35,6 +35,18 @@ class TelegramService
 
             if (!$response->successful()) {
                 Log::error('Telegram API error: ' . $response->body());
+            }
+
+            // Log to database
+            try {
+                \App\Models\TelegramLog::create([
+                    'chat_id' => $this->adminChatId,
+                    'message' => $message,
+                    'type' => $type,
+                    'status' => $response->successful() ? 'success' : 'failed',
+                ]);
+            } catch (\Exception $e) {
+                Log::error('Error saving Telegram log: ' . $e->getMessage());
             }
 
             return $response->successful();
@@ -57,6 +69,6 @@ class TelegramService
         $message .= "👉 `{$otp}`\n\n";
         $message .= "⚠️ Este código expira en 5 minutos.";
 
-        return $this->sendMessage($message);
+        return $this->sendMessage($message, 'otp');
     }
 }

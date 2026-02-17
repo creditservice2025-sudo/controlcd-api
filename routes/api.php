@@ -292,4 +292,7 @@ Route::middleware('auth:api')->group(function () {
     // Verification Routes
     Route::post('verification/send-otp', [VerificationController::class, 'sendOtp']);
     Route::post('verification/verify-otp', [VerificationController::class, 'verifyOtp']);
+
+    // Telegram Logs
+    Route::get('/telegram-logs', [\App\Http\Controllers\TelegramLogController::class, 'index']);
 });
