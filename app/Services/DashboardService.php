@@ -205,6 +205,7 @@ class DashboardService
                 'routes' => 0,
                 'credits' => 0,
                 'clients' => 0,
+                'clients_no_credits' => 0,
             ];
 
             // ------------------------------------------------------------------
@@ -235,8 +236,17 @@ class DashboardService
                 $sellerIds = $this->applyLocationFilters($sellerIdsQuery, $request)->pluck('id');
 
                 // Aplicamos los filtros de vendedor (que ya llevan la ubicación) a Créditos y Clientes
-                $data['credits'] = Credit::whereIn('seller_id', $sellerIds)->count();
-                $data['clients'] = Client::whereIn('seller_id', $sellerIds)->count();
+                $data['credits'] = Credit::whereIn('seller_id', $sellerIds)
+                    ->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable'])
+                    ->count();
+                $data['clients'] = Client::whereIn('seller_id', $sellerIds)
+                    ->whereHas('credits', function ($query) {
+                        $query->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable']);
+                    })->count();
+                $data['clients_no_credits'] = Client::whereIn('seller_id', $sellerIds)
+                    ->whereDoesntHave('credits', function ($query) {
+                        $query->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable']);
+                    })->count();
 
 
                 // ------------------------------------------------------------------
@@ -267,8 +277,17 @@ class DashboardService
                 })->count();
 
                 // CRÉDITOS Y CLIENTES: Usamos el array de IDs de vendedores filtrados
-                $data['credits'] = Credit::whereIn('seller_id', $sellerIds)->count();
-                $data['clients'] = Client::whereIn('seller_id', $sellerIds)->count();
+                $data['credits'] = Credit::whereIn('seller_id', $sellerIds)
+                    ->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable'])
+                    ->count();
+                $data['clients'] = Client::whereIn('seller_id', $sellerIds)
+                    ->whereHas('credits', function ($query) {
+                        $query->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable']);
+                    })->count();
+                $data['clients_no_credits'] = Client::whereIn('seller_id', $sellerIds)
+                    ->whereDoesntHave('credits', function ($query) {
+                        $query->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable']);
+                    })->count();
 
 
                 // ------------------------------------------------------------------
@@ -278,8 +297,17 @@ class DashboardService
                 // Se mantiene igual, ya está filtrado por el vendedor logueado
                 $seller = $user->seller;
                 if ($seller) {
-                    $data['clients'] = $seller->clients()->count();
-                    $data['credits'] = $seller->credits()->count();
+                    $data['credits'] = $seller->credits()
+                        ->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable'])
+                        ->count();
+                    $data['clients'] = Client::where('seller_id', $seller->id)
+                        ->whereHas('credits', function ($query) {
+                            $query->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable']);
+                        })->count();
+                    $data['clients_no_credits'] = Client::where('seller_id', $seller->id)
+                        ->whereDoesntHave('credits', function ($query) {
+                            $query->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable']);
+                        })->count();
                 }
                 // Consultor: solo los sellers asociados en UserRoute
             } else {
@@ -288,8 +316,17 @@ class DashboardService
                 $data['members'] = User::whereHas('seller', function ($query) use ($sellerIds) {
                     $query->whereIn('id', $sellerIds);
                 })->count();
-                $data['credits'] = Credit::whereIn('seller_id', $sellerIds)->count();
-                $data['clients'] = Client::whereIn('seller_id', $sellerIds)->count();
+                $data['credits'] = Credit::whereIn('seller_id', $sellerIds)
+                    ->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable'])
+                    ->count();
+                $data['clients'] = Client::whereIn('seller_id', $sellerIds)
+                    ->whereHas('credits', function ($query) {
+                        $query->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable']);
+                    })->count();
+                $data['clients_no_credits'] = Client::whereIn('seller_id', $sellerIds)
+                    ->whereDoesntHave('credits', function ($query) {
+                        $query->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable']);
+                    })->count();
             }
 
             // Filtro por vendedor si se recibe seller_id
@@ -300,8 +337,17 @@ class DashboardService
                 $data['members'] = User::whereHas('seller', function ($query) use ($sellerId) {
                     $query->where('id', $sellerId);
                 })->count();
-                $data['credits'] = Credit::where('seller_id', $sellerId)->count();
-                $data['clients'] = Client::where('seller_id', $sellerId)->count();
+                $data['credits'] = Credit::where('seller_id', $sellerId)
+                    ->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable'])
+                    ->count();
+                $data['clients'] = Client::where('seller_id', $sellerId)
+                    ->whereHas('credits', function ($query) {
+                        $query->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable']);
+                    })->count();
+                $data['clients_no_credits'] = Client::where('seller_id', $sellerId)
+                    ->whereDoesntHave('credits', function ($query) {
+                        $query->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable']);
+                    })->count();
             }
 
             return $this->successResponse([
