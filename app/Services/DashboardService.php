@@ -637,7 +637,11 @@ class DashboardService
             // Filtro por vendedor si se recibe seller_id
             $sellerId = $request->input('seller_id');
             if ($sellerId) {
-                $sellerIds = collect([$sellerId]);
+                if (!is_numeric($sellerId)) {
+                    $resolvedSeller = Seller::where('uuid', $sellerId)->first();
+                    $sellerId = $resolvedSeller ? $resolvedSeller->id : null;
+                }
+                $sellerIds = $sellerId ? collect([$sellerId]) : collect();
             }
 
             if (empty($sellerIds)) {
@@ -868,7 +872,11 @@ class DashboardService
             // Filtro por vendedor si se recibe seller_id
             $sellerId = $request->input('seller_id');
             if ($sellerId) {
-                $sellerIds = [$sellerId];
+                if (!is_numeric($sellerId)) {
+                    $resolvedSeller = Seller::where('uuid', $sellerId)->first();
+                    $sellerId = $resolvedSeller ? $resolvedSeller->id : null;
+                }
+                $sellerIds = $sellerId ? [$sellerId] : [];
             }
 
             if (empty($sellerIds)) {
@@ -967,9 +975,26 @@ class DashboardService
             $user = Auth::user();
             $sellerIds = $this->getSellerIdsForUser($user, $request, $companyId)->all();
             if ($type === 'income') {
-                $query = Income::with('user')->whereBetween('created_at', [$start, $end]);
+                $query = Income::with('user');
+                
+                // Usar business_date si el filtro es específico, de lo contrario created_at
+                if (in_array($filter, ['day', 'week', 'month'])) {
+                    $query->where(function($q) use ($start, $end) {
+                        $q->whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
+                          ->orWhereBetween('created_at', [$start, $end]);
+                    });
+                } else {
+                    $query->whereBetween('created_at', [$start, $end]);
+                }
+
                 if ($sellerId) {
-                    $seller = Seller::find($sellerId);
+                    if (!is_numeric($sellerId)) {
+                        $seller = Seller::where('uuid', $sellerId)->first();
+                        $sellerId = $seller ? $seller->id : null;
+                    } else {
+                        $seller = Seller::find($sellerId);
+                    }
+                    
                     if ($seller && $seller->user_id) {
                         $query->where('user_id', $seller->user_id);
                     } else {
@@ -1002,9 +1027,25 @@ class DashboardService
                     }
                 }
             } elseif ($type === 'expenses') {
-                $query = Expense::with('user')->whereBetween('created_at', [$start, $end]);
+                $query = Expense::with('user');
+                
+                if (in_array($filter, ['day', 'week', 'month'])) {
+                    $query->where(function($q) use ($start, $end) {
+                        $q->whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
+                          ->orWhereBetween('created_at', [$start, $end]);
+                    });
+                } else {
+                    $query->whereBetween('created_at', [$start, $end]);
+                }
+
                 if ($sellerId) {
-                    $seller = Seller::find($sellerId);
+                    if (!is_numeric($sellerId)) {
+                        $seller = Seller::where('uuid', $sellerId)->first();
+                        $sellerId = $seller ? $seller->id : null;
+                    } else {
+                        $seller = Seller::find($sellerId);
+                    }
+                    
                     if ($seller && $seller->user_id) {
                         $query->where('user_id', $seller->user_id);
                     } else {
@@ -1038,15 +1079,23 @@ class DashboardService
                 }
             } elseif ($type === 'collected') {
                 if ($sellerId) {
-                    $creditIds = Credit::where('seller_id', $sellerId)->pluck('id')->all();
+                    if (!is_numeric($sellerId)) {
+                        $seller = Seller::where('uuid', $sellerId)->first();
+                        $sellerId = $seller ? $seller->id : null;
+                    }
+                    $creditIds = $sellerId ? Credit::where('seller_id', $sellerId)->pluck('id')->all() : [];
                 } elseif (!empty($sellerIds)) {
                     $creditIds = Credit::whereIn('seller_id', $sellerIds)->pluck('id')->all();
                 } else {
                     $creditIds = Credit::pluck('id')->all();
                 }
-                $payments = Payment::with(['credit.seller', 'credit.seller.user'])
+                $payments = Payment::with(['credit.client', 'credit.seller', 'credit.seller.user'])
                     ->whereIn('credit_id', $creditIds)
-                    ->whereBetween('created_at', [$start, $end])
+                    ->where('amount', '>', 0) // Filter out zero amount payments
+                    ->where(function($q) use ($start, $end) {
+                        $q->whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
+                          ->orWhereBetween('created_at', [$start, $end]);
+                    })
                     ->orderBy('created_at', 'asc')
                     ->get();
                 $grouped = [];
