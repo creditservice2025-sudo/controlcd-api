@@ -2876,7 +2876,7 @@ class CreditService
             'total_credit_value' => round($totalCreditValue, 2),
             'capital' => round($credit->credit_value, 2),
             'interest' => round($interestAmount, 2),
-            'micro_insurance' => round($microInsurance, 2),
+            'micro_insurance' => round($credit->micro_insurance_amount ?? 0, 2),
             'quota_amount' => $quotaAmount,
             'number_installments' => $credit->number_installments,
             'installments' => $installmentsData,
