@@ -38,7 +38,6 @@ class Payment extends Model
     protected $casts = [
         'payment_date' => 'date:Y-m-d',
         'business_date' => 'date:Y-m-d',
-        'business_timestamp' => 'datetime',
         'client_created_at' => 'string',
         'client_timezone' => 'string',
         'business_timezone' => 'string',

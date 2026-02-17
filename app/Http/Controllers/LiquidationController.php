@@ -47,7 +47,9 @@ class LiquidationController extends Controller
         $sellerId = $request->seller_id;
         $date = $request->date;
 
-        $timezone = 'America/Lima';
+        // ✅ MULTI-PAÍS: Obtener timezone del vendedor
+        $seller = Seller::with('city.country')->find($sellerId);
+        $timezone = \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
         $dateLocal = Carbon::parse($date, $timezone)->format('Y-m-d');
 
         // Verificar permisos
@@ -86,24 +88,39 @@ class LiquidationController extends Controller
         try {
             $todayDate = Carbon::now($timezone)->toDateString();
 
-            // Verificar si ya existe liquidación para este día
+            // Verificar si ya existe liquidación para este día (cualquiera, excluyendo eliminados)
             $existingLiquidation = Liquidation::where('seller_id', $request->seller_id)
                 ->whereDate('date', $request->date)
-                ->where('status', 'approved')
                 ->first();
 
-            if ($existingLiquidation && $user->role_id !== 1) {
-                Log::warning('Duplicate liquidation attempt blocked', [
-                    'seller_id' => $request->seller_id,
-                    'date' => $request->date,
-                    'existing_id' => $existingLiquidation->id,
-                    'country' => $country?->name,
-                ]);
+            $action = 'created';
+            $liquidationToUpdate = null;
+
+            if ($existingLiquidation) {
+                // Si existe y ya está aprobada, bloquear (a menos que sea super admin)
+                if ($existingLiquidation->status === 'approved' && $user->role_id !== 1) {
+                    Log::warning('Duplicate approved liquidation attempt blocked', [
+                        'seller_id' => $request->seller_id,
+                        'date' => $request->date,
+                        'existing_id' => $existingLiquidation->id,
+                        'country' => $country?->name,
+                    ]);
+                    
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Ya existe una liquidación aprobada para este vendedor en la fecha seleccionada'
+                    ], 422);
+                }
+
+                // Si existe pero NO está aprobada (ej. pending, auto, en proceso), 
+                // permitimos actualizarla en lugar de crear una nueva.
+                $action = 'updated';
+                $liquidationToUpdate = $existingLiquidation;
                 
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Ya existe una liquidación para este vendedor en la fecha seleccionada'
-                ], 422);
+                Log::info('Updating existing liquidation instead of creating duplicate', [
+                    'liquidation_id' => $existingLiquidation->id,
+                    'old_status' => $existingLiquidation->status
+                ]);
             }
 
             // Obtener el user_id del vendedor
@@ -129,7 +146,7 @@ class LiquidationController extends Controller
             }
 
             // === TRANSACCIÓN ATÓMICA: Todo o nada ===
-            $liquidation = DB::transaction(function () use ($request, $user, $timezone, $currency) {
+            $liquidation = DB::transaction(function () use ($request, $user, $timezone, $currency, $action, $liquidationToUpdate) {
                 // === Calcular créditos irrecuperables ===
                 $irrecoverableCredits = DB::table('installments')
                     ->join('credits', 'installments.credit_id', '=', 'credits.id')
@@ -208,9 +225,9 @@ class LiquidationController extends Controller
                     'real_to_deliver' => $realToDeliver,
                     'shortage' => $shortage,
                     'surplus' => $surplus,
-                    'path' => $request->path,
+                    // 'path' => ... handled below
                     'cash_delivered' => $request->cash_delivered,
-                    'status' => 'pending',
+                    'status' => 'pending', // Always explicitly set to pending on save/update unless logic dictates otherwise
                     'irrecoverable_credits_amount' => $irrecoverableCredits,
                     'renewal_disbursed_total' => $total_renewal_disbursed,
                     'poliza' => $poliza,
@@ -220,30 +237,50 @@ class LiquidationController extends Controller
                     $liquidationData['created_at'] = $request->created_at;
                 } else {
                     if ($request->filled('timezone')) {
-                        $liquidationData['created_at'] = Carbon::now();
                         $liquidationData['updated_at'] = Carbon::now();
+                        if ($action === 'created') {
+                             $liquidationData['created_at'] = Carbon::now();
+                        }
                     }
                 }
 
+                // Handle Image Upload logic
                 if ($request->has('path')) {
                     $imageFile = $request->file('path');
+                    
+                    // If updating and there was an old file, delete it to prevent orphans
+                    if ($action === 'updated' && $liquidationToUpdate && $liquidationToUpdate->path) {
+                        \App\Helpers\Helper::deleteFile($liquidationToUpdate->path);
+                    }
+                    
                     $imagePath = Helper::uploadFile($imageFile, 'liquidations');
                     $liquidationData['path'] = $imagePath;
+                } elseif ($action === 'created') {
+                      // If creating and no path, handle if necessary (or nullable)
+                      $liquidationData['path'] = $request->path; // Might be null or string from request if not file? 
+                      // Wait, $request->has('path') checks for input presence. 
+                      // $request->file('path') checks for file.
+                      // If it's a file upload, use uploadFile. 
                 }
 
-                // Crear liquidación (dentro de transacción)
-                $liquidation = Liquidation::create($liquidationData);
+                if ($action === 'updated') {
+                    $liquidationToUpdate->update($liquidationData);
+                    $liquidation = $liquidationToUpdate;
+                } else {
+                    // Create new
+                    $liquidation = Liquidation::create($liquidationData);
+                }
 
                 // Crear auditoría (dentro de transacción)
                 LiquidationAudit::create([
                     'liquidation_id' => $liquidation->id,
                     'user_id' => $user->id,
-                    'action' => 'created',
+                    'action' => $action,
                     'changes' => json_encode($liquidation->toArray()),
                     'created_at' => Carbon::now($timezone),
                 ]);
 
-                Log::info('Liquidation created successfully', [
+                Log::info("Liquidation $action successfully", [
                     'liquidation_id' => $liquidation->id,
                     'seller_id' => $request->seller_id,
                     'currency' => $currency,
@@ -967,18 +1004,20 @@ class LiquidationController extends Controller
     {
         $user = Auth::user();
 
-        // Zona horaria Venezuela
-        $timezone = $request->query('timezone', 'America/Lima');
+        // ✅ MULTI-PAÍS: Obtener timezone del vendedor
+        $seller = Seller::with('city.country')->find($sellerId);
+        $timezone = $request->query('timezone') ?: \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
         $start = Carbon::createFromFormat('Y-m-d', $date, $timezone)->startOfDay()->setTimezone('UTC');
         $end = Carbon::createFromFormat('Y-m-d', $date, $timezone)->endOfDay()->setTimezone('UTC');
         $todayDate = Carbon::now($timezone)->toDateString();
 
         \Log::debug("Solicitud de datos de liquidación para vendedor $sellerId en fecha $date por usuario {$user->id} ({$user->role_id})");
 
-        // 1. Verificar si ya existe liquidación para esta fecha
+        // 1. Verificar si ya existe liquidación para esta fecha (Ignorar 'En curso' que son borradores/auditoría)
         $existingLiquidation = Liquidation::with('seller.user')
             ->where('seller_id', $sellerId)
             ->whereDate('date', $date)
+            ->where('status', '!=', 'En curso')
             ->first();
         \Log::debug("Verificando liquidación para vendedor $sellerId en fecha desde $start hasta $end");
         if ($existingLiquidation) {
@@ -1095,8 +1134,12 @@ class LiquidationController extends Controller
         return $response;
     }
 
-    protected function getDailyTotals($sellerId, $date, $user, $timezone = 'America/Lima')
+    protected function getDailyTotals($sellerId, $date, $user, $timezone = null)
     {
+        if (is_null($timezone)) {
+            $seller = Seller::with('city.country')->find($sellerId);
+            $timezone = \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
+        }
         $targetDate = Carbon::parse($date, $timezone);
         $formattedDate = $targetDate->format('Y-m-d');
 
