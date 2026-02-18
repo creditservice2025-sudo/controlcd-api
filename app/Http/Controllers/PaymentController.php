@@ -299,7 +299,7 @@ class PaymentController extends Controller
         $expensesQuery = DB::table('expenses')
             ->select(DB::raw('COALESCE(SUM(value), 0) as total_expenses'))
             ->whereNull('deleted_at')
-            ->whereBetween('created_at', [$start, $end])
+            ->where('business_date', $date)
             ->where(function ($q) {
                 $q->where('status', 'Aprobado')
                     ->orWhere('description', 'like', '%AJUSTE%');
@@ -308,7 +308,7 @@ class PaymentController extends Controller
         $incomeQuery = DB::table('incomes')
             ->select(DB::raw('COALESCE(SUM(value), 0) as total_income'))
             ->whereNull('deleted_at')
-            ->whereBetween('created_at', [$start, $end]);
+            ->where('business_date', $date);
 
         if ($user->role_id == 5) {
             $expensesQuery->where('user_id', $user->id);
@@ -317,9 +317,9 @@ class PaymentController extends Controller
 
         $expensesResult = $expensesQuery->first();
 
-        // List all expenses for the date - CORREGIDO: usar created_at con rango UTC
+        // List all expenses for the date
         $expensesListQuery = DB::table('expenses')
-            ->whereBetween('created_at', [$start, $end])
+            ->where('business_date', $date)
             ->where(function ($q) {
                 $q->where('status', 'Aprobado')
                     ->orWhere('description', 'like', '%AJUSTE%');
@@ -333,9 +333,9 @@ class PaymentController extends Controller
 
         $incomeResult = $incomeQuery->first();
 
-        // List all incomes for the date - CORREGIDO: usar created_at con rango UTC
+        // List all incomes for the date
         $incomesListQuery = DB::table('incomes')
-            ->whereBetween('created_at', [$start, $end]);
+            ->where('business_date', $date);
 
         if ($user->role_id == 5) {
             $incomesListQuery = $incomesListQuery->where('user_id', $user->id);

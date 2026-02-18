@@ -994,10 +994,7 @@ class LiquidationService
             $expenses = collect();
             if ($userId) {
                 $expenses = Expense::where('user_id', $userId)
-                    ->where(function($q) use ($dateLocal, $startUTC, $endUTC) {
-                        $q->where('business_date', $dateLocal)
-                          ->orWhereBetween('created_at', [$startUTC, $endUTC]);
-                    })
+                    ->where('business_date', $dateLocal)
                     ->whereNull('deleted_at')
                     ->get()
                     ->map(function ($e) {
@@ -1019,10 +1016,7 @@ class LiquidationService
             $incomes = collect();
             if ($userId) {
                 $incomes = Income::where('user_id', $userId)
-                    ->where(function($q) use ($dateLocal, $startUTC, $endUTC) {
-                        $q->where('business_date', $dateLocal)
-                          ->orWhereBetween('created_at', [$startUTC, $endUTC]);
-                    })
+                    ->where('business_date', $dateLocal)
                     ->whereNull('deleted_at')
                     ->get()
                     ->map(function ($i) {
