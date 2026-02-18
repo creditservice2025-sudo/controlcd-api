@@ -118,7 +118,7 @@ class ExpenseService
                 'updated_at' => $createdAt, 
                 'client_timezone' => $clientTimezone,
                 'business_timezone' => $businessTimezone, // Dynamic based on operation
-                'business_timestamp' => $businessTimestamp,
+                'business_timestamp' => $businessTimestamp->copy()->setTimezone('UTC'), // EXPLICIT UTC FOR DB
                 'business_date' => $businessDate
             ];
 

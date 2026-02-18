@@ -156,7 +156,7 @@ class PaymentService
                         'updated_at' => $serverNow,
 
                         // TIMESTAMPS DE NEGOCIO (operaciones)
-                        'business_timestamp' => $businessTimestampUtc,
+                        'business_timestamp' => $businessTimestampUtc->copy()->setTimezone('UTC'), // EXPLICIT UTC
                         'business_date' => $businessDate,
                         'business_timezone' => $clientTimezone,
 
@@ -233,7 +233,7 @@ class PaymentService
                     'updated_at' => $serverNow,
 
                     // TIMESTAMPS DE NEGOCIO (operaciones)
-                    'business_timestamp' => $businessTimestampUtc,
+                    'business_timestamp' => $businessTimestampUtc->copy()->setTimezone('UTC'), // EXPLICIT UTC
                     'business_date' => $businessDate,
                     'business_timezone' => $clientTimezone,
 
