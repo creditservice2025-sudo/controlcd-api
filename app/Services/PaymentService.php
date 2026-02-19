@@ -59,9 +59,12 @@ class PaymentService
             // 1. TIMESTAMP TÉCNICO (auditoría del sistema)
             $serverNow = Carbon::now('UTC');
 
+
             // 2. TIMESTAMP DE NEGOCIO (hora oficial del pago)
             $businessNow = Carbon::now($clientTimezone);
-            $businessTimestampUtc = $businessNow->copy()->utc();
+            // TRUCO: Creamos un Carbon en UTC con la hora LOCAL para que al guardarse quede "11:05" en DB
+            // y al leerse (con AppTimezone Caracas) se interprete como "11:05 Caracas".
+            $businessTimestampUtc = Carbon::createFromFormat('Y-m-d H:i:s', $businessNow->format('Y-m-d H:i:s'), 'UTC');
             $businessDate = $businessNow->toDateString();
 
             Log::info('Payment Create - Business Timestamps Generated', [
