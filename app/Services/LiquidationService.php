@@ -317,6 +317,7 @@ class LiquidationService
             'collection_target' => 'required|numeric|min:0',
             'initial_cash' => 'required|numeric',
             'base_delivered' => 'required|numeric|min:0',
+            'cash_delivered' => 'nullable|numeric',
             'total_collected' => 'required|numeric|min:0',
             'total_expenses' => 'required|numeric|min:0',
             'new_credits' => 'required|numeric|min:0',
