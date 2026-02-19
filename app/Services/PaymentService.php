@@ -551,6 +551,8 @@ class PaymentService
                     'payments.payment_method',
                     'payments.payment_reference',
                     'payments.status',
+                    'payments.business_timezone',
+                    'payments.business_timestamp',
 
 
                     DB::raw('GROUP_CONCAT(installments.quota_number ORDER BY installments.quota_number) as quotas'),
@@ -602,8 +604,11 @@ class PaymentService
                     'payments.payment_method',
                     'payments.payment_reference',
                     'payments.status',
+                    'payments.status',
                     'payments.created_at',
                     'payments.unapplied_amount',
+                    'payments.business_timezone',
+                    'payments.business_timestamp',
                     'payment_images.path'
 
                 )
@@ -680,6 +685,8 @@ class PaymentService
                     'payments.payment_method',
                     'payments.payment_reference',
                     'payments.status',
+                    'payments.business_timezone',
+                    'payments.business_timestamp',
                     \DB::raw('GROUP_CONCAT(installments.quota_number ORDER BY installments.quota_number) as quotas'),
                     \DB::raw('COALESCE(SUM(payment_installments.applied_amount), 0) as total_applied')
                 )
@@ -696,7 +703,10 @@ class PaymentService
                     'payments.payment_method',
                     'payments.payment_reference',
                     'payments.status',
+                    'payments.status',
                     'payments.created_at',
+                    'payments.business_timezone',
+                    'payments.business_timestamp',
                     'payment_images.path'
                 )
                 ->orderBy('payments.created_at', 'desc');
@@ -859,6 +869,8 @@ class PaymentService
                         'business_date' => $payment->business_date,
                         'amount' => $payment->amount,
                         'status' => $payment->status,
+                        'business_timezone' => $payment->business_timezone,
+                        'business_timestamp' => $payment->business_timestamp,
                         'payment_method' => $payment->payment_method,
                         'payment_reference' => $payment->payment_reference,
                         'quota_numbers' => $quotaNumbers,
@@ -1041,6 +1053,8 @@ class PaymentService
                     'business_date' => $payment->business_date,
                     'amount' => $payment->amount,
                     'status' => $payment->status,
+                    'business_timezone' => $payment->business_timezone,
+                    'business_timestamp' => $payment->business_timestamp,
                     'payment_method' => $payment->payment_method,
                     'payment_reference' => $payment->payment_reference,
                     'quota_numbers' => $quotaNumbers,
