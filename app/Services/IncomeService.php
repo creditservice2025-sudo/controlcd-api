@@ -85,7 +85,7 @@ class IncomeService
                 'updated_at' => $createdAt,
                 'client_timezone' => $clientTimezone,
                 'business_timezone' => $businessTimezone, // Dynamic based on operation
-                'business_timestamp' => $businessTimestamp,
+                'business_timestamp' => $businessTimestamp->format('Y-m-d H:i:s'),
                 'business_date' => $businessDate
             ];
 
