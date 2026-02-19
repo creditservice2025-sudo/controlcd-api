@@ -703,23 +703,25 @@ class ExpenseService
             }
 
             $expensesQuery = Expense::query()
-                ->select('expenses.*', 'liquidations.id as liquidation_number')
+                ->select('expenses.*')
+                ->addSelect([
+                    'liquidation_number' => DB::table('liquidations')
+                        ->select('id')
+                        ->whereColumn('date', DB::raw('COALESCE(expenses.business_date, DATE(expenses.created_at))'))
+                        ->where('seller_id', $seller->id)
+                        ->whereNull('deleted_at')
+                        ->limit(1)
+                ])
                 ->with(['user', 'category', 'images']);
 
             if ($request->has('include_deleted') && filter_var($request->include_deleted, FILTER_VALIDATE_BOOLEAN)) {
                 $expensesQuery->withTrashed();
             }
-
-            $expensesQuery->leftJoin('liquidations', function ($join) use ($seller) {
-                $join->on(DB::raw('COALESCE(expenses.business_date, DATE(expenses.created_at))'), '=', 'liquidations.date')
-                    ->where('liquidations.seller_id', '=', $seller->id)
-                    ->whereNull('liquidations.deleted_at');
-            })
-            ->where('expenses.user_id', $seller->user_id)
-            ->where(function ($q) {
-                $q->where('expenses.status', 'Aprobado')
-                    ->orWhere('expenses.description', 'like', '%AJUSTE%');
-            });
+            $expensesQuery->where('expenses.user_id', $seller->user_id)
+                ->where(function ($q) {
+                    $q->where('expenses.status', 'Aprobado')
+                        ->orWhere('expenses.description', 'like', '%AJUSTE%');
+                });
 
             $timezone = $request->input('timezone', 'America/Lima');
 

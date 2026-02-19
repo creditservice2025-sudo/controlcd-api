@@ -86,14 +86,13 @@ class LiquidationController extends Controller
         try {
             $todayDate = Carbon::now($timezone)->toDateString();
 
-            // Verificar si ya existe liquidación para este día
+            // Verificar si ya existe liquidación para este día (cualquier estado)
             $existingLiquidation = Liquidation::where('seller_id', $request->seller_id)
                 ->whereDate('date', $request->date)
-                ->where('status', 'approved')
                 ->first();
 
-            if ($existingLiquidation && $user->role_id !== 1) {
-                Log::warning('Duplicate liquidation attempt blocked', [
+            if ($existingLiquidation && $existingLiquidation->status === 'approved' && $user->role_id !== 1) {
+                Log::warning('Duplicate approved liquidation attempt blocked', [
                     'seller_id' => $request->seller_id,
                     'date' => $request->date,
                     'existing_id' => $existingLiquidation->id,
@@ -102,7 +101,7 @@ class LiquidationController extends Controller
                 
                 return response()->json([
                     'success' => false,
-                    'message' => 'Ya existe una liquidación para este vendedor en la fecha seleccionada'
+                    'message' => 'Ya existe una liquidación aprobada para este vendedor en la fecha seleccionada'
                 ], 422);
             }
 
@@ -129,7 +128,7 @@ class LiquidationController extends Controller
             }
 
             // === TRANSACCIÓN ATÓMICA: Todo o nada ===
-            $liquidation = DB::transaction(function () use ($request, $user, $timezone, $currency) {
+            $liquidation = DB::transaction(function () use ($request, $user, $timezone, $currency, $existingLiquidation) {
                 // === Calcular créditos irrecuperables ===
                 $irrecoverableCredits = DB::table('installments')
                     ->join('credits', 'installments.credit_id', '=', 'credits.id')
@@ -231,19 +230,26 @@ class LiquidationController extends Controller
                     $liquidationData['path'] = $imagePath;
                 }
 
-                // Crear liquidación (dentro de transacción)
-                $liquidation = Liquidation::create($liquidationData);
+                // Crear o Actualizar liquidación (dentro de transacción)
+                if ($existingLiquidation) {
+                    $existingLiquidation->update($liquidationData);
+                    $liquidation = $existingLiquidation;
+                    $action = 'updated';
+                } else {
+                    $liquidation = Liquidation::create($liquidationData);
+                    $action = 'created';
+                }
 
                 // Crear auditoría (dentro de transacción)
                 LiquidationAudit::create([
                     'liquidation_id' => $liquidation->id,
                     'user_id' => $user->id,
-                    'action' => 'created',
+                    'action' => $action,
                     'changes' => json_encode($liquidation->toArray()),
                     'created_at' => Carbon::now($timezone),
                 ]);
 
-                Log::info('Liquidation created successfully', [
+                Log::info("Liquidation $action successfully", [
                     'liquidation_id' => $liquidation->id,
                     'seller_id' => $request->seller_id,
                     'currency' => $currency,
