@@ -99,10 +99,15 @@ class ExpenseService
             if ($request->has('created_at')) {
                 // Asumimos que la fecha enviada es "local" para el usuario (en su timezone efectivo)
                 $userProvidedDate = Carbon::parse($validated['created_at'], $businessTimezone);
-                $businessTimestamp = $userProvidedDate; 
+                
+                // TRUCO: Creamos un Carbon en UTC con la hora LOCAL para que al guardarse quede tal cual en DB
+                $businessTimestamp = Carbon::createFromFormat('Y-m-d H:i:s', $userProvidedDate->format('Y-m-d H:i:s'), 'UTC');
+                
                 $createdAt = $userProvidedDate->copy()->setTimezone('UTC'); 
             } else {
-                $businessTimestamp = $nowInBusinessZone;
+                // TRUCO: Creamos un Carbon en UTC con la hora LOCAL para que al guardarse quede tal cual en DB
+                $businessTimestamp = Carbon::createFromFormat('Y-m-d H:i:s', $nowInBusinessZone->format('Y-m-d H:i:s'), 'UTC');
+                
                 $createdAt = $nowInBusinessZone->copy()->setTimezone('UTC');
             }
             
