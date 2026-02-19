@@ -321,6 +321,8 @@ class LiquidationService
             'total_expenses' => 'required|numeric|min:0',
             'new_credits' => 'required|numeric|min:0',
             'status' => 'sometimes|in:pending,approved,rejected',
+            'path' => 'nullable|string',
+            'observation' => 'nullable|string',
         ];
 
         return Validator::make($data, $rules)->validate();

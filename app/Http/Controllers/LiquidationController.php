@@ -382,13 +382,45 @@ class LiquidationController extends Controller
         $user = Auth::user();
         $timezone = $request->input('timezone', 'America/Lima');
         
-        $result = $this->liquidationService->updateLiquidation($id, $request->all(), $user, $timezone);
+        // Resolver modelo explícitamente para coincidir con la firma del servicio
+        $liquidation = $id instanceof Liquidation ? $id : Liquidation::findOrFail($id);
+
+        $data = $request->all();
         
-        if (!$result['success']) {
-            return response()->json($result, 422);
+        // Asegurar que observation esté presente si se envía
+        if ($request->has('observation')) {
+            $data['observation'] = $request->input('observation');
         }
 
-        return response()->json($result);
+        // Manejar subida de archivo (captura) si existe
+        if ($request->hasFile('path')) {
+            $imageFile = $request->file('path');
+            $imagePath = Helper::uploadFile($imageFile, 'liquidations');
+            $data['path'] = $imagePath;
+            // Respaldar también en capture_path por si se usa ese campo
+            $data['capture_path'] = $imagePath;
+        }
+
+        // Llamar al servicio pasando el objeto Liquidation y el array de datos
+        // NOTA: El servicio espera (Liquidation $liquidation, array $data)
+        // Eliminamos $user y $timezone de los argumentos si el servicio no los pide en esa firma
+        // Revisando LiquidationService::updateLiquidation(Liquidation $liquidation, array $data)
+        
+        try {
+            $resultLiquidation = $this->liquidationService->updateLiquidation($liquidation, $data);
+            
+            return response()->json([
+                'success' => true,
+                'data' => $resultLiquidation,
+                'message' => 'Liquidación actualizada correctamente'
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Error updating liquidation: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al actualizar la liquidación: ' . $e->getMessage()
+            ], 500);
+        }
     }
 
     public function reopenRoute(ReopenRouteRequest $request)
