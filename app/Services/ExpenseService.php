@@ -773,6 +773,13 @@ class ExpenseService
 
             $expenses = $expensesQuery->paginate($perpage);
 
+            $expenses->getCollection()->transform(function ($expense) use ($seller) {
+                if (!$expense->business_timezone) {
+                    $expense->business_timezone = \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
+                }
+                return $expense;
+            });
+
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Gastos obtenidos correctamente para el vendedor y fecha(s) especificadas',

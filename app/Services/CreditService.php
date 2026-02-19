@@ -2374,8 +2374,11 @@ class CreditService
                 return $credit;
             });
 
+            $sellerForTz = \App\Models\Seller::find($sellerId);
+            $sellerTz = \App\Helpers\TimezoneHelper::getSellerTimezone($sellerForTz);
+
             // Convert to array to ensure renewed_from is included in JSON
-            $creditsArray = $credits->map(function ($credit) {
+            $creditsArray = $credits->map(function ($credit) use ($sellerTz) {
                 $creditArray = $credit->toArray();
                 // Ensure renewed_from is included even if it was set dynamically
                 if ($credit->relationLoaded('renewed_from')) {
@@ -2384,6 +2387,11 @@ class CreditService
                 } else {
                     \Log::info('Credit ID: ' . $credit->id . ' - renewed_from relation NOT loaded');
                 }
+                
+                if (!isset($creditArray['business_timezone'])) {
+                    $creditArray['business_timezone'] = $sellerTz;
+                }
+
                 return $creditArray;
             });
 
