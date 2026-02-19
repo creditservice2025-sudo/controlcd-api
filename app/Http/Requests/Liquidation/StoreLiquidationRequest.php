@@ -15,7 +15,7 @@ class StoreLiquidationRequest extends FormRequest
         return [
             'date' => 'required|date',
             'seller_id' => 'required|exists:sellers,id',
-            'cash_delivered' => 'required|numeric|min:0',
+            'cash_delivered' => 'required|numeric',
             'path' => 'nullable|image|max:2048',
             'initial_cash' => 'required|numeric',
             'base_delivered' => 'required|numeric|min:0',
