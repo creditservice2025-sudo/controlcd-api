@@ -19,6 +19,8 @@ class StoreLiquidationRequest extends FormRequest
             'path' => 'nullable|image|max:2048',
             'initial_cash' => 'required|numeric',
             'base_delivered' => 'required|numeric|min:0',
+            'collection_target' => 'required|numeric|min:0',
+            'observation' => 'nullable|string',
             'total_collected' => 'required|numeric|min:0',
             'total_expenses' => 'required|numeric|min:0',
             'total_income' => 'required|numeric|min:0',

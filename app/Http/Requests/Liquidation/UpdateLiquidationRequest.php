@@ -24,6 +24,7 @@ class UpdateLiquidationRequest extends FormRequest
             'new_credits' => 'nullable|numeric|min:0',
             'total_income' => 'nullable|numeric|min:0',
             'collection_target' => 'nullable|numeric|min:0',
+            'observation' => 'nullable|string',
             'created_at' => 'nullable|date',
         ];
     }
