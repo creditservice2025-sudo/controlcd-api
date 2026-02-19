@@ -315,7 +315,7 @@ class LiquidationService
             'date' => 'required|date',
             'seller_id' => 'required|exists:sellers,id',
             'collection_target' => 'required|numeric|min:0',
-            'initial_cash' => 'required|numeric|min:0',
+            'initial_cash' => 'required|numeric',
             'base_delivered' => 'required|numeric|min:0',
             'total_collected' => 'required|numeric|min:0',
             'total_expenses' => 'required|numeric|min:0',
