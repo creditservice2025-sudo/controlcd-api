@@ -545,7 +545,7 @@ class LiquidationService
         }
     }
 
-    public function getLiquidationData($sellerId, $date, $userId, $timezone = null)
+    public function getLiquidationData($sellerId, $date, $userId, $timezone = null, $autoCreate = true)
     {
         $tz = $timezone ?: self::TIMEZONE;
         $startUTC = Carbon::parse($date, $tz)->startOfDay()->setTimezone('UTC');
@@ -558,30 +558,31 @@ class LiquidationService
 
         // Si existe liquidación, retornar directamente esos datos
         if ($existingLiquidation) {
-            $today = Carbon::now($tz)->toDateString(); // Formato 'Y-m-d'
-            $liquidationDate = Carbon::parse($existingLiquidation->date)->toDateString();
-            \Log::debug("Liquidación existente para fecha $date: $today: $existingLiquidation->date");
-            // Solo recalculamos si la liquidación es del día actual (comparando con el campo 'date')
-            if ($liquidationDate == $today) {  // Comparar con el campo 'date' de la liquidación
-                \Log::debug("Recalculando liquidación para el vendedor $sellerId en la fecha $date (hoy)");
+            $todayStr = Carbon::now($tz)->toDateString();
+            $liquidationDateStr = Carbon::parse($existingLiquidation->date)->toDateString();
+            
+            if ($liquidationDateStr == $todayStr) {
                 $this->recalculateLiquidation($sellerId, $date, $timezone);
-
-                // Vuelve a obtener la liquidación actualizada
                 $updatedLiquidation = Liquidation::with('audits')->where('seller_id', $sellerId)
-                    ->whereDate('date', $date)  // Cambiado de 'created_at' a 'date'
+                    ->whereDate('date', $date)
                     ->first();
-
-                \Log::debug("Liquidación actualizada: ", $updatedLiquidation->toArray());
                 return $this->formatLiquidationResponse($updatedLiquidation, true);
             } else {
                 $this->recalculateLiquidation($sellerId, $date);
-
-                // Vuelve a obtener la liquidación actualizada
                 $updatedLiquidation = Liquidation::with('audits')->where('seller_id', $sellerId)
-                    ->whereDate('date', $date)  // Cambiado de 'created_at' a 'date'
+                    ->whereDate('date', $date)
                     ->first();
-                \Log::debug("Liquidación existente para fecha pasada, no se recalcula. Fecha: $existingLiquidation->date");
                 return $this->formatLiquidationResponse($updatedLiquidation, true);
+            }
+        }
+
+        // Si no existe y es para HOY, y autoCreate está activo, crearla automáticamente (Apertura)
+        if ($autoCreate) {
+            $todayStr = Carbon::now($tz)->toDateString();
+            if ($date == $todayStr) {
+                \Log::info("Auto-creando liquidación (Apertura) para vendedor $sellerId en fecha $date");
+                $newLiquidation = $this->getOrCreateLiquidation($sellerId, $date, $timezone);
+                return $this->formatLiquidationResponse($newLiquidation, true);
             }
         }
         // 2. Obtener datos del endpoint dailyPaymentTotals
@@ -707,7 +708,8 @@ class LiquidationService
         $country = $seller?->city?->country ?? null;
         $currency = $country?->currency ?? 'PEN'; // Fallback a PEN si no hay país
 
-        $dynamicData = $this->getLiquidationData($sellerId, $date, $userId, $tz);
+        // Importante: autoCreate = false para evitar recursión infinita
+        $dynamicData = $this->getLiquidationData($sellerId, $date, $userId, $tz, false);
 
         return Liquidation::create([
             'seller_id' => $sellerId,

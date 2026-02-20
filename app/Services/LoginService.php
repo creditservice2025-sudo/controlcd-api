@@ -93,6 +93,16 @@ class LoginService
                 'user_agent' => request()->header('User-Agent'),
             ]);
 
+            // Auto-Apertura si es vendedor
+            if ($seller && ($user->role_id === 5 || $user->role_id === 3)) {
+                try {
+                    $liquidationService = app(\App\Services\LiquidationService::class);
+                    $liquidationService->getOrCreateLiquidation($seller->id, $loginAt->toDateString(), $timezone);
+                } catch (\Exception $e) {
+                    \Log::error("Error en auto-apertura al login: " . $e->getMessage());
+                }
+            }
+
             return $this->successResponse([
                 'success' => true,
                 'access_token' => $token,
