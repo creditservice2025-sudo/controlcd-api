@@ -166,6 +166,7 @@ class PaymentService
                         // COMPATIBILIDAD (mantener por ahora)
                         'payment_date' => $businessDate,
                         'client_timezone' => $clientTimezone,
+                        'client_created_at' => $params['client_created_at'] ?? null,
                     ];
 
                     $payment = Payment::create($paymentData);
@@ -243,6 +244,7 @@ class PaymentService
                     // COMPATIBILIDAD (mantener por ahora)
                     'payment_date' => $businessDate,
                     'client_timezone' => $clientTimezone,
+                    'client_created_at' => $params['client_created_at'] ?? null,
                 ];
 
                 $payment = Payment::create($paymentData);
