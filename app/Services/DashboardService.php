@@ -667,11 +667,11 @@ class DashboardService
                 'data' => $result,
                 'total' => $sellersCount
             ]);
-        } catch (\Exception $e) {
-            \Log::error("Error fetching pending portfolios: " . $e->getMessage() . " line: " . $e->getLine());
+        } catch (\Throwable $e) {
+            \Log::error("CRITICAL ERROR in loadPendingPortfolios: " . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine() . "\n" . $e->getTraceAsString());
             return response()->json([
                 'success' => false,
-                'message' => 'Error fetching pending portfolios: ' . $e->getMessage()
+                'message' => 'Error al obtener las carteras pendientes: ' . $e->getMessage()
             ], 500);
         }
     }
@@ -834,9 +834,9 @@ class DashboardService
                     'dailyPolicy' => (float) number_format($dailyPolicy, 2, '.', ''),
                 ]
             ]);
-        } catch (\Exception $e) {
-            Log::error("Error loading financial summary: {$e->getMessage()} | " . $e->getTraceAsString());
-            return $this->errorResponse('Error al obtener el resumen financiero.', 500);
+        } catch (\Throwable $e) {
+            \Log::error("Error loading financial summary: " . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
+            return $this->errorResponse('Error al obtener el resumen financiero: ' . $e->getMessage(), 500);
         }
     }
 
@@ -912,9 +912,9 @@ class DashboardService
                     'irrecoverableWeek' => (float) $irrecoverableCredits
                 ]
             ]);
-        } catch (\Exception $e) {
-            Log::error("Error loading weekly financial summary: {$e->getMessage()} | " . $e->getTraceAsString());
-            return $this->errorResponse('Error al obtener el balance general semanal.', 500);
+        } catch (\Throwable $e) {
+            \Log::error("Error loading weekly financial summary: " . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
+            return $this->errorResponse('Error al obtener el balance general semanal: ' . $e->getMessage(), 500);
         }
     }
 
@@ -1038,9 +1038,9 @@ class DashboardService
                     'filter' => $filter
                 ]
             ]);
-        } catch (\Exception $e) {
-            Log::error("Error loading movements: {$e->getMessage()} | " . $e->getTraceAsString());
-            return $this->errorResponse('Error al obtener movimientos.', 500);
+        } catch (\Throwable $e) {
+            \Log::error("Error loading weekly movements: " . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
+            return $this->errorResponse('Error al obtener movimientos: ' . $e->getMessage(), 500);
         }
     }
 
@@ -1217,9 +1217,9 @@ class DashboardService
                     'type' => $type,
                 ]
             ]);
-        } catch (\Exception $e) {
-            Log::error("Error loading movements history: {$e->getMessage()} | " . $e->getTraceAsString());
-            return $this->errorResponse('Error al obtener histórico de movimientos.', 500);
+        } catch (\Throwable $e) {
+            \Log::error("Error loading movements history: " . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
+            return $this->errorResponse('Error al obtener histórico de movimientos: ' . $e->getMessage(), 500);
         }
     }
 }
