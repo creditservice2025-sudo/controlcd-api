@@ -547,7 +547,7 @@ class DashboardService
                     DB::raw("(credits.credit_value + (credits.credit_value * credits.total_interest / 100)) as total_value"),
                     DB::raw("SUM(IFNULL(payments.amount, 0)) as total_paid")
                 )
-                ->groupBy('credits.id')
+                ->groupBy('credits.id', 'credits.credit_value', 'credits.total_interest')
                 ->get()
                 ->keyBy('id');
 
