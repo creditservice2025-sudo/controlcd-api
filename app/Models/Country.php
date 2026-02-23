@@ -11,7 +11,7 @@ class Country extends Model
 {
     use HasFactory;
 
-    protected $fillable = ['name', 'currency', 'status', 'timezone'];
+    protected $fillable = ['name', 'currency', 'status', 'timezone', 'phone_code'];
 
     public function departments()
     {

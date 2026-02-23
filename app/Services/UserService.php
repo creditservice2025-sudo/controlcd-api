@@ -222,6 +222,9 @@ public function me()
                 ->whereDate('date', \Carbon\Carbon::now('America/Lima')->toDateString())
                 ->exists()
             : false,
+        'phone_code' => ($user->seller && $user->seller->city && $user->seller->city->country)
+            ? $user->seller->city->country->phone_code
+            : null,
     ]);
 }
 
