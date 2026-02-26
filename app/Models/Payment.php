@@ -18,6 +18,7 @@ class Payment extends Model
         'installment_id',
         'payment_date',
         'amount',
+        'unapplied_amount',
         'status',
         'payment_method',
         'payment_reference',

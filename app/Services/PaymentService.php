@@ -226,6 +226,7 @@ class PaymentService
                     'credit_id' => $credit->id,
                     'user_id' => $user->id,
                     'amount' => $request->amount,
+                    'unapplied_amount' => $request->amount,
                     'status' => $isAbono ? 'Abonado' : 'Pagado',
                     'payment_method' => $params['payment_method'] ?? null,
                     'payment_reference' => $params['payment_reference'] ?? '',
@@ -250,10 +251,6 @@ class PaymentService
                 $payment = Payment::create($paymentData);
 
                 // ======= NEW STACKING LOGIC (Priority + FIFO) =======
-
-                // 1. Initialize unapplied_amount for the NEW payment
-                $payment->unapplied_amount = $payment->amount;
-                $payment->save();
 
                 $remainingAmount = $request->amount; // Just for tracking, logic uses unapplied_amount
 

@@ -104,37 +104,52 @@ class ClientService
                     ->first();
 
                 if ($existingClient) {
-                    throw new \Exception("El DNI {$params['dni']} ya está registrado en esta ruta");
+                    // Si el cliente existe pero fue creado por carga masiva y necesita actualización (no tiene fotos o gps)
+                    $hasGeolocation = !empty($existingClient->geolocation) || !empty($existingClient->gps_geolocalization);
+                    $hasImages = \App\Models\Image::where('client_id', $existingClient->id)->count() > 0;
+
+                    if (!$hasImages || !$hasGeolocation) {
+                        // Es un cliente incompleto (carga masiva), lo actualizamos en lugar de rechazar
+                        $existingClient->update([
+                            'name' => $params['name'],
+                            'address' => $params['address'] ?? $existingClient->address,
+                            'gps_address' => $params['gps_address'] ?? $existingClient->gps_address,
+                            'gps_geolocalization' => $params['gps_geolocalization'] ?? $existingClient->gps_geolocalization,
+                            'geolocation' => $params['geolocation'] ?? $existingClient->geolocation,
+                            'phone' => $params['phone'] ?? $existingClient->phone,
+                            'email' => $params['email'] ?? $existingClient->email,
+                            'company_name' => $params['company_name'] ?? $existingClient->company_name,
+                            'routing_order' => $params['routing_order'] ?? $existingClient->routing_order,
+                        ]);
+                        $client = $existingClient;
+                    } else {
+                        throw new \Exception("El DNI {$params['dni']} ya está registrado en esta ruta");
+                    }
+                } else {
+                    // Stage 3: Create client
+                    $clientToCreate = true;
                 }
 
-                // Stage 3: Create client
                 try {
-                    $client = Client::create([
-                        'name' => $params['name'],
-                        'dni' => $params['dni'],
-                        'address' => $params['address'] ?? null,
-                        'gps_address' => $params['gps_address'] ?? null,
-                        'gps_geolocalization' => $params['gps_geolocalization'] ?? null,
-                        'geolocation' => $params['geolocation'] ?? null,
-                        'phone' => $params['phone'] ?? null,
-                        'email' => $params['email'] ?? null,
-                        'company_name' => $params['company_name'] ?? null,
-                        'seller_id' => $params['seller_id'] ?? null,
-                        'routing_order' => $params['routing_order'] ?? null,
-                    ]);
+                    if (isset($clientToCreate) && $clientToCreate) {
+                        $client = Client::create([
+                            'name' => $params['name'],
+                            'dni' => $params['dni'],
+                            'address' => $params['address'] ?? null,
+                            'gps_address' => $params['gps_address'] ?? null,
+                            'gps_geolocalization' => $params['gps_geolocalization'] ?? null,
+                            'geolocation' => $params['geolocation'] ?? null,
+                            'phone' => $params['phone'] ?? null,
+                            'email' => $params['email'] ?? null,
+                            'company_name' => $params['company_name'] ?? null,
+                            'seller_id' => $params['seller_id'] ?? null,
+                            'routing_order' => $params['routing_order'] ?? null,
+                        ]);
+                    }
 
-                    // Record Geolocation History
-                    if (!empty($params['gps_geolocalization']) || !empty($params['geolocation'])) {
+                    // Record Geolocation History (for both new and updated from mass upload)
+                    if (isset($client) && (!empty($params['gps_geolocalization']) || !empty($params['geolocation']))) {
                         $coords = $params['gps_geolocalization'] ?? $params['geolocation'];
-                        // Assuming format "lat,lng" or similar if string, but let's check how it's passed.
-                        // Based on other code, it might be separate fields or a string.
-                        // Looking at migration for images, it uses lat/lng columns.
-                        // Client model has 'gps_geolocalization' and 'geolocation'.
-                        // Let's try to parse if it's a string "lat,lng" or use request lat/lng if available.
-                        // Actually, let's look at the request params in a moment.
-                        // For now, let's assume we can extract lat/lng from the request if they exist separately,
-                        // or parse the string.
-                        // However, the cleanest way is to check if request has latitude/longitude directly or parse the string.
 
                         $lat = null;
                         $lng = null;
@@ -181,11 +196,11 @@ class ClientService
                     if ($e->getCode() == 23000) {
                         throw new \Exception("El DNI {$params['dni']} ya está registrado en esta ruta");
                     }
-                    Log::error("Database error creating client: {$e->getMessage()}");
+                    Log::error("Database error creating or updating client: {$e->getMessage()}");
                     throw new \Exception("Error al guardar los datos del cliente: {$e->getMessage()}");
                 } catch (\Exception $e) {
-                    Log::error("Error creating client: {$e->getMessage()}");
-                    throw new \Exception("Error al crear el cliente: {$e->getMessage()}");
+                    Log::error("Error creating or updating client: {$e->getMessage()}");
+                    throw new \Exception("Error al registrar el cliente: {$e->getMessage()}");
                 }
 
                 // Stage 3: Create initial credit if provided
@@ -394,7 +409,31 @@ class ClientService
                 return $this->errorResponse("Error al actualizar el cliente: {$e->getMessage()}", 500);
             }
 
-            // Stage 2: Update images if provided
+            // Stage 2: Update images if provided or if required for incomplete clients
+            if ($client->needs_update) {
+                // If it's an incomplete client, we strictly require images to complete the profile
+                $existingImagesCount = $client->images()->where('type', '!=', 'profile')->count();
+                $hasProfile = $client->images()->where('type', 'profile')->count() > 0;
+                
+                $incomingImagesCount = 0;
+                $incomingHasProfile = false;
+
+                if ($request->has('images')) {
+                    $imagesParam = $request->input('images');
+                    foreach ($imagesParam as $img) {
+                        if (isset($img['type'])) {
+                            if ($img['type'] === 'profile') $incomingHasProfile = true;
+                            else $incomingImagesCount++;
+                        }
+                    }
+                }
+
+                if ( ($existingImagesCount + $incomingImagesCount) < 3 || (!$hasProfile && !$incomingHasProfile) ) {
+                    DB::rollBack();
+                    return $this->errorResponse("Para actualizar un cliente de carga masiva, es obligatorio subir la foto de perfil y las 3 fotos requeridas (fachada, documento y dinero en mano).", 400);
+                }
+            }
+
             if ($request->has('images')) {
                 $validation = $this->validateImages($request);
                 if ($validation !== true) {
@@ -518,6 +557,10 @@ class ClientService
                 return $this->errorResponse("No se encontró {$friendlyName} en la solicitud.", 400);
             }
 
+            if (!$imageFile->isValid()) {
+                return $this->errorResponse("Error al subir {$friendlyName}: La imagen excede el límite de tamaño del servidor o está corrupta. (" . $imageFile->getErrorMessage() . ")", 400);
+            }
+
             if ($imageFile->getSize() > self::MAX_IMAGE_SIZE_BYTES) {
                 $sizeMB = round($imageFile->getSize() / 1048576, 2);
                 return $this->errorResponse("{$friendlyName} excede el tamaño máximo permitido de 2MB (tamaño actual: {$sizeMB}MB). Por favor, comprime la imagen e intenta nuevamente.", 400);
@@ -561,6 +604,11 @@ class ClientService
                 // Validate file exists
                 if (!$imageFile) {
                     throw new \Exception("No se encontró el archivo de imagen");
+                }
+
+                // Validate file is valid before getting size or mime type
+                if (!$imageFile->isValid()) {
+                    throw new \Exception("La imagen excede el límite de tamaño del servidor o está corrupta. (" . $imageFile->getErrorMessage() . ")");
                 }
 
                 // Get friendly name for error messages

@@ -121,6 +121,7 @@ class CreditService
                 'micro_insurance_amount' => $microInsuranceAmount,
                 'is_advance_payment' => $params['is_advance_payment'] ?? false,
                 'status' => 'Vigente',
+                'is_initial_credit' => false,
                 'created_at' => $createdAt,
                 'updated_at' => $updatedAt
             ];
@@ -411,6 +412,7 @@ class CreditService
                 'micro_insurance_amount' => $microInsuranceAmount,
                 'excluded_days' => $request->input('excluded_days') ? json_encode($request->input('excluded_days')) : $oldCredit->excluded_days,
                 'status' => 'Vigente',
+                'is_initial_credit' => false,
                 'created_at' => $createdAt,
                 'updated_at' => $updatedAt
             ]);

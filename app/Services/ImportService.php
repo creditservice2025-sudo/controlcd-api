@@ -25,8 +25,14 @@ class ImportService
         }
 
         if (in_array(strtolower($extension), ['xlsx', 'xls'])) {
-            $rows = Excel::toArray([], $filePath)[0];
-            $headers = array_shift($rows);
+            $allRows = Excel::toArray([], $filePath)[0];
+            $headers = array_shift($allRows);
+            $rows = [];
+            foreach ($allRows as $row) {
+                if (!empty(array_filter($row, function($cell) { return $cell !== null && $cell !== ''; }))) {
+                    $rows[] = $row;
+                }
+            }
         } else {
             $handle = fopen($filePath, 'r');
             $headers = fgetcsv($handle, 0, ',');
@@ -46,6 +52,7 @@ class ImportService
         $dniIndex = array_search('cliente_dni', $headers);
         $nameIndex = array_search('cliente_nombre', $headers);
         $amountIndex = array_search('monto_credito', $headers);
+        $phoneIndex = array_search('cliente_telefono', $headers);
         
         if ($dniIndex === false) {
             throw new \Exception("El archivo no contiene la columna 'cliente_dni'.");
@@ -60,23 +67,62 @@ class ImportService
         ];
 
         $clientsInFile = [];
+        $phonesInFile = []; // phone => dni
         foreach ($rows as $rowData) {
             if (count($rowData) <= $dniIndex) continue;
             
             $dni = trim($rowData[$dniIndex] ?? '');
             if (empty($dni)) continue;
 
-            $name = ($nameIndex !== false && isset($rowData[$nameIndex])) ? trim($rowData[$nameIndex]) : 'S/N';
+            $rawName = ($nameIndex !== false && isset($rowData[$nameIndex])) ? trim($rowData[$nameIndex]) : 'S/N';
+            // Force Title Case
+            $name = \mb_convert_case(mb_strtolower($rawName, 'UTF-8'), MB_CASE_TITLE, 'UTF-8');
             $amount = ($amountIndex !== false && isset($rowData[$amountIndex])) ? floatval($rowData[$amountIndex]) : 0;
+            $phone = ($phoneIndex !== false && isset($rowData[$phoneIndex])) ? trim($rowData[$phoneIndex]) : '';
 
             if (!isset($clientsInFile[$dni])) {
                 $clientsInFile[$dni] = [
                     'dni' => $dni,
                     'name' => $name,
+                    'phone' => $phone,
                     'is_new' => true,
                     'credits' => [],
-                    'total_amount' => 0
+                    'total_amount' => 0,
+                    'warnings' => []
                 ];
+            } else {
+                // Intra-file name check
+                if (strcasecmp($clientsInFile[$dni]['name'], $name) !== 0) {
+                    $mismatch = "ERROR: La cédula $dni aparece con nombres distintos en el archivo: '{$clientsInFile[$dni]['name']}' y '$name'.";
+                    if (!in_array($mismatch, $clientsInFile[$dni]['warnings'])) {
+                        $clientsInFile[$dni]['warnings'][] = $mismatch;
+                    }
+                    $clientsInFile[$dni]['has_errors'] = true;
+                    // Update main name to show conflict clearly
+                    if (!str_contains($clientsInFile[$dni]['name'], 'CONFLICTO')) {
+                        $clientsInFile[$dni]['name'] = "(!) CONFLICTO: " . $clientsInFile[$dni]['name'] . " / " . $name;
+                    }
+                }
+                // Intra-file phone consistency check
+                if ($clientsInFile[$dni]['phone'] !== $phone) {
+                    $mismatch = "ERROR: La cédula $dni aparece con teléfonos distintos: '{$clientsInFile[$dni]['phone']}' y '$phone'.";
+                    if (!in_array($mismatch, $clientsInFile[$dni]['warnings'])) {
+                        $clientsInFile[$dni]['warnings'][] = $mismatch;
+                    }
+                    $clientsInFile[$dni]['has_errors'] = true;
+                }
+            }
+
+            // Flag if phone is used by a different DNI in same file
+            if (!empty($phone)) {
+                if (isset($phonesInFile[$phone]) && $phonesInFile[$phone] !== $dni) {
+                    $error = "ERROR: El teléfono $phone ya está siendo usado por otra cédula en este archivo (DNI: {$phonesInFile[$phone]}).";
+                    if (!in_array($error, $clientsInFile[$dni]['warnings'])) {
+                        $clientsInFile[$dni]['warnings'][] = $error;
+                    }
+                    $clientsInFile[$dni]['has_errors'] = true;
+                }
+                $phonesInFile[$phone] = $dni;
             }
 
             $clientsInFile[$dni]['credits'][] = $amount;
@@ -89,6 +135,34 @@ class ImportService
                             ->first();
 
             if ($client) {
+                // Check for DNI / Name mismatch
+                $dbNameNormalized = \mb_convert_case(mb_strtolower(trim($client->name), 'UTF-8'), MB_CASE_TITLE, 'UTF-8');
+                $excelNameNormalized = $data['name'];
+
+                if (strcasecmp($dbNameNormalized, $excelNameNormalized) !== 0) {
+                     $data['has_errors'] = true;
+                     $error = "ERROR: La cédula $dni ya existe para este vendedor pero está registrada a nombre de: {$client->name}.";
+                     if (!in_array($error, $data['warnings'])) {
+                        $data['warnings'][] = $error;
+                     }
+                     $data['name'] = "(!) ERROR NOMBRE: " . $client->name . " (BD) / " . $excelNameNormalized . " (Archivo)";
+                }
+                // Check for phone uniqueness against DB (for existing client, must match their own phone or be unique)
+                if (!empty($data['phone'])) {
+                    $otherClientWithPhone = Client::where('phone', $data['phone'])
+                        ->where('seller_id', $sellerId)
+                        ->where('dni', '!=', $dni)
+                        ->first();
+                    if ($otherClientWithPhone) {
+                        $error = "ERROR: El teléfono {$data['phone']} ya está registrado para otro cliente: {$otherClientWithPhone->name} (DNI: {$otherClientWithPhone->dni}).";
+                        if (!in_array($error, $data['warnings'])) {
+                            $data['warnings'][] = $error;
+                        }
+                        $data['needs_update'] = true;
+                        $data['has_errors'] = true;
+                    }
+                }
+
                 $summary['existing_clients']++;
                 $data['is_new'] = false;
                 $data['name'] = $client->name; // Use DB name if exists
@@ -102,8 +176,44 @@ class ImportService
             } else {
                 $summary['new_clients']++;
                 $data['needs_update'] = true; // NEW clients will need update
+
+                // SOFT GLOBAL DNI CHECK: Inform if DNI exists in another seller with different name
+                $globalClient = Client::where('dni', $dni)->first();
+                if ($globalClient) {
+                    $dbNameNormalized = \mb_convert_case(mb_strtolower(trim($globalClient->name), 'UTF-8'), MB_CASE_TITLE, 'UTF-8');
+                    $excelNameNormalized = $data['name'];
+                    if (strcasecmp($dbNameNormalized, $excelNameNormalized) !== 0) {
+                        $infoMsg = "INFO: Esta cédula ya está registrada en otra ruta a nombre de: {$globalClient->name}. Verifique si se trata de la misma persona.";
+                        if (!in_array($infoMsg, $data['warnings'])) {
+                            $data['warnings'][] = $infoMsg;
+                        }
+                    }
+                }
+                
+                // Check for phone uniqueness for NEW clients
+                if (!empty($data['phone'])) {
+                    $otherClientWithPhone = Client::where('phone', $data['phone'])
+                        ->where('seller_id', $sellerId)
+                        ->first();
+                    if ($otherClientWithPhone) {
+                        $error = "ERROR: El teléfono {$data['phone']} ya está registrado para otro cliente: {$otherClientWithPhone->name} (DNI: {$otherClientWithPhone->dni}).";
+                        if (!in_array($error, $data['warnings'])) {
+                            $data['warnings'][] = $error;
+                        }
+                        $data['has_errors'] = true;
+                    }
+                }
             }
             
+            if (!empty($data['warnings'])) {
+                foreach($data['warnings'] as $w) {
+                    if (str_starts_with($w, 'ERROR')) {
+                        $summary['has_critical_errors'] = true;
+                        break;
+                    }
+                }
+            }
+
             $summary['client_details'][] = $data;
         }
 
@@ -184,8 +294,53 @@ class ImportService
         return $results;
     }
 
-    protected function validateAndProcess($row, $seller, &$results)
+    protected function validateAndProcess(&$row, $seller, &$results)
     {
+        // Robust date parsing for fecha_entrega
+        if (isset($row['fecha_entrega']) && !empty($row['fecha_entrega'])) {
+            $val = $row['fecha_entrega'];
+            // If it's a numeric Excel date (e.g. 45346)
+            if (is_numeric($val) && $val > 30000) { 
+                try {
+                    $dateTime = \PhpOffice\PhpSpreadsheet\Shared\Date::excelToDateTimeObject($val);
+                    $row['fecha_entrega'] = $dateTime->format('Y-m-d');
+                } catch (\Exception $e) {
+                    // Fallback or leave as is for validator to catch
+                }
+            } else if (is_string($val)) {
+                // Try to parse common formats if it doesn't match Y-m-d
+                if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $val)) {
+                    try {
+                        // Handle d/m/Y or d-m-Y
+                        $cleaned = str_replace('/', '-', $val);
+                        $carbonDate = \Carbon\Carbon::parse($cleaned);
+                        $row['fecha_entrega'] = $carbonDate->format('Y-m-d');
+                    } catch (\Exception $e) {
+                        // Leave as is
+                    }
+                }
+            }
+        }
+
+        // Robust date parsing for fecha_primera_cuota
+        if (isset($row['fecha_primera_cuota']) && !empty($row['fecha_primera_cuota'])) {
+            $val = $row['fecha_primera_cuota'];
+            if (is_numeric($val) && $val > 30000) {
+                try {
+                    $dateTime = \PhpOffice\PhpSpreadsheet\Shared\Date::excelToDateTimeObject($val);
+                    $row['fecha_primera_cuota'] = $dateTime->format('Y-m-d');
+                } catch (\Exception $e) {}
+            } else if (is_string($val)) {
+                if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $val)) {
+                    try {
+                        $cleaned = str_replace('/', '-', $val);
+                        $carbonDate = \Carbon\Carbon::parse($cleaned);
+                        $row['fecha_primera_cuota'] = $carbonDate->format('Y-m-d');
+                    } catch (\Exception $e) {}
+                }
+            }
+        }
+
         $friendlyNames = [
             'cliente_nombre' => 'Nombre del Cliente',
             'cliente_dni' => 'DNI/Cédula',
@@ -204,12 +359,16 @@ class ImportService
         $validator = \Illuminate\Support\Facades\Validator::make($row, [
             'cliente_nombre' => 'required|string|max:255',
             'cliente_dni' => 'required',
+            'cliente_telefono' => 'required',
             'monto_credito' => 'required|numeric|min:0',
-            'fecha_primera_cuota' => 'nullable', // Validation handled manually for formulas
-            'cuotas_numero' => 'nullable|integer|min:1',
-            'tasa_interes' => 'nullable|numeric|min:0',
-            'frecuencia' => 'nullable|in:Diaria,Semanal,Quincenal,Mensual',
-            'fecha_entrega' => 'nullable'
+            'tasa_interes' => 'required|numeric|min:0',
+            'cuotas_numero' => 'required|integer|min:1',
+            'fecha_entrega' => 'required|date_format:Y-m-d',
+            'frecuencia' => 'required|in:Diaria,Semanal,Quincenal,Mensual',
+            'fecha_primera_cuota' => 'required', // Validation handled manually for formulas
+            'microseguro_porcentaje' => 'required|numeric|min:0',
+            'pagos_realizados' => 'required|numeric|min:0',
+            'excluir_domingos' => 'required|in:SI,NO'
         ], [
             'required' => 'El campo :attribute es obligatorio.',
             'numeric' => 'El campo :attribute debe ser un número válido.',
@@ -271,6 +430,10 @@ class ImportService
 
         if (str_contains($technicalError, 'Duplicate entry')) {
             return "Ya existe un registro con el DNI {$row['cliente_dni']} para este vendedor.";
+        }
+        
+        if (str_starts_with($technicalError, 'DNI_MISMATCH|')) {
+            return explode('|', $technicalError)[1];
         }
 
         if (str_contains($technicalError, 'Integrity constraint violation')) {
@@ -340,6 +503,11 @@ class ImportService
 
     public function downloadExcelTemplate($sellerId = null)
     {
+        ini_set('memory_limit', '512M');
+        ini_set('max_execution_time', '300');
+        
+        Log::info("ImportService: Starting template generation for seller: " . ($sellerId ?? 'General'));
+        
         $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
         $sheet = $spreadsheet->getActiveSheet();
         
@@ -428,23 +596,32 @@ class ImportService
         $sundayValidation->setPrompt('¿Excluir domingos del calendario de pagos?');
         $sundayValidation->setFormula1('"SI,NO"');
         
-        // Formula for fecha_primera_cuota (column I2)
-        // This formula adds days based on frequency and skips Sundays if needed
-        // =IF(H2="Diaria",G2+1,IF(H2="Semanal",G2+7,IF(H2="Quincenal",G2+15,IF(H2="Mensual",G2+30,G2+1))))
-        // We'll create a simpler version that the user can adjust
-        $formula = '=IF(L2="SI",IF(WEEKDAY(IF(H2="Diaria",G2+1,IF(H2="Semanal",G2+7,IF(H2="Quincenal",G2+15,G2+30))))=1,IF(H2="Diaria",G2+2,IF(H2="Semanal",G2+8,IF(H2="Quincenal",G2+16,G2+31))),IF(H2="Diaria",G2+1,IF(H2="Semanal",G2+7,IF(H2="Quincenal",G2+15,G2+30)))),IF(H2="Diaria",G2+1,IF(H2="Semanal",G2+7,IF(H2="Quincenal",G2+15,G2+30))))';
-        $sheet->setCellValue('I2', $formula);
-        
-        // Format date columns
-        $sheet->getStyle('G2')->getNumberFormat()
-            ->setFormatCode(\PhpOffice\PhpSpreadsheet\Style\NumberFormat::FORMAT_DATE_YYYYMMDD2);
-        $sheet->getStyle('I2')->getNumberFormat()
-            ->setFormatCode(\PhpOffice\PhpSpreadsheet\Style\NumberFormat::FORMAT_DATE_YYYYMMDD2);
-        
-        // Auto-size columns
+        // Auto-size columns (skip I to avoid calculation overhead/crashes on empty rows)
         foreach (range('A', 'L') as $col) {
+            if ($col == 'I') {
+                $sheet->getColumnDimension($col)->setWidth(20);
+                continue;
+            }
             $sheet->getColumnDimension($col)->setAutoSize(true);
         }
+
+        Log::info("ImportService: Applying validations and formulas to 1000 rows");
+        // Apply validations and formula to rows 2 through 1000
+        for ($i = 2; $i <= 1000; $i++) {
+            $sheet->getCell('H' . $i)->setDataValidation(clone $frequencyValidation);
+            $sheet->getCell('L' . $i)->setDataValidation(clone $sundayValidation);
+            
+            // Formula for fecha_primera_cuota (column I)
+            // Wrap it in an IF(G$i="", "", ...) to avoid errors on empty rows
+            $formula = '=IF(G'.$i.'="", "", IF(L'.$i.'="SI",IF(WEEKDAY(IF(H'.$i.'="Diaria",G'.$i.'+1,IF(H'.$i.'="Semanal",G'.$i.'+7,IF(H'.$i.'="Quincenal",G'.$i.'+15,G'.$i.'+30))))=1,IF(H'.$i.'="Diaria",G'.$i.'+2,IF(H'.$i.'="Semanal",G'.$i.'+8,IF(H'.$i.'="Quincenal",G'.$i.'+16,G'.$i.'+31))),IF(H'.$i.'="Diaria",G'.$i.'+1,IF(H'.$i.'="Semanal",G'.$i.'+7,IF(H'.$i.'="Quincenal",G'.$i.'+15,G'.$i.'+30)))),IF(H'.$i.'="Diaria",G'.$i.'+1,IF(H'.$i.'="Semanal",G'.$i.'+7,IF(H'.$i.'="Quincenal",G'.$i.'+15,G'.$i.'+30)))))';
+            $sheet->setCellValue('I' . $i, $formula);
+        }
+        
+        // Format date columns for rows 2 through 1000
+        $sheet->getStyle('G2:G1000')->getNumberFormat()
+            ->setFormatCode(\PhpOffice\PhpSpreadsheet\Style\NumberFormat::FORMAT_DATE_YYYYMMDD2);
+        $sheet->getStyle('I2:I1000')->getNumberFormat()
+            ->setFormatCode(\PhpOffice\PhpSpreadsheet\Style\NumberFormat::FORMAT_DATE_YYYYMMDD2);
         
         // Add instructions in a separate sheet
         $instructionsSheet = $spreadsheet->createSheet();
@@ -467,8 +644,9 @@ class ImportService
             '11. pagos_realizados: Monto de pagos históricos ya realizados',
             '12. excluir_domingos: Usar lista desplegable (SI/NO)',
             '',
-            'NOTAS IMPORTANTES:',
-            '- La fecha_primera_cuota se calcula automáticamente basándose en fecha_entrega + frecuencia',
+            'IMPORTANTE:',
+            '- TODOS LOS CAMPOS SON OBLIGATORIOS.',
+            '- La fecha_primera_cuota se calcula automáticamente basándose en fecha_entrega + frecuencia.',
             '- Si excluir_domingos = SI, la fórmula salta domingos automáticamente',
             '- Para agregar más filas, copie la fila 2 y pegue abajo (mantendrá fórmulas y validaciones)',
             '- NO modifique los encabezados de la primera fila',
@@ -496,8 +674,19 @@ class ImportService
         
         // Create writer and download
         $writer = new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($spreadsheet);
-        $temp_file = tempnam(sys_get_temp_dir(), 'template_');
+        $writer->setPreCalculateFormulas(false);
+        
+        $tempDir = storage_path('app/public');
+        if (!file_exists($tempDir)) {
+            mkdir($tempDir, 0775, true);
+        }
+        $temp_file = $tempDir . DIRECTORY_SEPARATOR . 'template_' . time() . '.xlsx';
+        
+        Log::info("ImportService: Saving file to: " . $temp_file);
         $writer->save($temp_file);
+        Log::info("ImportService: File saved successfully");
+        
+        if (ob_get_length()) ob_end_clean();
         
         return response()->download($temp_file, $filename . '.xlsx')->deleteFileAfterSend(true);
     }
@@ -509,11 +698,12 @@ class ImportService
 
         // 1. Find or Create Client
         $warnings = [];
+        // Force Title Case on the incoming name
+        $row['cliente_nombre'] = \mb_convert_case(mb_strtolower(trim($row['cliente_nombre']), 'UTF-8'), MB_CASE_TITLE, 'UTF-8');
+        
         $client = Client::where('dni', $row['cliente_dni'])
                         ->where('seller_id', $sellerId)
                         ->first();
-
-        $existingClientId = $client?->id;
 
         if ($client) {
             // Check for existing credits
@@ -527,20 +717,41 @@ class ImportService
         }
 
         if (!$client) {
+            // Check if phone already exists for THIS seller
+            if (!empty($row['cliente_telefono'])) {
+                $duplicatePhone = Client::where('phone', $row['cliente_telefono'])
+                    ->where('seller_id', $sellerId)
+                    ->first();
+                if ($duplicatePhone) {
+                    throw new \Exception("PHONE_DUPLICATE|El teléfono {$row['cliente_telefono']} ya está asociado a otro cliente: {$duplicatePhone->name} (DNI: {$duplicatePhone->dni}).");
+                }
+            }
+
             // Client does not exist, create it
             $client = Client::create([
                 'uuid' => (string) Str::uuid(),
                 'name' => $row['cliente_nombre'],
                 'dni' => $row['cliente_dni'],
-                'phone' => $row['cliente_telefono'] ?? '0',
+                'phone' => $row['cliente_telefono'],
                 'seller_id' => $sellerId,
                 'status' => 'active',
-                // 'needs_update' => true, // Column missing in DB
                 'address' => '',
                 'geolocation' => ['latitude' => 0, 'longitude' => 0],
                 'routing_order' => Client::where('seller_id', $sellerId)->max('routing_order') + 1,
             ]);
         } else {
+            // Update phone if different and not taken
+            if (!empty($row['cliente_telefono']) && $client->phone !== $row['cliente_telefono']) {
+                $duplicatePhone = Client::where('phone', $row['cliente_telefono'])
+                    ->where('seller_id', $sellerId)
+                    ->where('dni', '!=', $client->dni)
+                    ->first();
+                if ($duplicatePhone) {
+                    throw new \Exception("PHONE_DUPLICATE|El teléfono {$row['cliente_telefono']} ya está asociado a otro cliente: {$duplicatePhone->name} (DNI: {$duplicatePhone->dni}).");
+                }
+                $client->update(['phone' => $row['cliente_telefono']]);
+            }
+
             // If client exists, check if they are missing mandatory data
             $hasAddress = !empty($client->address);
             $hasGPS = !empty($client->gps_address) || (!empty($client->geolocation['latitude']) && $client->geolocation['latitude'] != 0);
@@ -624,6 +835,7 @@ class ImportService
             'first_quota_date' => $firstQuotaDate,
             'micro_insurance_amount' => $microInsuranceAmount,
             'excluded_days' => $excludeSundays ? json_encode(['Domingo']) : json_encode([]),
+            'is_initial_credit' => true,
         ]);
 
         // 3. Generate Installments

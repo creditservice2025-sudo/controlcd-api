@@ -287,6 +287,7 @@ Route::middleware('auth:api')->group(function () {
     });
 
     // Import Routes (Admin restricted via Controller)
+    Route::post('/import/analyze', [\App\Http\Controllers\ImportController::class, 'analyze']);
     Route::post('/import/clients', [\App\Http\Controllers\ImportController::class, 'store']);
 
     // Verification Routes
@@ -296,3 +297,5 @@ Route::middleware('auth:api')->group(function () {
     // Telegram Logs
     Route::get('/telegram-logs', [\App\Http\Controllers\TelegramLogController::class, 'index']);
 });
+
+Route::get('/import/template', [\App\Http\Controllers\ImportController::class, 'downloadTemplate']);

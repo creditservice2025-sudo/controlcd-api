@@ -842,8 +842,18 @@ class SellerService
     public function getRoutesSelect()
     {
         try {
-            $routes = Seller::with('user:id,name')
-                ->select('id', 'uuid', 'user_id')
+            $routes = Seller::select('id', 'uuid', 'user_id')
+                ->with('user:id,name,dni')
+                ->withCount([
+                    'clients' => function ($query) {
+                        $query->where('status', 'active')
+                            ->whereNull('deleted_at');
+                    },
+                    'credits' => function ($query) {
+                        $query->where('status', 'Vigente')
+                            ->whereNull('deleted_at');
+                    }
+                ])
                 ->get();
 
             return $this->successResponse([

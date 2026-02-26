@@ -17,7 +17,9 @@ class PaymentInstallment extends Model
         'payment_id',
         'installment_id',
         'applied_amount',
-        'deleted_by'
+        'deleted_by',
+        'created_at',
+        'updated_at'
     ];
 
     public function payment(): BelongsTo

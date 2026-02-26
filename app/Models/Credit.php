@@ -42,6 +42,7 @@ class Credit extends Model
         'modification_count',
         'last_modified_at',
         'last_modified_by',
+        'is_initial_credit',
     ];
 
     public function client()
