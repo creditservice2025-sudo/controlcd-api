@@ -1701,6 +1701,9 @@ class ClientService
                             'installments' => function ($iq) {
                                 $iq->select('id', 'credit_id', 'quota_number', 'due_date', 'quota_amount', 'paid_amount', 'status')
                                     ->orderBy('quota_number', 'asc');
+                            },
+                            'images' => function ($iq) {
+                                $iq->select('id', 'credit_id', 'path', 'type');
                             }
                         ]);
                 },

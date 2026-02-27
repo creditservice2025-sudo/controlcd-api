@@ -24,6 +24,7 @@ use App\Models\CreditModification;
 use App\Models\PaymentInstallment;
 use Barryvdh\DomPDF\Facade\Pdf;
 use App\Traits\ApiResponse;
+use App\Models\Image;
 
 class CreditService
 {
@@ -100,6 +101,11 @@ class CreditService
             // Calculate total amount (Capital + Interest only, Micro-insurance is deducted from disbursement)
             $totalAmount = $creditValue + $totalInterestAmount;
 
+            $client = Client::find($params['client_id']);
+            if (!$client) {
+                return $this->errorResponse('El cliente no existe.', 404);
+            }
+
             $now = Carbon::now($userTimezone ?: self::TIMEZONE);
             $createdAt = $params['created_at'] ?? $now;
             $updatedAt = $params['updated_at'] ?? $now;
@@ -121,7 +127,7 @@ class CreditService
                 'micro_insurance_amount' => $microInsuranceAmount,
                 'is_advance_payment' => $params['is_advance_payment'] ?? false,
                 'status' => 'Vigente',
-                'is_initial_credit' => false,
+                'is_initial_credit' => !($client->credits()->exists()),
                 'created_at' => $createdAt,
                 'updated_at' => $updatedAt
             ];
@@ -1754,6 +1760,46 @@ class CreditService
             }
             $credit->update($params);
 
+            if ($request->has('images')) {
+                $images = $request->input('images');
+                $creditDescription = "Crédito ID: {$credit->id} - Valor: $" . number_format($credit->credit_value, 2) . " - Actualizado: " . now()->format('Y-m-d H:i');
+
+                foreach ($images as $index => $imageData) {
+                    if ($request->hasFile("images.{$index}.file")) {
+                        $imageFile = $request->file("images.{$index}.file");
+                        $imagePath = Helper::uploadFile($imageFile, 'clients');
+
+                        $locationTimestamp = null;
+                        if (!empty($imageData['location_timestamp'])) {
+                            try {
+                                $locationTimestamp = Carbon::parse($imageData['location_timestamp'])->format('Y-m-d H:i:s');
+                            } catch (\Exception $e) {
+                                \Log::warning("Error parsing location_timestamp: " . $imageData['location_timestamp']);
+                            }
+                        }
+
+                        $imageRecordData = [
+                            'path' => $imagePath,
+                            'type' => $imageData['type'],
+                            'description' => $creditDescription,
+                            'latitude' => $imageData['latitude'] ?? null,
+                            'longitude' => $imageData['longitude'] ?? null,
+                            'accuracy' => $imageData['accuracy'] ?? null,
+                            'address' => $imageData['address'] ?? null,
+                            'location_timestamp' => $locationTimestamp,
+                        ];
+
+                        // Create for Credit
+                        Image::create(array_merge($imageRecordData, ['credit_id' => $credit->id]));
+                        
+                        // Si es un tipo de imagen que pertenece al perfil del cliente, también la asociamos al cliente
+                        if (in_array($imageData['type'], ['document', 'business', 'profile', 'money_in_hand'])) {
+                            Image::create(array_merge($imageRecordData, ['client_id' => $credit->client_id]));
+                        }
+                    }
+                }
+            }
+
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Crédito actualizado correctamente',
@@ -2283,7 +2329,7 @@ class CreditService
         try {
             $query = Credit::query()
                 ->where('client_id', $clientId)
-                ->with(['client', 'seller', 'installments', 'payments'])
+                ->with(['client', 'seller', 'installments', 'payments', 'images'])
                 ->orderBy('created_at', 'desc');
 
             $credits = $query->paginate($perPage, ['*'], 'page', $page);

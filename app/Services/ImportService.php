@@ -833,9 +833,11 @@ class ImportService
             'status' => 'Vigente',
             'start_date' => $payoutDate,
             'first_quota_date' => $firstQuotaDate,
+            'micro_insurance_percentage' => $microInsurancePercentage,
             'micro_insurance_amount' => $microInsuranceAmount,
             'excluded_days' => $excludeSundays ? json_encode(['Domingo']) : json_encode([]),
-            'is_initial_credit' => true,
+            'phone' => $client->phone,
+            'is_initial_credit' => !($client->credits()->exists()),
         ]);
 
         // 3. Generate Installments

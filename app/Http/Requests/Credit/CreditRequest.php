@@ -40,18 +40,16 @@ class CreditRequest extends FormRequest
             'number_installments' => 'required|integer|min:1'
         ];
 
-        if ($this->isMethod('put') || $this->isMethod('get')) {
+        if ($this->isMethod('put') || $this->isMethod('patch') || $this->isMethod('get')) {
             $rules['client_id'] = 'nullable|exists:clients,id';
             $rules['guarantor_id'] = 'nullable|exists:guarantors,id';
             $rules['seller_id'] = 'nullable|exists:sellers,id';
-            // $rules['start_date'] = 'nullable|date';
-            // $rules['end_date'] = 'nullable|date';
             $rules['credit_value'] = 'nullable|numeric';
             $rules['first_quota_date'] = 'nullable|date';
-            $rules['payment_frequency'] = 'nullable|in:daily,weekly,biweekly,monthly';
-            //$rules['status'] = 'nullable|in:Pendiente,Cancelado,Finalizado,Renovado,Moroso';
-            //$rules['total_interest'] = 'nullable|numeric';
+            $rules['payment_frequency'] = 'nullable|in:Diaria,Semanal,Quincenal,Mensual';
             $rules['number_installments'] = 'nullable|integer';
+            $rules['micro_insurance_percentage'] = 'nullable|numeric';
+            $rules['micro_insurance_amount'] = 'nullable|numeric';
         }
 
         return $rules;
