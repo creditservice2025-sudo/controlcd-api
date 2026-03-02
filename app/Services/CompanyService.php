@@ -4,12 +4,14 @@ namespace App\Services;
 
 use App\Helpers\Helper;
 use App\Http\Requests\Company\CompanyRequest;
+use App\Mail\WelcomeCompanyMail;
 use App\Traits\ApiResponse;
 use App\Models\Company;
 use App\Models\User;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Mail;
 use Log;
 use Illuminate\Support\Str;
 
@@ -90,15 +92,19 @@ class CompanyService
                 }
             }
 
+            // Capture plain password before hashing (needed for welcome email)
+            $plainPassword = $params['password'];
+
             $user = User::create([
-                'name' => $params['name'],
-                'email' => $params['email'],
-                'dni' => $params['dni'],
-                'phone' => $params['phone'] ?? null,
-                'password' => Hash::make($params['password']),
-                'role_id' => $params['role_id'] ?? 2,
-                'created_at' => $params['created_at'] ?? null,
-                'updated_at' => $params['updated_at'] ?? null
+                'name'                 => $params['name'],
+                'email'                => $params['email'],
+                'dni'                  => $params['dni'],
+                'phone'                => $params['phone'] ?? null,
+                'password'             => Hash::make($plainPassword),
+                'role_id'              => $params['role_id'] ?? 2,
+                'must_change_password' => true,   // force password change on first login
+                'created_at'           => $params['created_at'] ?? null,
+                'updated_at'           => $params['updated_at'] ?? null
             ]);
 
             $logoPath = null;
@@ -120,15 +126,33 @@ class CompanyService
 
             DB::commit();
 
+            // Send welcome email using queue to avoid blocking the HTTP response.
+            // Mail::later dispatches to queue (sync driver = defers after response).
+            try {
+                \Log::info('Attempting to send welcome email (create)', [
+                    'from' => config('mail.from.address'),
+                    'to'   => $user->email
+                ]);
+                Mail::to($user->email)->later(
+                    now(),
+                    new WelcomeCompanyMail($user, $company, $plainPassword)
+                );
+            } catch (\Throwable $mailEx) {
+                Log::warning('Welcome email could not be sent to ' . $user->email . ': ' . $mailEx->getMessage());
+            }
+
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Empresa creada con éxito',
-                'data' => $company
+                'data'    => $company
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
-            \Log::error('Error creating company: ' . $e->getMessage());
-            return $this->errorResponse('Error al crear la empresa', 500);
+            \Log::error('Error creating company: ' . $e->getMessage(), [
+                'params' => $request->all(),
+                'trace'  => $e->getTraceAsString()
+            ]);
+            return $this->errorResponse('Error al crear la empresa: ' . $e->getMessage(), 500);
         }
     }
 
@@ -264,5 +288,43 @@ class CompanyService
             \Log::error($e->getMessage());
             return $this->errorResponse('Error al eliminar la empresa', 500);
         }
+    }
+
+    public function resendWelcomeEmail($companyId)
+    {
+        $company = Company::with('user')->findOrFail($companyId);
+        $user = $company->user;
+
+        if (!$user) {
+            return $this->errorResponse('Usuario no encontrado para esta empresa', 404);
+        }
+
+        // Generate a new random password for reset
+        $newPassword = Str::random(8);
+        
+        $user->update([
+            'password' => Hash::make($newPassword),
+            'must_change_password' => true
+        ]);
+
+        try {
+            // For resending, we use direct send() instead of later() to give 
+            // the admin immediate confirmation that the email was attempted.
+            \Log::info('Attempting to send welcome email (resend)', [
+                'from' => config('mail.from.address'),
+                'to'   => $user->email
+            ]);
+            Mail::to($user->email)->send(
+                new WelcomeCompanyMail($user, $company, $newPassword)
+            );
+        } catch (\Throwable $mailEx) {
+            \Log::error('Resend welcome email failed for ' . $user->email . ': ' . $mailEx->getMessage());
+            return $this->errorResponse('El correo no pudo ser enviado: ' . $mailEx->getMessage(), 500);
+        }
+
+        return $this->successResponse([
+            'success' => true,
+            'message' => 'Correo de bienvenida reenviado con éxito. Se ha generado una nueva contraseña temporal.'
+        ]);
     }
 }

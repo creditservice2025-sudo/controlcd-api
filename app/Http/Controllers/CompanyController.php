@@ -125,4 +125,13 @@ class CompanyController extends Controller
         ]);
     }
 
+    public function resendWelcomeEmail($companyId)
+    {
+        try {
+            return $this->companyService->resendWelcomeEmail($companyId);
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
 }

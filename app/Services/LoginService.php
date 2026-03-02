@@ -173,13 +173,11 @@ class LoginService
 
     public function changePassword($params)
     {
-
         DB::beginTransaction();
-
         try {
             $validator = Validator::make($params, [
                 'current_password' => ['required'],
-                'new_password' => ['required', 'min:8'],
+                'new_password'     => ['required', 'min:8'],
             ]);
 
             if ($validator->fails()) {
@@ -192,14 +190,16 @@ class LoginService
                 return $this->errorResponse('La contraseña actual no es correcta', 401);
             }
 
-            $user->password = Hash::make($params['new_password']);
+            $user->password             = Hash::make($params['new_password']);
+            $user->must_change_password = false;  // clear the force-change flag
             $user->save();
 
             DB::commit();
 
             return $this->successResponse([
-                'success' => true,
-                'message' => 'Contraseña actualizada correctamente',
+                'success'              => true,
+                'message'              => 'Contraseña actualizada correctamente',
+                'must_change_password' => false,
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
