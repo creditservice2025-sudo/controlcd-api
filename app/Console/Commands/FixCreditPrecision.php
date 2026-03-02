@@ -35,14 +35,12 @@ class FixCreditPrecision extends Command
         
         $this->info($dryRun ? "--- DRY RUN MODE: No changes will be saved ---" : "--- STARTING CREDIT PRECISION FIX ---");
 
-        // We look for credits that stay "Vigente" or other active status but have a very small remaining amount
+        // We look for credits that stay "Vigente" or other active status but have a very small remaining amount (or are overpaid)
         $credits = Credit::where('status', '!=', 'Liquidado')
-            ->where('remaining_amount', '>', 0)
-            ->where('remaining_amount', '<', 0.01)
+            ->where('remaining_amount', '<=', 0.01)
             ->get();
 
-        $this->info("Found " . $credits->count() . " credits with balance < 0.01");
-
+        $this->info("Found " . $credits->count() . " credits with balance <= 0.01");
         foreach ($credits as $credit) {
             $this->warn("Credit ID: {$credit->id} | Balance: {$credit->remaining_amount} | Status: {$credit->status}");
 
