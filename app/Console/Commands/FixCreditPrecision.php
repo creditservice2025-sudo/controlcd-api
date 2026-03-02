@@ -41,7 +41,6 @@ class FixCreditPrecision extends Command
             ->get();
 
         $this->info("Found " . $credits->count() . " credits with balance <= 0.01");
-
         foreach ($credits as $credit) {
             $this->warn("Credit ID: {$credit->id} | Balance: {$credit->remaining_amount} | Status: {$credit->status}");
 
@@ -100,7 +99,6 @@ class FixCreditPrecision extends Command
                             $payment->save();
                         }
                     }
-
                     // Liquidate Credit
                     $credit->remaining_amount = 0;
                     $credit->status = 'Liquidado';
