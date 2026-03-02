@@ -11,6 +11,7 @@ use Spatie\Permission\Traits\HasRoles;
 use Laravel\Passport\HasApiTokens;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Str;
+use App\Notifications\ResetPasswordNotification;
 
 class User extends Authenticatable
 {
@@ -105,7 +106,6 @@ class User extends Authenticatable
     }
 
 
-    // boots
     protected static function boot()
     {
         parent::boot();
@@ -114,5 +114,16 @@ class User extends Authenticatable
                 $model->uuid = Str::uuid();
             }
         });
+    }
+
+    /**
+     * Send the password reset notification.
+     *
+     * @param  string  $token
+     * @return void
+     */
+    public function sendPasswordResetNotification($token)
+    {
+        $this->notify(new ResetPasswordNotification($token));
     }
 }
