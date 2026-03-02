@@ -1396,7 +1396,7 @@ class PaymentService
 
                 // Check total stack available BEFORE applying anything to THIS installment
                 $totalStack = $stackPayments->sum('unapplied_amount');
-                if ($totalStack < $targetAmount) {
+                if ($totalStack < ($targetAmount - 0.001)) {
                     // Not enough money to fill THIS quota.
                     break;
                 }
