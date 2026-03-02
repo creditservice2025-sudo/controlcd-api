@@ -32,7 +32,7 @@ class FixCreditPrecision extends Command
     public function handle()
     {
         $dryRun = $this->option('dry-run');
-        
+
         $this->info($dryRun ? "--- DRY RUN MODE: No changes will be saved ---" : "--- STARTING CREDIT PRECISION FIX ---");
 
         // We look for credits that stay "Vigente" or other active status but have a very small remaining amount (or are overpaid)
