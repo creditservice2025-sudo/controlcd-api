@@ -10,35 +10,46 @@
 
     /* CSS Logo Header (Zero External Images) */
     .header {
-      padding: 40px;
+      padding: 50px 40px;
       text-align: center;
-      background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%);
+      background: linear-gradient(135deg, #1a3fad 0%, #2563eb 100%);
       color: #ffffff;
     }
     .logo-box {
       display: inline-flex;
       align-items: center;
       background: #ffffff;
-      padding: 10px 20px;
-      border-radius: 8px;
-      margin-bottom: 20px;
+      padding: 12px 24px;
+      border-radius: 12px;
+      margin-bottom: 25px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
     }
     .logo-icon {
-      font-size: 24px;
-      margin-right: 10px;
+      font-size: 28px;
+      margin-right: 12px;
       color: #2563eb;
-      font-weight: bold;
+      font-weight: 900;
     }
     .logo-text {
-      font-size: 22px;
-      font-weight: 800;
+      font-size: 24px;
+      font-weight: 900;
       color: #1e3a8a;
-      letter-spacing: -1px;
+      letter-spacing: -0.5px;
     }
-    .logo-subtitle { color: #2563eb; }
+    .logo-subtitle { color: #2563eb; font-weight: 900; }
 
-    .header h1 { font-size: 26px; font-weight: 800; margin-bottom: 8px; }
-    .header p { color: rgba(255,255,255,0.85); font-size: 15px; }
+    .header h1 { 
+      font-size: 32px; 
+      font-weight: 900; 
+      margin-bottom: 12px; 
+      letter-spacing: -1px;
+      color: #ffffff;
+    }
+    .header p { 
+      color: rgba(255,255,255,0.9); 
+      font-size: 16px; 
+      font-weight: 500;
+    }
 
     /* Body */
     .body { padding: 40px; }
@@ -107,8 +118,14 @@
         <span class="logo-icon">⇄</span>
         <span class="logo-text">Controll <span class="logo-subtitle">CD</span></span>
       </div>
-      <h1>¡Tu cuenta está lista! 🎉</h1>
-      <p>Bienvenido al sistema oficial de Control-C&D</p>
+      
+      @if(($type ?? 'welcome') === 'welcome')
+        <h1>¡Tu cuenta está lista! 🎉</h1>
+        <p>Bienvenido al sistema oficial de Controll-C&D</p>
+      @else
+        <h1>¡Clave restablecida! 🔑</h1>
+        <p>Se ha generado una nueva clave de acceso para tu cuenta</p>
+      @endif
     </div>
 
     <div class="body">
@@ -154,7 +171,7 @@
     </div>
 
     <div class="footer">
-      <p><strong>Control-C&D — Soluciones de Crédito</strong></p>
+      <p><strong>Controll-C&D — Soluciones de Crédito</strong></p>
       <p>© {{ date('Y') }} Todos los derechos reservados.</p>
     </div>
   </div>

@@ -18,12 +18,17 @@ class WelcomeCompanyMail extends Mailable
         public readonly User    $user,
         public readonly Company $company,
         public readonly string  $plainPassword,
+        public readonly string  $type = 'welcome', // 'welcome' or 'reset'
     ) {}
 
     public function envelope(): Envelope
     {
+        $subject = $this->type === 'welcome' 
+            ? '¡Bienvenido a Control-C&D! - Tus credenciales de acceso'
+            : 'Restablecimiento de clave - Control-C&D';
+
         return new Envelope(
-            subject: '¡Bienvenido a Control-C&D! - Tus credenciales de acceso',
+            subject: $subject,
         );
     }
 
@@ -41,6 +46,7 @@ class WelcomeCompanyMail extends Mailable
                 'userEmail'     => $this->user->email,
                 'password'      => $this->plainPassword,
                 'appUrl'        => env('FRONTEND_URL', config('app.url')),
+                'type'          => $this->type,
             ],
         );
     }

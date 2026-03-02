@@ -39,7 +39,7 @@ class CompanyRequest extends FormRequest
                 'max:255',
                 Rule::unique('users', 'email')->ignore($userId)
             ],
-            'password' => $companyId ? 'nullable|string|min:6' : 'required|string|min:6',
+            'password' => 'nullable|string|min:6',
             
             'code' => [
                 'required',

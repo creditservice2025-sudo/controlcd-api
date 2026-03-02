@@ -27,11 +27,9 @@ class CompanyService
     ) {
         try {
             $companies = Company::with('user')
-                ->withCount(['sellers'])
+                ->withCount(['sellers', 'credits'])
                 ->withSum('credits as total_credits_value', 'credit_value')
-                ->with(['credits' => function ($query) {
-                    $query->select('company_id', 'total_interest');
-                }])
+                ->withSum('credits as total_interest_sum', 'total_interest')
                 ->when($search, function ($query, $search) {
                     return $query->where('name', 'like', "%{$search}%")
                         ->orWhere('code', 'like', "%{$search}%")
@@ -46,12 +44,11 @@ class CompanyService
                 ->paginate($perPage);
 
             $transformedCompanies = $companies->getCollection()->transform(function ($company) {
-                $totalInterest = $company->credits->sum('total_interest');
+                $totalInterest = $company->total_interest_sum ?? 0;
+                $totalCreditsValue = $company->total_credits_value ?? 0;
 
-                $company->total_with_interest = $company->total_credits_value +
-                    ($company->total_credits_value * $totalInterest / 100);
-
-                $company->credits_count = $company->credits->count();
+                $company->total_with_interest = $totalCreditsValue +
+                    ($totalCreditsValue * $totalInterest / 100);
 
                 return $company;
             });
@@ -93,7 +90,8 @@ class CompanyService
             }
 
             // Capture plain password before hashing (needed for welcome email)
-            $plainPassword = $params['password'];
+            // If password is not provided, generate a random one
+            $plainPassword = $params['password'] ?? Str::random(8);
 
             $user = User::create([
                 'name'                 => $params['name'],
@@ -135,7 +133,7 @@ class CompanyService
                 ]);
                 Mail::to($user->email)->later(
                     now(),
-                    new WelcomeCompanyMail($user, $company, $plainPassword)
+                    new WelcomeCompanyMail($user, $company, $plainPassword, 'welcome')
                 );
             } catch (\Throwable $mailEx) {
                 Log::warning('Welcome email could not be sent to ' . $user->email . ': ' . $mailEx->getMessage());
@@ -290,7 +288,7 @@ class CompanyService
         }
     }
 
-    public function resendWelcomeEmail($companyId)
+    public function resendWelcomeEmail($companyId, $customPassword = null)
     {
         $company = Company::with('user')->findOrFail($companyId);
         $user = $company->user;
@@ -299,8 +297,8 @@ class CompanyService
             return $this->errorResponse('Usuario no encontrado para esta empresa', 404);
         }
 
-        // Generate a new random password for reset
-        $newPassword = Str::random(8);
+        // Use custom password if provided, otherwise generate a new random one
+        $newPassword = $customPassword ?? Str::random(8);
         
         $user->update([
             'password' => Hash::make($newPassword),
@@ -312,19 +310,30 @@ class CompanyService
             // the admin immediate confirmation that the email was attempted.
             \Log::info('Attempting to send welcome email (resend)', [
                 'from' => config('mail.from.address'),
-                'to'   => $user->email
+                'to'   => $user->email,
+                'company' => $company->name,
+                'user_id' => $user->id,
+                'password_len' => strlen($newPassword),
+                'mailer' => config('mail.mailer'),
+                'is_custom' => !is_null($customPassword)
             ]);
+            
             Mail::to($user->email)->send(
-                new WelcomeCompanyMail($user, $company, $newPassword)
+                new WelcomeCompanyMail($user, $company, $newPassword, 'reset')
             );
+            
+            \Log::info('Welcome email (resend) sent successfully to ' . $user->email);
         } catch (\Throwable $mailEx) {
-            \Log::error('Resend welcome email failed for ' . $user->email . ': ' . $mailEx->getMessage());
+            \Log::error('Resend welcome email failed for ' . $user->email . ': ' . $mailEx->getMessage(), [
+                'exception' => $mailEx,
+                'trace' => $mailEx->getTraceAsString()
+            ]);
             return $this->errorResponse('El correo no pudo ser enviado: ' . $mailEx->getMessage(), 500);
         }
 
         return $this->successResponse([
             'success' => true,
-            'message' => 'Correo de bienvenida reenviado con éxito. Se ha generado una nueva contraseña temporal.'
+            'message' => 'Correo de bienvenida reenviado con éxito.' . ($customPassword ? '' : ' Se ha generado una nueva contraseña temporal.')
         ]);
     }
 }
