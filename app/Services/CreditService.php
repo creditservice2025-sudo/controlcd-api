@@ -192,11 +192,19 @@ class CreditService
 
             for ($i = 1; $i <= $credit->number_installments; $i++) {
 
+                $amount = round($quotaAmount, 2);
+                
+                // Si es la última cuota, ajustar para que la suma total sea exacta
+                if ($i == $credit->number_installments) {
+                    $accumulated = round($amount * ($credit->number_installments - 1), 2);
+                    $amount = round($credit->total_amount - $accumulated, 2);
+                }
+
                 Installment::create([
                     'credit_id' => $credit->id,
                     'quota_number' => $i,
                     'due_date' => $dueDate->format('Y-m-d'),
-                    'quota_amount' => round($quotaAmount, 2),
+                    'quota_amount' => $amount,
                     'status' => 'Pendiente',
                     'created_at' => $createdAt,
                     'updated_at' => $updatedAt
@@ -438,11 +446,19 @@ class CreditService
             $dueDate = $adjustForExcludedDays(Carbon::parse($newCredit->first_quota_date));
 
             for ($i = 1; $i <= $newCredit->number_installments; $i++) {
+                $amount = round($quotaAmount, 2);
+
+                // Ajustar última cuota
+                if ($i == $newCredit->number_installments) {
+                    $accumulated = round($amount * ($newCredit->number_installments - 1), 2);
+                    $amount = round($newCredit->total_amount - $accumulated, 2);
+                }
+
                 Installment::create([
                     'credit_id' => $newCredit->id,
                     'quota_number' => $i,
                     'due_date' => $dueDate->format('Y-m-d'),
-                    'quota_amount' => round($quotaAmount, 2),
+                    'quota_amount' => $amount,
                     'status' => 'Pendiente',
                     'created_at' => $createdAt,
                     'updated_at' => $updatedAt
@@ -2376,11 +2392,23 @@ class CreditService
                     }
                 }
 
+                // Add geolocation history for credit creation
+                $geolocation = \App\Models\ClientGeolocationHistory::where('action_type', 'credit_created')
+                    ->where('action_id', $credit->id)
+                    ->first();
+                
+                if ($geolocation) {
+                    $credit->setAttribute('geolocation', $geolocation);
+                }
+
                 return $credit;
             });
 
+            $sellerForTz = \App\Models\Seller::find($sellerId);
+            $sellerTz = \App\Helpers\TimezoneHelper::getSellerTimezone($sellerForTz);
+
             // Convert to array to ensure renewed_from is included in JSON
-            $creditsArray = $credits->map(function ($credit) {
+            $creditsArray = $credits->map(function ($credit) use ($sellerTz) {
                 $creditArray = $credit->toArray();
                 // Ensure renewed_from is included even if it was set dynamically
                 if ($credit->relationLoaded('renewed_from')) {
@@ -2389,6 +2417,11 @@ class CreditService
                 } else {
                     \Log::info('Credit ID: ' . $credit->id . ' - renewed_from relation NOT loaded');
                 }
+                
+                if (!isset($creditArray['business_timezone'])) {
+                    $creditArray['business_timezone'] = $sellerTz;
+                }
+
                 return $creditArray;
             });
 
@@ -2881,7 +2914,7 @@ class CreditService
             'total_credit_value' => round($totalCreditValue, 2),
             'capital' => round($credit->credit_value, 2),
             'interest' => round($interestAmount, 2),
-            'micro_insurance' => round($microInsurance, 2),
+            'micro_insurance' => round($credit->micro_insurance_amount ?? 0, 2),
             'quota_amount' => $quotaAmount,
             'number_installments' => $credit->number_installments,
             'installments' => $installmentsData,

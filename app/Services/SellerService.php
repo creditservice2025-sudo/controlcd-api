@@ -252,9 +252,16 @@ class SellerService
             $targetDate = $targetDateInput ? Carbon::parse($targetDateInput, $timezone) : Carbon::now($timezone);
             
             $targetDay = $targetDate->format('Y-m-d');
+            $todayLima = Carbon::now($timezone)->format('Y-m-d');
+            
+            // 1. Bloqueo de fechas futuras
+            if ($targetDay > $todayLima) {
+                return $this->errorResponse('No se pueden consultar rutas de fechas futuras.', 422);
+            }
+
             $targetStartUTC = $targetDate->copy()->startOfDay()->utc();
             $targetEndUTC = $targetDate->copy()->endOfDay()->utc();
-            $isToday = $targetDay === Carbon::now($timezone)->format('Y-m-d');
+            $isToday = $targetDay === $todayLima;
 
             \Log::info("Rutas Activas Consulted", [
                 'target_day' => $targetDay,
@@ -271,9 +278,9 @@ class SellerService
                 //     $q->whereDate('login_at', $today)
                 //         ->whereNull('logout_at');
                 // },
-                'user.sessionLogs' => function ($q) {
-                    // Cargar los últimos logs de sesión de forma más robusta
-                    $q->orderBy('login_at', 'desc')->limit(20);
+                'user.sessionLogs' => function ($q) use ($targetDay, $timezone) {
+                    $q->whereDate('login_at', $targetDay)
+                      ->orderBy('login_at', 'asc');
                 },
                 'city:id,name,country_id',
                 'city.country:id,name,timezone'
@@ -336,21 +343,7 @@ class SellerService
             //         ->whereNull('logout_at');
             // })->get([
 
-            $routesList = $routes->where(function ($query) use ($targetStartUTC, $targetEndUTC, $targetDay) {
-                // Sellers who started a session today
-                $query->whereHas('user.sessionLogs', function ($q) use ($targetStartUTC, $targetEndUTC) {
-                    $q->whereBetween('login_at', [$targetStartUTC, $targetEndUTC]);
-                })
-                // OR Sellers with an active session started before today
-                ->orWhereHas('user.sessionLogs', function ($q) use ($targetStartUTC) {
-                    $q->where('login_at', '<', $targetStartUTC)
-                      ->whereNull('logout_at');
-                })
-                // OR Sellers who already have work (liquidation) for today
-                ->orWhereHas('liquidations', function ($q) use ($targetDay) {
-                    $q->whereDate('date', $targetDay);
-                });
-            })->get([
+            $routesList = $routes->get([
                         'id',
                         'user_id',
                         'city_id',
@@ -359,10 +352,50 @@ class SellerService
                         'created_at'
                     ]);
 
-            $data = $routesList->map(function ($route) use ($targetDay, $targetStartUTC, $targetEndUTC) {
-                $liquidationToday = Liquidation::where('seller_id', $route->id)
-                    ->where(DB::raw('DATE(date)'), $targetDay)
-                    ->first();
+            // ─── PRE-LOAD BATCH DATA (elimina queries N+1) ───────────────
+            $routeIds = $routesList->pluck('id');
+
+            // 1. Liquidaciones de hoy para todos los vendedores (1 query)
+            $liquidationsToday = Liquidation::whereIn('seller_id', $routeIds)
+                ->whereDate('date', $targetDay)
+                ->get()
+                ->keyBy('seller_id');
+
+            // 2. Auditorías de esas liquidaciones (1 query)
+            $liquidationIds = $liquidationsToday->pluck('id');
+            $auditsToday = \App\Models\LiquidationAudit::with('user')
+                ->whereIn('liquidation_id', $liquidationIds)
+                ->whereIn('action', ['updated', 'created', 'Aprobación administrativa'])
+                ->whereNull('deleted_at')
+                ->orderByDesc('created_at')
+                ->get()
+                ->groupBy('liquidation_id');
+
+            // 3. Rutas con liquidaciones pendientes de días anteriores (1 query)
+            $previousPendingSellerIds = Liquidation::whereIn('seller_id', $routeIds)
+                ->whereDate('date', '<', $targetDay)
+                ->whereIn('status', ['pending', 'auto', 'En curso'])
+                ->pluck('seller_id')
+                ->unique()
+                ->flip();
+
+
+            // 5. Todos los pagos de hoy para los sellers (para el resumen de ruta)
+            $allPaymentsToday = \App\Models\Payment::with('credit:id,seller_id', 'credit.client:id,name')
+                ->whereHas('credit', function ($q) use ($routeIds) {
+                    $q->whereIn('seller_id', $routeIds);
+                })
+                ->whereDate('payment_date', $targetDay) // Usamos payment_date para consistencia de negocio
+                ->orderBy('created_at', 'asc')
+                ->get()
+                ->groupBy(function ($payment) {
+                    return $payment->credit->seller_id;
+                });
+            // ─────────────────────────────────────────────────────────────────
+
+            $data = $routesList->map(function ($route) use ($targetDay, $targetStartUTC, $targetEndUTC, $liquidationsToday, $auditsToday, $previousPendingSellerIds, $allPaymentsToday) {
+                $liquidationToday = $liquidationsToday->get($route->id);
+
 
                 $liquidationOpen = null;
                 $liquidationClosed = null;
@@ -370,28 +403,16 @@ class SellerService
                 $closedBySellerToday = false;
                 $liquidationStatus = null;
 
-                $firstPayment = $route->credits()
-                    ->whereHas('payments', function ($q) use ($targetStartUTC, $targetEndUTC) {
-                        $q->whereBetween('created_at', [$targetStartUTC, $targetEndUTC]);
-                    })
-                    ->with([
-                        'payments' => function ($q) use ($targetStartUTC, $targetEndUTC) {
-                            $q->whereBetween('created_at', [$targetStartUTC, $targetEndUTC])->orderBy('created_at', 'asc');
-                        }
-                    ])
-                    ->get()
-                    ->pluck('payments')
-                    ->flatten()
-                    ->sortBy('created_at')
-                    ->first();
+                $sellerPaymentsToday = $allPaymentsToday->get($route->id) ?? collect();
+                $firstPayment = $sellerPaymentsToday->first();
+                $lastPayment = $sellerPaymentsToday->last();
 
                 if ($liquidationToday) {
                     $liquidationStatus = $liquidationToday->status;
                     $liquidationOpen = $liquidationToday->date;
 
-                    $lastAudit = $liquidationToday->audits()
+                    $lastAudit = ($auditsToday->get($liquidationToday->id) ?? collect())
                         ->where('user_id', $route->user_id)
-                        ->orderByDesc('created_at')
                         ->first();
                     $liquidationClosed = $liquidationToday->end_date ?? null;
                     if ($lastAudit) {
@@ -405,12 +426,7 @@ class SellerService
                 $closedByAdmin = false;
                 $closingRoleId = null;
                 if ($liquidationToday) {
-                    $lastClosureAudit = \App\Models\LiquidationAudit::with('user')
-                        ->where('liquidation_id', $liquidationToday->id)
-                        ->whereIn('action', ['updated', 'created', 'Aprobación administrativa'])
-                        ->whereNull('deleted_at')
-                        ->orderByDesc('created_at')
-                        ->first();
+                    $lastClosureAudit = ($auditsToday->get($liquidationToday->id) ?? collect())->first();
 
                     if ($lastClosureAudit) {
                         $auditExists = true;
@@ -432,16 +448,12 @@ class SellerService
                     }
                 }
 
-                // Verificar si hay liquidaciones pendientes de días anteriores
-                $hasPreviousPending = Liquidation::where('seller_id', $route->id)
-                    ->whereDate('date', '<', $targetDay)
-                    ->whereIn('status', ['pending', 'auto', 'En curso'])
-                    ->exists();
+                // Verificar si hay liquidaciones pendientes de días anteriores (pre-cargado)
+                $hasPreviousPending = isset($previousPendingSellerIds[$route->id]);
 
                 // Considerar cerrado si tiene status correcto o auditoria
                 $isClosed = $liquidationToday && (in_array($liquidationStatus, ['pending', 'auto', 'approved']) || $auditExists);
 
-                // \Log::info($route->toArray());
 
                 $sessionLogs = $route->user ? $route->user->sessionLogs : collect([]);
                 
@@ -457,8 +469,23 @@ class SellerService
                 $fallbackDate = $liquidationToday?->created_at 
                              ?? ($liquidationToday?->date ? Carbon::parse($liquidationToday->date) : null);
                 
-                $routeStartDate = $firstLog?->login_at ?? $fallbackDate;
+                // PRIORIDAD: 
+                // 1. Si hay una liquidación para hoy (Apertura), esa es la hora de inicio oficial.
+                // 2. Si no, usamos el log de sesión detectado.
+                $firstLog = $sessionLogs
+                    ->where('login_at', '>=', $targetStartUTC->copy()->startOfDay())
+                    ->sortBy('login_at')
+                    ->first();
 
+                // PRIORIDAD: 1. Primer Login del día, 2. Apertura de caja, 3. Primer Pago (fallback visual)
+                $routeStartDate = null;
+                if ($firstLog && $firstLog->login_at) {
+                    $routeStartDate = \Carbon\Carbon::parse($firstLog->login_at)->format('Y-m-d H:i:s');
+                } elseif ($liquidationOpen) {
+                    $routeStartDate = $liquidationOpen->format('Y-m-d') . ' ' . $liquidationToday->created_at->format('H:i:s');
+                } elseif ($firstPayment) {
+                    $routeStartDate = \Carbon\Carbon::parse($firstPayment->created_at)->format('Y-m-d H:i:s');
+                }
                 return [
                     'route_id' => $route->id,
                     'country' => $route->city->country->name ?? null,
@@ -487,18 +514,62 @@ class SellerService
                             'login_at' => \Carbon\Carbon::parse($log->login_at)->format('Y-m-d H:i:s'),
                             'logout_at' => $log->logout_at ? \Carbon\Carbon::parse($log->logout_at)->format('Y-m-d H:i:s') : null,
                             'ip' => $log->ip,
-                            'connection_country' => 'Desconocido', // \App\Helpers\Helper::getCountryFromIp($log->ip),
+                            'connection_country' => 'Desconocido', // Obtenido por Jobs o DB si fuese necesario para no saturar timeouts
                             'device' => $parsed['device'] . ' (' . $parsed['os'] . ')',
                             'browser' => $parsed['browser'],
                             'is_active' => is_null($log->logout_at),
                         ];
                     }),
+                    'route_summary' => [
+                        'start_location' => $firstPayment ? [
+                            'lat' => $firstPayment->latitude,
+                            'lng' => $firstPayment->longitude,
+                            'time' => $firstPayment->created_at->format('H:i:s'),
+                            'description' => 'Inicio de cobranza'
+                        ] : null,
+                        'end_location' => $lastPayment ? [
+                            'lat' => $lastPayment->latitude,
+                            'lng' => $lastPayment->longitude,
+                            'time' => $lastPayment->created_at->format('H:i:s'),
+                            'description' => 'Final de cobranza'
+                        ] : null,
+                        'collection_points' => $sellerPaymentsToday->filter(fn($p) => $p->latitude && $p->longitude)->map(function ($p) {
+                            $duration = null;
+                            if ($p->client_created_at && $p->business_timestamp) {
+                                try {
+                                    $arrival = Carbon::parse($p->client_created_at);
+                                    $finish = Carbon::parse($p->business_timestamp);
+                                    $duration = $finish->diffInSeconds($arrival);
+                                } catch (\Exception $e) {}
+                            }
+                            return [
+                                'lat' => $p->latitude,
+                                'lng' => $p->longitude,
+                                'amount' => $p->amount,
+                                'client_name' => $p->credit->client->name ?? 'Cliente',
+                                'time' => Carbon::parse($p->created_at)->format('H:i:s'),
+                                'duration_seconds' => $duration
+                            ];
+                        })->values()
+                    ]
                 ];
             });
 
             if ($hasLiquidation !== null) {
                 $data = $data->filter(function ($item) use ($hasLiquidation) {
-                    return $hasLiquidation ? $item['closed_today'] : !$item['closed_today'];
+                    if ($hasLiquidation === 'started') {
+                        // "Iniciaron Ruta" significa que tienen al menos un log de sesión Y han abierto caja.
+                        return count($item['session_logs']) > 0 && $item['liquidation_open'] !== null;
+                    }
+                    if ($hasLiquidation === '0') {
+                        // "No Cerró" ahora excluye a los que ni siquiera han abierto.
+                        return !$item['closed_today'] && $item['liquidation_open'] !== null;
+                    }
+                    if ($hasLiquidation === '1') {
+                        // "Cerró Caja Hoy"
+                        return $item['closed_today'];
+                    }
+                    return true;
                 })->values();
             }
 

@@ -125,4 +125,13 @@ class CompanyController extends Controller
         ]);
     }
 
+    public function resendWelcomeEmail(Request $request, $companyId)
+    {
+        try {
+            return $this->companyService->resendWelcomeEmail($companyId, $request->input('password'));
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
 }

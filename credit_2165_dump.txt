@@ -1,0 +1,29 @@
+============================
+CREDIT 2165 DETAILS
+============================
+CREDIT:
+Total: 0.00 | Remaining: 0.00 | Status: Vigente
+
+--- INSTALLMENTS ---
+ID: 14338 | Quota: 160.00 | Paid: 160.00 | Status: Pagado
+ID: 14339 | Quota: 160.00 | Paid: 160.00 | Status: Pagado
+ID: 14340 | Quota: 160.00 | Paid: 0.00 | Status: Pendiente
+
+--- PAYMENTS ---
+ID: 7465 | Amount: 160.00 | Unapplied: 0.00 | Status: Pagado
+ID: 11075 | Amount: 50.00 | Unapplied: 0.00 | Status: Abonado
+ID: 16735 | Amount: 30.00 | Unapplied: 0.00 | Status: Abonado
+ID: 25259 | Amount: 20.00 | Unapplied: 0.00 | Status: Abonado
+ID: 45974 | Amount: 30.00 | Unapplied: 0.00 | Status: Abonado
+ID: 59771 | Amount: 20.00 | Unapplied: 0.00 | Status: Abonado
+ID: 70534 | Amount: 20.00 | Unapplied: 10.00 | Status: Abonado
+
+--- PAYMENT_INSTALLMENTS ---
+ID: 10356 | PMT ID: 7465 | INST ID: 14338 | Applied: 160.00
+ID: 105423 | PMT ID: 11075 | INST ID: 14339 | Applied: 50.00
+ID: 105424 | PMT ID: 16735 | INST ID: 14339 | Applied: 30.00
+ID: 105425 | PMT ID: 25259 | INST ID: 14339 | Applied: 20.00
+ID: 105426 | PMT ID: 45974 | INST ID: 14339 | Applied: 30.00
+ID: 105427 | PMT ID: 59771 | INST ID: 14339 | Applied: 20.00
+ID: 105428 | PMT ID: 70534 | INST ID: 14339 | Applied: 10.00
+

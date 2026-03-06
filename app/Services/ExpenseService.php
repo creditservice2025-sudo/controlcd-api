@@ -99,10 +99,15 @@ class ExpenseService
             if ($request->has('created_at')) {
                 // Asumimos que la fecha enviada es "local" para el usuario (en su timezone efectivo)
                 $userProvidedDate = Carbon::parse($validated['created_at'], $businessTimezone);
-                $businessTimestamp = $userProvidedDate; 
+                
+                // TRUCO: Creamos un Carbon en UTC con la hora LOCAL para que al guardarse quede tal cual en DB
+                $businessTimestamp = Carbon::createFromFormat('Y-m-d H:i:s', $userProvidedDate->format('Y-m-d H:i:s'), 'UTC');
+                
                 $createdAt = $userProvidedDate->copy()->setTimezone('UTC'); 
             } else {
-                $businessTimestamp = $nowInBusinessZone;
+                // TRUCO: Creamos un Carbon en UTC con la hora LOCAL para que al guardarse quede tal cual en DB
+                $businessTimestamp = Carbon::createFromFormat('Y-m-d H:i:s', $nowInBusinessZone->format('Y-m-d H:i:s'), 'UTC');
+                
                 $createdAt = $nowInBusinessZone->copy()->setTimezone('UTC');
             }
             
@@ -703,23 +708,25 @@ class ExpenseService
             }
 
             $expensesQuery = Expense::query()
-                ->select('expenses.*', 'liquidations.id as liquidation_number')
+                ->select('expenses.*')
+                ->addSelect([
+                    'liquidation_number' => DB::table('liquidations')
+                        ->select('id')
+                        ->whereColumn('date', DB::raw('COALESCE(expenses.business_date, DATE(expenses.created_at))'))
+                        ->where('seller_id', $seller->id)
+                        ->whereNull('deleted_at')
+                        ->limit(1)
+                ])
                 ->with(['user', 'category', 'images']);
 
             if ($request->has('include_deleted') && filter_var($request->include_deleted, FILTER_VALIDATE_BOOLEAN)) {
                 $expensesQuery->withTrashed();
             }
-
-            $expensesQuery->leftJoin('liquidations', function ($join) use ($seller) {
-                $join->on(DB::raw('COALESCE(expenses.business_date, DATE(expenses.created_at))'), '=', 'liquidations.date')
-                    ->where('liquidations.seller_id', '=', $seller->id)
-                    ->whereNull('liquidations.deleted_at');
-            })
-            ->where('expenses.user_id', $seller->user_id)
-            ->where(function ($q) {
-                $q->where('expenses.status', 'Aprobado')
-                    ->orWhere('expenses.description', 'like', '%AJUSTE%');
-            });
+            $expensesQuery->where('expenses.user_id', $seller->user_id)
+                ->where(function ($q) {
+                    $q->where('expenses.status', 'Aprobado')
+                        ->orWhere('expenses.description', 'like', '%AJUSTE%');
+                });
 
             $timezone = $request->input('timezone', 'America/Lima');
 
@@ -770,6 +777,13 @@ class ExpenseService
             $expensesQuery->orderBy('expenses.created_at', 'desc');
 
             $expenses = $expensesQuery->paginate($perpage);
+
+            $expenses->getCollection()->transform(function ($expense) use ($seller) {
+                if (!$expense->business_timezone) {
+                    $expense->business_timezone = \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
+                }
+                return $expense;
+            });
 
             return $this->successResponse([
                 'success' => true,

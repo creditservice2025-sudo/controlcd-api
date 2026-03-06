@@ -250,6 +250,7 @@ Route::middleware('auth:api')->group(function () {
         Route::delete('/{companyId}', [CompanyController::class, 'delete']);
         Route::post('/validate-code', [CompanyController::class, 'validateCompanyCode']);
         Route::post('/validate-ruc', [CompanyController::class, 'validateCompanyRuc']);
+        Route::post('/{companyId}/resend-welcome', [CompanyController::class, 'resendWelcomeEmail']);
     });
 
     //route installment

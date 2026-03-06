@@ -85,7 +85,7 @@ class IncomeService
                 'updated_at' => $createdAt,
                 'client_timezone' => $clientTimezone,
                 'business_timezone' => $businessTimezone, // Dynamic based on operation
-                'business_timestamp' => $businessTimestamp,
+                'business_timestamp' => $businessTimestamp->format('Y-m-d H:i:s'),
                 'business_date' => $businessDate
             ];
 
@@ -681,12 +681,16 @@ class IncomeService
             }
 
             $incomeQuery = Income::query()
-                ->select('incomes.*', 'liquidations.id as liquidation_number')
+                ->select('incomes.*')
+                ->addSelect([
+                    'liquidation_number' => DB::table('liquidations')
+                        ->select('id')
+                        ->whereColumn('date', DB::raw('COALESCE(incomes.business_date, DATE(incomes.created_at))'))
+                        ->where('seller_id', $seller->id)
+                        ->whereNull('deleted_at')
+                        ->limit(1)
+                ])
                 ->with(['user', 'images'])
-                ->leftJoin('liquidations', function($join) use ($seller) {
-                     $join->on(DB::raw('COALESCE(incomes.business_date, DATE(incomes.created_at))'), '=', 'liquidations.date')
-                          ->where('liquidations.seller_id', '=', $seller->id);
-                })
                 ->where('incomes.user_id', $seller->user_id);
 
             $timezone = $request->input('timezone', 'America/Lima');

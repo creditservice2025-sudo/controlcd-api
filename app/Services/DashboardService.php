@@ -205,6 +205,7 @@ class DashboardService
                 'routes' => 0,
                 'credits' => 0,
                 'clients' => 0,
+                'clients_no_credits' => 0,
             ];
 
             // ------------------------------------------------------------------
@@ -235,8 +236,17 @@ class DashboardService
                 $sellerIds = $this->applyLocationFilters($sellerIdsQuery, $request)->pluck('id');
 
                 // Aplicamos los filtros de vendedor (que ya llevan la ubicación) a Créditos y Clientes
-                $data['credits'] = Credit::whereIn('seller_id', $sellerIds)->count();
-                $data['clients'] = Client::whereIn('seller_id', $sellerIds)->count();
+                $data['credits'] = Credit::whereIn('seller_id', $sellerIds)
+                    ->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable'])
+                    ->count();
+                $data['clients'] = Client::whereIn('seller_id', $sellerIds)
+                    ->whereHas('credits', function ($query) {
+                        $query->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable']);
+                    })->count();
+                $data['clients_no_credits'] = Client::whereIn('seller_id', $sellerIds)
+                    ->whereDoesntHave('credits', function ($query) {
+                        $query->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable']);
+                    })->count();
 
 
                 // ------------------------------------------------------------------
@@ -267,8 +277,17 @@ class DashboardService
                 })->count();
 
                 // CRÉDITOS Y CLIENTES: Usamos el array de IDs de vendedores filtrados
-                $data['credits'] = Credit::whereIn('seller_id', $sellerIds)->count();
-                $data['clients'] = Client::whereIn('seller_id', $sellerIds)->count();
+                $data['credits'] = Credit::whereIn('seller_id', $sellerIds)
+                    ->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable'])
+                    ->count();
+                $data['clients'] = Client::whereIn('seller_id', $sellerIds)
+                    ->whereHas('credits', function ($query) {
+                        $query->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable']);
+                    })->count();
+                $data['clients_no_credits'] = Client::whereIn('seller_id', $sellerIds)
+                    ->whereDoesntHave('credits', function ($query) {
+                        $query->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable']);
+                    })->count();
 
 
                 // ------------------------------------------------------------------
@@ -278,8 +297,17 @@ class DashboardService
                 // Se mantiene igual, ya está filtrado por el vendedor logueado
                 $seller = $user->seller;
                 if ($seller) {
-                    $data['clients'] = $seller->clients()->count();
-                    $data['credits'] = $seller->credits()->count();
+                    $data['credits'] = $seller->credits()
+                        ->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable'])
+                        ->count();
+                    $data['clients'] = Client::where('seller_id', $seller->id)
+                        ->whereHas('credits', function ($query) {
+                            $query->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable']);
+                        })->count();
+                    $data['clients_no_credits'] = Client::where('seller_id', $seller->id)
+                        ->whereDoesntHave('credits', function ($query) {
+                            $query->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable']);
+                        })->count();
                 }
                 // Consultor: solo los sellers asociados en UserRoute
             } else {
@@ -288,8 +316,17 @@ class DashboardService
                 $data['members'] = User::whereHas('seller', function ($query) use ($sellerIds) {
                     $query->whereIn('id', $sellerIds);
                 })->count();
-                $data['credits'] = Credit::whereIn('seller_id', $sellerIds)->count();
-                $data['clients'] = Client::whereIn('seller_id', $sellerIds)->count();
+                $data['credits'] = Credit::whereIn('seller_id', $sellerIds)
+                    ->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable'])
+                    ->count();
+                $data['clients'] = Client::whereIn('seller_id', $sellerIds)
+                    ->whereHas('credits', function ($query) {
+                        $query->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable']);
+                    })->count();
+                $data['clients_no_credits'] = Client::whereIn('seller_id', $sellerIds)
+                    ->whereDoesntHave('credits', function ($query) {
+                        $query->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable']);
+                    })->count();
             }
 
             // Filtro por vendedor si se recibe seller_id
@@ -300,8 +337,17 @@ class DashboardService
                 $data['members'] = User::whereHas('seller', function ($query) use ($sellerId) {
                     $query->where('id', $sellerId);
                 })->count();
-                $data['credits'] = Credit::where('seller_id', $sellerId)->count();
-                $data['clients'] = Client::where('seller_id', $sellerId)->count();
+                $data['credits'] = Credit::where('seller_id', $sellerId)
+                    ->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable'])
+                    ->count();
+                $data['clients'] = Client::where('seller_id', $sellerId)
+                    ->whereHas('credits', function ($query) {
+                        $query->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable']);
+                    })->count();
+                $data['clients_no_credits'] = Client::where('seller_id', $sellerId)
+                    ->whereDoesntHave('credits', function ($query) {
+                        $query->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable']);
+                    })->count();
             }
 
             return $this->successResponse([
@@ -330,30 +376,28 @@ class DashboardService
             $endUTC = Carbon::now($timezone)->endOfDay()->timezone('UTC');
             $todayDate = Carbon::now($timezone)->toDateString();
 
-            $sellersQuery = Seller::with([
-                'credits' => function ($query) {
-                    $query->select('id', 'seller_id', 'credit_value', 'total_interest', 'status', 'created_at', 'renewed_from_id', 'updated_at')
-                        ->whereNull('deleted_at');
-                },
-                // 'credits.installments.payments', // Removed as it is unused and causes high memory consumption
-                'city:id,name,country_id',
-                'city.country:id,name',
-                'user:id,name',
-            ])
+            $sellersQuery = Seller::query()
+                ->join('users', 'sellers.user_id', '=', 'users.id')
+                ->select('sellers.id', 'sellers.uuid', 'sellers.user_id', 'sellers.city_id', 'sellers.status', 'users.name')
+                ->with([
+                    'city:id,name,country_id',
+                    'city.country:id,name',
+                    'user:id,name',
+                ])
                 ->whereHas('credits', function ($query) {
                     $query->whereNull('deleted_at');
                 })
-                ->orderBy('created_at', 'desc');
+                ->orderBy('users.name', 'asc');
 
             if ($role === 2 && !$user->company) {
                 return response()->json(['success' => true, 'data' => []]);
             }
             if ($role === 2)
-                $sellersQuery->where('company_id', $user->company->id);
+                $sellersQuery->where('sellers.company_id', $user->company->id);
             if ($role === 5)
-                $sellersQuery->where('user_id', $user->id);
+                $sellersQuery->where('sellers.user_id', $user->id);
             if ($role === 1 && $companyId) {
-                $sellersQuery->where('company_id', $companyId);
+                $sellersQuery->where('sellers.company_id', $companyId);
             }
             if (!in_array($role, [1, 2, 5])) {
                 return response()->json(['success' => true, 'data' => []]);
@@ -366,153 +410,231 @@ class DashboardService
             // Filtro por vendedor si se recibe seller_id
             $sellerId = $request->input('seller_id');
             if ($sellerId) {
-                $sellersQuery->where('id', $sellerId);
+                $sellersQuery->where('sellers.id', $sellerId);
             }
 
-            $sellers = $sellersQuery->take(10)->get();
+            // Aumentamos el límite para ver todas las rutas (ej. 200) y optimizamos la carga masiva
+            $sellersCount = (clone $sellersQuery)->count();
+            $sellers = $sellersQuery->limit(200)->get();
             $result = [];
 
             $sellerIds = $sellers->pluck('id')->toArray();
-            // $allCreditIds logic replaced by direct query constraints to avoid memory issues
+            $userIds = $sellers->pluck('user_id')->filter()->unique()->toArray();
 
-            $totalPaidByCredit = Payment::whereIn('credit_id', function ($query) use ($sellerIds) {
-                $query->select('id')->from('credits')->whereIn('seller_id', $sellerIds)->whereNull('deleted_at');
-            })
-                ->select('credit_id', DB::raw('SUM(amount) as total'))
-                ->groupBy('credit_id')
-                ->get()
-                ->pluck('total', 'credit_id')
-                ->map(function ($v) {
-                    return (float) $v;
+            if (empty($sellerIds)) {
+                return response()->json(['success' => true, 'data' => []]);
+            }
+
+            // 1. Agregaciones de Cartera (Inicial y Cobrado All Time)
+            // Calculamos Capital e Interés por separado usando el ratio de cada crédito en SQL
+            $portfolioAggs = DB::table('credits')
+                ->leftJoin('payments', function($join) {
+                    $join->on('credits.id', '=', 'payments.credit_id')
+                         ->whereNull('payments.deleted_at');
                 })
-                ->all();
+                ->whereIn('credits.seller_id', $sellerIds)
+                ->whereNull('credits.deleted_at')
+                ->select(
+                    'credits.seller_id',
+                    // Totales All Time (incluyendo irrecuperables)
+                    DB::raw("SUM(DISTINCT credits.id) as count_credits"), // Solo informativo
+                    DB::raw("SUM(credits.credit_value) as total_cap_init_all"),
+                    DB::raw("SUM(credits.credit_value * credits.total_interest / 100) as total_util_init_all"),
+                    
+                    // Totales No Irrecuperables (para 'to_collect' e 'initial_portfolio' visual)
+                    DB::raw("SUM(IF(credits.status != 'Cartera Irrecuperable', credits.credit_value, 0)) as init_cap_non_irr"),
+                    DB::raw("SUM(IF(credits.status != 'Cartera Irrecuperable', credits.credit_value * credits.total_interest / 100, 0)) as init_util_non_irr"),
 
-            $paidTodayByCredit = Payment::whereIn('credit_id', function ($query) use ($sellerIds) {
-                $query->select('id')->from('credits')->whereIn('seller_id', $sellerIds)->whereNull('deleted_at');
-            })
+                    // Cobrado (Necesitamos la suma de pagos escalados por el ratio de cada crédito)
+                    // Nota: Usar subquery o Map en PHP para los pagos es a veces más seguro si el JOIN multiplica filas.
+                    // Pero para optimizar máximo, calcularemos el cobrado total por crédito primero.
+                )
+                ->groupBy('credits.seller_id')
+                ->get()
+                ->keyBy('seller_id');
+
+            // 2. Pagos por Crédito Agrupados por Vendedor (Para precisión de Ratios)
+            $paymentAggs = DB::table('payments')
+                ->join('credits', 'payments.credit_id', '=', 'credits.id')
+                ->whereIn('credits.seller_id', $sellerIds)
+                ->whereNull('payments.deleted_at')
+                ->whereNull('credits.deleted_at')
+                ->select(
+                    'credits.seller_id',
+                    // All Time
+                    DB::raw("SUM(payments.amount) as total_paid"),
+                    DB::raw("SUM(payments.amount * (credits.credit_value / (credits.credit_value + (credits.credit_value * credits.total_interest / 100)))) as cap_paid"),
+                    // All Time - Non Irrecuperable (para to_collect)
+                    DB::raw("SUM(IF(credits.status != 'Cartera Irrecuperable', payments.amount, 0)) as total_paid_non_irr"),
+                    DB::raw("SUM(IF(credits.status != 'Cartera Irrecuperable', payments.amount * (credits.credit_value / (credits.credit_value + (credits.credit_value * credits.total_interest / 100))), 0)) as cap_paid_non_irr"),
+                    // Hoy
+                    DB::raw("SUM(IF(payments.created_at BETWEEN '$startUTC' AND '$endUTC', payments.amount, 0)) as paid_today"),
+                    DB::raw("SUM(IF(payments.created_at BETWEEN '$startUTC' AND '$endUTC', payments.amount * (credits.credit_value / (credits.credit_value + (credits.credit_value * credits.total_interest / 100))), 0)) as cap_paid_today"),
+                    DB::raw("SUM(IF(payments.created_at BETWEEN '$startUTC' AND '$endUTC', payments.amount * ((credits.credit_value * credits.total_interest / 100) / (credits.credit_value + (credits.credit_value * credits.total_interest / 100))), 0)) as util_paid_today")
+                )
+                ->groupBy('credits.seller_id')
+                ->get()
+                ->keyBy('seller_id');
+
+            // 3. Créditos Nuevos Hoy
+            $newCreditsTodayAgg = DB::table('credits')
+                ->whereIn('seller_id', $sellerIds)
                 ->whereBetween('created_at', [$startUTC, $endUTC])
-                ->select('credit_id', DB::raw('SUM(amount) as total'))
-                ->groupBy('credit_id')
+                ->whereNull('renewed_from_id')
+                ->whereNull('deleted_at')
+                ->select(
+                    'seller_id',
+                    DB::raw("SUM(credit_value) as cap"),
+                    DB::raw("SUM(credit_value * total_interest / 100) as util")
+                )
+                ->groupBy('seller_id')
                 ->get()
-                ->pluck('total', 'credit_id')
-                ->map(function ($v) {
-                    return (float) $v;
+                ->keyBy('seller_id');
+
+            // 4. Última liquidación (para Saldo Inicial)
+            $latestLiquidationDateSub = Liquidation::select('seller_id', DB::raw('MAX(date) as max_date'))
+                ->whereIn('seller_id', $sellerIds)
+                ->where('date', '<', $todayDate)
+                ->groupBy('seller_id');
+
+            $lastLiquidations = Liquidation::joinSub($latestLiquidationDateSub, 'latest', function ($join) {
+                    $join->on('liquidations.seller_id', '=', 'latest.seller_id')
+                         ->on('liquidations.date', '=', 'latest.max_date');
                 })
+                ->get()
+                ->keyBy('seller_id');
+
+            // 5. Gastos e Ingresos
+            $expensesTodayAgg = DB::table('expenses')
+                ->whereIn('user_id', $userIds)
+                ->whereBetween('created_at', [$startUTC, $endUTC])
+                ->where(function ($q) {
+                    $q->where('status', 'Aprobado')
+                        ->orWhere('description', 'like', '%AJUSTE%');
+                })
+                ->select('user_id', DB::raw("SUM(value) as total"))
+                ->groupBy('user_id')
+                ->get()
+                ->keyBy('user_id');
+
+            $incomeTodayAgg = DB::table('incomes')
+                ->whereIn('user_id', $userIds)
+                ->whereBetween('created_at', [$startUTC, $endUTC])
+                ->select('user_id', DB::raw("SUM(value) as total"))
+                ->groupBy('user_id')
+                ->get()
+                ->keyBy('user_id');
+
+            // 6. Renovaciones y Créditos Irrecuperables
+            $renewalsToday = Credit::whereIn('seller_id', $sellerIds)
+                ->whereBetween('created_at', [$startUTC, $endUTC])
+                ->whereNotNull('renewed_from_id')
+                ->select('id', 'seller_id', 'renewed_from_id', 'credit_value', 'total_interest')
+                ->get()
+                ->groupBy('seller_id');
+
+            $renewedFromIds = $renewalsToday->flatten()->pluck('renewed_from_id')->filter()->unique()->toArray();
+            
+            // Para las renovaciones, necesitamos el capital/interés y pagos de los créditos antiguos
+            $oldCreditsInfo = DB::table('credits')
+                ->leftJoin('payments', function($join) {
+                    $join->on('credits.id', '=', 'payments.credit_id')
+                         ->whereNull('payments.deleted_at');
+                })
+                ->whereIn('credits.id', $renewedFromIds)
+                ->select(
+                    'credits.id',
+                    DB::raw("(credits.credit_value + (credits.credit_value * credits.total_interest / 100)) as total_value"),
+                    DB::raw("SUM(IFNULL(payments.amount, 0)) as total_paid")
+                )
+                ->groupBy('credits.id', 'credits.credit_value', 'credits.total_interest')
+                ->get()
+                ->keyBy('id');
+
+            $irrecoverableToday = DB::table('installments')
+                ->join('credits', 'installments.credit_id', '=', 'credits.id')
+                ->whereIn('credits.seller_id', $sellerIds)
+                ->where('credits.status', 'Cartera Irrecuperable')
+                ->whereBetween('credits.updated_at', [$startUTC, $endUTC])
+                ->where('installments.status', 'Pendiente')
+                ->select('credits.seller_id', DB::raw('SUM(installments.quota_amount) as total'))
+                ->groupBy('credits.seller_id')
+                ->get()
+                ->pluck('total', 'seller_id')
                 ->all();
 
             foreach ($sellers as $seller) {
                 $location = $this->getSellerLocation($seller);
+                
+                $pAgg = $portfolioAggs->get($seller->id);
+                $payAgg = $paymentAggs->get($seller->id);
+                $newCredAgg = $newCreditsTodayAgg->get($seller->id);
+
+                // Initial Portfolio (Non Irrecuperable)
+                $initCap = $pAgg ? (float) $pAgg->init_cap_non_irr : 0;
+                $initUtil = $pAgg ? (float) $pAgg->init_util_non_irr : 0;
+
+                // Collected (All Time)
+                $collTotal = $payAgg ? (float) $payAgg->total_paid : 0;
+                $collCap = $payAgg ? (float) $payAgg->cap_paid : 0;
+                $collUtil = $collTotal - $collCap;
+
+                // Collected Non-Irr (for to_collect calculation)
+                $collTotalNonIrr = $payAgg ? (float) $payAgg->total_paid_non_irr : 0;
+                $collCapNonIrr = $payAgg ? (float) $payAgg->cap_paid_non_irr : 0;
+                $collUtilNonIrr = $collTotalNonIrr - $collCapNonIrr;
+
+                // To Collect (Non Irrecuperable)
+                $toCollCap = max(0, $initCap - $collCapNonIrr);
+                $toCollUtil = max(0, $initUtil - $collUtilNonIrr);
+                $toCollTotal = $toCollCap + $toCollUtil;
+
                 $sellerData = [
                     'id' => $seller->id,
+                    'uuid' => $seller->uuid,
                     'route' => $seller->name,
                     'name' => $seller->user ? $seller->user->name : 'No name',
                     'location' => $location,
-                    'initial_portfolio' => ['T' => 0, 'C' => 0, 'U' => 0],
-                    'collected' => ['T' => 0, 'C' => 0, 'U' => 0],
-                    'to_collect' => ['T' => 0, 'C' => 0, 'U' => 0],
-                    'credits_today' => ['T' => 0, 'C' => 0, 'U' => 0],
-                    'collected_today' => ['T' => 0, 'C' => 0, 'U' => 0],
+                    'initial_portfolio' => [
+                        'T' => $initCap + $initUtil,
+                        'C' => $initCap,
+                        'U' => $initUtil
+                    ],
+                    'collected' => [
+                        'T' => $collTotal,
+                        'C' => $collCap,
+                        'U' => $collUtil
+                    ],
+                    'to_collect' => [
+                        'T' => $toCollTotal,
+                        'C' => $toCollCap,
+                        'U' => $toCollUtil
+                    ],
+                    'credits_today' => [
+                        'T' => $newCredAgg ? ($newCredAgg->cap + $newCredAgg->util) : 0,
+                        'C' => $newCredAgg ? (float) $newCredAgg->cap : 0,
+                        'U' => $newCredAgg ? (float) $newCredAgg->util : 0,
+                    ],
+                    'collected_today' => [
+                        'T' => $payAgg ? (float) $payAgg->paid_today : 0,
+                        'C' => $payAgg ? (float) $payAgg->cap_paid_today : 0,
+                        'U' => $payAgg ? (float) $payAgg->util_paid_today : 0,
+                    ],
                     'previous_cash' => 0,
                     'current_cash' => 0,
-                    'utility_collected_today' => 0,
+                    'utility_collected_today' => $payAgg ? (float) $payAgg->util_paid_today : 0,
                 ];
 
-                $creditsActivos = $seller->credits->filter(function ($credit) {
-                    return $credit->status !== 'Cartera Irrecuperable';
-                });
-
-
-                foreach ($creditsActivos as $credit) {
-                    $capitalInitial = $credit->credit_value;
-                    $utilityInitial = $credit->credit_value * $credit->total_interest / 100;
-                    $totalInitial = $capitalInitial + $utilityInitial;
-
-                    $percentageCapital = $totalInitial > 0 ? $capitalInitial / $totalInitial : 0;
-                    $percentageUtility = $totalInitial > 0 ? $utilityInitial / $totalInitial : 0;
-
-                    $capitalPagado = 0;
-                    $utilityPagado = 0;
-
-                    $totalPagado = $totalPaidByCredit[$credit->id] ?? 0;
-
-                    $capitalPagado = $totalPagado * $percentageCapital;
-                    $utilityPagado = $totalPagado * $percentageUtility;
-
-                    $capitalPendiente = $capitalInitial - $capitalPagado;
-                    $utilityPendiente = $utilityInitial - $utilityPagado;
-                    $totalPendiente = $capitalPendiente + $utilityPendiente;
-
-                    $capitalPendiente = max(0, $capitalPendiente);
-                    $utilityPendiente = max(0, $utilityPendiente);
-                    $totalPendiente = max(0, $totalPendiente);
-
-                    $sellerData['to_collect']['C'] += $capitalPendiente;
-                    $sellerData['to_collect']['U'] += $utilityPendiente;
-                    $sellerData['to_collect']['T'] += $totalPendiente;
-
-                    $sellerData['initial_portfolio']['C'] += $capitalInitial;
-                    $sellerData['initial_portfolio']['U'] += $utilityInitial;
-                    $sellerData['initial_portfolio']['T'] += $totalInitial;
-                }
-
-                foreach ($seller->credits as $credit) {
-                    $isIrrecuperable = $credit->status === 'Cartera Irrecuperable';
-
-                    $capitalInitial = $credit->credit_value;
-                    $utilityInitial = $credit->credit_value * $credit->total_interest / 100;
-                    $totalInitial = $capitalInitial + $utilityInitial;
-
-                    $percentageCapital = $totalInitial > 0 ? $capitalInitial / $totalInitial : 0;
-                    $percentageUtility = $totalInitial > 0 ? $utilityInitial / $totalInitial : 0;
-
-                    $capitalPaid = 0;
-                    $utilityPaid = 0;
-                    $totalPaid = $totalPaidByCredit[$credit->id] ?? 0;
-
-                    $capitalPaid = $totalPaid * $percentageCapital;
-                    $utilityPaid = $totalPaid * $percentageUtility;
-
-                    $sellerData['collected']['C'] += $capitalPaid;
-                    $sellerData['collected']['U'] += $utilityPaid;
-                    $sellerData['collected']['T'] += $totalPaid;
-
-                    if (
-                        $credit->created_at->setTimezone(self::TIMEZONE)->toDateString() == $todayDate
-                        && $credit->renewed_from_id === null
-                    ) {
-                        $sellerData['credits_today']['C'] += $capitalInitial;
-                        $sellerData['credits_today']['U'] += $utilityInitial;
-                        $sellerData['credits_today']['T'] += $totalInitial;
-                    }
-
-                    $paymentsTodayTotal = $paidTodayByCredit[$credit->id] ?? 0;
-
-                    $collectedTodayCapital = $paymentsTodayTotal * $percentageCapital;
-                    $collectedTodayUtility = $paymentsTodayTotal * $percentageUtility;
-
-                    $sellerData['collected_today']['C'] += $collectedTodayCapital;
-                    $sellerData['collected_today']['U'] += $collectedTodayUtility;
-                    $sellerData['collected_today']['T'] += $paymentsTodayTotal;
-
-                    $sellerData['utility_collected_today'] += $collectedTodayUtility;
-                }
-
-                $renewalCredits = DB::table('credits')
-                    ->where('seller_id', $seller->id)
-                    ->whereBetween('created_at', [$startUTC, $endUTC])
-                    ->whereNotNull('renewed_from_id')
-                    ->get();
-
+                // Renovaciones
+                $sellerRenewals = $renewalsToday->get($seller->id) ?? collect();
                 $total_renewal_disbursed = 0;
                 $total_pending_absorbed = 0;
 
-                foreach ($renewalCredits as $renewCredit) {
-                    $oldCredit = DB::table('credits')->where('id', $renewCredit->renewed_from_id)->first();
+                foreach ($sellerRenewals as $renewCredit) {
+                    $oldInfo = $oldCreditsInfo->get($renewCredit->renewed_from_id);
                     $pendingAmount = 0;
-                    if ($oldCredit) {
-                        $oldCreditTotal = ($oldCredit->credit_value * $oldCredit->total_interest / 100) + $oldCredit->credit_value;
-                        $oldCreditPaid = DB::table('payments')->where('credit_id', $oldCredit->id)->sum('amount');
-                        $pendingAmount = $oldCreditTotal - $oldCreditPaid;
+                    if ($oldInfo) {
+                        $pendingAmount = max(0, (float) $oldInfo->total_value - (float) $oldInfo->total_paid);
                         $total_pending_absorbed += $pendingAmount;
                     }
                     $netDisbursement = $renewCredit->credit_value - $pendingAmount;
@@ -522,61 +644,19 @@ class DashboardService
                 $sellerData['total_renewal_disbursed'] = (float) number_format($total_renewal_disbursed, 2, '.', '');
                 $sellerData['total_pending_absorbed'] = (float) number_format($total_pending_absorbed, 2, '.', '');
 
-                // Caja inicial: última liquidación antes de hoy
-                $lastApprovedLiquidation = Liquidation::where('seller_id', $seller->id)
-                    ->where('date', '<', $todayDate)
-                    ->orderBy('date', 'desc')
-                    ->first();
-
-                $sellerData['previous_cash'] = $lastApprovedLiquidation
-                    ? (float) number_format($lastApprovedLiquidation->real_to_deliver, 2, '.', '')
-                    : 0;
+                // Caja inicial
+                $lastLiquidation = $lastLiquidations->get($seller->id);
+                $initialCash = $lastLiquidation ? (float) $lastLiquidation->real_to_deliver : 0;
+                $sellerData['previous_cash'] = (float) number_format($initialCash, 2, '.', '');
 
                 // Caja actual
-                $initialCash = $lastApprovedLiquidation ? $lastApprovedLiquidation->real_to_deliver : 0;
-                $creditIds = collect($seller->credits)->pluck('id')->toArray();
-                $cashPayments = Payment::whereIn('credit_id', $creditIds)
-                    ->whereBetween('created_at', [$startUTC, $endUTC])
-                    ->sum('amount');
-                $expenses = Expense::where('user_id', $seller->user_id)
-                    ->whereBetween('created_at', [$startUTC, $endUTC])
-                    ->where(function ($q) {
-                        $q->where('status', 'Aprobado')
-                            ->orWhere('description', 'like', '%AJUSTE%');
-                    })
-                    ->sum('value');
-                $income = Income::where('user_id', $seller->user_id)
-                    ->whereBetween('created_at', [$startUTC, $endUTC])
-                    ->sum('value');
-                $newCredits = Credit::where('seller_id', $seller->id)
-                    ->whereBetween('created_at', [$startUTC, $endUTC])
-                    ->whereNull('renewed_from_id')
-                    ->whereNull('deleted_at')
-                    ->sum('credit_value');
-                $renewalCredits = Credit::where('seller_id', $seller->id)
-                    ->whereBetween('created_at', [$startUTC, $endUTC])
-                    ->whereNotNull('renewed_from_id')
-                    ->get();
-                $total_renewal_disbursed = 0;
-                foreach ($renewalCredits as $renewCredit) {
-                    $oldCredit = Credit::find($renewCredit->renewed_from_id);
-                    $pendingAmount = 0;
-                    if ($oldCredit) {
-                        $oldCreditTotal = ($oldCredit->credit_value * $oldCredit->total_interest / 100) + $oldCredit->credit_value;
-                        $oldCreditPaid = Payment::where('credit_id', $oldCredit->id)->sum('amount');
-                        $pendingAmount = $oldCreditTotal - $oldCreditPaid;
-                    }
-                    $netDisbursement = $renewCredit->credit_value - $pendingAmount;
-                    $total_renewal_disbursed += $netDisbursement;
-                }
-                $irrecoverableCredits = DB::table('installments')
-                    ->join('credits', 'installments.credit_id', '=', 'credits.id')
-                    ->where('credits.seller_id', $seller->id)
-                    ->where('credits.status', 'Cartera Irrecuperable')
-                    ->whereBetween('credits.updated_at', [$startUTC, $endUTC])
-                    ->where('installments.status', 'Pendiente')
-                    ->sum('installments.quota_amount');
-                $currentCash = $initialCash + ($income + $cashPayments) - ($expenses + $newCredits + $total_renewal_disbursed + $irrecoverableCredits);
+                $expenses = (float) ($expensesTodayAgg->get($seller->user_id)->total ?? 0);
+                $income = (float) ($incomeTodayAgg->get($seller->user_id)->total ?? 0);
+                $newCreditsVal = $newCredAgg ? (float) $newCredAgg->cap : 0;
+                $irrecoverableCreditsSum = (float) ($irrecoverableToday[$seller->id] ?? 0);
+                $cashPaymentsToday = $payAgg ? (float) $payAgg->paid_today : 0;
+
+                $currentCash = $initialCash + ($income + $cashPaymentsToday) - ($expenses + $newCreditsVal + $total_renewal_disbursed + $irrecoverableCreditsSum);
                 $sellerData['current_cash'] = (float) number_format($currentCash, 2, '.', '');
 
                 $result[] = $sellerData;
@@ -584,13 +664,14 @@ class DashboardService
 
             return response()->json([
                 'success' => true,
-                'data' => $result
+                'data' => $result,
+                'total' => $sellersCount
             ]);
-        } catch (\Exception $e) {
-            \Log::error("Error fetching pending portfolios: " . $e->getMessage());
+        } catch (\Throwable $e) {
+            \Log::error("CRITICAL ERROR in loadPendingPortfolios: " . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine() . "\n" . $e->getTraceAsString());
             return response()->json([
                 'success' => false,
-                'message' => 'Error fetching pending portfolios'
+                'message' => 'Error al obtener las carteras pendientes: ' . $e->getMessage()
             ], 500);
         }
     }
@@ -746,16 +827,16 @@ class DashboardService
                     'profit' => (float) number_format($profitPending, 2, '.', ''),
                     'currentCash' => (float) number_format($currentCash, 2, '.', ''),
                     'cashDayBalance' => (float) number_format($cashDayBalance, 2, '.', ''),
-                    'income' => (float) number_format($incomeTotal, 2, '.', ''),
-                    'expenses' => (float) number_format($expenseTotal, 2, '.', ''),
+                    'income' => (float) number_format($income, 2, '.', ''),
+                    'expenses' => (float) number_format($expenses, 2, '.', ''),
                     'newCredits' => (float) number_format($newCredits, 2, '.', ''),
                     'renewalCreditsDisbursed' => (float) number_format($total_renewal_disbursed, 2, '.', ''),
                     'dailyPolicy' => (float) number_format($dailyPolicy, 2, '.', ''),
                 ]
             ]);
-        } catch (\Exception $e) {
-            Log::error("Error loading financial summary: {$e->getMessage()} | " . $e->getTraceAsString());
-            return $this->errorResponse('Error al obtener el resumen financiero.', 500);
+        } catch (\Throwable $e) {
+            \Log::error("Error loading financial summary: " . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
+            return $this->errorResponse('Error al obtener el resumen financiero: ' . $e->getMessage(), 500);
         }
     }
 
@@ -831,9 +912,9 @@ class DashboardService
                     'irrecoverableWeek' => (float) $irrecoverableCredits
                 ]
             ]);
-        } catch (\Exception $e) {
-            Log::error("Error loading weekly financial summary: {$e->getMessage()} | " . $e->getTraceAsString());
-            return $this->errorResponse('Error al obtener el balance general semanal.', 500);
+        } catch (\Throwable $e) {
+            \Log::error("Error loading weekly financial summary: " . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
+            return $this->errorResponse('Error al obtener el balance general semanal: ' . $e->getMessage(), 500);
         }
     }
 
@@ -866,26 +947,44 @@ class DashboardService
             $sellerIds = $this->getSellerIdsForUser($user, $request, $companyId)->all();
 
             // Filtro por vendedor si se recibe seller_id
-            $sellerId = $request->input('seller_id');
-            if ($sellerId) {
-                $sellerIds = [$sellerId];
+        $sellerId = $request->input('seller_id');
+        if ($sellerId) {
+            if (!is_numeric($sellerId)) {
+                $resolvedSeller = Seller::where('uuid', $sellerId)->first();
+                $sellerId = $resolvedSeller ? $resolvedSeller->id : null;
             }
+            $sellerIds = $sellerId ? [$sellerId] : [];
+        }
 
-            if (empty($sellerIds)) {
-                return $this->successResponse(['success' => true, 'data' => []]);
-            }
+        if (empty($sellerIds)) {
+            return $this->successResponse(['success' => true, 'data' => []]);
+        }
 
-            $creditIds = $this->getCreditIdsForSellers(collect($sellerIds))->all();
-            $userIds = $this->getUserIdsForSellers(collect($sellerIds))->all();
+        $creditIds = $this->getCreditIdsForSellers(collect($sellerIds))->all();
+        $userIds = $this->getUserIdsForSellers(collect($sellerIds))->all();
 
-            $income = (float) Income::whereIn('user_id', $userIds)
-                ->whereBetween('created_at', [$start, $end])->sum('value');
+        $income = (float) Income::whereIn('user_id', $userIds)
+            ->where(function($q) use ($start, $end) {
+                // Si el filtro no es 'all', usamos rangos
+                $q->whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
+                  ->orWhereBetween('created_at', [$start, $end]);
+            })
+            ->sum('value');
 
-            $expenses = (float) Expense::whereIn('user_id', $userIds)
-                ->whereBetween('created_at', [$start, $end])->sum('value');
+        $expenses = (float) Expense::whereIn('user_id', $userIds)
+            ->where(function($q) use ($start, $end) {
+                $q->whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
+                  ->orWhereBetween('created_at', [$start, $end]);
+            })
+            ->sum('value');
 
-            $collected = (float) Payment::whereIn('credit_id', $creditIds)
-                ->whereBetween('created_at', [$start, $end])->sum('amount');
+        $collected = (float) Payment::whereIn('credit_id', $creditIds)
+            ->where(function($q) use ($start, $end) {
+                $q->whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
+                  ->orWhereBetween('created_at', [$start, $end]);
+            })
+            ->where('amount', '>', 0)
+            ->sum('amount');
 
             $newCredits = (float) Credit::whereIn('seller_id', $sellerIds)
                 ->whereBetween('created_at', [$start, $end])->whereNull('renewed_from_id')->sum('credit_value');
@@ -939,9 +1038,9 @@ class DashboardService
                     'filter' => $filter
                 ]
             ]);
-        } catch (\Exception $e) {
-            Log::error("Error loading movements: {$e->getMessage()} | " . $e->getTraceAsString());
-            return $this->errorResponse('Error al obtener movimientos.', 500);
+        } catch (\Throwable $e) {
+            \Log::error("Error loading weekly movements: " . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
+            return $this->errorResponse('Error al obtener movimientos: ' . $e->getMessage(), 500);
         }
     }
 
@@ -966,92 +1065,120 @@ class DashboardService
             $data = [];
             $user = Auth::user();
             $sellerIds = $this->getSellerIdsForUser($user, $request, $companyId)->all();
-            if ($type === 'income') {
-                $query = Income::with('user')->whereBetween('created_at', [$start, $end]);
-                if ($sellerId) {
-                    $seller = Seller::find($sellerId);
-                    if ($seller && $seller->user_id) {
-                        $query->where('user_id', $seller->user_id);
-                    } else {
-                        $query->whereRaw('0 = 1');
-                    }
-                } elseif (!empty($sellerIds)) {
-                    $userIds = Seller::whereIn('id', $sellerIds)->pluck('user_id')->all();
-                    $query->whereIn('user_id', $userIds);
+        if ($type === 'income') {
+            $query = Income::with('user');
+            
+            $query->where(function($q) use ($start, $end) {
+                $q->whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
+                  ->orWhereBetween('created_at', [$start, $end]);
+            });
+
+            if ($sellerId) {
+                if (!is_numeric($sellerId)) {
+                    $resolvedSeller = Seller::where('uuid', $sellerId)->first();
+                    $sellerId = $resolvedSeller ? $resolvedSeller->id : null;
                 }
-                $incomes = $query->orderBy('created_at', 'asc')->get();
-                $grouped = [];
-                foreach ($incomes as $income) {
-                    $date = $income->created_at->format('Y-m-d');
-                    if (!isset($grouped[$date]))
-                        $grouped[$date] = [];
-                    $grouped[$date][] = [
-                        'value' => $income->value,
-                        'user' => $income->user ? $income->user->name : 'Sin usuario',
-                        'description' => $income->description ?? '',
+                $seller = Seller::find($sellerId);
+                if ($seller && $seller->user_id) {
+                    $query->where('user_id', $seller->user_id);
+                } else {
+                    $query->whereRaw('0 = 1');
+                }
+            } elseif (!empty($sellerIds)) {
+                $userIds = Seller::whereIn('id', $sellerIds)->pluck('user_id')->all();
+                $query->whereIn('user_id', $userIds);
+            }
+
+            $incomes = $query->orderBy('business_date', 'asc')
+                             ->orderBy('created_at', 'asc')
+                             ->get();
+
+            foreach ($incomes as $income) {
+                $date = $income->business_date ? $income->business_date->toDateString() : $income->created_at->format('Y-m-d');
+                if (!isset($grouped[$date]))
+                    $grouped[$date] = [];
+                $grouped[$date][] = [
+                    'value' => $income->value,
+                    'user' => $income->user ? $income->user->name : 'Sin usuario',
+                    'description' => $income->description ?? '',
+                ];
+            }
+        } elseif ($type === 'expenses') {
+            $query = Expense::with('user');
+
+            $query->where(function($q) use ($start, $end) {
+                $q->whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
+                  ->orWhereBetween('created_at', [$start, $end]);
+            });
+
+            if ($sellerId) {
+                if (!is_numeric($sellerId)) {
+                    $resolvedSeller = Seller::where('uuid', $sellerId)->first();
+                    $sellerId = $resolvedSeller ? $resolvedSeller->id : null;
+                }
+                $seller = Seller::find($sellerId);
+                if ($seller && $seller->user_id) {
+                    $query->where('user_id', $seller->user_id);
+                } else {
+                    $query->whereRaw('0 = 1');
+                }
+            } elseif (!empty($sellerIds)) {
+                $userIds = Seller::whereIn('id', $sellerIds)->pluck('user_id')->all();
+                $query->whereIn('user_id', $userIds);
+            }
+
+            $expenses = $query->orderBy('business_date', 'asc')
+                              ->orderBy('created_at', 'asc')
+                              ->get();
+
+            foreach ($expenses as $expense) {
+                $date = $expense->business_date ? $expense->business_date->toDateString() : $expense->created_at->format('Y-m-d');
+                if (!isset($grouped[$date]))
+                    $grouped[$date] = [];
+                $grouped[$date][] = [
+                    'value' => $expense->value,
+                    'user' => $expense->user ? $expense->user->name : 'Sin usuario',
+                    'description' => $expense->description ?? '',
+                ];
+            }
+
+            foreach ($grouped as $date => $items) {
+                foreach ($items as $item) {
+                    $data[] = [
+                        'date' => $date,
+                        'value' => $item['value'],
+                        'user' => $item['user'],
+                        'description' => $item['description'],
                     ];
                 }
-                foreach ($grouped as $date => $items) {
-                    foreach ($items as $item) {
-                        $data[] = [
-                            'date' => $date,
-                            'value' => $item['value'],
-                            'user' => $item['user'],
-                            'description' => $item['description'],
-                        ];
-                    }
-                }
-            } elseif ($type === 'expenses') {
-                $query = Expense::with('user')->whereBetween('created_at', [$start, $end]);
+            }
+        } elseif ($type === 'collected') {
                 if ($sellerId) {
-                    $seller = Seller::find($sellerId);
-                    if ($seller && $seller->user_id) {
-                        $query->where('user_id', $seller->user_id);
-                    } else {
-                        $query->whereRaw('0 = 1');
+                    if (!is_numeric($sellerId)) {
+                        $resolvedSeller = Seller::where('uuid', $sellerId)->first();
+                        $sellerId = $resolvedSeller ? $resolvedSeller->id : null;
                     }
-                } elseif (!empty($sellerIds)) {
-                    $userIds = Seller::whereIn('id', $sellerIds)->pluck('user_id')->all();
-                    $query->whereIn('user_id', $userIds);
-                }
-                $expenses = $query->orderBy('created_at', 'asc')->get();
-                $grouped = [];
-                foreach ($expenses as $expense) {
-                    $date = $expense->created_at->format('Y-m-d');
-                    if (!isset($grouped[$date]))
-                        $grouped[$date] = [];
-                    $grouped[$date][] = [
-                        'value' => $expense->value,
-                        'user' => $expense->user ? $expense->user->name : 'Sin usuario',
-                        'description' => $expense->description ?? '',
-                    ];
-                }
-                foreach ($grouped as $date => $items) {
-                    foreach ($items as $item) {
-                        $data[] = [
-                            'date' => $date,
-                            'value' => $item['value'],
-                            'user' => $item['user'],
-                            'description' => $item['description'],
-                        ];
-                    }
-                }
-            } elseif ($type === 'collected') {
-                if ($sellerId) {
                     $creditIds = Credit::where('seller_id', $sellerId)->pluck('id')->all();
                 } elseif (!empty($sellerIds)) {
                     $creditIds = Credit::whereIn('seller_id', $sellerIds)->pluck('id')->all();
                 } else {
                     $creditIds = Credit::pluck('id')->all();
                 }
+                
                 $payments = Payment::with(['credit.seller', 'credit.seller.user'])
                     ->whereIn('credit_id', $creditIds)
-                    ->whereBetween('created_at', [$start, $end])
+                    ->where(function($q) use ($start, $end) {
+                        $q->whereBetween('business_date', [$start->toDateString(), $end->toDateString()])
+                          ->orWhereBetween('created_at', [$start, $end]);
+                    })
+                    ->where('amount', '>', 0)
+                    ->orderBy('business_date', 'asc')
                     ->orderBy('created_at', 'asc')
                     ->get();
+                
                 $grouped = [];
                 foreach ($payments as $payment) {
-                    $date = $payment->created_at->format('Y-m-d');
+                    $date = $payment->business_date ? $payment->business_date->toDateString() : $payment->created_at->format('Y-m-d');
                     if (!isset($grouped[$date]))
                         $grouped[$date] = [];
                     $sellerName = $payment->credit && $payment->credit->seller && $payment->credit->seller->user
@@ -1090,9 +1217,9 @@ class DashboardService
                     'type' => $type,
                 ]
             ]);
-        } catch (\Exception $e) {
-            Log::error("Error loading movements history: {$e->getMessage()} | " . $e->getTraceAsString());
-            return $this->errorResponse('Error al obtener histórico de movimientos.', 500);
+        } catch (\Throwable $e) {
+            \Log::error("Error loading movements history: " . $e->getMessage() . " at " . $e->getFile() . ":" . $e->getLine());
+            return $this->errorResponse('Error al obtener histórico de movimientos: ' . $e->getMessage(), 500);
         }
     }
 }

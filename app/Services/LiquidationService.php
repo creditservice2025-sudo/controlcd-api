@@ -315,12 +315,15 @@ class LiquidationService
             'date' => 'required|date',
             'seller_id' => 'required|exists:sellers,id',
             'collection_target' => 'required|numeric|min:0',
-            'initial_cash' => 'required|numeric|min:0',
+            'initial_cash' => 'required|numeric',
             'base_delivered' => 'required|numeric|min:0',
+            'cash_delivered' => 'nullable|numeric',
             'total_collected' => 'required|numeric|min:0',
             'total_expenses' => 'required|numeric|min:0',
             'new_credits' => 'required|numeric|min:0',
             'status' => 'sometimes|in:pending,approved,rejected',
+            'path' => 'nullable|string',
+            'observation' => 'nullable|string',
         ];
 
         return Validator::make($data, $rules)->validate();
@@ -542,7 +545,7 @@ class LiquidationService
         }
     }
 
-    public function getLiquidationData($sellerId, $date, $userId, $timezone = null)
+    public function getLiquidationData($sellerId, $date, $userId, $timezone = null, $autoCreate = true)
     {
         $tz = $timezone ?: self::TIMEZONE;
         $startUTC = Carbon::parse($date, $tz)->startOfDay()->setTimezone('UTC');
@@ -555,30 +558,31 @@ class LiquidationService
 
         // Si existe liquidación, retornar directamente esos datos
         if ($existingLiquidation) {
-            $today = Carbon::now($tz)->toDateString(); // Formato 'Y-m-d'
-            $liquidationDate = Carbon::parse($existingLiquidation->date)->toDateString();
-            \Log::debug("Liquidación existente para fecha $date: $today: $existingLiquidation->date");
-            // Solo recalculamos si la liquidación es del día actual (comparando con el campo 'date')
-            if ($liquidationDate == $today) {  // Comparar con el campo 'date' de la liquidación
-                \Log::debug("Recalculando liquidación para el vendedor $sellerId en la fecha $date (hoy)");
+            $todayStr = Carbon::now($tz)->toDateString();
+            $liquidationDateStr = Carbon::parse($existingLiquidation->date)->toDateString();
+            
+            if ($liquidationDateStr == $todayStr) {
                 $this->recalculateLiquidation($sellerId, $date, $timezone);
-
-                // Vuelve a obtener la liquidación actualizada
                 $updatedLiquidation = Liquidation::with('audits')->where('seller_id', $sellerId)
-                    ->whereDate('date', $date)  // Cambiado de 'created_at' a 'date'
+                    ->whereDate('date', $date)
                     ->first();
-
-                \Log::debug("Liquidación actualizada: ", $updatedLiquidation->toArray());
                 return $this->formatLiquidationResponse($updatedLiquidation, true);
             } else {
                 $this->recalculateLiquidation($sellerId, $date);
-
-                // Vuelve a obtener la liquidación actualizada
                 $updatedLiquidation = Liquidation::with('audits')->where('seller_id', $sellerId)
-                    ->whereDate('date', $date)  // Cambiado de 'created_at' a 'date'
+                    ->whereDate('date', $date)
                     ->first();
-                \Log::debug("Liquidación existente para fecha pasada, no se recalcula. Fecha: $existingLiquidation->date");
                 return $this->formatLiquidationResponse($updatedLiquidation, true);
+            }
+        }
+
+        // Si no existe y es para HOY, y autoCreate está activo, crearla automáticamente (Apertura)
+        if ($autoCreate) {
+            $todayStr = Carbon::now($tz)->toDateString();
+            if ($date == $todayStr) {
+                \Log::info("Auto-creando liquidación (Apertura) para vendedor $sellerId en fecha $date");
+                $newLiquidation = $this->getOrCreateLiquidation($sellerId, $date, $timezone);
+                return $this->formatLiquidationResponse($newLiquidation, true);
             }
         }
         // 2. Obtener datos del endpoint dailyPaymentTotals
@@ -704,7 +708,8 @@ class LiquidationService
         $country = $seller?->city?->country ?? null;
         $currency = $country?->currency ?? 'PEN'; // Fallback a PEN si no hay país
 
-        $dynamicData = $this->getLiquidationData($sellerId, $date, $userId, $tz);
+        // Importante: autoCreate = false para evitar recursión infinita
+        $dynamicData = $this->getLiquidationData($sellerId, $date, $userId, $tz, false);
 
         return Liquidation::create([
             'seller_id' => $sellerId,
@@ -946,6 +951,13 @@ class LiquidationService
             $tz = $timezone ?: self::TIMEZONE;
             $dateLocal = $date ?: Carbon::now($tz)->toDateString();
 
+            if (!is_numeric($sellerId)) {
+                $resolvedSeller = Seller::where('uuid', $sellerId)->first();
+                $sellerId = $resolvedSeller ? $resolvedSeller->id : null;
+            }
+
+            if (!$sellerId) return ['success' => false, 'message' => 'Vendedor no encontrado'];
+
             $startUTC = Carbon::parse($dateLocal, $tz)->startOfDay()->setTimezone('UTC');
             $endUTC = Carbon::parse($dateLocal, $tz)->endOfDay()->setTimezone('UTC');
 
@@ -959,6 +971,7 @@ class LiquidationService
                 ->where('credits.seller_id', $sellerId)
                 ->whereNull('payments.deleted_at')
                 ->where('payments.business_date', $dateLocal)
+                ->where('payments.amount', '>', 0)
                 ->select('payments.*', 'credits.client_id as client_id')
                 ->get()
                 ->map(function ($p) use ($sellerName) {
@@ -986,15 +999,17 @@ class LiquidationService
             $expenses = collect();
             if ($userId) {
                 $expenses = Expense::where('user_id', $userId)
-                    ->whereBetween('created_at', [$startUTC, $endUTC])
+                    ->where('business_date', $dateLocal)
                     ->whereNull('deleted_at')
                     ->get()
                     ->map(function ($e) {
                         return [
                             'type' => 'expense',
+                            'movement_kind' => 'Egreso',
                             'id' => $e->id,
                             'amount' => (float) $e->value,
                             'created_at' => (string) $e->created_at,
+                            'business_date' => $e->business_date ? (is_string($e->business_date) ? $e->business_date : $e->business_date->format('Y-m-d')) : null,
                             'category_id' => $e->category_id ?? null,
                             'description' => $e->description ?? null,
                             'raw' => $e,
@@ -1006,15 +1021,17 @@ class LiquidationService
             $incomes = collect();
             if ($userId) {
                 $incomes = Income::where('user_id', $userId)
-                    ->whereBetween('created_at', [$startUTC, $endUTC])
+                    ->where('business_date', $dateLocal)
                     ->whereNull('deleted_at')
                     ->get()
                     ->map(function ($i) {
                         return [
                             'type' => 'income',
+                            'movement_kind' => 'Ingreso',
                             'id' => $i->id,
                             'amount' => (float) $i->value,
                             'created_at' => (string) $i->created_at,
+                            'business_date' => $i->business_date ? (is_string($i->business_date) ? $i->business_date : $i->business_date->format('Y-m-d')) : null,
                             'description' => $i->description ?? null,
                             'raw' => $i,
                         ];

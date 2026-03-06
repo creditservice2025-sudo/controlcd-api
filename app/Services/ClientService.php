@@ -894,22 +894,19 @@ class ClientService
             elseif ($user->role_id == 5 && $seller)
                 $clientsQuery->where('seller_id', $seller->id);
 
-            // Filtros por estado / créditos (mantengo tu lógica original)
+            // Filtros por estado / créditos
             if ($status === 'Cartera Irrecuperable') {
                 $clientsQuery->whereHas('credits', fn($q) => $q->where('status', $status));
                 $clientsQuery->with(['credits' => fn($q) => $q->where('status', $status)]);
             } elseif ($status === 'Inactivo') {
                 $clientsQuery->where('status', 'inactive');
-            } elseif ($status === 'Activo' && in_array($user->role_id, [1, 2], true)) {
-                $clientsQuery->where('status', 'active')
-                    ->where(fn($q) => $q->whereDoesntHave('credits', fn($qq) => $qq->where('status', 'Cartera Irrecuperable'))
-                        ->orWhereHas('credits', fn($qq) => $qq->whereIn('status', ['Activo', 'Vigente'])))
-                    ->with(['credits' => fn($qq) => $qq->whereIn('status', ['Activo', 'Vigente'])]);
+            } elseif ($status === 'Activo' || $status === 'clientes') {
+                $clientsQuery->where('status', 'active');
             } elseif ($status === 'con_creditos') {
-                $clientsQuery->whereHas('credits', fn($q) => $q->whereIn('status', ['Activo', 'Vigente']));
-                $clientsQuery->with(['credits' => fn($q) => $q->whereIn('status', ['Activo', 'Vigente'])]);
+                $clientsQuery->whereHas('credits', fn($q) => $q->whereIn('status', ['Activo', 'Vigente', 'Vencido']));
+                $clientsQuery->with(['credits' => fn($q) => $q->whereIn('status', ['Activo', 'Vigente', 'Vencido'])]);
             } elseif ($status === 'sin_creditos') {
-                $clientsQuery->whereDoesntHave('credits', fn($q) => $q->whereIn('status', ['Activo', 'Vigente']));
+                $clientsQuery->whereDoesntHave('credits', fn($q) => $q->whereIn('status', ['Activo', 'Vigente', 'Vencido']));
             } else {
                 $clientsQuery->where('status', 'active');
             }

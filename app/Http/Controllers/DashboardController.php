@@ -21,7 +21,8 @@ class DashboardController extends Controller
         try {
             $companyId = $request->input('company_id');
             return $this->dashboardService->loadCounters($request, $companyId);
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
+            \Log::error("Error in loadDahsboardData: " . $e->getMessage() . " in " . $e->getFile() . ":" . $e->getLine());
             return $this->errorResponse($e->getMessage(), 500);
         }
     }
@@ -31,8 +32,8 @@ class DashboardController extends Controller
         try {
             $companyId = $request->input('company_id');
             return $this->dashboardService->loadPendingPortfolios($request, $companyId);
-        } catch (\Exception $e) {
-            \Log::error("Error in getPendingPortfolios: " . $e->getMessage());
+        } catch (\Throwable $e) {
+            \Log::error("Error in getPendingPortfolios: " . $e->getMessage() . " in " . $e->getFile() . ":" . $e->getLine());
             return $this->errorResponse('Error al obtener las carteras pendientes.', 500);
         }
     }
@@ -42,8 +43,8 @@ class DashboardController extends Controller
         try {
             $companyId = $request->input('company_id');
             return $this->dashboardService->loadFinancialSummary($request, $companyId);
-        } catch (\Exception $e) {
-            \Log::error("Error in loadFinancialSummary: " . $e->getMessage());
+        } catch (\Throwable $e) {
+            \Log::error("Error in loadFinancialSummary: " . $e->getMessage() . " in " . $e->getFile() . ":" . $e->getLine());
             return $this->errorResponse('Error al cargar el resumen financiero.', 500);
         }
     }
@@ -53,9 +54,9 @@ class DashboardController extends Controller
         try {
             $companyId = $request->input('company_id');
             return $this->dashboardService->weeklyMovements($request, $companyId);
-        } catch (\Exception $e) {
-            \Log::error("Error in loadFinancialSummary: " . $e->getMessage());
-            return $this->errorResponse('Error al cargar el resumen financiero.', 500);
+        } catch (\Throwable $e) {
+            \Log::error("Error in loadWeeklyMovements: " . $e->getMessage() . " in " . $e->getFile() . ":" . $e->getLine());
+            return $this->errorResponse('Error al cargar los movimientos semanales.', 500);
         }
     }
 
@@ -65,8 +66,8 @@ class DashboardController extends Controller
             $companyId = $request->input('company_id');
             $sellerId = $request->input('seller_id');
             return $this->dashboardService->weeklyMovementsHistory($request, $sellerId, $companyId);
-        } catch (\Exception $e) {
-            \Log::error("Error in loadWeeklyMovementsHistory: " . $e->getMessage());
+        } catch (\Throwable $e) {
+            \Log::error("Error in loadWeeklyMovementsHistory: " . $e->getMessage() . " in " . $e->getFile() . ":" . $e->getLine());
             return $this->errorResponse('Error al cargar el histórico de movimientos.', 500);
         }
     }
@@ -76,8 +77,8 @@ class DashboardController extends Controller
         try {
             $companyId = $request->input('company_id');
             return $this->dashboardService->weeklyFinancialSummary($request, $companyId);
-        } catch (\Exception $e) {
-            \Log::error("Error in weeklyFinancialSummary: " . $e->getMessage());
+        } catch (\Throwable $e) {
+            \Log::error("Error in weeklyFinancialSummary: " . $e->getMessage() . " in " . $e->getFile() . ":" . $e->getLine());
             return $this->errorResponse('Error al cargar el resumen financiero.', 500);
         }
     }

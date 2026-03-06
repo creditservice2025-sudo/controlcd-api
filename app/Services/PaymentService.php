@@ -59,9 +59,12 @@ class PaymentService
             // 1. TIMESTAMP TÉCNICO (auditoría del sistema)
             $serverNow = Carbon::now('UTC');
 
+
             // 2. TIMESTAMP DE NEGOCIO (hora oficial del pago)
             $businessNow = Carbon::now($clientTimezone);
-            $businessTimestampUtc = $businessNow->copy()->utc();
+            // TRUCO: Creamos un Carbon en UTC con la hora LOCAL para que al guardarse quede "11:05" en DB
+            // y al leerse (con AppTimezone Caracas) se interprete como "11:05 Caracas".
+            $businessTimestampUtc = Carbon::createFromFormat('Y-m-d H:i:s', $businessNow->format('Y-m-d H:i:s'), 'UTC');
             $businessDate = $businessNow->toDateString();
 
             Log::info('Payment Create - Business Timestamps Generated', [
@@ -163,6 +166,7 @@ class PaymentService
                         // COMPATIBILIDAD (mantener por ahora)
                         'payment_date' => $businessDate,
                         'client_timezone' => $clientTimezone,
+                        'client_created_at' => $params['client_created_at'] ?? null,
                     ];
 
                     $payment = Payment::create($paymentData);
@@ -240,6 +244,7 @@ class PaymentService
                     // COMPATIBILIDAD (mantener por ahora)
                     'payment_date' => $businessDate,
                     'client_timezone' => $clientTimezone,
+                    'client_created_at' => $params['client_created_at'] ?? null,
                 ];
 
                 $payment = Payment::create($paymentData);
@@ -547,6 +552,8 @@ class PaymentService
                     'payments.payment_method',
                     'payments.payment_reference',
                     'payments.status',
+                    'payments.business_timezone',
+                    'payments.business_timestamp',
 
 
                     DB::raw('GROUP_CONCAT(installments.quota_number ORDER BY installments.quota_number) as quotas'),
@@ -598,8 +605,11 @@ class PaymentService
                     'payments.payment_method',
                     'payments.payment_reference',
                     'payments.status',
+                    'payments.status',
                     'payments.created_at',
                     'payments.unapplied_amount',
+                    'payments.business_timezone',
+                    'payments.business_timestamp',
                     'payment_images.path'
 
                 )
@@ -676,6 +686,8 @@ class PaymentService
                     'payments.payment_method',
                     'payments.payment_reference',
                     'payments.status',
+                    'payments.business_timezone',
+                    'payments.business_timestamp',
                     \DB::raw('GROUP_CONCAT(installments.quota_number ORDER BY installments.quota_number) as quotas'),
                     \DB::raw('COALESCE(SUM(payment_installments.applied_amount), 0) as total_applied')
                 )
@@ -692,7 +704,10 @@ class PaymentService
                     'payments.payment_method',
                     'payments.payment_reference',
                     'payments.status',
+                    'payments.status',
                     'payments.created_at',
+                    'payments.business_timezone',
+                    'payments.business_timestamp',
                     'payment_images.path'
                 )
                 ->orderBy('payments.created_at', 'desc');
@@ -855,6 +870,8 @@ class PaymentService
                         'business_date' => $payment->business_date,
                         'amount' => $payment->amount,
                         'status' => $payment->status,
+                        'business_timezone' => $payment->business_timezone,
+                        'business_timestamp' => $payment->business_timestamp,
                         'payment_method' => $payment->payment_method,
                         'payment_reference' => $payment->payment_reference,
                         'quota_numbers' => $quotaNumbers,
@@ -1037,6 +1054,8 @@ class PaymentService
                     'business_date' => $payment->business_date,
                     'amount' => $payment->amount,
                     'status' => $payment->status,
+                    'business_timezone' => $payment->business_timezone,
+                    'business_timestamp' => $payment->business_timestamp,
                     'payment_method' => $payment->payment_method,
                     'payment_reference' => $payment->payment_reference,
                     'quota_numbers' => $quotaNumbers,
@@ -1368,12 +1387,12 @@ class PaymentService
                     continue;
                 }
 
-                // --- MODIFICADO: Permitir pagos parciales incluso si no cubren la cuota completa ---
-                // Eliminamos el break que impedía aplicar saldos pequeños a cuotas más grandes.
-                // $totalStack = $stackPayments->sum('unapplied_amount');
-                // if ($totalStack < $targetAmount) {
-                //     break;
-                // }
+                // Check total stack available BEFORE applying anything to THIS installment
+                $totalStack = $stackPayments->sum('unapplied_amount');
+                if ($totalStack < ($targetAmount - 0.001)) {
+                    // Not enough money to fill THIS quota.
+                    break;
+                }
 
                 $amountNeeded = $targetAmount;
 

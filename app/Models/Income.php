@@ -26,7 +26,7 @@ class Income extends Model
     protected $casts = [
         'value' => 'decimal:2',
         'created_at' => 'datetime',
-        'business_timestamp' => 'datetime',
+        'business_timestamp' => 'string',
         'business_date' => 'date:Y-m-d',
     ];
 

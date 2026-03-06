@@ -16,7 +16,7 @@ class UpdateLiquidationRequest extends FormRequest
         return [
             'date' => 'nullable|date',
             'seller_id' => 'nullable|exists:sellers,id',
-            'cash_delivered' => 'nullable|numeric|min:0',
+            'cash_delivered' => 'nullable|numeric',
             'initial_cash' => 'nullable|numeric',
             'base_delivered' => 'nullable|numeric|min:0',
             'total_collected' => 'nullable|numeric|min:0',
@@ -24,6 +24,7 @@ class UpdateLiquidationRequest extends FormRequest
             'new_credits' => 'nullable|numeric|min:0',
             'total_income' => 'nullable|numeric|min:0',
             'collection_target' => 'nullable|numeric|min:0',
+            'observation' => 'nullable|string',
             'created_at' => 'nullable|date',
         ];
     }

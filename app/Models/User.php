@@ -11,6 +11,7 @@ use Spatie\Permission\Traits\HasRoles;
 use Laravel\Passport\HasApiTokens;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Str;
+use App\Notifications\ResetPasswordNotification;
 
 class User extends Authenticatable
 {
@@ -32,7 +33,8 @@ class User extends Authenticatable
         'city_id',
         'parent_id',
         'role_id',
-        'status'
+        'status',
+        'must_change_password',
     ];
 
     /**
@@ -53,8 +55,9 @@ class User extends Authenticatable
     protected function casts(): array
     {
         return [
-            'email_verified_at' => 'datetime',
-            'password' => 'hashed',
+            'email_verified_at'    => 'datetime',
+            'password'             => 'hashed',
+            'must_change_password' => 'boolean',
         ];
     }
 
@@ -105,7 +108,6 @@ class User extends Authenticatable
     }
 
 
-    // boots
     protected static function boot()
     {
         parent::boot();
@@ -114,5 +116,16 @@ class User extends Authenticatable
                 $model->uuid = Str::uuid();
             }
         });
+    }
+
+    /**
+     * Send the password reset notification.
+     *
+     * @param  string  $token
+     * @return void
+     */
+    public function sendPasswordResetNotification($token)
+    {
+        $this->notify(new ResetPasswordNotification($token));
     }
 }
