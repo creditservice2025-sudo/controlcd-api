@@ -2387,6 +2387,15 @@ class CreditService
                     }
                 }
 
+                // Add geolocation history for credit creation
+                $geolocation = \App\Models\ClientGeolocationHistory::where('action_type', 'credit_created')
+                    ->where('action_id', $credit->id)
+                    ->first();
+                
+                if ($geolocation) {
+                    $credit->setAttribute('geolocation', $geolocation);
+                }
+
                 return $credit;
             });
 
