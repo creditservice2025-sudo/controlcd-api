@@ -25,6 +25,7 @@ use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\ReportExportController;
 
 use App\Http\Controllers\FrontendErrorController;
+use App\Http\Controllers\VerificationController;
 
 // Auth routes
 Route::post('login', [AuthController::class, 'login'])->middleware('throttle:6,1');
@@ -289,5 +290,12 @@ Route::middleware('auth:api')->group(function () {
     // Import Routes (Admin restricted via Controller)
     Route::post('/import/analyze', [\App\Http\Controllers\ImportController::class, 'analyze']);
     Route::post('/import/clients', [\App\Http\Controllers\ImportController::class, 'store']);
+
+    // Verification Routes
+    Route::post('verification/send-otp', [VerificationController::class, 'sendOtp']);
+    Route::post('verification/verify-otp', [VerificationController::class, 'verifyOtp']);
+
+    // Telegram Logs
+    Route::get('/telegram-logs', [\App\Http\Controllers\TelegramLogController::class, 'index']);
 });
 Route::get('/import/template', [\App\Http\Controllers\ImportController::class, 'downloadTemplate']);

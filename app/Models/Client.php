@@ -20,6 +20,7 @@ class Client extends Model
         'status',
         'dni',
         'address',
+        'reference',
         'gps_address',
         'gps_geolocalization',
         'geolocation',
