@@ -188,15 +188,13 @@ class ClientService
                     throw new \Exception("Error al crear el cliente: {$e->getMessage()}");
                 }
 
-                // Stage 3: Create initial credit if provided
+                // Stage 3: Create initial credit (NOW MANDATORY)
                 $credit = null;
-                if (!empty($params['credit_value']) && (float) $params['credit_value'] > 0) {
-                    try {
-                        $credit = $this->createCreditForNewClient($client, $params, $guarantorId);
-                    } catch (\Exception $e) {
-                        Log::error("Error creating initial credit for client {$client->id}: {$e->getMessage()}");
-                        throw new \Exception("Cliente creado pero error al crear el crédito inicial: {$e->getMessage()}");
-                    }
+                try {
+                    $credit = $this->createCreditForNewClient($client, $params, $guarantorId);
+                } catch (\Exception $e) {
+                    Log::error("Error creating mandatory initial credit for client {$client->id}: {$e->getMessage()}");
+                    throw new \Exception("Error al crear el crédito obligatorio: {$e->getMessage()}");
                 }
 
                 // Stage 4: Store images if provided
