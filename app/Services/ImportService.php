@@ -14,9 +14,18 @@ use Illuminate\Support\Str;
 use Maatwebsite\Excel\Facades\Excel;
 use Illuminate\Support\Facades\Response;
 
+use App\Models\Liquidation;
+
 class ImportService
 {
     protected $paymentService;
+    protected $liquidationService;
+
+    public function __construct(PaymentService $paymentService, LiquidationService $liquidationService)
+    {
+        $this->paymentService = $paymentService;
+        $this->liquidationService = $liquidationService;
+    }
 
     public function analyzeFile($filePath, $sellerId, $extension)
     {
@@ -113,10 +122,6 @@ class ImportService
         return $summary;
     }
 
-    public function __construct(PaymentService $paymentService)
-    {
-        $this->paymentService = $paymentService;
-    }
 
     public function importFromCsv($filePath, $sellerIdInput, $selectedDnis = null)
     {
@@ -535,7 +540,7 @@ class ImportService
                 'phone' => $row['cliente_telefono'] ?? '0',
                 'seller_id' => $sellerId,
                 'status' => 'active',
-                // 'needs_update' => true, // Column missing in DB
+                'needs_update' => true,
                 'address' => '',
                 'geolocation' => ['latitude' => 0, 'longitude' => 0],
                 'routing_order' => Client::where('seller_id', $sellerId)->max('routing_order') + 1,
@@ -547,7 +552,7 @@ class ImportService
             $hasImages = $client->images()->count() > 0;
 
             if (!$hasAddress || !$hasGPS || !$hasImages) {
-                // $client->update(['needs_update' => true]); // Column missing in DB
+                $client->update(['needs_update' => true]);
             }
         }
         // If client already exists, we just use it and create a new credit for them
@@ -634,20 +639,38 @@ class ImportService
         $paidAmount = floatval($row['pagos_realizados'] ?? 0);
         Log::info("ImportService: Handling historical payments", ['paid_amount' => $paidAmount]);
         if ($paidAmount > 0) {
+            // business_date = hoy (fecha del import), no fecha_entrega.
+            // Razón: (1) la fecha_entrega del Excel puede parsearse mal (ej: 2046)
+            //        (2) el pago "entra a caja" en el día del import, no en el día histórico
+            $importDate = Carbon::today()->toDateString();
+
             $payment = Payment::create([
                 'credit_id' => $credit->id,
                 'user_id' => $seller->user_id ?? 1,
                 'amount' => $paidAmount,
                 'unapplied_amount' => $paidAmount,
-                'payment_date' => $payoutDate, // Asumimos fecha de entrega para no afectar liquidaciones futuras si es histórico
+                'payment_date' => $importDate,
                 'payment_method' => 'Efectivo',
                 'status' => 'Pagado',
                 'description' => 'Pago histórico importado',
-                'business_date' => $payoutDate,
+                'business_date' => $importDate,
             ]);
 
-            // Apply payment to installments (FIFO)
             $this->paymentService->reapplyPayments($credit->id);
+
+            // Recalculate the liquidation for today so that the recaudo appears
+            try {
+                $existingLiquidation = Liquidation::where('seller_id', $sellerId)
+                    ->whereDate('date', $importDate)
+                    ->first();
+                if ($existingLiquidation) {
+                    $this->liquidationService->recalculateLiquidation($sellerId, $importDate);
+                    Log::info("ImportService: Recalculated liquidation for seller $sellerId on $importDate after historical payment import");
+                }
+
+            } catch (\Exception $e) {
+                Log::warning("ImportService: Could not recalculate liquidation after payment import: " . $e->getMessage());
+            }
         }
 
         return [
