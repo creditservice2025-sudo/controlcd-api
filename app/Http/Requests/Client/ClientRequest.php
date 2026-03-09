@@ -15,6 +15,35 @@ class ClientRequest extends FormRequest
     }
 
     /**
+     * Prepare the data for validation.
+     */
+    protected function prepareForValidation(): void
+    {
+        if ($this->has('payment_frequency')) {
+            $value = strtolower($this->payment_frequency);
+            $map = [
+                'diaria' => 'Diaria',
+                'diario' => 'Diaria',
+                'diarios' => 'Diaria',
+                'daily' => 'Diaria',
+                'semanal' => 'Semanal',
+                'semanales' => 'Semanal',
+                'weekly' => 'Semanal',
+                'quincenal' => 'Quincenal',
+                'quincenales' => 'Quincenal',
+                'biweekly' => 'Quincenal',
+                'mensual' => 'Mensual',
+                'mensuales' => 'Mensual',
+                'monthly' => 'Mensual',
+            ];
+
+            if (isset($map[$value])) {
+                $this->merge(['payment_frequency' => $map[$value]]);
+            }
+        }
+    }
+
+    /**
      * Get the validation rules that apply to the request.
      *
      * @return array<string, \Illuminate\Contracts\Validation\ValidationRule|array<mixed>|string>
@@ -24,6 +53,7 @@ class ClientRequest extends FormRequest
         $rules = [
             'name' => 'required|string|max:255',
             'address' => 'required|string',
+            'reference' => 'required|string|max:255',
             'gps_address' => 'nullable|string',
             'gps_geolocalization' => 'nullable|array',
             'dni' => 'required|numeric', // Unique per seller validated in ClientService
@@ -32,7 +62,7 @@ class ClientRequest extends FormRequest
             'geolocation.longitude' => 'required|numeric',
             'phone' => 'required|string|max:20',
             'email' => 'nullable|email|unique:clients',
-            'company_name' => 'nullable|string',
+            'company_name' => 'required|string',
             'guarantor_name' => 'nullable|string',
             'guarantor_dni' => 'nullable|numeric|unique:guarantors,dni',
             'guarantor_address' => 'nullable|string',
@@ -58,8 +88,8 @@ class ClientRequest extends FormRequest
 
 
             /* 'guarantors_ids' => 'array', */
-            'images' => 'nullable|array',
-            /*  'images.*.file' => 'nullable|file|mimes:jpg,jpeg,png|max:2048',  */
+            'images' => 'required|array|min:4',
+            'images.*.file' => 'required|image|max:2048',
             'images.*.type' => 'required|string|in:profile,money_in_hand,business,document'
         ];
 
@@ -85,6 +115,7 @@ class ClientRequest extends FormRequest
             $rules = [
                 'name' => 'nullable|string|max:255',
                 'address' => 'nullable|string',
+                'reference' => 'nullable|string|max:255',
                 'gps_address' => 'nullable|string',
                 'gps_geolocalization' => 'nullable|array',
                 'dni' => 'nullable|numeric|unique:clients,dni,' . $clientId . ',id,seller_id,' . $sellerId,
@@ -104,27 +135,37 @@ class ClientRequest extends FormRequest
     public function messages(): array
     {
         return [
-            'name.required' => 'El nombre es requerido',
-            'address.required' => 'La dirección es requerida',
-            'dni.required' => 'El DNI es requerido',
-            'dni.numeric' => 'El DNI debe ser un número',
-            'dni.unique' => 'El DNI ya está registrado en esta ruta',
-            'routing_order.required' => 'El orden de rutas es requerido',
-            'routing_order.integer' => 'El orden de rutas debe ser un número entero',
-            'routing_order.min' => 'El orden de rutas debe ser mayor a 0',
-            'geolocation.required' => 'La geolocalización es requerida',
-            'geolocation.latitude.required' => 'La latitud es requerida',
+            'name.required' => 'El nombre es obligatorio',
+            'company_name.required' => 'El nombre del negocio es obligatorio',
+            'address.required' => 'La dirección es obligatoria',
+            'reference.required' => 'El punto de referencia es obligatorio',
+            'dni.required' => 'El DNI es obligatorio',
+            'dni.numeric' => 'El DNI debe ser solo números',
+            'dni.unique' => 'Este DNI ya está registrado en esta ruta',
+            'routing_order.required' => 'El orden de ruta es obligatorio',
+            'routing_order.integer' => 'El orden de ruta debe ser un número',
+            'routing_order.min' => 'El orden debe ser mayor a 0',
+            'geolocation.required' => 'La geolocalización es obligatoria',
+            'geolocation.latitude.required' => 'La latitud es obligatoria',
             'geolocation.latitude.numeric' => 'La latitud debe ser un número',
-            'geolocation.longitude.required' => 'La longitud es requerida',
+            'geolocation.longitude.required' => 'La longitud es obligatoria',
             'geolocation.longitude.numeric' => 'La longitud debe ser un número',
-            'phone.required' => 'El teléfono es requerido',
-            // 'phone.numeric' => 'El teléfono debe ser un número',
-            'email.email' => 'El correo electrónico debe ser una dirección de correo válida',
-            'email.unique' => 'El correo electrónico ya existe',
-            'guarantors_ids.array' => 'Los fiadores deben ser un array',
-            'image.file' => 'La imagen debe ser un archivo',
-            'image.mimes' => 'La imagen debe ser una imagen válida',
-            'image.max' => 'La imagen debe ser menor a 2MB'
+            'phone.required' => 'El teléfono es obligatorio',
+            'email.email' => 'El correo electrónico no es válido',
+            'email.unique' => 'Este correo ya está registrado',
+            'guarantors_ids.array' => 'Los fiadores deben ser un listado',
+            'images.required' => 'Las 4 fotos (Perfil, Fachada, Dinero en mano y Documento) son obligatorias',
+            'images.min' => 'Debe subir exactamente las 4 fotos obligatorias',
+            'images.*.file.required' => 'El archivo de imagen es obligatorio',
+            'images.*.file.image' => 'El archivo debe ser una imagen (JPG, PNG)',
+            'images.*.file.max' => 'La imagen no puede pesar más de 2MB',
+            'images.*.type.required' => 'El tipo de imagen es obligatorio',
+            'images.*.type.in' => 'El tipo de imagen no es válido',
+            'credit_value.required' => 'El valor del crédito es obligatorio',
+            'installment_count.required' => 'El número de cuotas es obligatorio',
+            'interest_rate.required' => 'La tasa de interés es obligatoria',
+            'payment_frequency.required' => 'La frecuencia de pago es obligatoria',
+            'micro_insurance_percentage.required' => 'El porcentaje de seguro es obligatorio',
         ];
     }
 }

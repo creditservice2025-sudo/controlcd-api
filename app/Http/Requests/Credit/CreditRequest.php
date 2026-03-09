@@ -12,6 +12,35 @@ class CreditRequest extends FormRequest
     }
 
     /**
+     * Prepare the data for validation.
+     */
+    protected function prepareForValidation(): void
+    {
+        if ($this->has('payment_frequency')) {
+            $value = strtolower($this->payment_frequency);
+            $map = [
+                'diaria' => 'Diaria',
+                'diario' => 'Diaria',
+                'diarios' => 'Diaria',
+                'daily' => 'Diaria',
+                'semanal' => 'Semanal',
+                'semanales' => 'Semanal',
+                'weekly' => 'Semanal',
+                'quincenal' => 'Quincenal',
+                'quincenales' => 'Quincenal',
+                'biweekly' => 'Quincenal',
+                'mensual' => 'Mensual',
+                'mensuales' => 'Mensual',
+                'monthly' => 'Mensual',
+            ];
+
+            if (isset($map[$value])) {
+                $this->merge(['payment_frequency' => $map[$value]]);
+            }
+        }
+    }
+
+    /**
      * Get the validation rules that apply to the request.
      *
      * @return array<string, \Illuminate\Contracts\Validation\ValidationRule|array<mixed>|string>
@@ -48,7 +77,7 @@ class CreditRequest extends FormRequest
             // $rules['end_date'] = 'nullable|date';
             $rules['credit_value'] = 'nullable|numeric';
             $rules['first_quota_date'] = 'nullable|date';
-            $rules['payment_frequency'] = 'nullable|in:daily,weekly,biweekly,monthly';
+            $rules['payment_frequency'] = 'nullable|in:Diaria,Semanal,Quincenal,Mensual';
             //$rules['status'] = 'nullable|in:Pendiente,Cancelado,Finalizado,Renovado,Moroso';
             //$rules['total_interest'] = 'nullable|numeric';
             $rules['number_installments'] = 'nullable|integer';
