@@ -334,11 +334,14 @@ class CreditService
                 'new_credit_value' => 'required|numeric|min:1',
                 'phone' => 'required|string|min:7',
                 'micro_insurance_percentage' => 'required|numeric',
+                'images' => 'required|array|min:1',
             ], [
                 'phone.required' => 'El teléfono es obligatorio',
                 'phone.min' => 'El teléfono debe tener al menos 7 caracteres',
                 'micro_insurance_percentage.required' => 'El porcentaje de microseguro es obligatorio',
                 'micro_insurance_percentage.numeric' => 'El porcentaje de microseguro debe ser un número',
+                'images.required' => 'La foto es obligatoria para la renovación',
+                'images.min' => 'Debe subir al menos una foto para renovar',
             ]);
 
             DB::beginTransaction();
