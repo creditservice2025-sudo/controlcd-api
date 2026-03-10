@@ -113,6 +113,7 @@ class ClientService
                         'name' => $params['name'],
                         'dni' => $params['dni'],
                         'address' => $params['address'] ?? null,
+                        'reference' => $params['reference'] ?? null,
                         'gps_address' => $params['gps_address'] ?? null,
                         'gps_geolocalization' => $params['gps_geolocalization'] ?? null,
                         'geolocation' => $params['geolocation'] ?? null,
@@ -496,17 +497,28 @@ class ClientService
 
     private function validateImages($request)
     {
-        $images = $request->all()['images'] ?? [];
+        // En PHP, $request->all() solo devuelve texto, no archivos.
+        // Para saber cuántas imágenes vienen en el FormData, debemos revisar
+        // $request->input('images') (partes de texto) e iterar por índices.
+        $imagesInput = $request->input('images') ?? [];
         $profileCount = 0;
         $galleryCount = 0;
 
-        foreach ($images as $index => $imageData) {
-            if (!isset($imageData['file']) || !isset($imageData['type'])) {
-                return $this->errorResponse('Cada imagen debe contener un archivo y un tipo ("profile" o "gallery").', 400);
+        foreach ($imagesInput as $index => $imageData) {
+            // Verificar el tipo (campo de texto)
+            if (!isset($imageData['type'])) {
+                return $this->errorResponse('Cada imagen debe contener un tipo ("profile" o "gallery").', 400);
             }
 
             $type = $imageData['type'];
             $friendlyName = $this->getImageTypeFriendlyName($type);
+
+            // Verificar el archivo usando $request->file(), ya que PHP separa
+            // los campos de texto de los archivos en FormData.
+            $imageFile = $request->file("images.{$index}.file");
+            if (!$imageFile) {
+                return $this->errorResponse("No se encontró {$friendlyName} en la solicitud.", 400);
+            }
 
             if ($type === 'profile')
                 $profileCount++;
@@ -518,11 +530,6 @@ class ClientService
             }
             if ($galleryCount > self::MAX_GALLERY_IMAGES) {
                 return $this->errorResponse('Solo se permiten hasta 4 imágenes en la galería.', 400);
-            }
-
-            $imageFile = $request->file("images.{$index}.file");
-            if (!$imageFile) {
-                return $this->errorResponse("No se encontró {$friendlyName} en la solicitud.", 400);
             }
 
             if ($imageFile->getSize() > self::MAX_IMAGE_SIZE_BYTES) {
@@ -801,7 +808,7 @@ class ClientService
             }
 
             $clientsQuery = Client::query()
-                ->select('id', 'uuid', 'name', 'dni', 'email', 'phone', 'address', 'company_name', 'status', 'seller_id', 'geolocation', 'gps_geolocalization', 'gps_address', 'routing_order', 'capacity', 'created_at')
+                ->select('id', 'uuid', 'name', 'dni', 'email', 'phone', 'address', 'reference', 'company_name', 'status', 'seller_id', 'geolocation', 'gps_geolocalization', 'gps_address', 'routing_order', 'capacity', 'created_at')
                 ->with([
                     'seller' => function ($q) {
                         $q->select('id', 'user_id', 'city_id', 'company_id');
@@ -1098,6 +1105,7 @@ class ClientService
                         'name' => $client->name,
                         'dni' => $client->dni,
                         'address' => $client->address,
+                        'reference' => $client->reference,
                         'credit' => [
                             'id' => $credit->id,
                             'credit_value' => $credit->credit_value,

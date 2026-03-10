@@ -189,11 +189,22 @@ class Helper
      */
     public static function deleteFile($filePath)
     {
+        if (empty($filePath) || trim($filePath) === '') {
+            return false;
+        }
+
         $fullPath = public_path($filePath);
 
-        if (file_exists($fullPath)) {
-            unlink($fullPath);
-            return true;
+        // Security check: Ensure we are not trying to delete the public folder itself
+        // or a directory. This prevents the "cannot be opened" error on Windows/Linux
+        // when a directory is treated as a file.
+        if (file_exists($fullPath) && is_file($fullPath)) {
+            try {
+                unlink($fullPath);
+                return true;
+            } catch (\Exception $e) {
+                \Log::warning("Could not delete file: {$fullPath}. Error: " . $e->getMessage());
+            }
         }
 
         return false;
