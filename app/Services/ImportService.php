@@ -203,12 +203,14 @@ class ImportService
             'fecha_primera_cuota' => 'Fecha de Primera Cuota',
             'microseguro_porcentaje' => 'Microseguro (%)',
             'pagos_realizados' => 'Pagos Realizados',
-            'excluir_domingos' => 'Excluir Domingos'
+            'excluir_domingos' => 'Excluir Domingos',
+            'cliente_punto_referencia' => 'Punto de Referencia'
         ];
 
         $validator = \Illuminate\Support\Facades\Validator::make($row, [
             'cliente_nombre' => 'required|string|max:255',
             'cliente_dni' => 'required',
+            'cliente_punto_referencia' => 'nullable|string|max:255',
             'monto_credito' => 'required|numeric|min:0',
             'fecha_primera_cuota' => 'nullable', // Validation handled manually for formulas
             'cuotas_numero' => 'nullable|integer|min:1',
@@ -377,7 +379,8 @@ class ImportService
             'I' => 'fecha_primera_cuota',
             'J' => 'microseguro_porcentaje',
             'K' => 'pagos_realizados',
-            'L' => 'excluir_domingos'
+            'L' => 'excluir_domingos',
+            'M' => 'cliente_punto_referencia'
         ];
         
         // Set headers
@@ -447,7 +450,7 @@ class ImportService
             ->setFormatCode(\PhpOffice\PhpSpreadsheet\Style\NumberFormat::FORMAT_DATE_YYYYMMDD2);
         
         // Auto-size columns
-        foreach (range('A', 'L') as $col) {
+        foreach (range('A', 'M') as $col) {
             $sheet->getColumnDimension($col)->setAutoSize(true);
         }
         
@@ -471,6 +474,7 @@ class ImportService
             '10. microseguro_porcentaje: Porcentaje de microseguro (ej: 5 para 5%)',
             '11. pagos_realizados: Monto de pagos históricos ya realizados',
             '12. excluir_domingos: Usar lista desplegable (SI/NO)',
+            '13. cliente_punto_referencia: Punto de referencia o ubicación específica del cliente',
             '',
             'NOTAS IMPORTANTES:',
             '- La fecha_primera_cuota se calcula automáticamente basándose en fecha_entrega + frecuencia',
@@ -509,7 +513,7 @@ class ImportService
 
     protected function processRow($row, $seller)
     {
-        Log::info("ImportService: Processing row", ['dni' => $row['cliente_dni'] ?? 'N/A']);
+        Log::info("ImportService: Processing row raw data", ['data' => $row]);
         $sellerId = $seller->id;
 
         // 1. Find or Create Client
@@ -538,6 +542,7 @@ class ImportService
                 'name' => $row['cliente_nombre'],
                 'dni' => $row['cliente_dni'],
                 'phone' => $row['cliente_telefono'] ?? '0',
+                'reference' => $row['cliente_punto_referencia'] ?? null,
                 'seller_id' => $sellerId,
                 'status' => 'active',
                 'needs_update' => true,
@@ -562,37 +567,15 @@ class ImportService
         $interestRate = floatval($row['tasa_interes'] ?? 20);
         $installmentsCount = intval($row['cuotas_numero'] ?? 24);
         $frequency = $row['frecuencia'] ?? 'Diaria';
-        $payoutDate = $row['fecha_entrega'] ?? Carbon::now()->format('Y-m-d');
+        $payoutDate = $this->normalizeDate($row['fecha_entrega'] ?? null) ?: Carbon::now()->format('Y-m-d');
         
         // Automated First Quota Date logic if missing
-        $firstQuotaDate = $row['fecha_primera_cuota'] ?? null;
+        $firstQuotaDate = $this->normalizeDate($row['fecha_primera_cuota'] ?? null);
         
-        // If it starts with "=", it's an uncalculated formula from Excel
-        if (is_string($firstQuotaDate) && str_starts_with($firstQuotaDate, '=')) {
-            Log::warning("ImportService: Formula detected in fecha_primera_cuota, ignoring to let system calculate", ['formula' => $firstQuotaDate]);
-            $firstQuotaDate = null;
-        }
-
-        // Validate basic date format if present
-        if (!empty($firstQuotaDate)) {
-            try {
-                Carbon::parse($firstQuotaDate);
-            } catch (\Exception $e) {
-                Log::warning("ImportService: Invalid date string in fecha_primera_cuota, ignoring", ['value' => $firstQuotaDate]);
-                $firstQuotaDate = null; // Let the system calculate it if invalid
-            }
-        }
-
         $excludeSundays = ($row['excluir_domingos'] ?? 'SI') === 'SI';
 
         if (empty($firstQuotaDate)) {
-            $rawPayoutDate = $row['fecha_entrega'] ?? null;
-            // Handle possible formula in payout date too
-            if (is_string($rawPayoutDate) && str_starts_with($rawPayoutDate, '=')) {
-                $rawPayoutDate = null;
-            }
-            
-            $date = Carbon::parse($rawPayoutDate ?? now());
+            $date = Carbon::parse($payoutDate);
             $date->addDay();
             
             // Skip Sundays if requested
@@ -604,10 +587,9 @@ class ImportService
             $firstQuotaDate = $date->format('Y-m-d');
         }
 
-        $payoutDate = $row['fecha_entrega'] ?? Carbon::now()->format('Y-m-d');
-        if (is_string($payoutDate) && str_starts_with($payoutDate, '=')) {
-            $payoutDate = Carbon::now()->format('Y-m-d');
-        }
+        // Final check for payoutDate again just in case but usually it's already normalized above
+        $payoutDate = $this->normalizeDate($row['fecha_entrega'] ?? null) ?: Carbon::now()->format('Y-m-d');
+
         
         // Calculate microseguro amount from percentage
         $microInsurancePercentage = floatval($row['microseguro_porcentaje'] ?? 0);
@@ -629,6 +611,7 @@ class ImportService
             'first_quota_date' => $firstQuotaDate,
             'micro_insurance_amount' => $microInsuranceAmount,
             'excluded_days' => $excludeSundays ? json_encode(['Domingo']) : json_encode([]),
+            'created_at' => $payoutDate . ' ' . Carbon::now()->format('H:i:s'), // Maintain time of import but date of payout
         ]);
 
         // 3. Generate Installments
@@ -731,6 +714,57 @@ class ImportService
                 }
                 $dueDate = $adjustForExcludedDays($dueDate);
             }
+        }
+    }
+
+    protected function normalizeDate($value)
+    {
+        if (empty($value)) return null;
+
+        // 1. Handle already parsed date objects (Maatwebsite sometimes returns these)
+        if ($value instanceof \DateTimeInterface) {
+            return $value->format('Y-m-d');
+        }
+
+        // 2. Handle Excel serial numbers (numeric)
+        if (is_numeric($value)) {
+            // Excel serial numbers for 2020-2030 are in the 40,000-50,000 range.
+            // If the value is suspicious (e.g. very small like 1-100), it might be 
+            // an unintended numeric value or a very old date.
+            try {
+                $dateObj = \PhpOffice\PhpSpreadsheet\Shared\Date::excelToDateTimeObject($value);
+                $formatted = Carbon::instance($dateObj)->format('Y-m-d');
+                Log::debug("ImportService: Normalized numeric date", ['input' => $value, 'result' => $formatted]);
+                return $formatted;
+            } catch (\Exception $e) {
+                Log::warning("ImportService: Error converting Excel serial number", ['value' => $value, 'error' => $e->getMessage()]);
+            }
+        }
+
+        // 3. Handle formulas (strip '=')
+        if (is_string($value) && str_starts_with($value, '=')) {
+            $potentialSerial = substr($value, 1);
+            if (is_numeric($potentialSerial)) {
+                return $this->normalizeDate($potentialSerial);
+            }
+            Log::warning("ImportService: Formula detected but not supported", ['value' => $value]);
+            return null;
+        }
+
+        // 4. Try to parse string formats
+        try {
+            // If it's a 5-digit string that is numeric, DO NOT use Carbon::parse directly
+            // as it might be misinterpreted as a year or timestamp.
+            if (is_string($value) && strlen($value) === 5 && is_numeric($value)) {
+                return $this->normalizeDate((int)$value);
+            }
+
+            $formatted = Carbon::parse($value)->format('Y-m-d');
+            Log::debug("ImportService: Normalized string date", ['input' => $value, 'result' => $formatted]);
+            return $formatted;
+        } catch (\Exception $e) {
+            Log::warning("ImportService: Error parsing date string", ['value' => $value, 'error' => $e->getMessage()]);
+            return null;
         }
     }
 }

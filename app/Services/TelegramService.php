@@ -12,8 +12,8 @@ class TelegramService
 
     public function __construct()
     {
-        $this->token = env('TELEGRAM_BOT_TOKEN');
-        $this->adminChatId = env('TELEGRAM_ADMIN_CHAT_ID');
+        $this->token = config('services.telegram.bot_token');
+        $this->adminChatId = config('services.telegram.admin_chat_id');
     }
 
     /**
