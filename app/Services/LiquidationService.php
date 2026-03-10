@@ -838,7 +838,7 @@ class LiquidationService
             ->whereNull('renewed_to_id')
             ->whereNull('deleted_at')
             ->whereNull('unification_reason')
-            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereRaw('COALESCE(imported_at, created_at) BETWEEN ? AND ?', [$startUTC, $endUTC])
             ->sum('credit_value');
 
         $totalCollected = Payment::join('credits', 'payments.credit_id', '=', 'credits.id')
@@ -849,7 +849,7 @@ class LiquidationService
             ->sum('payments.amount');
 
         $renewalCredits = Credit::where('seller_id', $sellerId)
-            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereRaw('COALESCE(imported_at, created_at) BETWEEN ? AND ?', [$startUTC, $endUTC])
             ->whereNotNull('renewed_from_id')
             ->get();
 
@@ -879,7 +879,7 @@ class LiquidationService
             ->sum('installments.quota_amount');
 
         $poliza = (float) Credit::where('seller_id', $sellerId)
-            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereRaw('COALESCE(imported_at, created_at) BETWEEN ? AND ?', [$startUTC, $endUTC])
             ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
 
         // Determinar initial_cash

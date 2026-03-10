@@ -612,6 +612,7 @@ class ImportService
             'micro_insurance_amount' => $microInsuranceAmount,
             'excluded_days' => $excludeSundays ? json_encode(['Domingo']) : json_encode([]),
             'created_at' => $payoutDate . ' ' . Carbon::now()->format('H:i:s'), // Maintain time of import but date of payout
+            'imported_at' => Carbon::now(), // Real import timestamp for liquidation totals
         ]);
 
         // 3. Generate Installments
