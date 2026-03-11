@@ -476,10 +476,10 @@ class DashboardService
                 ->get()
                 ->keyBy('seller_id');
 
-            // 3. Créditos Nuevos Hoy
+            // 3. Créditos Nuevos Hoy (incluye importados via COALESCE)
             $newCreditsTodayAgg = DB::table('credits')
                 ->whereIn('seller_id', $sellerIds)
-                ->whereBetween('created_at', [$startUTC, $endUTC])
+                ->whereRaw('COALESCE(imported_at, created_at) BETWEEN ? AND ?', [$startUTC, $endUTC])
                 ->whereNull('renewed_from_id')
                 ->whereNull('deleted_at')
                 ->select(
@@ -803,14 +803,14 @@ class DashboardService
                 ->sum('incomes.value');
 
             $newCredits = (float) Credit::whereIn('seller_id', $sellerIds)
-                ->whereBetween('created_at', [$startUTC, $endUTC])
+                ->whereRaw('COALESCE(imported_at, created_at) BETWEEN ? AND ?', [$startUTC, $endUTC])
                 ->whereNull('renewed_from_id')
                 ->whereNull('deleted_at')
                 ->sum('credit_value');
 
             // Renovaciones: compute net disbursement (Optimized to avoid N+1)
             $renewalCredits = Credit::whereIn('seller_id', $sellerIds)
-                ->whereBetween('created_at', [$startUTC, $endUTC])
+                ->whereRaw('COALESCE(imported_at, created_at) BETWEEN ? AND ?', [$startUTC, $endUTC])
                 ->whereNotNull('renewed_from_id')
                 ->get();
 
@@ -839,10 +839,9 @@ class DashboardService
 
             // daily policy
             $dailyPolicy = (float) Credit::whereIn('seller_id', $sellerIds)
-                ->whereBetween('created_at', [$startUTC, $endUTC])
+                ->whereRaw('COALESCE(imported_at, created_at) BETWEEN ? AND ?', [$startUTC, $endUTC])
                 ->whereNull('deleted_at')
-                ->get()
-                ->sum(fn($credit) => ($credit->credit_value * ($credit->micro_insurance_percentage ?? 0) / 100));
+                ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
 
             // irrecoverable
             $irrecoverableCredits = (float) DB::table('installments')
@@ -927,7 +926,7 @@ class DashboardService
                 ->sum('payments.amount');
 
             $newCredits = (float) Credit::whereIn('seller_id', $sellerIds)
-                ->whereBetween('created_at', [$startOfWeekUtc, $endOfWeekUtc])
+                ->whereRaw('COALESCE(imported_at, created_at) BETWEEN ? AND ?', [$startOfWeekUtc, $endOfWeekUtc])
                 ->whereNull('renewed_from_id')
                 ->sum('credit_value');
 

@@ -2359,21 +2359,36 @@ class CreditService
 
                 $start = Carbon::parse($startDate, $timezone)->startOfDay()->timezone('UTC');
                 $end = Carbon::parse($endDate, $timezone)->endOfDay()->timezone('UTC');
-                $creditsQuery->whereBetween('credits.created_at', [$start, $end]);
+                // Incluir créditos normales (created_at en rango) Y créditos importados (imported_at en rango)
+                $creditsQuery->where(function ($q) use ($start, $end) {
+                    $q->whereBetween('credits.created_at', [$start, $end])
+                      ->orWhereBetween('credits.imported_at', [$start, $end]);
+                });
             } elseif ($request->has('date')) {
                 $filterDate = $request->get('date');
                 $start = Carbon::parse($filterDate, $timezone)->startOfDay()->timezone('UTC');
                 $end = Carbon::parse($filterDate, $timezone)->endOfDay()->timezone('UTC');
-                $creditsQuery->whereBetween('credits.created_at', [$start, $end]);
+                $creditsQuery->where(function ($q) use ($start, $end) {
+                    $q->whereBetween('credits.created_at', [$start, $end])
+                      ->orWhereBetween('credits.imported_at', [$start, $end]);
+                });
             } else {
                 $todayStart = Carbon::now($timezone)->startOfDay()->timezone('UTC');
                 $todayEnd = Carbon::now($timezone)->endOfDay()->timezone('UTC');
-                $creditsQuery->whereBetween('credits.created_at', [$todayStart, $todayEnd]);
+                $creditsQuery->where(function ($q) use ($todayStart, $todayEnd) {
+                    $q->whereBetween('credits.created_at', [$todayStart, $todayEnd])
+                      ->orWhereBetween('credits.imported_at', [$todayStart, $todayEnd]);
+                });
             }
 
-            $credits = $creditsQuery->get();
+            $perPage = (int) $request->input('per_page', 15);
+            $credits = $creditsQuery->paginate($perPage);
 
-            $credits = $credits->map(function ($credit) {
+            $sellerForTz = \App\Models\Seller::find($sellerId);
+            $sellerTz = \App\Helpers\TimezoneHelper::getSellerTimezone($sellerForTz);
+
+            // Map each item in the paginator
+            $credits->getCollection()->transform(function ($credit) use ($sellerTz) {
                 $startDate = $credit->start_date;
                 $lastKey = $credit->installments->sortByDesc('due_date')->first();
                 $endDate = $lastKey ? Carbon::parse($lastKey->due_date)->setTime(23, 59, 59)->format('Y-m-d H:i:s') : null;
@@ -2390,7 +2405,6 @@ class CreditService
                         ->first();
 
                     if ($lastCredit) {
-                         // Attach as relation so it appears in JSON
                         $credit->setRelation('renewed_from', $lastCredit);
                     }
                 }
@@ -2399,28 +2413,15 @@ class CreditService
                 $geolocation = \App\Models\ClientGeolocationHistory::where('action_type', 'credit_created')
                     ->where('action_id', $credit->id)
                     ->first();
-                
+
                 if ($geolocation) {
                     $credit->setAttribute('geolocation', $geolocation);
                 }
 
-                return $credit;
-            });
-
-            $sellerForTz = \App\Models\Seller::find($sellerId);
-            $sellerTz = \App\Helpers\TimezoneHelper::getSellerTimezone($sellerForTz);
-
-            // Convert to array to ensure renewed_from is included in JSON
-            $creditsArray = $credits->map(function ($credit) use ($sellerTz) {
                 $creditArray = $credit->toArray();
-                // Ensure renewed_from is included even if it was set dynamically
                 if ($credit->relationLoaded('renewed_from')) {
                     $creditArray['renewed_from'] = $credit->renewed_from ? $credit->renewed_from->toArray() : null;
-                    \Log::info('Credit ID: ' . $credit->id . ' has renewed_from: ' . ($credit->renewed_from ? $credit->renewed_from->id : 'null'));
-                } else {
-                    \Log::info('Credit ID: ' . $credit->id . ' - renewed_from relation NOT loaded');
                 }
-                
                 if (!isset($creditArray['business_timezone'])) {
                     $creditArray['business_timezone'] = $sellerTz;
                 }
@@ -2428,10 +2429,18 @@ class CreditService
                 return $creditArray;
             });
 
+            // Grand total: suma de credit_value de TODOS los registros que cumplen el filtro
+            $grandTotal = (clone $creditsQuery)->sum('credits.credit_value');
+
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Créditos obtenidos correctamente para el vendedor y fecha(s) especificadas',
-                'data' => $creditsArray
+                'data'    => $credits->items(),
+                'total'   => $credits->total(),
+                'per_page' => $credits->perPage(),
+                'current_page' => $credits->currentPage(),
+                'last_page' => $credits->lastPage(),
+                'grand_total' => round((float) $grandTotal, 2),
             ]);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
