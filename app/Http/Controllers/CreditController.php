@@ -354,7 +354,7 @@ class CreditController extends Controller
     public function getSellerCredits(Request $request, int $sellerId)
     {
         try {
-            $perPage = $request->get('perPage') ?? 10;
+            $perPage = $request->get('per_page') ?? 10;
             return $this->creditService->getSellerCreditsByDate($sellerId, $request, $perPage);
         } catch (Exception $e) {
             \Log::error($e->getMessage());

@@ -2343,46 +2343,55 @@ class CreditService
         }
     }
 
-    public function getSellerCreditsByDate(int $sellerId, Request $request, int $perpage)
+    public function getSellerCreditsByDate(int $sellerId, Request $request, int $perPage)
     {
         try {
             $creditsQuery = Credit::with(['client', 'client.images', 'installments', 'payments', 'images', 'renewedFrom', 'renewedFrom.payments'])
-                // ->whereNull('renewed_from_id')
                 ->where('seller_id', $sellerId);
 
             $timezone = $request->input('timezone', 'America/Lima');
+            $allRecords = filter_var($request->input('all_records'), FILTER_VALIDATE_BOOLEAN);
 
+            $search = $request->input('search');
 
-            if ($request->has('start_date') && $request->has('end_date')) {
-                $startDate = $request->get('start_date');
-                $endDate = $request->get('end_date');
+            if ($search) {
+                $creditsQuery->where(function ($q) use ($search) {
+                    $q->whereHas('client', function ($cq) use ($search) {
+                        $cq->where('name', 'like', "%{$search}%");
+                    })->orWhere('credits.id', 'like', "%{$search}%");
+                });
+            } else if (!$allRecords) {
+                if ($request->has('start_date') && $request->has('end_date')) {
+                    $startDate = $request->get('start_date');
+                    $endDate = $request->get('end_date');
 
-                $start = Carbon::parse($startDate, $timezone)->startOfDay()->timezone('UTC');
-                $end = Carbon::parse($endDate, $timezone)->endOfDay()->timezone('UTC');
-                // Incluir créditos normales (created_at en rango) Y créditos importados (imported_at en rango)
-                $creditsQuery->where(function ($q) use ($start, $end) {
-                    $q->whereBetween('credits.created_at', [$start, $end])
-                      ->orWhereBetween('credits.imported_at', [$start, $end]);
-                });
-            } elseif ($request->has('date')) {
-                $filterDate = $request->get('date');
-                $start = Carbon::parse($filterDate, $timezone)->startOfDay()->timezone('UTC');
-                $end = Carbon::parse($filterDate, $timezone)->endOfDay()->timezone('UTC');
-                $creditsQuery->where(function ($q) use ($start, $end) {
-                    $q->whereBetween('credits.created_at', [$start, $end])
-                      ->orWhereBetween('credits.imported_at', [$start, $end]);
-                });
-            } else {
-                $todayStart = Carbon::now($timezone)->startOfDay()->timezone('UTC');
-                $todayEnd = Carbon::now($timezone)->endOfDay()->timezone('UTC');
-                $creditsQuery->where(function ($q) use ($todayStart, $todayEnd) {
-                    $q->whereBetween('credits.created_at', [$todayStart, $todayEnd])
-                      ->orWhereBetween('credits.imported_at', [$todayStart, $todayEnd]);
-                });
+                    $start = Carbon::parse($startDate, $timezone)->startOfDay()->timezone('UTC');
+                    $end = Carbon::parse($endDate, $timezone)->endOfDay()->timezone('UTC');
+                    // Incluir créditos normales (created_at en rango) Y créditos importados (imported_at en rango)
+                    $creditsQuery->where(function ($q) use ($start, $end) {
+                        $q->whereBetween('credits.created_at', [$start, $end])
+                          ->orWhereBetween('credits.imported_at', [$start, $end]);
+                    });
+                } elseif ($request->has('date')) {
+                    $filterDate = $request->get('date');
+                    $start = Carbon::parse($filterDate, $timezone)->startOfDay()->timezone('UTC');
+                    $end = Carbon::parse($filterDate, $timezone)->endOfDay()->timezone('UTC');
+                    $creditsQuery->where(function ($q) use ($start, $end) {
+                        $q->whereBetween('credits.created_at', [$start, $end])
+                          ->orWhereBetween('credits.imported_at', [$start, $end]);
+                    });
+                } else {
+                    $todayStart = Carbon::now($timezone)->startOfDay()->timezone('UTC');
+                    $todayEnd = Carbon::now($timezone)->endOfDay()->timezone('UTC');
+                    $creditsQuery->where(function ($q) use ($todayStart, $todayEnd) {
+                        $q->whereBetween('credits.created_at', [$todayStart, $todayEnd])
+                          ->orWhereBetween('credits.imported_at', [$todayStart, $todayEnd]);
+                    });
+                }
             }
 
-            $perPage = (int) $request->input('per_page', 15);
-            $credits = $creditsQuery->paginate($perPage);
+            // Usar el parámetro $perPage pasado desde el controlador
+            $credits = $creditsQuery->orderBy('created_at', 'desc')->paginate($perPage);
 
             $sellerForTz = \App\Models\Seller::find($sellerId);
             $sellerTz = \App\Helpers\TimezoneHelper::getSellerTimezone($sellerForTz);
