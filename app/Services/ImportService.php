@@ -609,6 +609,7 @@ class ImportService
             'status' => 'Vigente',
             'start_date' => $payoutDate,
             'first_quota_date' => $firstQuotaDate,
+            'micro_insurance_percentage' => $microInsurancePercentage,
             'micro_insurance_amount' => $microInsuranceAmount,
             'excluded_days' => $excludeSundays ? json_encode(['Domingo']) : json_encode([]),
             'created_at' => $payoutDate . ' ' . Carbon::now()->format('H:i:s'), // Maintain time of import but date of payout

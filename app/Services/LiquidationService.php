@@ -611,9 +611,8 @@ class LiquidationService
             ->where('installments.status', 'Pendiente')
             ->sum('installments.quota_amount');
 
-        $poliza = (float) DB::table('credits')
-            ->where('seller_id', $sellerId)
-            ->whereBetween('created_at', [$startUTC, $endUTC])
+        $poliza = (float) Credit::where('seller_id', $sellerId)
+            ->whereRaw('COALESCE(imported_at, created_at) BETWEEN ? AND ?', [$startUTC, $endUTC])
             ->whereNull('deleted_at')
             ->whereNull('unification_reason')
             ->sum(DB::raw('micro_insurance_percentage * credit_value / 100'));
@@ -1038,24 +1037,30 @@ class LiquidationService
                     });
             }
 
-            // Movimientos: créditos creados (new credits) en la fecha
             $credits = Credit::where('seller_id', $sellerId)
                 ->whereNull('renewed_from_id')
                 ->whereNull('renewed_to_id')
                 ->whereNull('deleted_at')
-                ->whereBetween('created_at', [$startUTC, $endUTC])
+                ->whereRaw('COALESCE(imported_at, created_at) BETWEEN ? AND ?', [$startUTC, $endUTC])
                 ->get()
-                ->map(function ($c) use ($sellerName) {
+                ->map(function ($c) use ($sellerName, $tz) {
                     $clientName = null;
                     if (!empty($c->client_id)) {
                         $cl = Client::find($c->client_id);
                         $clientName = $cl ? $cl->name : null;
                     }
+                    // Use imported_at (if exists) as the business date so frontend date-filter works.
+                    // imported credits have a historical created_at, but were actually registered today.
+                    $displayDate = $c->imported_at
+                        ? Carbon::parse($c->imported_at)->setTimezone($tz)->format('Y-m-d')
+                        : Carbon::parse($c->created_at)->setTimezone($tz)->format('Y-m-d');
                     return [
                         'type' => 'credit',
+                        'movement_kind' => 'Crédito',
                         'id' => $c->id,
                         'amount' => (float) $c->credit_value,
                         'created_at' => (string) $c->created_at,
+                        'business_date' => $displayDate,
                         'client_id' => $c->client_id ?? null,
                         'client_name' => $clientName,
                         'seller_name' => $sellerName,
@@ -1069,9 +1074,16 @@ class LiquidationService
             $all = $payments->concat($expenses)->concat($incomes)->concat($credits);
 
             $sorted = $all->sortByDesc(function ($item) use ($tz) {
-                // asegurar parseo correcto incluso si created_at es string o Carbon
+                // Para créditos importados: usar imported_at (si existe en raw) como clave de orden
                 try {
-                    return Carbon::parse($item['created_at'])->setTimezone($tz)->timestamp;
+                    $raw = $item['raw'] ?? null;
+                    $effectiveDate = null;
+                    if ($raw && isset($raw->imported_at) && $raw->imported_at) {
+                        $effectiveDate = $raw->imported_at;
+                    } else {
+                        $effectiveDate = $item['created_at'] ?? null;
+                    }
+                    return Carbon::parse($effectiveDate)->setTimezone($tz)->timestamp;
                 } catch (\Throwable $e) {
                     return 0;
                 }
@@ -1163,10 +1175,10 @@ class LiquidationService
             ->whereDate('installments.due_date', $date)
             ->sum('installments.quota_amount');
 
-        // Obtener créditos creados
+        // Obtener créditos creados (incluye importados - usa COALESCE(imported_at, created_at))
         $credits = DB::table('credits')
             ->where('seller_id', $sellerId)
-            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereRaw('COALESCE(imported_at, created_at) BETWEEN ? AND ?', [$startUTC, $endUTC])
             ->whereNull('deleted_at')
             ->whereNull('renewed_from_id')
             ->whereNull('unification_reason')
