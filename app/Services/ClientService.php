@@ -101,6 +101,7 @@ class ClientService
                 // Stage 2: Validate DNI is unique per seller (allows same DNI in different sellers)
                 $existingClient = Client::where('dni', $params['dni'])
                     ->where('seller_id', $params['seller_id'])
+                    ->whereNull('deleted_at')
                     ->first();
 
                 if ($existingClient) {
@@ -369,6 +370,7 @@ class ClientService
                 $existingClient = Client::where('dni', $params['dni'])
                     ->where('seller_id', $sellerId)
                     ->where('id', '!=', $clientId)
+                    ->whereNull('deleted_at')
                     ->first();
 
                 if ($existingClient) {
