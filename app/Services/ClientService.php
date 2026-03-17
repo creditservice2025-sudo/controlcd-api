@@ -972,7 +972,10 @@ class ClientService
                 $hasGeolocation = $hasGpsAddress || $hasGpsGeo || $hasGeo;
                 $hasImages = $client->images->count() > 0;
 
-                $client->needs_update = !($hasAddress && $hasGeolocation && $hasImages);
+                // Si ya está marcado en DB como needs_update, se mantiene. 
+                // Pero si no está marcado, solo se activa on-the-fly si realmente le falta TODO (address, gps e imágenes).
+                // Esto evita que clientes manuales antiguos sean bloqueados por falta de las 4 fotos específicas en el backend.
+                $client->needs_update = $client->needs_update ?: !($hasAddress && $hasGeolocation && $hasImages);
 
                 return $client;
             });
