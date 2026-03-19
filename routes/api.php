@@ -38,7 +38,7 @@ Route::post('reset-password', [AuthController::class, 'resetPassword'])->middlew
 Route::get('mobile/version-check', [\App\Http\Controllers\Api\MobileVersionController::class, 'check']);
 
 
-Route::middleware('auth:api')->group(function () {
+Route::group(['middleware' => 'auth:api'], function () {
 
     //change password
     Route::post('auth/change-password', [AuthController::class, 'changePassword']);
@@ -105,7 +105,7 @@ Route::middleware('auth:api')->group(function () {
     Route::get('/roles/{role}/permisos', [RolePermissionController::class, 'show']);
 
     //route client
-    Route::prefix('clients')->group(function () {
+    Route::group(['prefix' => 'clients'], function () {
         // Listado principal
         Route::get('/', [ClientController::class, 'index']);
         Route::get('/total', [ClientController::class, 'totalClients']);
@@ -114,7 +114,6 @@ Route::middleware('auth:api')->group(function () {
         Route::post('/reactivate-by-criteria', [ClientController::class, 'reactivateClientsByIds']);
         Route::delete('/delete-inactive-without-credits', [ClientController::class, 'deleteInactiveClientsWithoutCredits']);
         Route::get('/inactive-without-credits', [ClientController::class, 'getInactiveClientsWithoutCreditsWithFilters']);
-        Route::delete('/delete-by-ids', [ClientController::class, 'deleteClientsByIds']);
         Route::delete('/delete-by-ids', [ClientController::class, 'deleteClientsByIds']);
         Route::get('/deleted-with-filters', [ClientController::class, 'getDeletedClientsWithFilters']);
         Route::get('/{id}/deleted-images', [ClientController::class, 'getDeletedImages']);
@@ -142,6 +141,9 @@ Route::middleware('auth:api')->group(function () {
         Route::post('/{id}/capacity', [ClientController::class, 'updateCapacity']);
         Route::get('/{id}/history', [ClientController::class, 'history']);
 
+        Route::post('/transfer-massive', [ClientController::class, 'transferMassive']);
+        Route::post('/{id}/transfer', [ClientController::class, 'transfer']);
+        Route::get('/transfers/audit', [ClientController::class, 'transfersAudit']);
         // Orden de ruta
         Route::post('/update-order', [ClientController::class, 'updateOrder']);
     });
@@ -212,7 +214,7 @@ Route::middleware('auth:api')->group(function () {
 
 
     //route liquidations
-    Route::prefix('liquidations')->group(function () {
+    Route::group(['prefix' => 'liquidations'], function () {
         Route::post('calculate', [LiquidationController::class, 'calculateLiquidation']);
         Route::post('store', [LiquidationController::class, 'storeLiquidation']);
         Route::get('history', [LiquidationController::class, 'getLiquidationHistory']);
@@ -233,7 +235,8 @@ Route::middleware('auth:api')->group(function () {
         Route::get('download-report/{id}', [LiquidationController::class, 'downloadReport']);
         Route::get('first-approved-by-seller', [LiquidationController::class, 'getFirstApprovedLiquidationBySeller']);
         Route::get('{id}/detail', [LiquidationController::class, 'getLiquidationDetail']);
-        Route::prefix('seller/{sellerId}')->group(function () {
+
+        Route::group(['prefix' => 'seller/{sellerId}'], function () {
             Route::get('/', [LiquidationController::class, 'getBySeller']);
             Route::get('/stats', [LiquidationController::class, 'getSellerStats']);
             Route::get('daily-movements', [LiquidationController::class, 'getDailyMovements']);
@@ -242,7 +245,7 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/{sellerId}/{date}', [LiquidationController::class, 'getLiquidationData']);
     });
 
-    Route::prefix('companies')->group(function () {
+    Route::group(['prefix' => 'companies'], function () {
         Route::get('/', [CompanyController::class, 'index']);
         Route::post('/', [CompanyController::class, 'create']);
         Route::get('/select', [CompanyController::class, 'getCompaniesSelect']);
@@ -281,7 +284,7 @@ Route::middleware('auth:api')->group(function () {
     //reports
     Route::get('reports/daily-collection', [CreditController::class, 'dailyCollectionReport']);
     Route::get('reports/credits/{credit}/report', [CreditController::class, 'creditReport']);
-    Route::prefix('reports/excel')->group(function () {
+    Route::group(['prefix' => 'reports/excel'], function () {
         Route::get('accumulated-by-city', [ReportExportController::class, 'downloadAccumulatedByCityExcel']);
         Route::get('seller-liquidations/{sellerId}/export-detail', [ReportExportController::class, 'downloadSellerLiquidationsDetailExcel']);
         Route::get('sellers-summary-by-city/{sellerId}', [ReportExportController::class, 'downloadSellersSummaryByCityExcel']);

@@ -350,6 +350,113 @@ class ClientService
 
 
 
+    public function transfer(Client $client, int $newSellerId)
+    {
+        try {
+            return DB::transaction(function () use ($client, $newSellerId) {
+                $oldSellerId = $client->seller_id;
+
+                if ($oldSellerId === $newSellerId) {
+                    throw new \Exception("El cliente ya pertenece a este vendedor/ruta.");
+                }
+
+                $newSeller = Seller::find($newSellerId);
+                if (!$newSeller) {
+                    throw new \Exception("El vendedor destino no existe.");
+                }
+
+                // Calculate new routing order (put at the end of the new route)
+                $maxOrder = Client::where('seller_id', $newSellerId)->max('routing_order') ?? 0;
+                $newOrder = $maxOrder + 1;
+
+                // Update client
+                $client->update([
+                    'seller_id' => $newSellerId,
+                    'routing_order' => $newOrder,
+                    'transferred_at' => now()
+                ]);
+
+                // Record history
+                ClientHistory::create([
+                    'client_id' => $client->id,
+                    'user_id' => Auth::id(),
+                    'field' => 'seller_id',
+                    'old_value' => $oldSellerId,
+                    'new_value' => $newSellerId,
+                    'ip_address' => request()->ip(),
+                ]);
+
+                return $this->successResponse([
+                    'success' => true,
+                    'message' => 'Cliente transferido con éxito',
+                    'data' => $client->fresh(['seller.user'])
+                ]);
+            });
+        } catch (\Exception $e) {
+            Log::error("Error transferring client {$client->id}: {$e->getMessage()}");
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+    public function transferMassive(array $clientIds, int $newSellerId)
+    {
+        try {
+            return DB::transaction(function () use ($clientIds, $newSellerId) {
+                $newSeller = Seller::find($newSellerId);
+                if (!$newSeller) {
+                    throw new \Exception("El vendedor destino no existe.");
+                }
+
+                $maxOrder = Client::where('seller_id', $newSellerId)->max('routing_order') ?? 0;
+                $transferredCount = 0;
+
+                foreach ($clientIds as $clientId) {
+                    $client = Client::find($clientId);
+                    if (!$client) continue;
+
+                    $oldSellerId = $client->seller_id;
+
+                    if ($oldSellerId === $newSellerId) {
+                        continue; // Skip if already assigned
+                    }
+
+                    $maxOrder++;
+
+                    // Update client
+                    $client->update([
+                        'seller_id' => $newSellerId,
+                        'routing_order' => $maxOrder,
+                        'transferred_at' => now()
+                    ]);
+
+                    // Record history
+                    ClientHistory::create([
+                        'client_id' => $client->id,
+                        'user_id' => Auth::id(),
+                        'field' => 'seller_id',
+                        'old_value' => $oldSellerId,
+                        'new_value' => $newSellerId,
+                        'ip_address' => request()->ip(),
+                    ]);
+
+                    $transferredCount++;
+                }
+
+                if ($transferredCount === 0) {
+                    throw new \Exception("No se transfirió ningún cliente. Es posible que ya pertenezcan a este vendedor.");
+                }
+
+                return $this->successResponse([
+                    'success' => true,
+                    'message' => "{$transferredCount} clientes transferidos con éxito",
+                ]);
+            });
+        } catch (\Exception $e) {
+            Log::error("Error transferring massive clients: {$e->getMessage()}");
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
     public function update(ClientRequest $request, $clientId)
     {
         DB::beginTransaction();
@@ -808,7 +915,7 @@ class ClientService
             }
 
             $clientsQuery = Client::query()
-                ->select('id', 'uuid', 'name', 'dni', 'email', 'phone', 'address', 'reference', 'company_name', 'status', 'seller_id', 'geolocation', 'gps_geolocalization', 'gps_address', 'routing_order', 'capacity', 'created_at')
+                ->select('id', 'uuid', 'name', 'dni', 'email', 'phone', 'address', 'reference', 'company_name', 'status', 'seller_id', 'geolocation', 'gps_geolocalization', 'gps_address', 'routing_order', 'capacity', 'created_at', 'transferred_at')
                 ->with([
                     'seller' => function ($q) {
                         $q->select('id', 'user_id', 'city_id', 'company_id');
@@ -1174,7 +1281,7 @@ class ClientService
             Log::info('status: ' . $status);
 
             $clientsQuery = Client::query()
-                ->select('id', 'uuid', 'name', 'dni', 'email', 'address', 'seller_id', 'routing_order', 'geolocation', 'gps_geolocalization', 'gps_address', 'phone', 'capacity', 'needs_update', 'created_at')
+                ->select('id', 'uuid', 'name', 'dni', 'email', 'address', 'seller_id', 'routing_order', 'geolocation', 'gps_geolocalization', 'gps_address', 'phone', 'capacity', 'needs_update', 'created_at', 'transferred_at')
                 ->with([
                     'seller' => function ($q) {
                         $q->select('id', 'user_id', 'city_id', 'company_id');
@@ -1256,7 +1363,7 @@ class ClientService
 
 
             $clients = Client::query()
-                ->select('id', 'uuid', 'name', 'dni', 'address', 'seller_id', 'routing_order', 'geolocation', 'gps_geolocalization', 'gps_address', 'phone', 'capacity', 'needs_update')
+                ->select('id', 'uuid', 'name', 'dni', 'address', 'seller_id', 'routing_order', 'geolocation', 'gps_geolocalization', 'gps_address', 'phone', 'capacity', 'needs_update', 'transferred_at')
                 ->with([
                     'guarantors' => function ($q) {
                         $q->select('guarantors.id as id', 'guarantors.name', 'guarantors.dni', 'guarantors.phone');
@@ -1564,6 +1671,7 @@ class ClientService
                     'clients.email', 
                     'clients.phone', 
                     'clients.address',
+                    'clients.transferred_at',
                     'users.name as seller_name',
                     \DB::raw('(SELECT count(*) FROM credits WHERE credits.client_id = clients.id AND credits.status IN ("Activo", "Vigente", "Active")) as active_credits_count')
                 );

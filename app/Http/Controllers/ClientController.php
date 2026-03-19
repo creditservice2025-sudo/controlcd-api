@@ -18,6 +18,7 @@ use App\Http\Requests\Client\DeleteClientsByIdsRequest;
 use App\Http\Requests\Client\ToggleStatusRequest;
 use App\Http\Requests\Client\InactiveClientsWithFiltersRequest;
 use App\Http\Requests\Client\DeletedClientsWithFiltersRequest;
+use App\Models\ClientHistory;
 
 class ClientController extends Controller
 {
@@ -113,12 +114,74 @@ class ClientController extends Controller
     {
         try {
             $client = Client::findOrFail($clientId);
-            $history = $client->history()->with('user')->get();
+            $history = $client->history()->with('user')->orderBy('created_at', 'desc')->get();
+
+            // Enrich history with seller names if the field is seller_id
+            $data = $history->map(function ($entry) {
+                $entryArray = $entry->toArray();
+                $entryArray['user'] = $entry->user; // Ensure user is included
+                
+                if ($entry->field === 'seller_id') {
+                    $oldSeller = Seller::with('user')->find($entry->old_value);
+                    $newSeller = Seller::with('user')->find($entry->new_value);
+                    $entryArray['old_value_name'] = ($oldSeller && $oldSeller->user) ? $oldSeller->user->name : 'N/A';
+                    $entryArray['new_value_name'] = ($newSeller && $newSeller->user) ? $newSeller->user->name : 'N/A';
+                }
+                return $entryArray;
+            });
 
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Historial obtenido exitosamente',
-                'data' => $history
+                'data' => $data
+            ]);
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+    public function transfersAudit(Request $request)
+    {
+        try {
+            $history = ClientHistory::where('field', 'seller_id')
+                ->with(['user', 'client'])
+                ->orderBy('created_at', 'desc')
+                ->paginate(20);
+
+            // Enrich with seller names
+            $history->getCollection()->transform(function ($entry) {
+                $oldSeller = Seller::with('user')->find($entry->old_value);
+                $newSeller = Seller::with('user')->find($entry->new_value);
+                $entry->setAttribute('old_value_name', ($oldSeller && $oldSeller->user) ? $oldSeller->user->name : 'N/A');
+                $entry->setAttribute('new_value_name', ($newSeller && $newSeller->user) ? $newSeller->user->name : 'N/A');
+                return $entry;
+            });
+
+            // For pagination, we need to ensure the attributes are appended or just manually handle them
+            $history->getCollection()->each->setAppends(['old_value_name', 'new_value_name']);
+            // Wait, ClientHistory doesn't have these in $appends. 
+            // Let's just return handles correctly.
+            
+            $items = $history->getCollection()->map(function($entry) {
+                $arr = $entry->toArray();
+                $arr['client'] = $entry->client;
+                $arr['user'] = $entry->user;
+                $oldSeller = Seller::with('user')->find($entry->old_value);
+                $newSeller = Seller::with('user')->find($entry->new_value);
+                $arr['old_value_name'] = ($oldSeller && $oldSeller->user) ? $oldSeller->user->name : 'N/A';
+                $arr['new_value_name'] = ($newSeller && $newSeller->user) ? $newSeller->user->name : 'N/A';
+                return $arr;
+            });
+
+            return $this->successResponse([
+                'success' => true,
+                'data' => [
+                    'data' => $items,
+                    'current_page' => $history->currentPage(),
+                    'per_page' => $history->perPage(),
+                    'total' => $history->total(),
+                    'last_page' => $history->lastPage(),
+                ]
             ]);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
@@ -179,6 +242,55 @@ class ClientController extends Controller
                 'message' => 'Error al actualizar el orden',
                 'error' => $e->getMessage()
             ], 500);
+        }
+    }
+
+    public function transfer(Request $request, $clientId)
+    {
+        try {
+            if (!is_numeric($clientId)) {
+                $client = Client::where('uuid', $clientId)->first();
+                if (!$client) {
+                    return $this->errorResponse('Cliente no encontrado', 404);
+                }
+                $clientId = $client->id;
+            }
+
+            $client = Client::findOrFail($clientId);
+
+            $validator = Validator::make($request->all(), [
+                'new_seller_id' => 'required|exists:sellers,id'
+            ]);
+
+            if ($validator->fails()) {
+                return $this->errorResponse($validator->errors()->first(), 422);
+            }
+
+            return $this->clientService->transfer($client, $request->input('new_seller_id'));
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+    public function transferMassive(Request $request)
+    {
+        try {
+            $validator = Validator::make($request->all(), [
+                'client_ids' => 'required|array',
+                'client_ids.*' => 'required',
+                'new_seller_id' => 'required|exists:sellers,id'
+            ]);
+
+            if ($validator->fails()) {
+                return $this->errorResponse($validator->errors()->first(), 422);
+            }
+
+            return $this->clientService->transferMassive(
+                $request->input('client_ids'),
+                $request->input('new_seller_id')
+            );
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
         }
     }
 
