@@ -169,7 +169,7 @@ class LiquidationController extends Controller
                 $realToDeliver = $request->initial_cash +
                     $request->base_delivered +
                     ($request->total_income + $request->total_collected + $poliza) -
-                    ($request->total_expenses + $request->new_credits + $irrecoverableCredits + $total_renewal_disbursed);
+                    ($request->total_expenses + $request->new_credits + $total_renewal_disbursed);
 
                 $shortage = 0;
                 $surplus = 0;
@@ -531,8 +531,7 @@ class LiquidationController extends Controller
             + ($totalIncome + $totalCollected + $poliza)
             - $totalExpenses
             - $newCredits
-            - $total_renewal_disbursed
-            - $irrecoverableCredits;
+            - $total_renewal_disbursed;
 
         $cashDelivered = $liquidation->cash_delivered;
         $shortage = 0;

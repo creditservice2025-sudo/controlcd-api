@@ -656,7 +656,7 @@ class DashboardService
                 $irrecoverableCreditsSum = (float) ($irrecoverableToday[$seller->id] ?? 0);
                 $cashPaymentsToday = $payAgg ? (float) $payAgg->paid_today : 0;
 
-                $currentCash = $initialCash + ($income + $cashPaymentsToday) - ($expenses + $newCreditsVal + $total_renewal_disbursed + $irrecoverableCreditsSum);
+                $currentCash = $initialCash + ($income + $cashPaymentsToday) - ($expenses + $newCreditsVal + $total_renewal_disbursed);
                 $sellerData['current_cash'] = (float) number_format($currentCash, 2, '.', '');
 
                 $result[] = $sellerData;
@@ -852,8 +852,8 @@ class DashboardService
                 ->where('installments.status', 'Pendiente')
                 ->sum('installments.quota_amount');
 
-            $currentCash = $initialCash + ($income + $cashPayments + $dailyPolicy) - ($expenses + $newCredits + $total_renewal_disbursed + $irrecoverableCredits);
-            $cashDayBalance = ($income + $cashPayments + $dailyPolicy) - ($expenses + $newCredits + $total_renewal_disbursed + $irrecoverableCredits);
+            $currentCash = $initialCash + ($income + $cashPayments + $dailyPolicy) - ($expenses + $newCredits + $total_renewal_disbursed);
+            $cashDayBalance = ($income + $cashPayments + $dailyPolicy) - ($expenses + $newCredits + $total_renewal_disbursed);
 
             return $this->successResponse([
                 'success' => true,
