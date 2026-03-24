@@ -58,8 +58,16 @@ class ClientRequest extends FormRequest
             'gps_geolocalization' => 'nullable|array',
             'dni' => 'required|numeric', // Unique per seller validated in ClientService
             'geolocation' => 'required|array',
-            'geolocation.latitude' => 'required|numeric',
-            'geolocation.longitude' => 'required|numeric',
+            'geolocation.latitude' => ['required', 'numeric', function ($attribute, $value, $fail) {
+                if ((float)$value == 0) {
+                    $fail('Por favor, obtenga la ubicación GPS real enviando coordenadas válidas.');
+                }
+            }],
+            'geolocation.longitude' => ['required', 'numeric', function ($attribute, $value, $fail) {
+                if ((float)$value == 0) {
+                    $fail('Por favor, obtenga la ubicación GPS real enviando coordenadas válidas.');
+                }
+            }],
             'phone' => 'required|string|max:20',
             'email' => 'nullable|email|unique:clients',
             'company_name' => 'required|string',
