@@ -116,7 +116,7 @@ class CreditService
                 'total_amount' => $totalAmount,
                 'remaining_amount' => $totalAmount,
                 'first_quota_date' => $firstQuotaDate,
-                'excluded_days' => isset($params['excluded_days']) ? json_encode($params['excluded_days']) : null,
+                'excluded_days' => !empty($params['excluded_days']) && is_array($params['excluded_days']) ? json_encode($params['excluded_days']) : json_encode(['Domingo']),
                 'micro_insurance_percentage' => $microInsurancePercentage,
                 'micro_insurance_amount' => $microInsuranceAmount,
                 'is_advance_payment' => $params['is_advance_payment'] ?? false,
@@ -412,7 +412,7 @@ class CreditService
                 'renewed_from_id' => $request->old_credit_id,
                 'micro_insurance_percentage' => $microInsurancePercentage,
                 'micro_insurance_amount' => $microInsuranceAmount,
-                'excluded_days' => $request->input('excluded_days') ? json_encode($request->input('excluded_days')) : $oldCredit->excluded_days,
+                'excluded_days' => !empty($request->input('excluded_days')) && is_array($request->input('excluded_days')) ? json_encode($request->input('excluded_days')) : ($oldCredit->excluded_days ?? json_encode(['Domingo'])),
                 'status' => 'Vigente',
                 'created_at' => $createdAt,
                 'updated_at' => $updatedAt
@@ -588,7 +588,7 @@ class CreditService
             }
 
             // Días excluidos del crédito
-            $excludedDayNames = json_decode($credit->excluded_days ?? '[]', true) ?? [];
+            $excludedDayNames = json_decode($credit->excluded_days ?? '["Domingo"]', true) ?? [];
             $dayMap = [
                 'Domingo' => Carbon::SUNDAY,
                 'Lunes' => Carbon::MONDAY,
@@ -1541,7 +1541,7 @@ class CreditService
             $dueDate = Carbon::parse($baseDateStr, $tz);
 
             // Excluded days helper
-            $excludedDayNames = json_decode($credit->excluded_days ?? '[]', true) ?? [];
+            $excludedDayNames = json_decode($credit->excluded_days ?? '["Domingo"]', true) ?? [];
             $dayMap = [
                 'Domingo' => Carbon::SUNDAY,
                 'Lunes' => Carbon::MONDAY,
@@ -2123,7 +2123,7 @@ class CreditService
                 'remaining_amount' => $totalAmount,
                 'number_installments' => $params['number_installments'] ?? $params['installment_count'] ?? null,
                 'payment_frequency' => $params['payment_frequency'],
-                'excluded_days' => json_encode($params['excluded_days'] ?? []),
+                'excluded_days' => json_encode($params['excluded_days'] ?? ['Domingo']),
                 'micro_insurance_percentage' => $microInsurancePercentage,
                 'micro_insurance_amount' => $microInsuranceAmount,
                 'first_quota_date' => $firstQuotaDate,
@@ -2171,7 +2171,7 @@ class CreditService
     {
         try {
             // Obtener días excluidos del crédito
-            $excludedDayNames = json_decode($credit->excluded_days ?? '[]', true) ?? [];
+            $excludedDayNames = json_decode($credit->excluded_days ?? '["Domingo"]', true) ?? [];
             $dayMap = [
                 'Domingo' => Carbon::SUNDAY,
                 'Lunes' => Carbon::MONDAY,
@@ -3217,7 +3217,7 @@ class CreditService
      */
     private function getExcludedDaysAdjuster(Credit $credit)
     {
-        $excludedDayNames = json_decode($credit->excluded_days ?? '[]', true) ?? [];
+        $excludedDayNames = json_decode($credit->excluded_days ?? '["Domingo"]', true) ?? [];
         $dayMap = [
             'Domingo' => Carbon::SUNDAY,
             'Lunes' => Carbon::MONDAY,
