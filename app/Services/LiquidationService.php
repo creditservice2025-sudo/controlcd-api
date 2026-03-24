@@ -9,11 +9,12 @@ use App\Models\Income;
 use App\Models\Liquidation;
 use App\Models\Payment;
 use App\Models\Seller;
-use Illuminate\Support\Facades\DB;
 use App\Traits\ApiResponse;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
 
@@ -233,10 +234,14 @@ class LiquidationService
             // Recalcula todas las liquidaciones posteriores
             $this->recalculateNextLiquidations($liquidation->seller_id, $liquidation->date);
 
+            // Generar nómina semanal si es sábado
+            $payroll = $this->generateWeeklyPayrollIfSaturday($liquidation, $timezone);
+
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Liquidación cerrada y aprobada correctamente.',
-                'data' => $liquidation
+                'data' => $liquidation,
+                'payroll_id' => $payroll ? $payroll->id : null
             ]);
         } catch (\Exception $e) {
             \Log::error("Error en approve: " . $e->getMessage());
@@ -288,6 +293,9 @@ class LiquidationService
 
                 // Recalcula todas las liquidaciones posteriores para cada liquidación aprobada
                 $this->recalculateNextLiquidations($liquidation->seller_id, $liquidation->date);
+
+                // Generar nómina semanal si es sábado
+                $this->generateWeeklyPayrollIfSaturday($liquidation, $timezone);
             }
 
             return $this->successResponse([
@@ -298,6 +306,90 @@ class LiquidationService
         } catch (\Exception $e) {
             \Log::error("Error en approveMultiple: " . $e->getMessage());
             return $this->errorResponse('Error al aprobar las liquidaciones', 500);
+        }
+    }
+
+    /**
+     * Genera la nómina semanal automáticamente si la liquidación aprobada es de un día Sábado.
+     */
+    protected function generateWeeklyPayrollIfSaturday(\App\Models\Liquidation $liquidation, $timezone = null)
+    {
+        try {
+            $tz = $timezone ?: self::TIMEZONE;
+            $date = \Carbon\Carbon::parse($liquidation->date, $tz);
+            
+            // 1. Verificamos que sea Sábado (6)
+            if ($date->dayOfWeek !== \Carbon\Carbon::SATURDAY) {
+                return null;
+            }
+
+            // 2. Traer configuración de comisiones del vendedor
+            $config = \App\Models\SellerConfig::where('seller_id', $liquidation->seller_id)->first();
+            if (!$config || !$config->commission_system_active) {
+                return null;
+            }
+
+            // 3. Rango de fechas: Lunes a Sábado de esta misma semana
+            $startDate = $date->copy()->startOfWeek(\Carbon\Carbon::MONDAY);
+            $endDate = $date->copy();
+
+            // Evitar duplicados
+            $existing = \App\Models\Payroll::where('seller_id', $liquidation->seller_id)
+                ->where('start_date', $startDate->toDateString())
+                ->where('end_date', $endDate->toDateString())
+                ->first();
+                
+            if ($existing) return $existing;
+
+            // 4. Sumar datos de la semana
+            $liquidations = \App\Models\Liquidation::where('seller_id', $liquidation->seller_id)
+                ->whereBetween('date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')])
+                ->where('status', 'approved')
+                ->get();
+
+            $totalCollected = $liquidations->sum('total_collected');
+            
+            // Cálculos
+            $commissionUtility = 0; // Dependerá de si se calcula la utilidad exacta, por ahora 0 o fórmula
+            $commissionCollection = $totalCollected * (($config->commission_total_collection ?? 0) / 100);
+            
+            $commissionCredits = 0;
+            if ($config->commission_paid_credits_type == 'C') {
+                $paidCount = $liquidations->sum('clients_liquidated_count'); // total de créditos saldados
+                $commissionCredits = $paidCount * ($config->commission_paid_credits ?? 0);
+            } 
+
+            $salary = $config->monthly_fixed_salary ?? 0; 
+            $allowance = $config->weekly_allowance ?? 0;
+            $savings = $config->monthly_savings ?? 0;
+            
+            // Asumimos que ARL es un % aplicado a los ingresos
+            $ingresosBase = $commissionUtility + $commissionCollection + $commissionCredits + $salary;
+            $arl = $ingresosBase * (($config->arl_discount ?? 0) / 100);
+
+            $netTotal = $ingresosBase + $allowance - $savings - $arl;
+
+            $payroll = \App\Models\Payroll::create([
+                'seller_id' => $liquidation->seller_id,
+                'start_date' => $startDate->toDateString(),
+                'end_date' => $endDate->toDateString(),
+                'total_collected' => $totalCollected,
+                'total_utility' => 0,
+                'commission_utility' => $commissionUtility,
+                'commission_collection' => $commissionCollection,
+                'commission_credits' => $commissionCredits,
+                'salary' => $salary,
+                'allowance' => $allowance,
+                'deductions_savings' => $savings,
+                'deductions_arl' => $arl,
+                'net_total' => $netTotal,
+                'status' => 'pending',
+            ]);
+
+            return $payroll;
+        } catch (\Exception $e) {
+            \Log::error("Error al generar nómina automatica (generateWeeklyPayrollIfSaturday): " . $e->getMessage());
+            return null;
         }
     }
 
