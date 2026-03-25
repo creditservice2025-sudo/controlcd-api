@@ -576,7 +576,15 @@ class ImportService
 
         if (empty($firstQuotaDate)) {
             $date = Carbon::parse($payoutDate);
-            $date->addDay();
+            
+            // Increment date based on frequency
+            switch ($frequency) {
+                case 'Diaria': $date->addDay(); break;
+                case 'Semanal': $date->addWeek(); break;
+                case 'Quincenal': $date->addDays(15); break;
+                case 'Mensual': $date->addMonth(); break;
+                default: $date->addDay();
+            }
             
             // Skip Sundays if requested
             if ($excludeSundays) {
@@ -637,7 +645,7 @@ class ImportService
                 'payment_date' => $importDate,
                 'payment_method' => 'Efectivo',
                 'status' => 'Pagado',
-                'description' => 'Pago histórico importado',
+                'payment_reference' => 'Pago histórico importado',
                 'business_date' => $importDate,
             ]);
 
