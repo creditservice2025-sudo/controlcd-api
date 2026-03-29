@@ -242,10 +242,11 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/{sellerId}/{date}', [LiquidationController::class, 'getLiquidationData']);
     });
 
-    //route payrolls
     Route::prefix('payrolls')->group(function () {
         Route::get('/', [\App\Http\Controllers\PayrollController::class, 'index']);
         Route::get('/me', [\App\Http\Controllers\PayrollController::class, 'myPayrolls']);
+        Route::get('/{id}/details', [\App\Http\Controllers\PayrollController::class, 'details']);
+        Route::put('/{id}', [\App\Http\Controllers\PayrollController::class, 'update']);
         Route::put('/{id}/paid', [\App\Http\Controllers\PayrollController::class, 'markAsPaid']);
         Route::get('/{id}/download', [\App\Http\Controllers\PayrollController::class, 'downloadPdf']);
     });

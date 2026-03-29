@@ -126,7 +126,10 @@
 <body>
 
     <div class="header">
-        <h1>DEUDAS Y ABONOS</h1>
+        <h1>RECIBO DE PAGO</h1>
+        @if($payroll->seller->company)
+            <p style="font-weight: bold; color: #0056b3; font-size: 18px;">{{ $payroll->seller->company->name }}</p>
+        @endif
         <p>Recibo de Nómina Semanal</p>
         <p>Periodo: {{ \Carbon\Carbon::parse($payroll->start_date)->format('d/m/Y') }} al {{ \Carbon\Carbon::parse($payroll->end_date)->format('d/m/Y') }}</p>
     </div>
@@ -203,7 +206,7 @@
     </div>
 
     <div class="footer">
-        <p>Generado automáticamente por el Sistema Deudas y Abonos.</p>
+        <p>Generado automáticamente por el Sistema de Gestión de Nóminas.</p>
         <p>Fecha de emisión: {{ now()->format('d/m/Y H:i:s') }}</p>
     </div>
 
