@@ -12,6 +12,18 @@ class Credit extends Model
 
     use HasFactory, Notifiable, SoftDeletes;
 
+    protected static function boot()
+    {
+        parent::boot();
+
+        static::saving(function ($credit) {
+            // Force default to ["Domingo"] if empty, null, or explicitly empty array string
+            if (empty($credit->excluded_days) || $credit->excluded_days === '[]' || $credit->excluded_days === 'null') {
+                $credit->excluded_days = json_encode(['Domingo']);
+            }
+        });
+    }
+
     protected $fillable = [
         'client_id',
         'phone',
