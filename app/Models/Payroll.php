@@ -25,6 +25,10 @@ class Payroll extends Model
         'net_total',
         'status',
         'receipt_path',
+        'payroll_frequency',
+        'payroll_start_day',
+        'include_sundays',
+        'updated_by_id',
     ];
 
     protected $casts = [
@@ -40,10 +44,16 @@ class Payroll extends Model
         'deductions_savings' => 'decimal:2',
         'deductions_arl' => 'decimal:2',
         'net_total' => 'decimal:2',
+        'include_sundays' => 'boolean',
     ];
 
     public function seller()
     {
         return $this->belongsTo(Seller::class);
+    }
+
+    public function updatedBy()
+    {
+        return $this->belongsTo(User::class, 'updated_by_id');
     }
 }

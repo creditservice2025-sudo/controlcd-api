@@ -6,6 +6,8 @@ use App\Helpers\Helper;
 use App\Models\Income;
 use App\Models\LiquidationAudit;
 use App\Services\LiquidationService;
+use App\Services\PayrollService;
+use App\Services\TelegramService;
 use Illuminate\Http\Request;
 use App\Traits\ApiResponse;
 use Illuminate\Support\Facades\Auth;
@@ -33,13 +35,19 @@ class LiquidationController extends Controller
     use ApiResponse;
     protected $liquidationService;
     protected $metricsCacheService;
+    protected $payrollService;
+    protected $telegramService;
 
     public function __construct(
         LiquidationService $liquidationService,
-        \App\Services\MetricsCacheService $metricsCacheService
+        \App\Services\MetricsCacheService $metricsCacheService,
+        PayrollService $payrollService,
+        TelegramService $telegramService
     ) {
         $this->liquidationService = $liquidationService;
         $this->metricsCacheService = $metricsCacheService;
+        $this->payrollService = $payrollService;
+        $this->telegramService = $telegramService;
     }
     public function calculateLiquidation(CalculateLiquidationRequest $request)
     {
@@ -276,9 +284,48 @@ class LiquidationController extends Controller
                 $user
             );
 
+
+            // === AUTO-PAYROLL: Verificar si hoy es día de nómina ===
+            $payroll = null;
+            try {
+                $isPayrollDay = $this->payrollService->isPayrollDay($seller, Carbon::parse($request->date));
+                if ($isPayrollDay) {
+                    [$pStart, $pEnd] = $this->payrollService->calculatePeriod($seller, Carbon::parse($request->date));
+                    $payroll = $this->payrollService->generateForSeller($seller, $pStart, $pEnd);
+
+                    if ($payroll && $payroll->net_total > 0) {
+                        // Crear Gasto automático aprobado
+                        $frequency = $seller->config->payroll_frequency ?? 'semanal';
+                        Expense::create([
+                            'value' => $payroll->net_total,
+                            'description' => "Sueldo del trabajador, $frequency - Automático.",
+                            'user_id' => $seller->user_id,
+                            'category_id' => 1, // ID genérico o de nómina
+                            'status' => 'Aprobado',
+                            'business_date' => $request->date,
+                        ]);
+
+                        // Enviar Telegram al Administrador
+                        $msg = "💰 *PAGO DE NÓMINA GENERADO*\n\n";
+                        $msg .= "👤 *Vendedor:* {$seller->user->name}\n";
+                        $msg .= "📅 *Periodo:* {$payroll->start_date} al {$payroll->end_date}\n";
+                        $msg .= "💵 *Monto Neto:* $ {$payroll->net_total}\n";
+                        $msg .= "📝 *Concepto:* Sueldo del trabajador, $frequency - Automático.";
+                        
+                        $this->telegramService->sendMessage($msg);
+                    }
+                }
+            } catch (\Exception $pe) {
+                Log::error('Auto-payroll generation failed', [
+                    'error' => $pe->getMessage(),
+                    'seller_id' => $seller->id,
+                ]);
+            }
+
             return response()->json([
                 'success' => true,
                 'data' => $liquidation['liquidation'],
+                'payroll' => $payroll,
                 'message' => 'Liquidación guardada correctamente'
             ]);
 

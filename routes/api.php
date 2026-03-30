@@ -245,10 +245,12 @@ Route::middleware('auth:api')->group(function () {
     Route::prefix('payrolls')->group(function () {
         Route::get('/', [\App\Http\Controllers\PayrollController::class, 'index']);
         Route::get('/me', [\App\Http\Controllers\PayrollController::class, 'myPayrolls']);
+        Route::get('/processed-dates', [\App\Http\Controllers\PayrollController::class, 'getProcessedDates']);
         Route::get('/{id}/details', [\App\Http\Controllers\PayrollController::class, 'details']);
         Route::put('/{id}', [\App\Http\Controllers\PayrollController::class, 'update']);
         Route::put('/{id}/paid', [\App\Http\Controllers\PayrollController::class, 'markAsPaid']);
         Route::get('/{id}/download', [\App\Http\Controllers\PayrollController::class, 'downloadPdf']);
+        Route::post('/{id}/recalculate', [\App\Http\Controllers\PayrollController::class, 'recalculate']);
     });
 
     Route::prefix('companies')->group(function () {

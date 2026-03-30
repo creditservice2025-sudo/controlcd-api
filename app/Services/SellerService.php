@@ -119,6 +119,9 @@ class SellerService
                 'eps_discount' => $params['eps_discount'] ?? null,
                 'arl_discount' => $params['arl_discount'] ?? null,
                 'weekly_allowance' => $params['weekly_allowance'] ?? null,
+                'payroll_frequency' => $params['payroll_frequency'] ?? 'weekly',
+                'payroll_start_day' => $params['payroll_start_day'] ?? 1,
+                'include_sundays' => $params['include_sundays'] ?? false,
             ]);
 
             DB::commit();
@@ -204,6 +207,9 @@ class SellerService
                     'eps_discount' => $params['eps_discount'] ?? null,
                     'arl_discount' => $params['arl_discount'] ?? null,
                     'weekly_allowance' => $params['weekly_allowance'] ?? null,
+                    'payroll_frequency' => $params['payroll_frequency'] ?? 'weekly',
+                    'payroll_start_day' => $params['payroll_start_day'] ?? 1,
+                    'include_sundays' => $params['include_sundays'] ?? false,
                 ]
             );
 

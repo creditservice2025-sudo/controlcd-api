@@ -44,6 +44,9 @@ class SellerConfig extends Model
         'eps_discount',
         'arl_discount',
         'weekly_allowance',
+        'payroll_frequency',
+        'payroll_start_day',
+        'include_sundays',
     ];
 
     public function seller()

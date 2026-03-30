@@ -49,6 +49,9 @@ class SellerRequest extends FormRequest
             'eps_discount' => 'nullable|numeric',
             'arl_discount' => 'nullable|numeric',
             'weekly_allowance' => 'nullable|numeric',
+            'payroll_frequency' => 'nullable|string|in:daily,weekly,biweekly,monthly',
+            'payroll_start_day' => 'nullable|integer|between:1,7',
+            'include_sundays' => 'nullable|boolean',
             'role_id' => 'nullable|exists:roles,id',
             'timezone' => 'nullable|string',
         ];
