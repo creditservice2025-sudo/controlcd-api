@@ -627,7 +627,7 @@ class LiquidationService
         )
             - (
             $dailyTotals['created_credits_value']
-            + $dailyTotals['total_expenses'] + $dailyTotals['total_renewal_disbursed'] + $irrecoverableCredits
+            + $dailyTotals['total_expenses'] + $dailyTotals['total_renewal_disbursed']
         );
 
         $cashcollection = (
@@ -637,7 +637,7 @@ class LiquidationService
         )
             - (
             $dailyTotals['created_credits_value']
-            + $dailyTotals['total_expenses'] + $dailyTotals['total_renewal_disbursed'] + $irrecoverableCredits
+            + $dailyTotals['total_expenses'] + $dailyTotals['total_renewal_disbursed']
         );
 
         \Log::debug("cashcollection: " . $cashcollection);
@@ -896,8 +896,7 @@ class LiquidationService
             + ($totalIncome + $totalCollected + $poliza)
             - ($totalExpenses
             + $newCredits
-            + $total_renewal_disbursed
-            + $irrecoverableCredits);
+            + $total_renewal_disbursed);
 
         $cashDelivered = $liquidation->cash_delivered;
         $shortage = 0;
@@ -1430,7 +1429,6 @@ class LiquidationService
             $liquidation->new_credits
             + $liquidation->total_expenses
             + $liquidation->renewal_disbursed_total
-            + $liquidation->irrecoverable_credits_amount
         );
         \Log::debug('Liquidation object:', ['liquidation' => json_decode(json_encode($liquidation), true)]);
 
