@@ -20,49 +20,21 @@ class PayrollService
      */
     public function calculatePeriod(Seller $seller, Carbon $date, $overrideFrequency = null)
     {
-        $config = $seller->config;
-        $frequency = $overrideFrequency ?: ($config->payroll_frequency ?? 'weekly');
-        $startDay = $config->payroll_start_day ?? 1; // 1 = Monday
-
         $start = $date->copy();
-        $end = $date->copy();
 
-        switch ($frequency) {
-            case 'daily':
-                $start = $date->copy()->startOfDay();
-                $end = $date->copy()->endOfDay();
-                break;
-
-            case 'weekly':
-                // Move back to the nearest startDay
-                while ($start->dayOfWeekIso != $startDay) {
-                    $start->subDay();
-                }
-                $start->startOfDay();
-                $end = $start->copy()->addDays(6)->endOfDay();
-                break;
-
-            case 'biweekly':
-                // Similar to weekly but 14 days
-                // We assume biweekly periods start from a fixed anchor or just the nearest startDay
-                while ($start->dayOfWeekIso != $startDay) {
-                    $start->subDay();
-                }
-                $start->startOfDay();
-                $end = $start->copy()->addDays(13)->endOfDay();
-                break;
-
-            case 'monthly':
-                // Monthly starting on a specific day of the month
-                // if startDay is 1, it's the 1st of the month.
-                $start = $date->copy()->day($startDay);
-                if ($start->isAfter($date)) {
-                    $start->subMonth();
-                }
-                $start->startOfDay();
-                $end = $start->copy()->addMonth()->subDay()->endOfDay();
-                break;
+        // Determinar si hoy es domingo para mostrar la próxima cohorte
+        if ($start->dayOfWeekIso == 7) {
+            $start->addDay(); // Mueve a Lunes
         }
+
+        // Retroceder al Lunes de la semana del start
+        while ($start->dayOfWeekIso != 1) { // 1 = Lunes
+            $start->subDay();
+        }
+        $start->startOfDay();
+        
+        // Sumamos 5 días para que finalice el Sábado
+        $end = $start->copy()->addDays(5)->endOfDay();
 
         return [$start, $end];
     }
@@ -72,7 +44,7 @@ class PayrollService
      */
     public function generateForSeller(Seller $seller, Carbon $start, Carbon $end)
     {
-        $config = $seller->config;
+        $config = $seller->config ?? (object)[];
         
         // Fetch payments in the period
         $query = Payment::whereHas('credit', function($q) use ($seller) {
@@ -81,11 +53,6 @@ class PayrollService
             ->whereBetween('payment_date', [$start->toDateString(), $end->toDateString()])
             ->where('status', '!=', 'Anulado')
             ->with('credit');
-
-        // Sunday Exclusion Logic
-        if (!($config->include_sundays ?? false)) {
-            $query->whereRaw('DAYOFWEEK(payment_date) != 1');
-        }
 
         $payments = $query->get();
 
@@ -126,10 +93,7 @@ class PayrollService
 
         $netTotal = $salary + $allowance + $commissionColl + $commissionUtil - ($savings + $legalDeductions);
 
-        // Skip if there's no activity and no fixed income/deductions
-        if ($totalRecaudo <= 0 && $salary <= 0 && $allowance <= 0 && $commissionColl <= 0 && $commissionUtil <= 0) {
-            return null;
-        }
+
 
         return Payroll::updateOrCreate(
             [
@@ -169,8 +133,9 @@ class PayrollService
      */
     public function isParameterized(Seller $seller)
     {
-        $config = $seller->config;
-        return $config && $config->payroll_frequency && $config->payroll_start_day !== null;
+        // Al reversar a lunes-sábado semestral/fijo, todo vendedor activo
+        // tiene un periodo de nómina válido por defecto si recibe cobros o sueldo.
+        return true;
     }
 
     /**
