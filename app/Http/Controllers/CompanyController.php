@@ -134,4 +134,21 @@ class CompanyController extends Controller
         }
     }
 
+    public function toggleCollectorMode($companyId)
+    {
+        try {
+            $company = Company::findOrFail($companyId);
+            $company->collector_mode = !$company->collector_mode;
+            $company->save();
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Módulo actualizado correctamente',
+                'data' => $company
+            ]);
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error al cambiar el módulo: ' . $e->getMessage(), 500);
+        }
+    }
+
 }

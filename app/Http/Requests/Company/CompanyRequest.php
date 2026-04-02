@@ -59,6 +59,7 @@ class CompanyRequest extends FormRequest
             'company_email' => 'nullable|email|max:255',
             'logo' => 'nullable|image|mimes:jpeg,png,jpg,gif,svg|max:2048',
             'timezone' => 'nullable|string',
+            'collector_mode' => 'nullable|boolean',
         ];
     }
 

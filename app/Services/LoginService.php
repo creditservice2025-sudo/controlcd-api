@@ -103,11 +103,19 @@ class LoginService
                 }
             }
 
+            // Obtener configuración de la empresa (modo cobrador, etc)
+            $userCompany = $user->company ?? ($user->seller ? $user->seller->company : null);
+
             return $this->successResponse([
                 'success' => true,
                 'access_token' => $token,
                 'token_type' => 'Bearer',
                 'user' => $user,
+                'company_config' => $userCompany ? [
+                    'id' => $userCompany->id,
+                    'name' => $userCompany->name,
+                    'collector_mode' => (bool)$userCompany->collector_mode,
+                ] : null,
                 'permissions' => $user->getAllPermissions()->pluck('name'),
                 'is_liquidated_today' => ($user->role_id === 5 && $user->seller)
                     ? \App\Models\Liquidation::where('seller_id', $user->seller->id)

@@ -252,6 +252,7 @@ Route::middleware('auth:api')->group(function () {
         Route::post('/validate-code', [CompanyController::class, 'validateCompanyCode']);
         Route::post('/validate-ruc', [CompanyController::class, 'validateCompanyRuc']);
         Route::post('/{companyId}/resend-welcome', [CompanyController::class, 'resendWelcomeEmail']);
+        Route::patch('/{companyId}/collector-mode', [CompanyController::class, 'toggleCollectorMode']);
     });
 
     //route installment

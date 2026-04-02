@@ -20,7 +20,12 @@ class Company extends Model
         'name',
         'phone',
         'email',
-        'logo_path'
+        'logo_path',
+        'collector_mode'
+    ];
+
+    protected $casts = [
+        'collector_mode' => 'boolean'
     ];
 
     public function user(): BelongsTo

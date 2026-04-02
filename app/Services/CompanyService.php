@@ -118,6 +118,7 @@ class CompanyService
                 'phone' => $params['company_phone'] ?? '',
                 'email' => $params['company_email'],
                 'logo_path' => $logoPath,
+                'collector_mode' => $params['collector_mode'] ?? false,
                 'created_at' => $params['created_at'] ?? null,
                 'updated_at' => $params['updated_at'] ?? null
             ]);
@@ -200,6 +201,7 @@ class CompanyService
                 'phone' => $params['company_phone'] ?? $company->phone,
                 'email' => $params['company_email'],
                 'logo_path' => $params['logo_path'] ?? $company->logo_path,
+                'collector_mode' => $params['collector_mode'] ?? $company->collector_mode,
                 'updated_at' => $params['updated_at'] ?? null
             ]);
 
