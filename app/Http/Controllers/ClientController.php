@@ -658,7 +658,7 @@ class ClientController extends Controller
     {
         try {
             $request->validate([
-                'new_seller_id' => 'required|exists:sellers,id',
+                'seller_id' => 'required|exists:sellers,id',
             ]);
 
             // Soporte UUID e ID numérico
@@ -674,13 +674,14 @@ class ClientController extends Controller
                 }
             }
 
-            $newSeller = Seller::find($request->new_seller_id);
+            $newSeller = Seller::find($request->seller_id);
             if (!$newSeller) {
                 return $this->errorResponse('Vendedor destino no encontrado', 404);
             }
 
-            $oldSellerId        = $client->seller_id;
-            $client->seller_id  = $newSeller->id;
+            $oldSellerId = $client->seller_id;
+            $client->seller_id = $newSeller->id;
+            $client->transferred_at = now();
             $client->save();
 
             \Log::info("Cliente #{$client->id} transferido de vendedor #{$oldSellerId} a #{$newSeller->id} por usuario #" . auth()->id());
@@ -688,7 +689,7 @@ class ClientController extends Controller
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Cliente transferido correctamente',
-                'data'    => $client->load('seller.user'),
+                'data' => $client->load('seller.user'),
             ]);
         } catch (\Illuminate\Validation\ValidationException $e) {
             return $this->errorResponse($e->getMessage(), 422);
@@ -702,9 +703,9 @@ class ClientController extends Controller
     {
         try {
             $request->validate([
-                'client_ids'   => 'required|array|min:1',
+                'client_ids' => 'required|array|min:1',
                 'client_ids.*' => 'required',
-                'seller_id'    => 'required|exists:sellers,id',
+                'seller_id' => 'required|exists:sellers,id',
             ]);
 
             $newSeller = Seller::find($request->seller_id);
@@ -721,6 +722,7 @@ class ClientController extends Controller
 
                     if ($client) {
                         $client->seller_id = $newSeller->id;
+                        $client->transferred_at = now();
                         $client->save();
                         $transferred++;
                     }
@@ -730,8 +732,8 @@ class ClientController extends Controller
             \Log::info("{$transferred} clientes transferidos masivamente al vendedor #{$newSeller->id} por usuario #" . auth()->id());
 
             return $this->successResponse([
-                'success'     => true,
-                'message'     => "{$transferred} cliente(s) transferido(s) correctamente",
+                'success' => true,
+                'message' => "{$transferred} cliente(s) transferido(s) correctamente",
                 'transferred' => $transferred,
             ]);
         } catch (\Illuminate\Validation\ValidationException $e) {
