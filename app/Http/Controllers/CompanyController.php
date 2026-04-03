@@ -57,7 +57,7 @@ class CompanyController extends Controller
 {
     try {
         $search = $request->input('search', '');
-        $perPage = $request->input('perPage', 10);
+        $perPage = $request->input('per_page', 10);
         $orderBy = $request->input('orderBy', 'created_at');
         $orderDirection = $request->input('orderDirection', 'desc');
 
