@@ -653,4 +653,92 @@ class ClientController extends Controller
             'data' => $client
         ]);
     }
+
+    public function transfer(Request $request, $clientId)
+    {
+        try {
+            $request->validate([
+                'new_seller_id' => 'required|exists:sellers,id',
+            ]);
+
+            // Soporte UUID e ID numérico
+            if (!is_numeric($clientId)) {
+                $client = Client::where('uuid', $clientId)->first();
+                if (!$client) {
+                    return $this->errorResponse('Cliente no encontrado', 404);
+                }
+            } else {
+                $client = Client::find($clientId);
+                if (!$client) {
+                    return $this->errorResponse('Cliente no encontrado', 404);
+                }
+            }
+
+            $newSeller = Seller::find($request->new_seller_id);
+            if (!$newSeller) {
+                return $this->errorResponse('Vendedor destino no encontrado', 404);
+            }
+
+            $oldSellerId        = $client->seller_id;
+            $client->seller_id  = $newSeller->id;
+            $client->save();
+
+            \Log::info("Cliente #{$client->id} transferido de vendedor #{$oldSellerId} a #{$newSeller->id} por usuario #" . auth()->id());
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Cliente transferido correctamente',
+                'data'    => $client->load('seller.user'),
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return $this->errorResponse($e->getMessage(), 422);
+        } catch (\Exception $e) {
+            \Log::error('Error transfiriendo cliente: ' . $e->getMessage());
+            return $this->errorResponse('Error al transferir el cliente', 500);
+        }
+    }
+
+    public function transferMassive(Request $request)
+    {
+        try {
+            $request->validate([
+                'client_ids'   => 'required|array|min:1',
+                'client_ids.*' => 'required',
+                'seller_id'    => 'required|exists:sellers,id',
+            ]);
+
+            $newSeller = Seller::find($request->seller_id);
+            if (!$newSeller) {
+                return $this->errorResponse('Vendedor destino no encontrado', 404);
+            }
+
+            $transferred = 0;
+            DB::transaction(function () use ($request, $newSeller, &$transferred) {
+                foreach ($request->client_ids as $clientId) {
+                    $client = is_numeric($clientId)
+                        ? Client::find($clientId)
+                        : Client::where('uuid', $clientId)->first();
+
+                    if ($client) {
+                        $client->seller_id = $newSeller->id;
+                        $client->save();
+                        $transferred++;
+                    }
+                }
+            });
+
+            \Log::info("{$transferred} clientes transferidos masivamente al vendedor #{$newSeller->id} por usuario #" . auth()->id());
+
+            return $this->successResponse([
+                'success'     => true,
+                'message'     => "{$transferred} cliente(s) transferido(s) correctamente",
+                'transferred' => $transferred,
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return $this->errorResponse($e->getMessage(), 422);
+        } catch (\Exception $e) {
+            \Log::error('Error en transferencia masiva: ' . $e->getMessage());
+            return $this->errorResponse('Error al transferir los clientes', 500);
+        }
+    }
 }
