@@ -704,10 +704,10 @@ class ClientController extends Controller
             $request->validate([
                 'client_ids'   => 'required|array|min:1',
                 'client_ids.*' => 'required',
-                'seller_id'    => 'required|exists:sellers,id',
+                'new_seller_id'    => 'required|exists:sellers,id',
             ]);
 
-            $newSeller = Seller::find($request->seller_id);
+            $newSeller = Seller::find($request->new_seller_id);
             if (!$newSeller) {
                 return $this->errorResponse('Vendedor destino no encontrado', 404);
             }
