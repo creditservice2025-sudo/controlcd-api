@@ -681,6 +681,7 @@ class ClientController extends Controller
 
             $oldSellerId        = $client->seller_id;
             $client->seller_id  = $newSeller->id;
+            $client->transferred_at = now();
             $client->save();
 
             \Log::info("Cliente #{$client->id} transferido de vendedor #{$oldSellerId} a #{$newSeller->id} por usuario #" . auth()->id());
@@ -721,6 +722,7 @@ class ClientController extends Controller
 
                     if ($client) {
                         $client->seller_id = $newSeller->id;
+                        $client->transferred_at = now();
                         $client->save();
                         $transferred++;
                     }
