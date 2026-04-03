@@ -142,6 +142,10 @@ Route::middleware('auth:api')->group(function () {
         Route::post('/{id}/capacity', [ClientController::class, 'updateCapacity']);
         Route::get('/{id}/history', [ClientController::class, 'history']);
 
+        // Transferencia de clientes
+        Route::post('/{id}/transfer', [ClientController::class, 'transfer']);
+        Route::post('/transfer-massive', [ClientController::class, 'transferMassive']);
+
         // Orden de ruta
         Route::post('/update-order', [ClientController::class, 'updateOrder']);
     });
