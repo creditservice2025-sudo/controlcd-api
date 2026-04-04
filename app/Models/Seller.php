@@ -20,7 +20,8 @@ class Seller extends Model
         'address',
         'seller_id',
         'company_id',
-        'status'
+        'status',
+        'module_type'
     ];
 
     protected static function boot()

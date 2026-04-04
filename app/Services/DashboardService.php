@@ -83,6 +83,19 @@ class DashboardService
         }
         if ($request) {
             $this->applyLocationFilters($sellersQuery, $request);
+            
+            // FILTRO DE MÓDULO (FINANCIAMIENTO VS COBRANZA)
+            $moduleContext = $request->input('module_context');
+            if ($moduleContext === 'financing') {
+                // Sello DevOps: Las carteras históricas (NULL o vacío) se consideran financiamiento por defecto
+                $sellersQuery->where(function($q) {
+                    $q->where('module_type', 'financing')
+                      ->orWhereNull('module_type')
+                      ->orWhere('module_type', '');
+                });
+            } elseif ($moduleContext) {
+                $sellersQuery->where('module_type', $moduleContext);
+            }
         }
 
         return $sellersQuery->pluck('id')->unique()->values();
@@ -221,10 +234,20 @@ class DashboardService
                     }
                 })->count();
 
-                // RUTAS/VENDEDORES: Vendedores filtrados por su ubicación
+                // RUTAS/VENDEDORES: Vendedores filtrados por su ubicación y Módulo
+                $moduleContext = $request->input('module_context');
                 $routesQuery = Seller::query();
                 if ($companyId) {
                     $routesQuery->where('company_id', $companyId);
+                }
+                if ($moduleContext === 'financing') {
+                    $routesQuery->where(function($q) {
+                        $q->where('module_type', 'financing')
+                          ->orWhereNull('module_type')
+                          ->orWhere('module_type', '');
+                    });
+                } elseif ($moduleContext) {
+                    $routesQuery->where('module_type', $moduleContext);
                 }
                 $data['routes'] = $this->applyLocationFilters($routesQuery, $request)->count();
 
@@ -405,6 +428,19 @@ class DashboardService
 
             if (in_array($role, [1, 2])) {
                 $this->applyLocationFilters($sellersQuery, $request);
+            }
+
+            // FILTRO DE MÓDULO (FINANCIAMIENTO VS COBRANZA) - INDISPENSABLE PARA PORTAFOLIO PENDIENTE
+            $moduleContext = $request->input('module_context');
+            if ($moduleContext === 'financing') {
+                // Sello DevOps: Inclusión de carteras históricas de MySQL
+                $sellersQuery->where(function($q) {
+                    $q->where('sellers.module_type', 'financing')
+                      ->orWhereNull('sellers.module_type')
+                      ->orWhere('sellers.module_type', '');
+                });
+            } elseif ($moduleContext) {
+                $sellersQuery->where('sellers.module_type', $moduleContext);
             }
 
             // Filtro por vendedor si se recibe seller_id

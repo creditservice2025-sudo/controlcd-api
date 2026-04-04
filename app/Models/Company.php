@@ -13,6 +13,7 @@ class Company extends Model
 {
 
     use HasFactory, Notifiable, SoftDeletes;
+    protected $connection = 'mysql';
     protected $fillable = [
         'user_id',
         'code',

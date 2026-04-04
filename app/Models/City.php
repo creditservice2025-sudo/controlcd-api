@@ -10,6 +10,8 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 class City extends Model
 {
     use HasFactory, SoftDeletes;
+
+    protected $connection = 'mysql';
     protected $fillable = ['name', 'country_id', 'status'];
 
     public function country()

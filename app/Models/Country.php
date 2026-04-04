@@ -10,7 +10,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 class Country extends Model
 {
     use HasFactory;
-
+    protected $connection = 'mysql';
     protected $fillable = ['name', 'currency', 'status', 'timezone', 'phone_code'];
 
     public function departments()
