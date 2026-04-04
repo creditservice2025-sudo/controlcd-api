@@ -252,6 +252,7 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/select', [CompanyController::class, 'getCompaniesSelect']);
         Route::get('/{companyId}', [CompanyController::class, 'show']);
         Route::put('/{companyId}', [CompanyController::class, 'update']);
+        Route::patch('/{companyId}/toggle-module', [CompanyController::class, 'toggleModule']);
         Route::delete('/{companyId}', [CompanyController::class, 'delete']);
         Route::post('/validate-code', [CompanyController::class, 'validateCompanyCode']);
         Route::post('/validate-ruc', [CompanyController::class, 'validateCompanyRuc']);

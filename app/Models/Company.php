@@ -11,6 +11,7 @@ use Illuminate\Notifications\Notifiable;
 
 class Company extends Model
 {
+    protected $connection = 'mysql';
 
     use HasFactory, Notifiable, SoftDeletes;
     protected $fillable = [
@@ -20,7 +21,9 @@ class Company extends Model
         'name',
         'phone',
         'email',
-        'logo_path'
+        'logo_path',
+        'is_financing_enabled',
+        'is_collection_enabled'
     ];
 
     public function user(): BelongsTo

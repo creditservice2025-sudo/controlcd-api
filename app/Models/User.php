@@ -15,6 +15,7 @@ use App\Notifications\ResetPasswordNotification;
 
 class User extends Authenticatable
 {
+    protected $connection = 'mysql';
     /** @use HasFactory<\Database\Factories\UserFactory> */
     use HasFactory, Notifiable, HasRoles, HasApiTokens, SoftDeletes;
 

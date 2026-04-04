@@ -37,7 +37,7 @@ class LoginService
             \Log::info('Intento de inicio de sesión: ' . $credentials['email']);
 
             $user = User::where('email', 'LIKE', $credentials['email'] . '%')
-                ->with('city', 'seller')
+                ->with('city', 'seller', 'company')
                 ->first();
 
                 \Log::info('Usuario encontrado: ' . ($user ? $user->email : 'Ninguno'));

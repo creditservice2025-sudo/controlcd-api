@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\DB;
 
 class Client extends Model
 {
+    protected $connection = 'mysql';
     use HasFactory, Notifiable, SoftDeletes;
 
     protected $fillable = [

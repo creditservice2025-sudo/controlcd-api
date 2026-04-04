@@ -118,6 +118,8 @@ class CompanyService
                 'phone' => $params['company_phone'] ?? '',
                 'email' => $params['company_email'],
                 'logo_path' => $logoPath,
+                'is_financing_enabled' => $params['is_financing_enabled'] ?? true,
+                'is_collection_enabled' => $params['is_collection_enabled'] ?? false,
                 'created_at' => $params['created_at'] ?? null,
                 'updated_at' => $params['updated_at'] ?? null
             ]);
@@ -200,6 +202,8 @@ class CompanyService
                 'phone' => $params['company_phone'] ?? $company->phone,
                 'email' => $params['company_email'],
                 'logo_path' => $params['logo_path'] ?? $company->logo_path,
+                'is_financing_enabled' => $params['is_financing_enabled'] ?? $company->is_financing_enabled,
+                'is_collection_enabled' => $params['is_collection_enabled'] ?? $company->is_collection_enabled,
                 'updated_at' => $params['updated_at'] ?? null
             ]);
 
@@ -214,6 +218,38 @@ class CompanyService
             DB::rollBack();
             \Log::error('Error updating company: ' . $e->getMessage());
             return $this->errorResponse('Error al actualizar la empresa', 500);
+        }
+    }
+
+    /**
+     * Toggles a specific module for a company.
+     *
+     * @param int $companyId
+     * @param string $module (financing|collection)
+     * @return \Illuminate\Http\Response|\Illuminate\Http\JsonResponse
+     */
+    public function toggleModule($companyId, $module)
+    {
+        try {
+            $company = Company::findOrFail($companyId);
+            
+            $field = ($module === 'financing') ? 'is_financing_enabled' : 'is_collection_enabled';
+            
+            // Toggle the current state
+            $company->$field = !$company->$field;
+            $company->save();
+
+            $moduleName = ($module === 'financing') ? 'Control CD' : 'Deuda & Abono';
+            $stateText = $company->$field ? 'activado' : 'desactivado';
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => "Módulo {$moduleName} {$stateText} con éxito",
+                'data' => $company->load('user')
+            ]);
+        } catch (\Exception $e) {
+            \Log::error("Error toggling module {$module} for company {$companyId}: " . $e->getMessage());
+            return $this->errorResponse("Error al cambiar estado del módulo", 500);
         }
     }
 

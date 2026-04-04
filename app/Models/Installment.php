@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Installment extends Model
 {
+    protected $connection = 'mysql';
     use HasFactory, Notifiable, SoftDeletes;
 
     protected $fillable = [
