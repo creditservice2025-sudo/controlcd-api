@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use App\Models\User;
+use App\Models\Company;
 use App\Mail\ResetPassword;
 use App\Models\Liquidation;
 use Hash;
@@ -103,11 +104,37 @@ class LoginService
                 }
             }
 
+            $company = $user->company instanceof Company
+                ? $user->company
+                : null;
+
+            $roles = $user->getRoleNames();
+
+            if ($roles->isEmpty() && !empty($user->role_id)) {
+                $roleModel = \Spatie\Permission\Models\Role::find($user->role_id);
+                if ($roleModel) {
+                    $roles = collect([$roleModel->name]);
+                } else {
+                    $roleFromTable = \DB::table('roles')->where('id', $user->role_id)->value('name');
+                    if ($roleFromTable) {
+                        $roles = collect([$roleFromTable]);
+                    }
+                }
+            }
+
+            $availableModules = [
+                'controlcd' => $company ? (bool) $company->is_financing_enabled : true,
+                'collection' => $company ? (bool) $company->is_collection_enabled : false,
+            ];
+
             return $this->successResponse([
                 'success' => true,
                 'access_token' => $token,
                 'token_type' => 'Bearer',
                 'user' => $user,
+                'company' => $company,
+                'roles' => $roles,
+                'modules' => $availableModules,
                 'permissions' => $user->getAllPermissions()->pluck('name'),
                 'is_liquidated_today' => ($user->role_id === 5 && $user->seller)
                     ? \App\Models\Liquidation::where('seller_id', $user->seller->id)

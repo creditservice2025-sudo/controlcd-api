@@ -97,6 +97,21 @@ return [
             'sslmode' => 'prefer',
         ],
 
+        'collection_pgsql' => [
+            'driver' => 'pgsql',
+            'url' => env('COLLECTION_DB_URL'),
+            'host' => env('COLLECTION_DB_HOST', '127.0.0.1'),
+            'port' => env('COLLECTION_DB_PORT', '5432'),
+            'database' => env('COLLECTION_DB_DATABASE', 'laravel'),
+            'username' => env('COLLECTION_DB_USERNAME', 'postgres'),
+            'password' => env('COLLECTION_DB_PASSWORD', ''),
+            'charset' => env('COLLECTION_DB_CHARSET', 'utf8'),
+            'prefix' => env('COLLECTION_DB_PREFIX', ''),
+            'prefix_indexes' => true,
+            'search_path' => env('COLLECTION_DB_SCHEMA', 'public'),
+            'sslmode' => env('COLLECTION_DB_SSLMODE', 'prefer'),
+        ],
+
         'sqlsrv' => [
             'driver' => 'sqlsrv',
             'url' => env('DB_URL'),
