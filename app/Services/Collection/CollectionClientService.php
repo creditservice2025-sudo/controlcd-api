@@ -313,14 +313,21 @@ class CollectionClientService
                 ->orderBy('installment_number')
                 ->get()
                 ->map(function ($inst) {
+                    $deletingUser = $inst->deleted_by ? \App\Models\User::find($inst->deleted_by) : null;
                     return [
                         'id' => $inst->id,
                         'installment_number' => $inst->installment_number,
                         'due_date' => $inst->due_date?->toDateString(),
-                        'amount' => $inst->amount,
-                        'paid_amount' => $inst->paid_amount,
+                        'amount' => (float) $inst->amount,
+                        'paid_amount' => (float) $inst->paid_amount,
                         'status' => $inst->status,
                         'last_payment_at' => $inst->last_payment_at?->toISOString(),
+                        'payment_method' => $inst->payment_method,
+                        'notes' => $inst->notes,
+                        'voucher_path' => $inst->voucher_path,
+                        'history' => $inst->history,
+                        'deleted_at' => $inst->deleted_at?->toISOString(),
+                        'deleted_by_name' => $deletingUser ? $deletingUser->name : null,
                     ];
                 });
         }

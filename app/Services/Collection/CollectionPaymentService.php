@@ -57,7 +57,18 @@ class CollectionPaymentService
                     continue; 
                 }
 
-                $amountToPay = (float) ($pData['amount'] ?? ($installment->amount - $installment->paid_amount));
+                $pendingAmount = (float) $installment->amount - (float) $installment->paid_amount;
+                $amountToPay = (float) ($pData['amount'] ?? $pendingAmount);
+
+                // Prevent overpayment at backend level
+                if ($amountToPay > $pendingAmount) {
+                    $amountToPay = $pendingAmount;
+                }
+
+                if ($amountToPay <= 0) {
+                    continue; 
+                }
+
                 $newPaidAmount = (float) $installment->paid_amount + $amountToPay;
                 
                 // Determine new status
@@ -73,7 +84,7 @@ class CollectionPaymentService
                     'payment_method' => $pData['payment_method'] ?? $payload['payment_method'] ?? 'Efectivo',
                     'notes' => $pData['notes'] ?? $payload['reference'] ?? null,
                     'voucher_path' => $payload['voucher_path'] ?? null,
-                    'last_payment_at' => Carbon::now(),
+                    'last_payment_at' => isset($payload['payment_date']) ? Carbon::parse($payload['payment_date']) : Carbon::now(),
                 ]);
 
                 // Create Payment Audit Record

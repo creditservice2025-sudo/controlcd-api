@@ -180,4 +180,45 @@ class CollectionCreditService
             }
         }
     }
+
+    public function deleteInstallment(int $installmentId, ?int $requestedCompanyId = null)
+    {
+        $companyId = $this->resolveCompanyId($requestedCompanyId);
+        if (!$companyId) {
+            return $this->errorResponse('No se pudo determinar la compañía para Collection', 422);
+        }
+
+        $installment = \App\Models\Collection\CollectionInstallment::query()
+            ->where('company_id', $companyId)
+            ->where('id', $installmentId)
+            ->first();
+
+        if (!$installment) {
+            return $this->errorNotFoundResponse('Cuota no encontrada');
+        }
+
+        return DB::connection(self::CONNECTION)->transaction(function () use ($installment) {
+            // Backup current state (with payment info) for audit
+            $history = $installment->toArray();
+            
+            $installment->update([
+                'paid_amount' => 0,
+                'status' => 'pendiente',
+                'payment_method' => null,
+                'notes' => null,
+                'voucher_path' => null,
+                'last_payment_at' => null,
+                // Audit the reversal action
+                'deleted_at' => Carbon::now(),
+                'deleted_by' => Auth::id(),
+                'deleted_ip' => request()->ip(),
+                'history' => $history,
+            ]);
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Cobro/Abono eliminado correctamente. La cuota ahora está pendiente.'
+            ]);
+        });
+    }
 }

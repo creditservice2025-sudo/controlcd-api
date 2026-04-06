@@ -44,4 +44,9 @@ class CollectionCreditController extends Controller
 
         return $this->collectionCreditService->create($validated);
     }
+
+    public function destroyInstallment(Request $request, int $id)
+    {
+        return $this->collectionCreditService->deleteInstallment($id, $request->input('company_id'));
+    }
 }

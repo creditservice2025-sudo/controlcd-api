@@ -27,6 +27,10 @@ class CollectionInstallment extends Model
         'voucher_path',
         'last_payment_at',
         'recorded_at',
+        'deleted_at',
+        'deleted_by',
+        'deleted_ip',
+        'history',
     ];
 
     protected $casts = [
@@ -35,6 +39,8 @@ class CollectionInstallment extends Model
         'paid_amount' => 'decimal:2',
         'last_payment_at' => 'datetime',
         'recorded_at' => 'datetime',
+        'deleted_at' => 'datetime',
+        'history' => 'array',
     ];
 
     public function credit()
