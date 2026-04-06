@@ -7,7 +7,7 @@ use Illuminate\Support\Facades\DB;
 
 return new class extends Migration
 {
-    protected $connection = 'pgsql_collection';
+    protected $connection = 'collection_pgsql';
 
     /**
      * Run the migrations.

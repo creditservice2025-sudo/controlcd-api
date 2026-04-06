@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class CollectionCredit extends Model
 {
-    protected $connection = 'pgsql_collection';
+    protected $connection = 'collection_pgsql';
     protected $table = 'collection_credits';
 
     protected $fillable = [
@@ -16,14 +16,19 @@ class CollectionCredit extends Model
         'amount',
         'interest_rate',
         'total_installments',
+        'payment_frequency',
+        'first_installment_date',
         'status',
-        'business_date'
+        'business_date',
+        'metadata',
     ];
 
     protected $casts = [
         'amount' => 'decimal:2',
         'interest_rate' => 'decimal:2',
-        'business_date' => 'date'
+        'business_date' => 'date',
+        'first_installment_date' => 'date',
+        'metadata' => 'array',
     ];
 
     public function client()

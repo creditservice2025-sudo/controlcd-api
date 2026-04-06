@@ -4,22 +4,21 @@ namespace App\Models\Collection;
 
 use Illuminate\Database\Eloquent\Model;
 
-class CollectionClient extends Model
+class CollectionClientAudit extends Model
 {
     protected $connection = 'collection_pgsql';
-    protected $table = 'collection_clients';
+    protected $table = 'collection_client_audits';
 
     protected $fillable = [
-        'id',
         'company_id',
-        'dni',
-        'name',
-        'phone',
-        'address',
-        'metadata'
+        'client_id',
+        'action',
+        'user_id',
+        'ip_address',
+        'changes',
     ];
 
     protected $casts = [
-        'metadata' => 'array'
+        'changes' => 'array',
     ];
 }

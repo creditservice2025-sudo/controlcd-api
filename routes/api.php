@@ -23,6 +23,9 @@ use App\Http\Controllers\CountriesController;
 use App\Http\Controllers\IncomeController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\ReportExportController;
+use App\Http\Controllers\Collection\CollectionClientController;
+use App\Http\Controllers\Collection\CollectionCreditController;
+use App\Http\Controllers\Collection\CollectionPaymentController;
 
 use App\Http\Controllers\FrontendErrorController;
 use App\Http\Controllers\VerificationController;
@@ -299,6 +302,17 @@ Route::middleware('auth:api')->group(function () {
     // Verification Routes
     Route::post('verification/send-otp', [VerificationController::class, 'sendOtp']);
     Route::post('verification/verify-otp', [VerificationController::class, 'verifyOtp']);
+
+    // Isolated Collection module (Deuda & Abono)
+    Route::prefix('collection/v1')->group(function () {
+        Route::get('clients', [CollectionClientController::class, 'index']);
+        Route::get('clients/{clientId}', [CollectionClientController::class, 'show']);
+        Route::post('clients', [CollectionClientController::class, 'store']);
+        Route::match(['post', 'put'], 'clients/{clientId}', [CollectionClientController::class, 'update']);
+        Route::delete('clients/{clientId}', [CollectionClientController::class, 'destroy']);
+        Route::post('credits', [CollectionCreditController::class, 'store']);
+        Route::post('payments', [CollectionPaymentController::class, 'store']);
+    });
 
     // Telegram Logs
     Route::get('/telegram-logs', [\App\Http\Controllers\TelegramLogController::class, 'index']);
