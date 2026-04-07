@@ -59,6 +59,7 @@ class CollectionCreditService
                 'transfer_voucher_photo' => $payload['transfer_voucher_photo'] ?? null,
                 'transfer_support_photo' => $payload['transfer_support_photo'] ?? null,
                 'excluded_days' => $payload['excluded_days'] ?? [],
+                'installment_distribution_mode' => $payload['installment_distribution_mode'] ?? 'capital_interest',
                 'created_by' => Auth::id(),
                 'created_ip' => request()->ip(),
             ];
@@ -139,7 +140,12 @@ class CollectionCreditService
         $principal = (float) $credit->amount;
         $interestRate = (float) $credit->interest_rate;
         $totalInterest = ($principal * $interestRate) / 100;
-        $installmentAmount = ($principal + $totalInterest) / $count;
+        $principalPerInstallment = $principal / $count;
+        $interestPerInstallment = $totalInterest / $count;
+
+        // Custom distribution mode (interest_only / capital_interest)
+        $meta = is_array($credit->metadata) ? $credit->metadata : [];
+        $mode = $meta['installment_distribution_mode'] ?? 'capital_interest';
 
         $currentDate = Carbon::parse($credit->first_installment_date);
         $frequency = $credit->payment_frequency ?? 'Diaria';
@@ -158,14 +164,30 @@ class CollectionCreditService
                 ->where('company_id', $credit->company_id)
                 ->max('id') + 1;
 
+            $currentPrincipal = $principalPerInstallment;
+            $currentInterest = $interestPerInstallment;
+
+            if ($mode === 'interest_only') {
+                $currentInterest = ($principal * $interestRate) / 100;
+                if ($i < $count) {
+                    $currentPrincipal = 0;
+                } else {
+                    $currentPrincipal = $principal;
+                }
+            }
+
             DB::connection(self::CONNECTION)->table('collection_installments')->insert([
                 'id' => $newId,
                 'company_id' => $credit->company_id,
                 'credit_id' => $credit->id,
                 'installment_number' => $i,
                 'due_date' => $currentDate->toDateString(),
-                'amount' => round($installmentAmount, 2),
+                'amount' => round($currentPrincipal + $currentInterest, 2),
+                'principal_amount' => round($currentPrincipal, 2),
+                'interest_amount' => round($currentInterest, 2),
                 'paid_amount' => 0,
+                'principal_paid' => 0,
+                'interest_paid' => 0,
                 'status' => 'pendiente',
                 'recorded_at' => Carbon::now(),
             ]);
@@ -181,11 +203,20 @@ class CollectionCreditService
         }
     }
 
-    public function deleteInstallment(int $installmentId, ?int $requestedCompanyId = null)
+    public function deleteInstallment(int $installmentId, array $securityToken = [], ?int $requestedCompanyId = null)
     {
         $companyId = $this->resolveCompanyId($requestedCompanyId);
         if (!$companyId) {
             return $this->errorResponse('No se pudo determinar la compañía para Collection', 422);
+        }
+
+        // Mandatory Security Validation
+        $securityService = app(\App\Services\Collection\CollectionSecurityService::class);
+        $requestId = $securityToken['request_id'] ?? '';
+        $code = $securityToken['code'] ?? '';
+
+        if (!$securityService->validateToken($requestId, $code, $companyId)) {
+            return $this->errorResponse('Código de autorización gerencial inválido o expirado', 403);
         }
 
         $installment = \App\Models\Collection\CollectionInstallment::query()
@@ -201,6 +232,12 @@ class CollectionCreditService
             // Backup current state (with payment info) for audit
             $history = $installment->toArray();
             
+            // Reversa física parcial de saldo: Marcamos los registros de la tabla de pagos como eliminados (Soft Delete manual)
+            \App\Models\Collection\CollectionPayment::where('company_id', $installment->company_id)
+                ->where('credit_id', $installment->credit_id)
+                ->where('installment_number', $installment->installment_number)
+                ->update(['deleted_at' => Carbon::now()]);
+
             $installment->update([
                 'paid_amount' => 0,
                 'status' => 'pendiente',

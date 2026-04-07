@@ -29,7 +29,12 @@ class CollectionClientController extends Controller
     {
         try {
             $companyId = $request->input('company_id');
-            return $this->collectionClientService->get($clientId, $companyId ? (int) $companyId : null);
+            $creditId = $request->input('credit_id');
+            return $this->collectionClientService->get(
+                $clientId, 
+                $companyId ? (int) $companyId : null,
+                $creditId ? (int) $creditId : null
+            );
         } catch (\Exception $e) {
             return $this->errorResponse('Error en el servidor: ' . $e->getMessage(), 500);
         }

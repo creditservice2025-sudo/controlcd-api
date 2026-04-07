@@ -30,6 +30,10 @@ class CollectionInstallment extends Model
         'deleted_at',
         'deleted_by',
         'deleted_ip',
+        'principal_amount',
+        'interest_amount',
+        'principal_paid',
+        'interest_paid',
         'history',
     ];
 
@@ -37,6 +41,10 @@ class CollectionInstallment extends Model
         'due_date' => 'date',
         'amount' => 'decimal:2',
         'paid_amount' => 'decimal:2',
+        'principal_amount' => 'decimal:2',
+        'interest_amount' => 'decimal:2',
+        'principal_paid' => 'decimal:2',
+        'interest_paid' => 'decimal:2',
         'last_payment_at' => 'datetime',
         'recorded_at' => 'datetime',
         'deleted_at' => 'datetime',

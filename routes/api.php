@@ -313,6 +313,13 @@ Route::middleware('auth:api')->group(function () {
         Route::post('credits', [CollectionCreditController::class, 'store']);
         Route::delete('installments/{id}', [CollectionCreditController::class, 'destroyInstallment']);
         Route::post('payments', [CollectionPaymentController::class, 'store']);
+        Route::get('expenses', [\App\Http\Controllers\Collection\CollectionExpenseController::class, 'index']);
+        Route::post('expenses', [\App\Http\Controllers\Collection\CollectionExpenseController::class, 'store']);
+        Route::get('dashboard/summary', [\App\Http\Controllers\Collection\CollectionDashboardController::class, 'index']);
+        
+        // WhatsApp Based Security Flow
+        Route::post('security/request-deletion', [\App\Http\Controllers\Collection\CollectionSecurityController::class, 'requestDeletionToken']);
+        Route::get('security/pending-codes', [\App\Http\Controllers\Collection\CollectionSecurityController::class, 'getPendingTokens']);
     });
 
     // Telegram Logs

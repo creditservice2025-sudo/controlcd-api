@@ -45,6 +45,10 @@ class CollectionPaymentController extends Controller
 
             return $this->collectionPaymentService->recordPayment($validated);
         } catch (\Exception $e) {
+            \Log::error('Error al registrar pago Collection: ' . $e->getMessage(), [
+                'request' => $request->all(),
+                'exception' => $e
+            ]);
             return $this->errorResponse('Error al registrar pago: ' . $e->getMessage(), 500);
         }
     }

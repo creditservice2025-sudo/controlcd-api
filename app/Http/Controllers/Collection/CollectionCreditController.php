@@ -47,6 +47,14 @@ class CollectionCreditController extends Controller
 
     public function destroyInstallment(Request $request, int $id)
     {
-        return $this->collectionCreditService->deleteInstallment($id, $request->input('company_id'));
+        $securityToken = [
+            'request_id' => $request->input('request_id'),
+            'code' => $request->input('code'),
+        ];
+        return $this->collectionCreditService->deleteInstallment(
+            $id, 
+            $securityToken, 
+            $request->input('company_id')
+        );
     }
 }

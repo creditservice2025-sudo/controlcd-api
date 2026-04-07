@@ -265,7 +265,7 @@ class CollectionClientService
         });
     }
 
-    public function get(int $clientId, ?int $requestedCompanyId = null)
+    public function get(int $clientId, ?int $requestedCompanyId = null, ?int $requestedCreditId = null)
     {
         $companyId = $this->resolveCompanyId($requestedCompanyId);
         if (!$companyId) {
@@ -285,18 +285,46 @@ class CollectionClientService
         }
 
         $meta = $this->hasClientMetadataColumn() ? ($client->metadata ?? []) : [];
-        $latestCredit = CollectionCredit::query()
+        $allCredits = CollectionCredit::query()
             ->where('client_id', $client->id)
             ->when($this->hasCreditCompanyColumn(), function ($creditQuery) use ($companyId) {
                 $creditQuery->where('company_id', $companyId);
             })
             ->orderByDesc('id')
-            ->first();
+            ->get();
 
-        $creditMeta = is_array($latestCredit?->metadata) ? $latestCredit->metadata : [];
+        $creditsData = $allCredits->map(function ($credit) use ($companyId) {
+            $meta = is_array($credit->metadata) ? $credit->metadata : [];
+            
+            // Calculate balance for each credit (total amount - paid amount from installments)
+            $stats = CollectionInstallment::query()
+                ->where('company_id', $companyId)
+                ->where('credit_id', $credit->id)
+                ->selectRaw('SUM(amount) as total, SUM(paid_amount) as paid')
+                ->first();
+                
+            return [
+                'id' => $credit->id,
+                'amount' => (float) $credit->amount,
+                'interest_rate' => (float) $credit->interest_rate,
+                'total_installments' => $credit->total_installments,
+                'payment_frequency' => $credit->payment_frequency,
+                'first_installment_date' => $credit->first_installment_date?->toDateString(),
+                'status' => $credit->status,
+                'balance' => (float) ($stats->total ?? $credit->amount) - (float) ($stats->paid ?? 0),
+                'total_paid' => (float) ($stats->paid ?? 0),
+                'created_at' => optional($credit->created_at)->toISOString(),
+                'transfer_bank_name' => $meta['transfer_bank_name'] ?? null,
+                'transfer_reference_number' => $meta['transfer_reference_number'] ?? null,
+            ];
+        });
 
-        // Check if installments need generation (for legacy credits visited for the first time)
+        $latestCredit = $requestedCreditId 
+            ? $allCredits->firstWhere('id', $requestedCreditId) 
+            : $allCredits->first();
+
         $installments = [];
+        
         if ($latestCredit) {
             $existingInstallmentsCount = CollectionInstallment::query()
                 ->where('company_id', $companyId)
@@ -304,12 +332,16 @@ class CollectionClientService
                 ->count();
 
             if ($existingInstallmentsCount === 0 && $latestCredit->total_installments > 0) {
-                $this->creditService->generateInstallments($latestCredit, $creditMeta['excluded_days'] ?? []);
+                // Fetch the actual model to get metadata correctly for generation
+                $creditModel = CollectionCredit::find($latestCredit->id);
+                $creditMeta = is_array($creditModel->metadata) ? $creditModel->metadata : [];
+                $this->creditService->generateInstallments($creditModel, $creditMeta['excluded_days'] ?? []);
             }
 
             $installments = CollectionInstallment::query()
                 ->where('company_id', $companyId)
                 ->where('credit_id', $latestCredit->id)
+                ->with('payments')
                 ->orderBy('installment_number')
                 ->get()
                 ->map(function ($inst) {
@@ -319,7 +351,11 @@ class CollectionClientService
                         'installment_number' => $inst->installment_number,
                         'due_date' => $inst->due_date?->toDateString(),
                         'amount' => (float) $inst->amount,
+                        'principal_amount' => (float) ($inst->principal_amount ?? ($inst->amount)),
+                        'interest_amount' => (float) ($inst->interest_amount ?? 0),
                         'paid_amount' => (float) $inst->paid_amount,
+                        'principal_paid' => (float) ($inst->principal_paid ?? 0),
+                        'interest_paid' => (float) ($inst->interest_paid ?? 0),
                         'status' => $inst->status,
                         'last_payment_at' => $inst->last_payment_at?->toISOString(),
                         'payment_method' => $inst->payment_method,
@@ -328,6 +364,17 @@ class CollectionClientService
                         'history' => $inst->history,
                         'deleted_at' => $inst->deleted_at?->toISOString(),
                         'deleted_by_name' => $deletingUser ? $deletingUser->name : null,
+                        'payments' => $inst->payments->map(function($p) {
+                            return [
+                                'id' => $p->id,
+                                'amount_paid' => (float) $p->amount_paid,
+                                'payment_date' => $p->payment_date?->toDateString(),
+                                'payment_method' => $p->payment_method,
+                                'notes' => $p->notes,
+                                'voucher_path' => $p->voucher_path,
+                                'recorded_at' => optional($p->recorded_at)->toISOString(),
+                            ];
+                        }),
                     ];
                 });
         }
@@ -345,19 +392,13 @@ class CollectionClientService
             'status' => $meta['status'] ?? 'Activo',
             'profile_photo' => $meta['profile_photo'] ?? null,
             'document_photo' => $meta['document_photo'] ?? null,
+            'credits' => $creditsData,
+            // Keep keys for compatibility with single-credit UI if needed
             'credit_id' => $latestCredit?->id,
             'credit_amount' => $latestCredit?->amount,
-            'credit_interest_rate' => $latestCredit?->interest_rate,
-            'credit_total_installments' => $latestCredit?->total_installments,
-            'credit_payment_frequency' => $latestCredit?->payment_frequency,
-            'credit_first_installment_date' => $latestCredit?->first_installment_date?->toDateString(),
             'credit_status' => $latestCredit?->status,
-            'transfer_voucher_photo' => $creditMeta['transfer_voucher_photo'] ?? null,
-            'transfer_support_photo' => $creditMeta['transfer_support_photo'] ?? null,
-            'transfer_bank_name' => $creditMeta['transfer_bank_name'] ?? null,
-            'transfer_reference_number' => $creditMeta['transfer_reference_number'] ?? null,
-            'created_at' => optional($client->created_at)->toISOString(),
             'installments' => $installments,
+            'created_at' => optional($client->created_at)->toISOString(),
         ];
 
         return $this->successResponse([

@@ -46,67 +46,100 @@ class CollectionPaymentService
 
             foreach ($payments as $pData) {
                 $instNum = $pData['installment_number'];
-                
-                $installment = CollectionInstallment::query()
-                    ->where('company_id', $companyId)
-                    ->where('credit_id', $creditId)
-                    ->where('installment_number', $instNum)
-                    ->first();
+                $amountToDistribute = (float) ($pData['amount'] ?? 0);
 
-                if (!$installment || $installment->status === 'pagado') {
-                    continue; 
+                // If amount is null/zero, it means pay the full installment (old behavior)
+                // but for overpayment logic, we need an actual number.
+                if ($pData['amount'] === null) {
+                    $inst = CollectionInstallment::query()
+                        ->where('company_id', $companyId)
+                        ->where('credit_id', $creditId)
+                        ->where('installment_number', $instNum)
+                        ->first();
+                    $amountToDistribute = $inst ? ($inst->amount - $inst->paid_amount) : 0;
                 }
 
-                $pendingAmount = (float) $installment->amount - (float) $installment->paid_amount;
-                $amountToPay = (float) ($pData['amount'] ?? $pendingAmount);
+                while ($amountToDistribute > 0) {
+                    $installment = CollectionInstallment::query()
+                        ->where('company_id', $companyId)
+                        ->where('credit_id', $creditId)
+                        ->where('installment_number', $instNum)
+                        ->first();
 
-                // Prevent overpayment at backend level
-                if ($amountToPay > $pendingAmount) {
-                    $amountToPay = $pendingAmount;
+                    if (!$installment) {
+                        break; // No more installments to pay
+                    }
+
+                    if ($installment->status === 'pagado') {
+                        $instNum++; // Try next one
+                        continue;
+                    }
+
+                    $pendingInterest = (float) $installment->interest_amount - (float) ($installment->interest_paid ?? 0);
+                    $pendingPrincipal = (float) $installment->principal_amount - (float) ($installment->principal_paid ?? 0);
+                    $pendingTotal = $pendingInterest + $pendingPrincipal;
+
+                    $appliedToThisInstallment = min($amountToDistribute, $pendingTotal);
+                    $tempAmount = $appliedToThisInstallment;
+
+                    // 1. Pay Interest First
+                    $payInterest = min($tempAmount, $pendingInterest);
+                    $newInterestPaid = (float) ($installment->interest_paid ?? 0) + $payInterest;
+                    $tempAmount -= $payInterest;
+
+                    // 2. Pay Principal
+                    $payPrincipal = $tempAmount;
+                    $newPrincipalPaid = (float) ($installment->principal_paid ?? 0) + $payPrincipal;
+
+                    $newPaidAmount = (float) $installment->paid_amount + $appliedToThisInstallment;
+                    
+                    // Determine new status
+                    $newStatus = 'pagado';
+                    if (round($newPaidAmount, 2) < round((float) $installment->amount, 2)) {
+                        $newStatus = 'parcial';
+                    }
+
+                    $tz = $payload['timezone'] ?? 'UTC';
+                    $now = Carbon::now($tz);
+
+                    // Update Installment
+                    $installment->update([
+                        'status' => $newStatus,
+                        'paid_amount' => $newPaidAmount,
+                        'interest_paid' => $newInterestPaid,
+                        'principal_paid' => $newPrincipalPaid,
+                        'payment_method' => $pData['payment_method'] ?? $payload['payment_method'] ?? 'Efectivo',
+                        'notes' => $pData['notes'] ?? $payload['reference'] ?? null,
+                        'voucher_path' => $payload['voucher_path'] ?? null,
+                        'last_payment_at' => isset($payload['payment_date']) ? Carbon::parse($payload['payment_date'], $tz) : $now,
+                    ]);
+
+                    // Create Payment Audit Record
+                    $newId = (int) CollectionPayment::withTrashed()
+                        ->where('company_id', $companyId)
+                        ->max('id') + 1;
+
+                    $payment = CollectionPayment::create([
+                        'id' => $newId,
+                        'company_id' => $companyId,
+                        'credit_id' => $creditId,
+                        'installment_number' => $installment->installment_number,
+                        'amount_paid' => $appliedToThisInstallment,
+                        'payment_date' => $payload['payment_date'] ?? $now->toDateString(),
+                        'receipt_number' => $payload['reference'] ?? null,
+                        'payment_method' => $pData['payment_method'] ?? $payload['payment_method'] ?? 'Efectivo',
+                        'notes' => $pData['notes'] ?? $payload['reference'] ?? null,
+                        'voucher_path' => $payload['voucher_path'] ?? null,
+                        'recorded_at' => $now,
+                    ]);
+
+                    $results[] = $payment->id;
+                    $amountToDistribute -= $appliedToThisInstallment;
+
+                    if ($amountToDistribute > 0) {
+                        $instNum++; // Move to next installment for the remaining excess
+                    }
                 }
-
-                if ($amountToPay <= 0) {
-                    continue; 
-                }
-
-                $newPaidAmount = (float) $installment->paid_amount + $amountToPay;
-                
-                // Determine new status
-                $newStatus = 'pagado';
-                if (round($newPaidAmount, 2) < round((float) $installment->amount, 2)) {
-                    $newStatus = 'parcial';
-                }
-
-                // Update Installment
-                $installment->update([
-                    'status' => $newStatus,
-                    'paid_amount' => $newPaidAmount,
-                    'payment_method' => $pData['payment_method'] ?? $payload['payment_method'] ?? 'Efectivo',
-                    'notes' => $pData['notes'] ?? $payload['reference'] ?? null,
-                    'voucher_path' => $payload['voucher_path'] ?? null,
-                    'last_payment_at' => isset($payload['payment_date']) ? Carbon::parse($payload['payment_date']) : Carbon::now(),
-                ]);
-
-                // Create Payment Audit Record
-                $newId = (int) CollectionPayment::query()
-                    ->where('company_id', $companyId)
-                    ->max('id') + 1;
-
-                $payment = CollectionPayment::create([
-                    'id' => $newId,
-                    'company_id' => $companyId,
-                    'credit_id' => $creditId,
-                    'installment_number' => $instNum,
-                    'amount_paid' => $amountToPay,
-                    'payment_date' => $payload['payment_date'] ?? Carbon::now()->toDateString(),
-                    'receipt_number' => $payload['reference'] ?? null,
-                    'payment_method' => $pData['payment_method'] ?? $payload['payment_method'] ?? 'Efectivo',
-                    'notes' => $pData['notes'] ?? $payload['reference'] ?? null,
-                    'voucher_path' => $payload['voucher_path'] ?? null,
-                    'recorded_at' => Carbon::now(),
-                ]);
-
-                $results[] = $payment->id;
             }
 
             return $this->successResponse([

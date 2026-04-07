@@ -3,15 +3,18 @@
 namespace App\Models\Collection;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class CollectionPayment extends Model
 {
+    use SoftDeletes;
     protected $connection = 'collection_pgsql';
     protected $table = 'collection_payments';
 
     // IDs are manual bigint in this project
     public $incrementing = false;
     public $timestamps = false;
+    const DELETED_AT = 'deleted_at';
 
     protected $fillable = [
         'id',
@@ -36,5 +39,17 @@ class CollectionPayment extends Model
     public function credit()
     {
         return $this->belongsTo(CollectionCredit::class, 'credit_id', 'id');
+    }
+
+    public function client()
+    {
+        return $this->hasOneThrough(
+            CollectionClient::class,
+            CollectionCredit::class,
+            'id', // Foreign key on credits table... (credits.id)
+            'id', // Foreign key on clients table... (clients.id)
+            'credit_id', // Local key on payments table... (payments.credit_id)
+            'client_id'  // Local key on credits table... (credits.client_id)
+        );
     }
 }
