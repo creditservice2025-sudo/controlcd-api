@@ -34,14 +34,19 @@ class CleanRetroactiveNotifications extends Command
         $deletedCount = 0;
 
         foreach ($admins as $admin) {
-            $linkedSellerIds = UserRoute::where('user_id', $admin->id)->pluck('seller_id')->toArray();
+            if (!$admin->company) {
+                continue; // Si el administrador misteriosamente no tiene empresa, ignorar.
+            }
+
+            // Obtener todos los IDs de vendedores de la misma empresa
+            $companySellerIds = \App\Models\Seller::where('company_id', $admin->company->id)->pluck('id')->toArray();
             
             foreach ($admin->notifications as $notification) {
                 $data = is_string($notification->data) ? json_decode($notification->data, true) : $notification->data;
                 
-                // Limpiar solo notificaciones que tienen un seller_id
+                // Limpiar solo notificaciones que tienen un seller_id que NO es de su empresa
                 if (isset($data['seller_id'])) {
-                    if (!in_array($data['seller_id'], $linkedSellerIds)) {
+                    if (!in_array($data['seller_id'], $companySellerIds)) {
                         $notification->delete();
                         $deletedCount++;
                     }
@@ -52,6 +57,6 @@ class CleanRetroactiveNotifications extends Command
             Cache::forget("notifications_user_{$admin->id}");
         }
 
-        $this->info("¡Completado! Se limpiaron {$deletedCount} notificaciones no vinculadas.");
+        $this->info("¡Completado! Se limpiaron {$deletedCount} notificaciones de otras empresas.");
     }
 }
