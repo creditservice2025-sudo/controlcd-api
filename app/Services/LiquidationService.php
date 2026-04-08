@@ -56,8 +56,23 @@ class LiquidationService
             // Notificación de sobrante/faltante
             $sellerConfig = \App\Models\SellerConfig::where('seller_id', $validated['seller_id'])->first();
             if ($sellerConfig && $sellerConfig->notify_shortage_surplus) {
-                $seller = Seller::find($validated['seller_id']);
-                $admins = \App\Models\User::whereIn('role_id', [1, 2])->get();
+                $seller = Seller::with(['user', 'company'])->find($validated['seller_id']);
+                $companyId = $seller->company_id;
+
+                // Filtrar administradores: SuperAdmin (1) ve todo, Admin (2) solo sus vendedores vinculados
+                $admins = \App\Models\User::where(function($query) use ($companyId, $validated) {
+                    $query->where('role_id', 1)
+                          ->orWhere(function($q) use ($companyId, $validated) {
+                              $q->where('role_id', 2)
+                                ->whereHas('company', function($c) use ($companyId) {
+                                    $c->where('id', $companyId);
+                                })
+                                ->whereHas('userRoutes', function($ur) use ($validated) {
+                                    $ur->where('seller_id', $validated['seller_id']);
+                                });
+                          });
+                })->get();
+
                 $userToNotify = $seller->user;
                 if ($validated['shortage'] > 0) {
                     $message = 'Alerta: El vendedor ' . $seller->user->name . ' tiene un faltante de $' . number_format($validated['shortage'], 2) . ' en la liquidación del ' . $validated['date'] . '.';
@@ -126,8 +141,23 @@ class LiquidationService
             // Notificación de sobrante/faltante si está activo en SellerConfig
             $sellerConfig = \App\Models\SellerConfig::where('seller_id', $validated['seller_id'])->first();
             if ($sellerConfig && $sellerConfig->notify_shortage_surplus) {
-                $seller = Seller::find($validated['seller_id']);
-                $admins = \App\Models\User::whereIn('role_id', [1, 2])->get();
+                $seller = Seller::with(['user', 'company'])->find($validated['seller_id']);
+                $companyId = $seller->company_id;
+
+                // Filtrar administradores: SuperAdmin (1) ve todo, Admin (2) solo sus vinculados
+                $admins = \App\Models\User::where(function($query) use ($companyId, $validated) {
+                    $query->where('role_id', 1)
+                          ->orWhere(function($q) use ($companyId, $validated) {
+                              $q->where('role_id', 2)
+                                ->whereHas('company', function($c) use ($companyId) {
+                                    $c->where('id', $companyId);
+                                })
+                                ->whereHas('userRoutes', function($ur) use ($validated) {
+                                    $ur->where('seller_id', $validated['seller_id']);
+                                });
+                          });
+                })->get();
+
                 $userToNotify = $seller->user;
                 if ($validated['shortage'] > 0) {
                     $message = 'Alerta: El vendedor ' . $seller->user->name . ' tiene un faltante de $' . number_format($validated['shortage'], 2) . ' en la liquidación del ' . $validated['date'] . '.';
@@ -1500,25 +1530,40 @@ class LiquidationService
         return $lastLiquidation ? $this->formatLiquidationDetails($lastLiquidation) : null;
     }
 
-    public function getReportByCity($startDate, $endDate)
+    public function getReportByCity($startDate, $endDate, $companyId = null)
     {
         $timezone = 'America/Lima';
         $startUTC = Carbon::parse($startDate, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC = Carbon::parse($endDate, $timezone)->endOfDay()->setTimezone('UTC');
 
-        $cities = DB::table('cities')->get();
+        $citiesQuery = DB::table('cities');
+        if ($companyId !== null) {
+            $citiesQuery->whereExists(function ($query) use ($companyId) {
+                $query->select(DB::raw(1))
+                    ->from('sellers')
+                    ->whereColumn('sellers.city_id', 'cities.id')
+                    ->where('sellers.company_id', $companyId);
+            });
+        }
+        $cities = $citiesQuery->get();
         $report = [];
 
         foreach ($cities as $city) {
-            $liquidations = Liquidation::whereHas('seller', function ($q) use ($city) {
+            $liquidations = Liquidation::whereHas('seller', function ($q) use ($city, $companyId) {
                 $q->where('city_id', $city->id);
+                if ($companyId !== null) {
+                    $q->where('company_id', $companyId);
+                }
             })
                 ->whereBetween('date', [$startUTC, $endUTC])
                 ->get();
 
             if ($liquidations->count() > 0) {
-                $previous_cash = Liquidation::whereHas('seller', function ($q) use ($city) {
+                $previous_cash = Liquidation::whereHas('seller', function ($q) use ($city, $companyId) {
                     $q->where('city_id', $city->id);
+                    if ($companyId !== null) {
+                        $q->where('company_id', $companyId);
+                    }
                 })
                     ->where('status', 'approved')
                     ->where('date', '<', $startUTC)
@@ -1549,8 +1594,11 @@ class LiquidationService
                 }
 
                 $income = Income::whereBetween('created_at', [$startUTC, $endUTC])
-                    ->whereHas('user', function ($q) use ($city) {
+                    ->whereHas('user', function ($q) use ($city, $companyId) {
                         $q->where('city_id', $city->id);
+                        if ($companyId !== null) {
+                            $q->where('company_id', $companyId);
+                        }
                     })->sum('value');
 
                 $report[] = [
@@ -1567,13 +1615,13 @@ class LiquidationService
         }
         return $report;
     }
-    public function getAccumulatedByCity($startDate, $endDate)
+    public function getAccumulatedByCity($startDate, $endDate, $companyId = null, $sellerIds = null)
     {
         $timezone = 'America/Lima';
         $startUTC = Carbon::parse($startDate, $timezone)->format('Y-m-d');
         $endUTC = Carbon::parse($endDate, $timezone)->format('Y-m-d');
 
-        \Log::debug("getAccumulatedByCity - Rango UTC:", ['startUTC' => $startUTC, 'endUTC' => $endUTC]);
+        \Log::debug("getAccumulatedByCity - Rango UTC:", ['startUTC' => $startUTC, 'endUTC' => $endUTC, 'company_id' => $companyId]);
 
         $query = DB::table('liquidations')
             ->join('sellers', 'liquidations.seller_id', '=', 'sellers.id')
@@ -1592,8 +1640,17 @@ class LiquidationService
                 DB::raw('SUM(liquidations.cash_delivered) as cash_delivered')
             )
             ->whereBetween('liquidations.date', [$startUTC, $endUTC])
-            ->where('liquidations.status', 'approved')
-            ->groupBy('cities.id', 'cities.name');
+            ->where('liquidations.status', 'approved');
+
+        if ($companyId !== null) {
+            $query->where('sellers.company_id', $companyId);
+        }
+
+        if ($sellerIds !== null) {
+            $query->whereIn('sellers.id', $sellerIds);
+        }
+
+        $query->groupBy('cities.id', 'cities.name');
 
         \Log::debug("getAccumulatedByCity - SQL:", ['sql' => $query->toSql(), 'bindings' => $query->getBindings()]);
 
@@ -1602,15 +1659,16 @@ class LiquidationService
         return $result;
     }
 
-    public function getAccumulatedBySellerInCity($cityId, $startDate, $endDate)
+    public function getAccumulatedBySellerInCity($cityId, $startDate, $endDate, $companyId = null, $sellerIds = null)
     {
         $timezone = 'America/Lima';
         $startUTC = Carbon::parse($startDate, $timezone)->format('Y-m-d');
         $endUTC = Carbon::parse($endDate, $timezone)->format('Y-m-d');
 
-        return DB::table('liquidations')
+        $query = DB::table('liquidations')
             ->join('sellers', 'liquidations.seller_id', '=', 'sellers.id')
             ->join('cities', 'sellers.city_id', '=', 'cities.id')
+            ->join('users', 'sellers.user_id', '=', 'users.id')
             ->select(
                 'sellers.id as seller_id',
                 'sellers.seller_id as seller_code',
@@ -1625,20 +1683,28 @@ class LiquidationService
                 DB::raw('SUM(liquidations.surplus) as surplus'),
                 DB::raw('SUM(liquidations.cash_delivered) as cash_delivered')
             )
-            ->join('users', 'sellers.user_id', '=', 'users.id')
             ->where('cities.id', $cityId)
-            ->whereBetween('liquidations.date', [$startUTC, $endUTC])
-            ->groupBy('sellers.id', 'sellers.seller_id', 'users.name')
+            ->whereBetween('liquidations.date', [$startUTC, $endUTC]);
+
+        if ($companyId !== null) {
+            $query->where('sellers.company_id', $companyId);
+        }
+
+        if ($sellerIds !== null) {
+            $query->whereIn('sellers.id', $sellerIds);
+        }
+
+        return $query->groupBy('sellers.id', 'sellers.seller_id', 'users.name')
             ->get();
     }
 
-    public function getAccumulatedBySellersInCity($cityId, $startDate, $endDate)
+    public function getAccumulatedBySellersInCity($cityId, $startDate, $endDate, $companyId = null, $sellerIds = null)
     {
         $timezone = 'America/Lima';
         $startUTC = Carbon::parse($startDate, $timezone)->format('Y-m-d');
         $endUTC = Carbon::parse($endDate, $timezone)->format('Y-m-d');
 
-        return DB::table('liquidations')
+        $query = DB::table('liquidations')
             ->join('sellers', 'liquidations.seller_id', '=', 'sellers.id')
             ->join('cities', 'sellers.city_id', '=', 'cities.id')
             ->join('users', 'sellers.user_id', '=', 'users.id')
@@ -1659,8 +1725,17 @@ class LiquidationService
             )
             ->where('cities.id', $cityId)
             ->where('liquidations.status', 'approved')
-            ->whereBetween('liquidations.date', [$startUTC, $endUTC])
-            ->groupBy('sellers.id', 'users.name', 'cities.name')
+            ->whereBetween('liquidations.date', [$startUTC, $endUTC]);
+
+        if ($companyId !== null) {
+            $query->where('sellers.company_id', $companyId);
+        }
+
+        if ($sellerIds !== null) {
+            $query->whereIn('sellers.id', $sellerIds);
+        }
+
+        return $query->groupBy('sellers.id', 'users.name', 'cities.name')
             ->get();
     }
 

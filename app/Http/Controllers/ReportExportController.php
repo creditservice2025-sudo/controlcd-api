@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Seller;
 use App\Exports\SellerLiquidationsDetailExport;
 use App\Services\ClientService;
 use Illuminate\Http\Request;
@@ -10,6 +11,7 @@ use Maatwebsite\Excel\Facades\Excel;
 use App\Exports\AccumulatedByCityExport;
 use App\Exports\SellersSummaryByCityExport;
 use App\Http\Requests\Report\ExportDateRangeRequest;
+use Illuminate\Support\Facades\Auth;
 
 class ReportExportController extends Controller
 {
@@ -43,6 +45,14 @@ class ReportExportController extends Controller
      */
     public function downloadAccumulatedByCityExcel(ExportDateRangeRequest $request)
     {
+        $user = Auth::user();
+        $companyId = $request->input('company_id');
+
+        // Enforcement: Role 2 only sees their company
+        if ($user->role_id == 2) {
+            $companyId = $user->company_id;
+        }
+
         $startDate = $request->input('start_date');
         $endDate = $request->input('end_date');
         $safeStartDate = str_replace(['/', '\\'], '-', $startDate);
@@ -50,7 +60,7 @@ class ReportExportController extends Controller
         try {
             $fileName = 'Reporte_Acumulado_Ciudad_' . $safeStartDate . '_' . $safeEndDate . '.xlsx';
             return \Maatwebsite\Excel\Facades\Excel::download(
-                new \App\Exports\AccumulatedByCityExport($startDate, $endDate, $this->liquidationService),
+                new \App\Exports\AccumulatedByCityExport($startDate, $endDate, $this->liquidationService, $companyId),
                 $fileName
             );
         } catch (\Exception $e) {
@@ -70,6 +80,12 @@ class ReportExportController extends Controller
      */
     public function downloadSellersSummaryByCityExcel(ExportDateRangeRequest $request, $sellerId)
     {
+        $user = Auth::user();
+        $authError = $this->checkAuthorization($user, $sellerId);
+        if ($authError) {
+            return $authError;
+        }
+
         $startDate = $request->input('start_date');
         $endDate = $request->input('end_date');
         $safeStartDate = str_replace(['/', '\\'], '-', $startDate);
@@ -99,6 +115,12 @@ class ReportExportController extends Controller
      */
     public function downloadSellerLiquidationsDetailExcel(ExportDateRangeRequest $request, $sellerId)
     {
+        $user = Auth::user();
+        $authError = $this->checkAuthorization($user, $sellerId);
+        if ($authError) {
+            return $authError;
+        }
+
         $startDate = $request->input('start_date');
         $endDate = $request->input('end_date');
         $safeStartDate = str_replace(['/', '\\'], '-', $startDate);
@@ -117,5 +139,22 @@ class ReportExportController extends Controller
                 'error' => $e->getMessage()
             ], 500);
         }
+    }
+
+    /**
+     * Verifica si el usuario tiene autorización para acceder a los datos de un vendedor.
+     */
+    private function checkAuthorization($user, $sellerId)
+    {
+        if ($user->role_id == 2) {
+            $seller = Seller::find($sellerId);
+            if (!$seller || $seller->company_id != $user->company_id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No está autorizado para ver la información de este vendedor o el vendedor no existe.'
+                ], 403);
+            }
+        }
+        return null; // Autorizado
     }
 }
