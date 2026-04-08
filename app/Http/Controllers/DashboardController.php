@@ -19,7 +19,8 @@ class DashboardController extends Controller
     public function loadDahsboardData(Request $request)
     {
         try {
-            $companyId = $request->input('company_id');
+            $user = auth()->user();
+            $companyId = ($user->role_id == 2) ? ($user->company?->id ?? -1) : $request->input('company_id');
             return $this->dashboardService->loadCounters($request, $companyId);
         } catch (\Throwable $e) {
             \Log::error("Error in loadDahsboardData: " . $e->getMessage() . " in " . $e->getFile() . ":" . $e->getLine());
@@ -30,7 +31,8 @@ class DashboardController extends Controller
     public function getPendingPortfolios(Request $request)
     {
         try {
-            $companyId = $request->input('company_id');
+            $user = auth()->user();
+            $companyId = ($user->role_id == 2) ? ($user->company?->id ?? -1) : $request->input('company_id');
             return $this->dashboardService->loadPendingPortfolios($request, $companyId);
         } catch (\Throwable $e) {
             \Log::error("Error in getPendingPortfolios: " . $e->getMessage() . " in " . $e->getFile() . ":" . $e->getLine());
@@ -41,7 +43,8 @@ class DashboardController extends Controller
     public function loadFinancialSummary(Request $request)
     {
         try {
-            $companyId = $request->input('company_id');
+            $user = auth()->user();
+            $companyId = ($user->role_id == 2) ? ($user->company?->id ?? -1) : $request->input('company_id');
             return $this->dashboardService->loadFinancialSummary($request, $companyId);
         } catch (\Throwable $e) {
             \Log::error("Error in loadFinancialSummary: " . $e->getMessage() . " in " . $e->getFile() . ":" . $e->getLine());
@@ -52,7 +55,8 @@ class DashboardController extends Controller
     public function loadWeeklyMovements(Request $request)
     {
         try {
-            $companyId = $request->input('company_id');
+            $user = auth()->user();
+            $companyId = ($user->role_id == 2) ? ($user->company?->id ?? -1) : $request->input('company_id');
             return $this->dashboardService->weeklyMovements($request, $companyId);
         } catch (\Throwable $e) {
             \Log::error("Error in loadWeeklyMovements: " . $e->getMessage() . " in " . $e->getFile() . ":" . $e->getLine());
@@ -63,7 +67,8 @@ class DashboardController extends Controller
     public function loadWeeklyMovementsHistory(Request $request)
     {
         try {
-            $companyId = $request->input('company_id');
+            $user = auth()->user();
+            $companyId = ($user->role_id == 2) ? ($user->company?->id ?? -1) : $request->input('company_id');
             $sellerId = $request->input('seller_id');
             return $this->dashboardService->weeklyMovementsHistory($request, $sellerId, $companyId);
         } catch (\Throwable $e) {
@@ -75,7 +80,8 @@ class DashboardController extends Controller
     public function weeklyFinancialSummary(Request $request)
     {
         try {
-            $companyId = $request->input('company_id');
+            $user = auth()->user();
+            $companyId = ($user->role_id == 2) ? ($user->company?->id ?? -1) : $request->input('company_id');
             return $this->dashboardService->weeklyFinancialSummary($request, $companyId);
         } catch (\Throwable $e) {
             \Log::error("Error in weeklyFinancialSummary: " . $e->getMessage() . " in " . $e->getFile() . ":" . $e->getLine());

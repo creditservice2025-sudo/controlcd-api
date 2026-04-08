@@ -11,17 +11,19 @@ class AccumulatedByCityExport implements FromArray, WithEvents
     protected $startDate;
     protected $endDate;
     protected $service;
+    protected $companyId;
 
-    public function __construct($startDate, $endDate, LiquidationService $service)
+    public function __construct($startDate, $endDate, LiquidationService $service, $companyId = null)
     {
         $this->startDate = $startDate;
         $this->endDate = $endDate;
         $this->service = $service;
+        $this->companyId = $companyId;
     }
 
     public function array(): array
     {
-        $report = $this->service->getReportByCity($this->startDate, $this->endDate);
+        $report = $this->service->getReportByCity($this->startDate, $this->endDate, $this->companyId);
 
         // Encabezados superiores
         $rows = [

@@ -310,8 +310,23 @@ class LiquidationController extends Controller
             $sellerConfig = \App\Models\SellerConfig::where('seller_id', $sellerId)->first();
             
             if ($sellerConfig && $sellerConfig->notify_shortage_surplus) {
-                $seller = Seller::with('user')->find($sellerId);
-                $admins = \App\Models\User::whereIn('role_id', [1, 2])->get();
+                $seller = Seller::with(['user', 'company'])->find($sellerId);
+                $companyId = $seller->company_id;
+
+                // Filtrar administradores: SuperAdmin (1) ve todo, Admin (2) solo su empresa y vinculados
+                $admins = \App\Models\User::where(function($query) use ($companyId, $sellerId) {
+                    $query->where('role_id', 1)
+                          ->orWhere(function($q) use ($companyId, $sellerId) {
+                              $q->where('role_id', 2)
+                                ->whereHas('company', function($c) use ($companyId) {
+                                    $c->where('id', $companyId);
+                                })
+                                ->whereHas('userRoutes', function($ur) use ($sellerId) {
+                                    $ur->where('seller_id', $sellerId);
+                                });
+                          });
+                })->get();
+
                 $userToNotify = $seller->user;
                 
                 if ($shortage > 0) {
@@ -346,8 +361,22 @@ class LiquidationController extends Controller
             }
 
             if ($user->role_id === 5) {
-                $seller = Seller::with(['user', 'city.country'])->find($sellerId);
-                $adminUsers = User::whereIn('role_id', [1, 2])->get();
+                $seller = Seller::with(['user', 'city.country', 'company'])->find($sellerId);
+                $companyId = $seller->company_id;
+
+                // Filtrar administradores destinatarios: SuperAdmin (1) ve todo, Admin (2) solo vinculados
+                $adminUsers = User::where(function($query) use ($companyId, $sellerId) {
+                    $query->where('role_id', 1)
+                          ->orWhere(function($q) use ($companyId, $sellerId) {
+                              $q->where('role_id', 2)
+                                ->whereHas('company', function($c) use ($companyId) {
+                                    $c->where('id', $companyId);
+                                })
+                                ->whereHas('userRoutes', function($ur) use ($sellerId) {
+                                    $ur->where('seller_id', $sellerId);
+                                });
+                          });
+                })->get();
 
                 foreach ($adminUsers as $adminUser) {
                     $adminUser->notify(new GeneralNotification(
@@ -660,12 +689,20 @@ class LiquidationController extends Controller
 
     private function checkAuthorization($user, $sellerId)
     {
-        // Admins y supervisores pueden acceder a cualquier vendedor
-        if (in_array($user->role_id, [1, 2])) {
+        // Superadministrador (Role 1) tiene acceso total
+        if ($user->role_id == 1) {
             return true;
         }
 
-        // Vendedores solo pueden acceder a sus propios datos
+        // Administradores de empresa (Role 2) solo acceden a sus propios vendedores
+        if ($user->role_id == 2) {
+            $seller = Seller::find($sellerId);
+            $userCompany = $user->company; // Proviene de la relación User -> hasOne(Company)
+            
+            return $seller && $userCompany && $seller->company_id == $userCompany->id;
+        }
+
+        // Vendedores (Role 5) solo acceden a sus propios datos
         if ($user->role_id == 5) {
             $seller = Seller::where('user_id', $user->id)->first();
             return $seller && $seller->id == $sellerId;
@@ -1016,8 +1053,20 @@ class LiquidationController extends Controller
         try {
             $startDate = $request->input('start_date');
             $endDate = $request->input('end_date');
+            $user = Auth::user();
+            $companyId = $request->input('company_id');
+            $sellerIds = null;
 
-            $results = $this->liquidationService->getAccumulatedByCity($startDate, $endDate);
+            // Aislamiento: Role 2 solo ve su empresa y sus vendedores vinculados
+            if ($user->role_id == 2) {
+                $companyId = $user->company ? $user->company->id : -1;
+                $sellerIds = \App\Models\UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
+                if (empty($sellerIds)) {
+                     $sellerIds = [-1];
+                }
+            }
+
+            $results = $this->liquidationService->getAccumulatedByCity($startDate, $endDate, $companyId, $sellerIds);
 
             return response()->json([
                 'success' => true,
@@ -1053,9 +1102,21 @@ class LiquidationController extends Controller
             $cityId = $request->input('city_id');
             $startDate = $request->input('start_date');
             $endDate = $request->input('end_date');
+            $user = Auth::user();
+            $companyId = $request->input('company_id');
+            $sellerIds = null;
 
-            // Llamar al nuevo servicio
-            $results = $this->liquidationService->getAccumulatedBySellerInCity($cityId, $startDate, $endDate);
+            // Aislamiento: Role 2 solo ve su empresa y sus vinculados
+            if ($user->role_id == 2) {
+                $companyId = $user->company ? $user->company->id : -1;
+                $sellerIds = \App\Models\UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
+                if (empty($sellerIds)) {
+                     $sellerIds = [-1];
+                }
+            }
+
+            // Llamar al nuevo servicio (agregando companyId y sellerIds)
+            $results = $this->liquidationService->getAccumulatedBySellerInCity($cityId, $startDate, $endDate, $companyId, $sellerIds);
 
             return response()->json([
                 'success' => true,
@@ -1089,8 +1150,20 @@ class LiquidationController extends Controller
             $cityId = $request->input('city_id');
             $startDate = $request->input('start_date');
             $endDate = $request->input('end_date');
+            $user = Auth::user();
+            $companyId = $request->input('company_id');
+            $sellerIds = null;
 
-            $results = $this->liquidationService->getAccumulatedBySellersInCity($cityId, $startDate, $endDate);
+            // Aislamiento: Role 2 solo ve su empresa y sus vinculados
+            if ($user->role_id == 2) {
+                $companyId = $user->company ? $user->company->id : -1;
+                $sellerIds = \App\Models\UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
+                if (empty($sellerIds)) {
+                     $sellerIds = [-1];
+                }
+            }
+
+            $results = $this->liquidationService->getAccumulatedBySellersInCity($cityId, $startDate, $endDate, $companyId, $sellerIds);
 
             return response()->json([
                 'success' => true,
@@ -1124,6 +1197,12 @@ class LiquidationController extends Controller
         try {
             $startDate = $request->input('start_date');
             $endDate = $request->input('end_date');
+            $user = Auth::user();
+
+            // Autorización: El administrador debe poder ver a este vendedor
+            if (!$this->checkAuthorization($user, $sellerId)) {
+                return response()->json(['success' => false, 'message' => 'No tienes permisos para ver este vendedor'], 403);
+            }
 
             $liquidations = Liquidation::with(['seller', 'seller.user'])
                 ->where('seller_id', $sellerId)
