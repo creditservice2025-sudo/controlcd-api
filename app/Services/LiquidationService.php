@@ -59,16 +59,13 @@ class LiquidationService
                 $seller = Seller::with(['user', 'company'])->find($validated['seller_id']);
                 $companyId = $seller->company_id;
 
-                // Filtrar administradores: SuperAdmin (1) ve todo, Admin (2) solo sus vendedores vinculados
-                $admins = \App\Models\User::where(function($query) use ($companyId, $validated) {
+                // Filtrar administradores: SuperAdmin (1) ve todo, Admin (2) solo su empresa
+                $admins = \App\Models\User::where(function($query) use ($companyId) {
                     $query->where('role_id', 1)
-                          ->orWhere(function($q) use ($companyId, $validated) {
+                          ->orWhere(function($q) use ($companyId) {
                               $q->where('role_id', 2)
                                 ->whereHas('company', function($c) use ($companyId) {
                                     $c->where('id', $companyId);
-                                })
-                                ->whereHas('userRoutes', function($ur) use ($validated) {
-                                    $ur->where('seller_id', $validated['seller_id']);
                                 });
                           });
                 })->get();
@@ -144,16 +141,13 @@ class LiquidationService
                 $seller = Seller::with(['user', 'company'])->find($validated['seller_id']);
                 $companyId = $seller->company_id;
 
-                // Filtrar administradores: SuperAdmin (1) ve todo, Admin (2) solo sus vinculados
-                $admins = \App\Models\User::where(function($query) use ($companyId, $validated) {
+                // Filtrar administradores: SuperAdmin (1) ve todo, Admin (2) solo su empresa
+                $admins = \App\Models\User::where(function($query) use ($companyId) {
                     $query->where('role_id', 1)
-                          ->orWhere(function($q) use ($companyId, $validated) {
+                          ->orWhere(function($q) use ($companyId) {
                               $q->where('role_id', 2)
                                 ->whereHas('company', function($c) use ($companyId) {
                                     $c->where('id', $companyId);
-                                })
-                                ->whereHas('userRoutes', function($ur) use ($validated) {
-                                    $ur->where('seller_id', $validated['seller_id']);
                                 });
                           });
                 })->get();
