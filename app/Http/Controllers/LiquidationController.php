@@ -313,16 +313,13 @@ class LiquidationController extends Controller
                 $seller = Seller::with(['user', 'company'])->find($sellerId);
                 $companyId = $seller->company_id;
 
-                // Filtrar administradores: SuperAdmin (1) ve todo, Admin (2) solo su empresa y vinculados
-                $admins = \App\Models\User::where(function($query) use ($companyId, $sellerId) {
+                // Filtrar administradores: SuperAdmin (1) ve todo, Admin (2) solo su empresa
+                $admins = \App\Models\User::where(function($query) use ($companyId) {
                     $query->where('role_id', 1)
-                          ->orWhere(function($q) use ($companyId, $sellerId) {
+                          ->orWhere(function($q) use ($companyId) {
                               $q->where('role_id', 2)
                                 ->whereHas('company', function($c) use ($companyId) {
                                     $c->where('id', $companyId);
-                                })
-                                ->whereHas('userRoutes', function($ur) use ($sellerId) {
-                                    $ur->where('seller_id', $sellerId);
                                 });
                           });
                 })->get();
@@ -364,16 +361,13 @@ class LiquidationController extends Controller
                 $seller = Seller::with(['user', 'city.country', 'company'])->find($sellerId);
                 $companyId = $seller->company_id;
 
-                // Filtrar administradores destinatarios: SuperAdmin (1) ve todo, Admin (2) solo vinculados
-                $adminUsers = User::where(function($query) use ($companyId, $sellerId) {
+                // Filtrar administradores destinatarios
+                $adminUsers = User::where(function($query) use ($companyId) {
                     $query->where('role_id', 1)
-                          ->orWhere(function($q) use ($companyId, $sellerId) {
+                          ->orWhere(function($q) use ($companyId) {
                               $q->where('role_id', 2)
                                 ->whereHas('company', function($c) use ($companyId) {
                                     $c->where('id', $companyId);
-                                })
-                                ->whereHas('userRoutes', function($ur) use ($sellerId) {
-                                    $ur->where('seller_id', $sellerId);
                                 });
                           });
                 })->get();
@@ -1057,13 +1051,9 @@ class LiquidationController extends Controller
             $companyId = $request->input('company_id');
             $sellerIds = null;
 
-            // Aislamiento: Role 2 solo ve su empresa y sus vendedores vinculados
+            // Aislamiento: Role 2 solo ve su empresa
             if ($user->role_id == 2) {
                 $companyId = $user->company ? $user->company->id : -1;
-                $sellerIds = \App\Models\UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
-                if (empty($sellerIds)) {
-                     $sellerIds = [-1];
-                }
             }
 
             $results = $this->liquidationService->getAccumulatedByCity($startDate, $endDate, $companyId, $sellerIds);
@@ -1154,13 +1144,9 @@ class LiquidationController extends Controller
             $companyId = $request->input('company_id');
             $sellerIds = null;
 
-            // Aislamiento: Role 2 solo ve su empresa y sus vinculados
+            // Aislamiento: Role 2 solo ve su empresa
             if ($user->role_id == 2) {
                 $companyId = $user->company ? $user->company->id : -1;
-                $sellerIds = \App\Models\UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
-                if (empty($sellerIds)) {
-                     $sellerIds = [-1];
-                }
             }
 
             $results = $this->liquidationService->getAccumulatedBySellersInCity($cityId, $startDate, $endDate, $companyId, $sellerIds);
