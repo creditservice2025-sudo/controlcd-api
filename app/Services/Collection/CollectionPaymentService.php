@@ -142,6 +142,23 @@ class CollectionPaymentService
                 }
             }
 
+            // Sync with Centralized Wallet
+            $credit = CollectionCredit::find($creditId);
+            $totalAmountCollected = (float) $payload['amount_total'] ?? 0;
+            if ($totalAmountCollected > 0 && $credit) {
+                app(\App\Services\Collection\CollectionWalletService::class)->recordMovement([
+                    'company_id' => $companyId,
+                    'currency' => $credit->currency ?? 'COP',
+                    'country_code' => $credit->country_code ?? 'CO',
+                    'amount' => $totalAmountCollected,
+                    'type' => 'credit', // Income
+                    'action_type' => 'payment',
+                    'reference_type' => 'credit',
+                    'reference_id' => $creditId,
+                    'description' => "Cobro de cuota(s) crédito #{$creditId}",
+                ]);
+            }
+
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Pagos registrados con éxito',

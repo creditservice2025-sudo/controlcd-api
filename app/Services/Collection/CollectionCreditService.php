@@ -64,6 +64,9 @@ class CollectionCreditService
                 'created_ip' => request()->ip(),
             ];
 
+            $currency = $payload['currency'] ?? 'COP';
+            $countryCode = $payload['country_code'] ?? 'CO';
+
             $credit = CollectionCredit::query()->create([
                 'id' => $newId,
                 'company_id' => $companyId,
@@ -76,6 +79,21 @@ class CollectionCreditService
                 'status' => 'active',
                 'business_date' => Carbon::now()->toDateString(),
                 'metadata' => $metadata,
+                'currency' => $currency,
+                'country_code' => $countryCode,
+            ]);
+
+            // Sync with Centralized Wallet (Outflow: Issuing a loan)
+            app(\App\Services\Collection\CollectionWalletService::class)->recordMovement([
+                'company_id' => $companyId,
+                'currency' => $currency,
+                'country_code' => $countryCode,
+                'amount' => $creditValue,
+                'type' => 'debit',
+                'action_type' => 'loan_issue',
+                'reference_type' => 'credit',
+                'reference_id' => $credit->id,
+                'description' => "Colocación de crédito #{$credit->id}",
             ]);
 
             $this->generateInstallments($credit, $payload['excluded_days'] ?? []);
@@ -228,7 +246,7 @@ class CollectionCreditService
             return $this->errorNotFoundResponse('Cuota no encontrada');
         }
 
-        return DB::connection(self::CONNECTION)->transaction(function () use ($installment) {
+        return DB::connection(self::CONNECTION)->transaction(function () use ($installment, $companyId) {
             // Backup current state (with payment info) for audit
             $history = $installment->toArray();
             
@@ -251,6 +269,23 @@ class CollectionCreditService
                 'deleted_ip' => request()->ip(),
                 'history' => $history,
             ]);
+
+            // Sync with Centralized Wallet (Reversal: Substract what was previously added)
+            $totalReversed = (float) ($history['paid_amount'] ?? 0);
+            if ($totalReversed > 0) {
+                $credit = CollectionCredit::find($installment->credit_id);
+                app(\App\Services\Collection\CollectionWalletService::class)->recordMovement([
+                    'company_id' => $companyId,
+                    'currency' => $credit->currency ?? 'COP',
+                    'country_code' => $credit->country_code ?? 'CO',
+                    'amount' => $totalReversed,
+                    'type' => 'debit', // Reversing an income
+                    'action_type' => 'payment_reversal',
+                    'reference_type' => 'credit',
+                    'reference_id' => $installment->credit_id,
+                    'description' => "Reversión de pago cuota #{$installment->installment_number} crédito #{$installment->credit_id}",
+                ]);
+            }
 
             return $this->successResponse([
                 'success' => true,

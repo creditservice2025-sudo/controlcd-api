@@ -92,6 +92,19 @@ class CollectionExpenseService
             'metadata' => $metadata,
         ]);
 
+        // Sync with Centralized Wallet
+        app(\App\Services\Collection\CollectionWalletService::class)->recordMovement([
+            'company_id' => $companyId,
+            'currency' => $request->currency ?? 'COP',
+            'country_code' => $request->country_code ?? 'CO',
+            'amount' => $validated['amount'],
+            'type' => 'debit', // Expense/Outflow
+            'action_type' => 'expense',
+            'reference_type' => 'expense',
+            'reference_id' => $expense->id,
+            'description' => $validated['description'] ?? "Gasto: {$validated['category']}",
+        ]);
+
         return $this->successCreatedResponse([
             'success' => true,
             'message' => 'Gasto registrado correctamente',

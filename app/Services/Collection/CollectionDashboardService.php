@@ -102,6 +102,12 @@ class CollectionDashboardService
                 ->get();
         }
 
+        // For Admins/Managers: Centralized Wallets
+        $wallets = [];
+        if ($isAdmin) {
+            $wallets = app(\App\Services\Collection\CollectionWalletService::class)->getBalances($companyId);
+        }
+
         return $this->successResponse([
             'kpis' => [
                 'collected_today' => $totalCollectedToday,
@@ -111,7 +117,8 @@ class CollectionDashboardService
                 'expenses_today' => $totalExpensesToday,
             ],
             'recent_activity' => $recentActivity,
-            'pending_authorizations' => $pendingAuths
+            'pending_authorizations' => $pendingAuths,
+            'wallets' => $wallets
         ]);
     }
 

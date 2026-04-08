@@ -320,6 +320,11 @@ Route::middleware('auth:api')->group(function () {
         // WhatsApp Based Security Flow
         Route::post('security/request-deletion', [\App\Http\Controllers\Collection\CollectionSecurityController::class, 'requestDeletionToken']);
         Route::get('security/pending-codes', [\App\Http\Controllers\Collection\CollectionSecurityController::class, 'getPendingTokens']);
+
+        // Centralized Wallet & Ledger Flow
+        Route::get('wallets/balances', [\App\Http\Controllers\Collection\CollectionWalletController::class, 'getBalances']);
+        Route::post('wallets/inject', [\App\Http\Controllers\Collection\CollectionWalletController::class, 'inject']);
+        Route::get('wallets/ledger', [\App\Http\Controllers\Collection\CollectionWalletController::class, 'indexLedger']);
     });
 
     // Telegram Logs
