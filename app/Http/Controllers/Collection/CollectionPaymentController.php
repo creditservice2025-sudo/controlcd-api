@@ -5,11 +5,13 @@ namespace App\Http\Controllers\Collection;
 use App\Http\Controllers\Controller;
 use App\Services\Collection\CollectionPaymentService;
 use App\Traits\ApiResponse;
+use App\Traits\ResolvesCollectionCompany;
 use Illuminate\Http\Request;
 
 class CollectionPaymentController extends Controller
 {
     use ApiResponse;
+    use ResolvesCollectionCompany;
 
     public function __construct(private readonly CollectionPaymentService $collectionPaymentService)
     {
@@ -18,9 +20,11 @@ class CollectionPaymentController extends Controller
     public function store(Request $request)
     {
         try {
+            $companyId = $this->resolveOwnCompanyId($request);
+            if (!is_int($companyId)) return $companyId;
+
             $validated = $request->validate([
                 'credit_id' => 'required|integer',
-                'company_id' => 'required|integer',
                 'installment_numbers' => 'nullable|array',
                 'installment_numbers.*' => 'integer',
                 'payments' => 'nullable|string', // JSON on multipart
@@ -42,6 +46,8 @@ class CollectionPaymentController extends Controller
             if (isset($validated['payments']) && is_string($validated['payments'])) {
                 $validated['payments'] = json_decode($validated['payments'], true);
             }
+
+            $validated['company_id'] = $companyId;
 
             return $this->collectionPaymentService->recordPayment($validated);
         } catch (\Exception $e) {

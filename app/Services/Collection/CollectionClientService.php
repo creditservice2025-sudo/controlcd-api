@@ -121,12 +121,7 @@ class CollectionClientService
         }
 
         return DB::connection(self::CONNECTION)->transaction(function () use ($payload, $companyId, $dni) {
-            $newIdQuery = CollectionClient::query();
-            if ($this->hasClientCompanyColumn()) {
-                $newIdQuery->where('company_id', $companyId);
-            }
-            $newId = (int) $newIdQuery->max('id') + 1;
-
+            // id generado por la secuencia de PostgreSQL.
             $metadata = [
                 'email' => $payload['email'] ?? null,
                 'reference' => $payload['reference'] ?? null,
@@ -137,7 +132,6 @@ class CollectionClientService
             ];
 
             $createData = [
-                'id' => $newId,
                 'dni' => $dni,
                 'name' => trim((string) ($payload['name'] ?? '')),
                 'phone' => trim((string) ($payload['phone'] ?? '')),
@@ -341,7 +335,11 @@ class CollectionClientService
             $installments = CollectionInstallment::query()
                 ->where('company_id', $companyId)
                 ->where('credit_id', $latestCredit->id)
-                ->with('payments')
+                ->with(['payments' => function ($q) use ($companyId, $latestCredit) {
+                    $q->where('company_id', $companyId)
+                      ->where('credit_id', $latestCredit->id)
+                      ->orderBy('recorded_at', 'asc');
+                }])
                 ->orderBy('installment_number')
                 ->get()
                 ->map(function ($inst) {

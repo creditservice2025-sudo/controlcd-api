@@ -114,13 +114,8 @@ class CollectionPaymentService
                         'last_payment_at' => isset($payload['payment_date']) ? Carbon::parse($payload['payment_date'], $tz) : $now,
                     ]);
 
-                    // Create Payment Audit Record
-                    $newId = (int) CollectionPayment::withTrashed()
-                        ->where('company_id', $companyId)
-                        ->max('id') + 1;
-
+                    // Create Payment Audit Record — id generado por secuencia.
                     $payment = CollectionPayment::create([
-                        'id' => $newId,
                         'company_id' => $companyId,
                         'credit_id' => $creditId,
                         'installment_number' => $installment->installment_number,
@@ -144,7 +139,7 @@ class CollectionPaymentService
 
             // Sync with Centralized Wallet
             $credit = CollectionCredit::find($creditId);
-            $totalAmountCollected = (float) $payload['amount_total'] ?? 0;
+            $totalAmountCollected = (float) ($payload['amount_total'] ?? 0);
             if ($totalAmountCollected > 0 && $credit) {
                 app(\App\Services\Collection\CollectionWalletService::class)->recordMovement([
                     'company_id' => $companyId,

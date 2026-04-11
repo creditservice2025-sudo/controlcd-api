@@ -20,12 +20,9 @@ class CollectionSecurityService
 
         $requestId = 'DEL-' . strtoupper(Str::random(4));
         $code = str_pad(rand(0, 9999), 4, '0', STR_PAD_LEFT);
-        
-        // Manual ID handled by project pattern
-        $newId = (int) CollectionAuthCode::where('company_id', $companyId)->max('id') + 1;
 
+        // id generado por la secuencia de PostgreSQL.
         $auth = CollectionAuthCode::create([
-            'id' => $newId,
             'company_id' => $companyId,
             'request_id' => $requestId,
             'code' => $code,
@@ -76,6 +73,7 @@ class CollectionSecurityService
     {
         if ($requestedId) return (int) $requestedId;
         $user = Auth::user();
+        if (!$user) return null;
         return $user->company->id ?? $user->seller->company_id ?? null;
     }
 }

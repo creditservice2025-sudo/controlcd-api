@@ -325,6 +325,29 @@ Route::middleware('auth:api')->group(function () {
         Route::get('wallets/balances', [\App\Http\Controllers\Collection\CollectionWalletController::class, 'getBalances']);
         Route::post('wallets/inject', [\App\Http\Controllers\Collection\CollectionWalletController::class, 'inject']);
         Route::get('wallets/ledger', [\App\Http\Controllers\Collection\CollectionWalletController::class, 'indexLedger']);
+
+        // Company Config (currencies, settings)
+        Route::get('config', [\App\Http\Controllers\Collection\CollectionConfigController::class, 'index']);
+        Route::put('config/currencies', [\App\Http\Controllers\Collection\CollectionConfigController::class, 'updateCurrencies']);
+
+        // Reports
+        Route::get('reports/caja-diaria', [\App\Http\Controllers\Collection\CollectionReportsController::class, 'cajaDiaria']);
+        Route::get('reports/morosidad', [\App\Http\Controllers\Collection\CollectionReportsController::class, 'morosidad']);
+        Route::get('reports/recaudo', [\App\Http\Controllers\Collection\CollectionReportsController::class, 'recaudo']);
+        Route::get('reports/gastos', [\App\Http\Controllers\Collection\CollectionReportsController::class, 'gastos']);
+        Route::get('reports/cartera', [\App\Http\Controllers\Collection\CollectionReportsController::class, 'cartera']);
+        Route::get('reports/estado-cuenta/{clientId}', [\App\Http\Controllers\Collection\CollectionReportsController::class, 'estadoCuenta']);
+
+        // User Management
+        Route::get('users', [\App\Http\Controllers\Collection\CollectionUserController::class, 'index']);
+        Route::post('users', [\App\Http\Controllers\Collection\CollectionUserController::class, 'store']);
+        Route::post('users/{userId}/toggle', [\App\Http\Controllers\Collection\CollectionUserController::class, 'toggleAccess']);
+        Route::put('users/{userId}/role', [\App\Http\Controllers\Collection\CollectionUserController::class, 'updateRole']);
+        Route::put('users/{userId}/permissions', [\App\Http\Controllers\Collection\CollectionUserController::class, 'updatePermissions']);
+        Route::get('users-permissions/available', [\App\Http\Controllers\Collection\CollectionUserController::class, 'availablePermissions']);
+        Route::post('users/{userId}/reset-password', [\App\Http\Controllers\Collection\CollectionUserController::class, 'resetPassword']);
+        Route::get('users/{userId}/activity', [\App\Http\Controllers\Collection\CollectionUserController::class, 'activity']);
+        Route::get('users/roles', [\App\Http\Controllers\Collection\CollectionUserController::class, 'roles']);
     });
 
     // Telegram Logs

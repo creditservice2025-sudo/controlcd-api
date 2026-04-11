@@ -39,10 +39,7 @@ class CollectionCreditService
         return DB::connection(self::CONNECTION)->transaction(function () use ($payload, $companyId, $clientId) {
             $this->ensureCreditPartition($companyId);
 
-            $newId = (int) CollectionCredit::query()
-                ->where('company_id', $companyId)
-                ->max('id') + 1;
-
+            // id generado por la secuencia de PostgreSQL.
             $creditValue = (float) ($payload['credit_value'] ?? 0);
             $interestRate = (float) ($payload['interest_rate'] ?? 0);
             $installments = (int) ($payload['number_installments'] ?? 1);
@@ -68,7 +65,6 @@ class CollectionCreditService
             $countryCode = $payload['country_code'] ?? 'CO';
 
             $credit = CollectionCredit::query()->create([
-                'id' => $newId,
                 'company_id' => $companyId,
                 'client_id' => $clientId,
                 'amount' => $creditValue,
@@ -177,11 +173,7 @@ class CollectionCreditService
                 $currentDate->addDay();
             }
 
-            $newId = (int) DB::connection(self::CONNECTION)
-                ->table('collection_installments')
-                ->where('company_id', $credit->company_id)
-                ->max('id') + 1;
-
+            // id generado por la secuencia de PostgreSQL.
             $currentPrincipal = $principalPerInstallment;
             $currentInterest = $interestPerInstallment;
 
@@ -195,7 +187,6 @@ class CollectionCreditService
             }
 
             DB::connection(self::CONNECTION)->table('collection_installments')->insert([
-                'id' => $newId,
                 'company_id' => $credit->company_id,
                 'credit_id' => $credit->id,
                 'installment_number' => $i,

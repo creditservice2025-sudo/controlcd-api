@@ -21,33 +21,29 @@ class CollectionExpenseService
         $companyId = $this->resolveCompanyId($request->company_id);
         if (!$companyId) return $this->errorResponse('Empresa no identificada', 422);
 
-        $date = $request->query('date', Carbon::now()->toDateString());
-        
-        $query = CollectionExpense::where('company_id', $companyId);
-        
-        // If not admin, only see own expenses
-        if (Auth::user()->role_id !== 1 && Auth::user()->role_id !== 2) {
-            $query->where('user_id', Auth::id());
-        }
+        // Usar timezone del cliente si viene en el request, sino America/Bogota por defecto
+        $tz = $request->query('timezone') ?: 'America/Bogota';
+        $date = $request->query('date', Carbon::now($tz)->toDateString());
 
-        if ($date) {
-            $query->whereDate('recorded_at', $date);
-        }
+        // Rango del dia en la zona horaria del cliente, convertido a UTC
+        $dayStart = Carbon::parse($date . ' 00:00:00', $tz)->utc();
+        $dayEnd = Carbon::parse($date . ' 23:59:59', $tz)->utc();
+
+        // Todos los gastos de la empresa (caja compartida) - sin filtro por usuario
+        $query = CollectionExpense::where('company_id', $companyId)
+            ->whereNull('deleted_at')
+            ->whereBetween('recorded_at', [$dayStart, $dayEnd]);
 
         $expenses = $query->orderBy('recorded_at', 'desc')->get();
 
-        // Calculate summary for the day
+        // Total de gastos aprobados
         $totalExpenses = $expenses->where('status', 'approved')->sum('amount');
-        
-        // Calculate total collections for the same day/user
-        $collectionsQuery = CollectionPayment::where('company_id', $companyId)
-            ->whereDate('recorded_at', $date);
-            
-        if (Auth::user()->role_id !== 1 && Auth::user()->role_id !== 2) {
-            $collectionsQuery->where('user_id', Auth::id());
-        }
-        
-        $totalCollections = $collectionsQuery->sum('amount_paid');
+
+        // Total de cobros del dia (caja compartida)
+        $totalCollections = (float) CollectionPayment::where('company_id', $companyId)
+            ->whereNull('deleted_at')
+            ->whereBetween('recorded_at', [$dayStart, $dayEnd])
+            ->sum('amount_paid');
 
         return $this->successResponse([
             'expenses' => $expenses,
@@ -112,6 +108,11 @@ class CollectionExpenseService
         ]);
     }
 
+    /**
+     * El controller (ResolvesCollectionCompany trait) ya validó y forzó
+     * el company_id correcto en el request. Usamos ese valor si existe;
+     * si no (invocación directa), lo derivamos del usuario autenticado.
+     */
     private function resolveCompanyId($requestedId)
     {
         if ($requestedId) return (int) $requestedId;

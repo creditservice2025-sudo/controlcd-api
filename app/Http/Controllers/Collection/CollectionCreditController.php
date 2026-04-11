@@ -5,11 +5,13 @@ namespace App\Http\Controllers\Collection;
 use App\Http\Controllers\Controller;
 use App\Services\Collection\CollectionCreditService;
 use App\Traits\ApiResponse;
+use App\Traits\ResolvesCollectionCompany;
 use Illuminate\Http\Request;
 
 class CollectionCreditController extends Controller
 {
     use ApiResponse;
+    use ResolvesCollectionCompany;
 
     public function __construct(private readonly CollectionCreditService $collectionCreditService)
     {
@@ -17,9 +19,11 @@ class CollectionCreditController extends Controller
 
     public function store(Request $request)
     {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
         $validated = $request->validate([
             'client_id' => 'required|integer|min:1',
-            'company_id' => 'nullable|integer|min:1',
             'credit_value' => 'required|numeric|min:0.01',
             'interest_rate' => 'nullable|numeric|min:0',
             'number_installments' => 'required|integer|min:1|max:1000',
@@ -42,19 +46,24 @@ class CollectionCreditController extends Controller
             $validated['transfer_support_photo'] = $request->file('images.1.file')->store('collection/credits/support', 'public');
         }
 
+        $validated['company_id'] = $companyId;
+
         return $this->collectionCreditService->create($validated);
     }
 
     public function destroyInstallment(Request $request, int $id)
     {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
         $securityToken = [
             'request_id' => $request->input('request_id'),
             'code' => $request->input('code'),
         ];
         return $this->collectionCreditService->deleteInstallment(
-            $id, 
-            $securityToken, 
-            $request->input('company_id')
+            $id,
+            $securityToken,
+            $companyId
         );
     }
 }

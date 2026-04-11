@@ -14,7 +14,6 @@ class CollectionExpense extends Model
     protected $table = 'collection_expenses';
 
     protected $fillable = [
-        'id',
         'company_id',
         'user_id',
         'amount',

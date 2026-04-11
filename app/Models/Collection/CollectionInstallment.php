@@ -9,12 +9,10 @@ class CollectionInstallment extends Model
     protected $connection = 'collection_pgsql';
     protected $table = 'collection_installments';
 
-    // IDs are handled manually in this partitioned architecture
-    public $incrementing = false;
+    public $incrementing = true;
     public $timestamps = false;
 
     protected $fillable = [
-        'id',
         'company_id',
         'credit_id',
         'installment_number',
@@ -58,8 +56,6 @@ class CollectionInstallment extends Model
 
     public function payments()
     {
-        return $this->hasMany(CollectionPayment::class, 'installment_number', 'installment_number')
-            ->where('credit_id', $this->credit_id)
-            ->where('company_id', $this->company_id);
+        return $this->hasMany(CollectionPayment::class, 'installment_number', 'installment_number');
     }
 }

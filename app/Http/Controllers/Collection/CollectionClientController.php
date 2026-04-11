@@ -5,11 +5,13 @@ namespace App\Http\Controllers\Collection;
 use App\Http\Controllers\Controller;
 use App\Services\Collection\CollectionClientService;
 use App\Traits\ApiResponse;
+use App\Traits\ResolvesCollectionCompany;
 use Illuminate\Http\Request;
 
 class CollectionClientController extends Controller
 {
     use ApiResponse;
+    use ResolvesCollectionCompany;
 
     public function __construct(private readonly CollectionClientService $collectionClientService)
     {
@@ -17,22 +19,27 @@ class CollectionClientController extends Controller
 
     public function index(Request $request)
     {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
         return $this->collectionClientService->list([
             'search' => (string) $request->input('search', ''),
             'page' => (int) $request->input('page', 1),
             'per_page' => (int) $request->input('per_page', 10),
-            'company_id' => $request->input('company_id'),
+            'company_id' => $companyId,
         ]);
     }
 
     public function show(Request $request, int $clientId)
     {
         try {
-            $companyId = $request->input('company_id');
+            $companyId = $this->resolveOwnCompanyId($request);
+            if (!is_int($companyId)) return $companyId;
+
             $creditId = $request->input('credit_id');
             return $this->collectionClientService->get(
-                $clientId, 
-                $companyId ? (int) $companyId : null,
+                $clientId,
+                $companyId,
                 $creditId ? (int) $creditId : null
             );
         } catch (\Exception $e) {
@@ -42,6 +49,9 @@ class CollectionClientController extends Controller
 
     public function store(Request $request)
     {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'dni' => ['required', 'string', 'max:20', 'regex:/^[0-9]+$/'],
@@ -50,10 +60,10 @@ class CollectionClientController extends Controller
             'address' => 'required|string|max:1000',
             'reference' => 'nullable|string|max:500',
             'company_name' => 'nullable|string|max:255',
-            'company_id' => 'nullable|integer|min:1',
             'profile_photo' => 'nullable|file|image|max:4096',
             'document_photo' => 'nullable|file|image|max:4096',
         ]);
+        $validated['company_id'] = $companyId;
 
         if ($request->hasFile('profile_photo')) {
             $validated['profile_photo'] = $request->file('profile_photo')->store('collection/clients/profile', 'public');
@@ -68,6 +78,9 @@ class CollectionClientController extends Controller
 
     public function update(Request $request, int $clientId)
     {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'dni' => ['required', 'string', 'max:20', 'regex:/^[0-9]+$/'],
@@ -76,10 +89,10 @@ class CollectionClientController extends Controller
             'address' => 'required|string|max:1000',
             'reference' => 'nullable|string|max:500',
             'company_name' => 'nullable|string|max:255',
-            'company_id' => 'nullable|integer|min:1',
             'profile_photo' => 'nullable|file|image|max:4096',
             'document_photo' => 'nullable|file|image|max:4096',
         ]);
+        $validated['company_id'] = $companyId;
 
         if ($request->hasFile('profile_photo')) {
             $validated['profile_photo'] = $request->file('profile_photo')->store('collection/clients/profile', 'public');
@@ -94,7 +107,9 @@ class CollectionClientController extends Controller
 
     public function destroy(Request $request, int $clientId)
     {
-        $companyId = $request->input('company_id');
-        return $this->collectionClientService->delete($clientId, $companyId ? (int) $companyId : null);
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
+        return $this->collectionClientService->delete($clientId, $companyId);
     }
 }

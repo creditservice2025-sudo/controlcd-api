@@ -8,11 +8,10 @@ class CollectionAuthCode extends Model
 {
     protected $connection = 'collection_pgsql';
     protected $table = 'collection_auth_codes';
-    public $incrementing = false;
+    public $incrementing = true;
     public $timestamps = false;
 
     protected $fillable = [
-        'id',
         'company_id',
         'request_id',
         'code',

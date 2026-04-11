@@ -36,6 +36,7 @@ class User extends Authenticatable
         'role_id',
         'status',
         'must_change_password',
+        'is_collection_user',
     ];
 
     /**
@@ -59,6 +60,7 @@ class User extends Authenticatable
             'email_verified_at'    => 'datetime',
             'password'             => 'hashed',
             'must_change_password' => 'boolean',
+            'is_collection_user'  => 'boolean',
         ];
     }
 

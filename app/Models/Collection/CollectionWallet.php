@@ -8,10 +8,9 @@ class CollectionWallet extends Model
 {
     protected $connection = 'collection_pgsql';
     protected $table = 'collection_wallets';
-    public $incrementing = false;
+    public $incrementing = true;
 
     protected $fillable = [
-        'id',
         'company_id',
         'currency',
         'country_code',

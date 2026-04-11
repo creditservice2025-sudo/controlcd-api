@@ -4,11 +4,13 @@ namespace App\Http\Controllers\Collection;
 
 use App\Http\Controllers\Controller;
 use App\Services\Collection\CollectionWalletService;
+use App\Traits\ResolvesCollectionCompany;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
 
 class CollectionWalletController extends Controller
 {
+    use ResolvesCollectionCompany;
+
     protected $service;
 
     public function __construct(CollectionWalletService $service)
@@ -18,8 +20,8 @@ class CollectionWalletController extends Controller
 
     public function getBalances(Request $request)
     {
-        $companyId = $request->company_id ?? Auth::user()->company->id ?? Auth::user()->seller->company_id ?? null;
-        if (!$companyId) return response()->json(['message' => 'Empresa no encontrada'], 422);
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
 
         return response()->json($this->service->getBalances($companyId));
     }
@@ -33,21 +35,21 @@ class CollectionWalletController extends Controller
             'description' => 'required|string'
         ]);
 
-        $companyId = $request->company_id ?? Auth::user()->company->id ?? Auth::user()->seller->company_id ?? null;
-        if (!$companyId) return response()->json(['message' => 'Empresa no encontrada'], 422);
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
 
         $payload = array_merge($request->all(), ['company_id' => $companyId]);
-        
+
         return $this->service->injectCapital($payload);
     }
 
     public function indexLedger(Request $request)
     {
-        $companyId = $request->company_id ?? Auth::user()->company->id ?? Auth::user()->seller->company_id ?? null;
-        if (!$companyId) return response()->json(['message' => 'Empresa no encontrada'], 422);
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
 
         $filters = $request->only(['action_type', 'country_code', 'type', 'per_page']);
-        
+
         return response()->json($this->service->getLedgerMovements($companyId, $filters));
     }
 }

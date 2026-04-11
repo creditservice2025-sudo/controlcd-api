@@ -8,11 +8,10 @@ class CollectionLedger extends Model
 {
     protected $connection = 'collection_pgsql';
     protected $table = 'collection_ledger';
-    public $incrementing = false;
-    public $timestamps = false; // We use created_at manually/via DB default
+    public $incrementing = true;
+    public $timestamps = false;
 
     protected $fillable = [
-        'id',
         'company_id',
         'wallet_id',
         'type',

@@ -108,6 +108,20 @@ class LoginService
                 ? $user->company
                 : null;
 
+            // Si el usuario no tiene empresa directa, buscar via seller o perfil Collection
+            if (!$company && $user->seller) {
+                $company = Company::find($user->seller->company_id);
+            }
+            if (!$company && $user->is_collection_user) {
+                $collectionProfile = \DB::connection('collection_pgsql')
+                    ->table('collection_user_profiles')
+                    ->where('user_id', $user->id)
+                    ->first();
+                if ($collectionProfile) {
+                    $company = Company::find($collectionProfile->company_id);
+                }
+            }
+
             $roles = $user->getRoleNames();
 
             if ($roles->isEmpty() && !empty($user->role_id)) {
@@ -122,10 +136,31 @@ class LoginService
                 }
             }
 
+            // Un usuario con is_collection_user siempre ve el módulo Collection
+            // aunque la empresa no lo tenga habilitado globalmente (ya tiene perfil)
+            $hasCollectionAccess = $company ? (bool) $company->is_collection_enabled : false;
+            if (!$hasCollectionAccess && $user->is_collection_user) {
+                $hasCollectionAccess = true;
+            }
+
             $availableModules = [
-                'controlcd' => $company ? (bool) $company->is_financing_enabled : true,
-                'collection' => $company ? (bool) $company->is_collection_enabled : false,
+                'controlcd' => $company ? (bool) $company->is_financing_enabled : false,
+                'collection' => $hasCollectionAccess,
             ];
+
+            // Rol Collection del usuario (admin, manager, analyst, collector)
+            $collectionRole = 'collector';
+            if (in_array((int) $user->role_id, [1, 2])) {
+                $collectionRole = 'admin';
+            } elseif ($hasCollectionAccess) {
+                $profile = \DB::connection('collection_pgsql')
+                    ->table('collection_user_profiles')
+                    ->where('user_id', $user->id)
+                    ->first();
+                if ($profile) {
+                    $collectionRole = $profile->role;
+                }
+            }
 
             return $this->successResponse([
                 'success' => true,
@@ -135,6 +170,7 @@ class LoginService
                 'company' => $company,
                 'roles' => $roles,
                 'modules' => $availableModules,
+                'collection_role' => $collectionRole,
                 'permissions' => $user->getAllPermissions()->pluck('name'),
                 'is_liquidated_today' => ($user->role_id === 5 && $user->seller)
                     ? \App\Models\Liquidation::where('seller_id', $user->seller->id)

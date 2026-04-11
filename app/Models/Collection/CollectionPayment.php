@@ -11,13 +11,11 @@ class CollectionPayment extends Model
     protected $connection = 'collection_pgsql';
     protected $table = 'collection_payments';
 
-    // IDs are manual bigint in this project
-    public $incrementing = false;
+    public $incrementing = true;
     public $timestamps = false;
     const DELETED_AT = 'deleted_at';
 
     protected $fillable = [
-        'id',
         'company_id',
         'credit_id',
         'installment_number', // For compatibility with existing migration
