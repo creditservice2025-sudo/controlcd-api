@@ -338,6 +338,11 @@ Route::middleware('auth:api')->group(function () {
         Route::get('reports/cartera', [\App\Http\Controllers\Collection\CollectionReportsController::class, 'cartera']);
         Route::get('reports/estado-cuenta/{clientId}', [\App\Http\Controllers\Collection\CollectionReportsController::class, 'estadoCuenta']);
 
+        // Recordatorios de pago (WhatsApp)
+        Route::get('reminders/upcoming', [\App\Http\Controllers\Collection\CollectionRemindersController::class, 'upcoming']);
+        Route::post('reminders/{installmentId}/mark-sent', [\App\Http\Controllers\Collection\CollectionRemindersController::class, 'markSent']);
+        Route::get('reminders/history', [\App\Http\Controllers\Collection\CollectionRemindersController::class, 'history']);
+
         // User Management
         Route::get('users', [\App\Http\Controllers\Collection\CollectionUserController::class, 'index']);
         Route::post('users', [\App\Http\Controllers\Collection\CollectionUserController::class, 'store']);
