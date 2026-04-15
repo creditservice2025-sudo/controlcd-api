@@ -42,8 +42,11 @@ class CollectionCreditService
             // id generado por la secuencia de PostgreSQL.
             $creditValue = (float) ($payload['credit_value'] ?? 0);
             $interestRate = (float) ($payload['interest_rate'] ?? 0);
-            $installments = (int) ($payload['number_installments'] ?? 1);
-            $installments = $installments > 0 ? $installments : 1;
+
+            // Unico modo soportado: credito abierto con interes mensual.
+            // Se genera 1 cuota inicial; las siguientes se crean al pagar.
+            $installments = 1;
+            $frequency = 'Mensual';
 
             $firstInstallmentDate = $payload['first_installment_date'] ?? null;
             if (!$firstInstallmentDate) {
@@ -56,7 +59,8 @@ class CollectionCreditService
                 'transfer_voucher_photo' => $payload['transfer_voucher_photo'] ?? null,
                 'transfer_support_photo' => $payload['transfer_support_photo'] ?? null,
                 'excluded_days' => $payload['excluded_days'] ?? [],
-                'installment_distribution_mode' => $payload['installment_distribution_mode'] ?? 'capital_interest',
+                'installment_distribution_mode' => 'monthly_interest_open',
+                'is_open_ended' => true,
                 'created_by' => Auth::id(),
                 'created_ip' => request()->ip(),
             ];
@@ -70,7 +74,7 @@ class CollectionCreditService
                 'amount' => $creditValue,
                 'interest_rate' => $interestRate,
                 'total_installments' => $installments,
-                'payment_frequency' => $payload['payment_frequency'] ?? 'Diaria',
+                'payment_frequency' => $frequency,
                 'first_installment_date' => $firstInstallmentDate,
                 'status' => 'active',
                 'business_date' => Carbon::now()->toDateString(),
@@ -148,18 +152,42 @@ class CollectionCreditService
     {
         $this->ensureCreditPartition($credit->company_id);
 
+        $principal = (float) $credit->amount;
+        $interestRate = (float) $credit->interest_rate;
+
+        $meta = is_array($credit->metadata) ? $credit->metadata : [];
+        $mode = $meta['installment_distribution_mode'] ?? 'monthly_interest_open';
+
+        // Modo unico actual: credito abierto.
+        // Genera 1 sola cuota de interes; las siguientes se crean al pagar.
+        if ($mode === 'monthly_interest_open') {
+            $interest = round(($principal * $interestRate) / 100, 2);
+            $firstDate = Carbon::parse($credit->first_installment_date);
+            DB::connection(self::CONNECTION)->table('collection_installments')->insert([
+                'company_id' => $credit->company_id,
+                'credit_id' => $credit->id,
+                'installment_number' => 1,
+                'due_date' => $firstDate->toDateString(),
+                'amount' => $interest,
+                'principal_amount' => 0,
+                'interest_amount' => $interest,
+                'paid_amount' => 0,
+                'principal_paid' => 0,
+                'interest_paid' => 0,
+                'status' => 'pendiente',
+                'recorded_at' => Carbon::now(),
+            ]);
+            return;
+        }
+
+        // Fallback para creditos legacy con modos anteriores (capital_interest / interest_only).
+        // No aplica a creditos nuevos, pero se deja por compatibilidad con datos existentes.
         $count = (int) $credit->total_installments;
         if ($count <= 0) return;
 
-        $principal = (float) $credit->amount;
-        $interestRate = (float) $credit->interest_rate;
         $totalInterest = ($principal * $interestRate) / 100;
         $principalPerInstallment = $principal / $count;
         $interestPerInstallment = $totalInterest / $count;
-
-        // Custom distribution mode (interest_only / capital_interest)
-        $meta = is_array($credit->metadata) ? $credit->metadata : [];
-        $mode = $meta['installment_distribution_mode'] ?? 'capital_interest';
 
         $currentDate = Carbon::parse($credit->first_installment_date);
         $frequency = $credit->payment_frequency ?? 'Diaria';
@@ -210,6 +238,195 @@ class CollectionCreditService
                 default: $currentDate->addDay(); break;
             }
         }
+    }
+
+    /**
+     * Liquida un credito abierto: paga el interes pendiente + todo el capital restante en
+     * una sola operacion, marca la cuota actual como pagada y cierra el credito.
+     */
+    public function settle(int $companyId, int $creditId, array $payload)
+    {
+        $credit = CollectionCredit::query()
+            ->where('company_id', $companyId)
+            ->where('id', $creditId)
+            ->first();
+
+        if (!$credit) {
+            return $this->errorNotFoundResponse('Credito no encontrado');
+        }
+
+        if ($credit->status !== 'active') {
+            return $this->errorResponse('El credito no esta activo (status=' . $credit->status . ')', 422);
+        }
+
+        // Capital pendiente
+        $paidPrincipal = (float) DB::connection(self::CONNECTION)
+            ->table('collection_installments')
+            ->where('company_id', $companyId)
+            ->where('credit_id', $creditId)
+            ->sum('principal_paid');
+        $remainingPrincipal = round((float) $credit->amount - $paidPrincipal, 2);
+
+        // Cuota pendiente actual (en credito abierto solo hay 1 abierta)
+        $pendingInstallment = \App\Models\Collection\CollectionInstallment::query()
+            ->where('company_id', $companyId)
+            ->where('credit_id', $creditId)
+            ->whereIn('status', ['pendiente', 'parcial'])
+            ->orderBy('installment_number')
+            ->first();
+
+        $pendingInterest = 0.0;
+        if ($pendingInstallment) {
+            $pendingInterest = round(
+                (float) $pendingInstallment->interest_amount - (float) ($pendingInstallment->interest_paid ?? 0),
+                2
+            );
+        }
+
+        $settlementTotal = round($remainingPrincipal + $pendingInterest, 2);
+
+        if ($settlementTotal <= 0) {
+            return $this->errorResponse('No hay saldo para liquidar', 422);
+        }
+
+        return DB::connection(self::CONNECTION)->transaction(function () use (
+            $credit, $companyId, $creditId, $payload, $pendingInstallment,
+            $pendingInterest, $remainingPrincipal, $settlementTotal
+        ) {
+            $tz = $payload['timezone'] ?? 'UTC';
+            $now = Carbon::now($tz);
+            $paymentMethod = $payload['payment_method'] ?? 'Efectivo';
+            $voucherPath = $payload['voucher_path'] ?? null;
+            $notes = $payload['notes'] ?? 'Liquidacion de credito';
+
+            // Si hay cuota pendiente: actualizar para reflejar pago de interes + capital total.
+            if ($pendingInstallment) {
+                $newInterestPaid = (float) $pendingInstallment->interest_amount;
+                $newPrincipalPaid = (float) ($pendingInstallment->principal_paid ?? 0) + $remainingPrincipal;
+                $newAmount = (float) $pendingInstallment->interest_amount + $remainingPrincipal;
+                $newPrincipalAmount = (float) ($pendingInstallment->principal_amount ?? 0) + $remainingPrincipal;
+
+                $pendingInstallment->update([
+                    'status' => 'pagado',
+                    'amount' => round($newAmount, 2),
+                    'principal_amount' => round($newPrincipalAmount, 2),
+                    'paid_amount' => round($newInterestPaid + $newPrincipalPaid, 2),
+                    'interest_paid' => round($newInterestPaid, 2),
+                    'principal_paid' => round($newPrincipalPaid, 2),
+                    'payment_method' => $paymentMethod,
+                    'notes' => $notes,
+                    'voucher_path' => $voucherPath,
+                    'last_payment_at' => $now,
+                ]);
+
+                \App\Models\Collection\CollectionPayment::create([
+                    'company_id' => $companyId,
+                    'credit_id' => $creditId,
+                    'installment_number' => $pendingInstallment->installment_number,
+                    'amount_paid' => $settlementTotal,
+                    'payment_date' => $payload['payment_date'] ?? $now->toDateString(),
+                    'payment_method' => $paymentMethod,
+                    'notes' => $notes,
+                    'voucher_path' => $voucherPath,
+                    'recorded_at' => $now,
+                ]);
+            }
+
+            // Cerrar credito
+            $credit->update(['status' => 'pagado']);
+
+            // Wallet: ingreso por liquidacion
+            app(\App\Services\Collection\CollectionWalletService::class)->recordMovement([
+                'company_id' => $companyId,
+                'currency' => $credit->currency ?? 'COP',
+                'country_code' => $credit->country_code ?? 'CO',
+                'amount' => $settlementTotal,
+                'type' => 'credit',
+                'action_type' => 'payment',
+                'reference_type' => 'credit',
+                'reference_id' => $creditId,
+                'description' => "Liquidacion de credito #{$creditId}",
+            ]);
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Credito liquidado con exito',
+                'settled_total' => $settlementTotal,
+                'paid_interest' => $pendingInterest,
+                'paid_principal' => $remainingPrincipal,
+            ]);
+        });
+    }
+
+    /**
+     * Credito abierto: cuando todas las cuotas existentes estan pagadas, crea la siguiente
+     * cuota mensual de interes sobre el capital pendiente. Si el capital ya se pago totalmente,
+     * cierra el credito.
+     */
+    public function generateNextOpenEndedInstallment(CollectionCredit $credit): void
+    {
+        $meta = is_array($credit->metadata) ? $credit->metadata : [];
+        if (empty($meta['is_open_ended'])) {
+            return;
+        }
+
+        // Capital pendiente = credit.amount - suma(principal_paid).
+        $paidPrincipal = (float) DB::connection(self::CONNECTION)
+            ->table('collection_installments')
+            ->where('company_id', $credit->company_id)
+            ->where('credit_id', $credit->id)
+            ->sum('principal_paid');
+
+        $remainingPrincipal = round((float) $credit->amount - $paidPrincipal, 2);
+
+        if ($remainingPrincipal <= 0) {
+            $credit->update(['status' => 'pagado']);
+            return;
+        }
+
+        // Solo generar siguiente si no hay ninguna cuota pendiente o parcial.
+        $hasPending = DB::connection(self::CONNECTION)
+            ->table('collection_installments')
+            ->where('company_id', $credit->company_id)
+            ->where('credit_id', $credit->id)
+            ->whereIn('status', ['pendiente', 'parcial'])
+            ->exists();
+
+        if ($hasPending) {
+            return;
+        }
+
+        $lastInstallment = DB::connection(self::CONNECTION)
+            ->table('collection_installments')
+            ->where('company_id', $credit->company_id)
+            ->where('credit_id', $credit->id)
+            ->orderByDesc('installment_number')
+            ->first();
+
+        if (!$lastInstallment) {
+            return;
+        }
+
+        $nextNumber = (int) $lastInstallment->installment_number + 1;
+        $nextDue = Carbon::parse($lastInstallment->due_date)->addMonth()->toDateString();
+        $interest = round(($remainingPrincipal * (float) $credit->interest_rate) / 100, 2);
+
+        DB::connection(self::CONNECTION)->table('collection_installments')->insert([
+            'company_id' => $credit->company_id,
+            'credit_id' => $credit->id,
+            'installment_number' => $nextNumber,
+            'due_date' => $nextDue,
+            'amount' => $interest,
+            'principal_amount' => 0,
+            'interest_amount' => $interest,
+            'paid_amount' => 0,
+            'principal_paid' => 0,
+            'interest_paid' => 0,
+            'status' => 'pendiente',
+            'recorded_at' => Carbon::now(),
+        ]);
+
+        $credit->increment('total_installments');
     }
 
     public function deleteInstallment(int $installmentId, array $securityToken = [], ?int $requestedCompanyId = null)

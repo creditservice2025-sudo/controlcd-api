@@ -26,9 +26,12 @@ class CollectionCreditController extends Controller
             'client_id' => 'required|integer|min:1',
             'credit_value' => 'required|numeric|min:0.01',
             'interest_rate' => 'nullable|numeric|min:0',
-            'number_installments' => 'required|integer|min:1|max:1000',
+            // Credito abierto: N no aplica; se genera 1 cuota y las siguientes al pagar.
+            // Se deja nullable para soportar el unico modo actual (monthly_interest_open).
+            'number_installments' => 'nullable|integer|min:1|max:1000',
             'payment_frequency' => 'nullable|string|max:50',
             'first_installment_date' => 'nullable|date',
+            'installment_distribution_mode' => 'nullable|in:monthly_interest_open',
             'transfer_bank_name' => 'nullable|string|max:150',
             'transfer_reference_number' => 'nullable|string|max:120',
             'excluded_days' => 'nullable|array',
@@ -65,5 +68,29 @@ class CollectionCreditController extends Controller
             $securityToken,
             $companyId
         );
+    }
+
+    /**
+     * Liquida un credito abierto: cobra interes pendiente + capital restante,
+     * cierra la cuota actual y marca el credito como pagado.
+     */
+    public function settle(Request $request, int $creditId)
+    {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
+        $validated = $request->validate([
+            'payment_method' => 'nullable|string|max:50',
+            'notes' => 'nullable|string|max:500',
+            'payment_date' => 'nullable|date',
+            'timezone' => 'nullable|string|max:80',
+            'voucher' => 'nullable|file|image|max:4096',
+        ]);
+
+        if ($request->hasFile('voucher')) {
+            $validated['voucher_path'] = $request->file('voucher')->store('collection/payments/voucher', 'public');
+        }
+
+        return $this->collectionCreditService->settle($companyId, $creditId, $validated);
     }
 }

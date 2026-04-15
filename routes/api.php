@@ -311,6 +311,7 @@ Route::middleware('auth:api')->group(function () {
         Route::match(['post', 'put'], 'clients/{clientId}', [CollectionClientController::class, 'update']);
         Route::delete('clients/{clientId}', [CollectionClientController::class, 'destroy']);
         Route::post('credits', [CollectionCreditController::class, 'store']);
+        Route::post('credits/{creditId}/settle', [CollectionCreditController::class, 'settle']);
         Route::delete('installments/{id}', [CollectionCreditController::class, 'destroyInstallment']);
         Route::post('payments', [CollectionPaymentController::class, 'store']);
         Route::get('expenses', [\App\Http\Controllers\Collection\CollectionExpenseController::class, 'index']);

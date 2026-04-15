@@ -154,6 +154,16 @@ class CollectionPaymentService
                 ]);
             }
 
+            // Credito abierto: si todas las cuotas quedaron pagadas, autogenerar la cuota
+            // de interes del proximo mes sobre el capital pendiente.
+            if ($credit) {
+                $meta = is_array($credit->metadata) ? $credit->metadata : [];
+                if (!empty($meta['is_open_ended']) && $credit->status === 'active') {
+                    app(\App\Services\Collection\CollectionCreditService::class)
+                        ->generateNextOpenEndedInstallment($credit);
+                }
+            }
+
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Pagos registrados con éxito',
