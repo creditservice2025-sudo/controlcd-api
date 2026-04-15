@@ -18,7 +18,7 @@ return new class extends Migration
 
         // 2. Main Wallets table
         Schema::connection($this->connection)->create('collection_wallets', function (Blueprint $table) {
-            $table->bigInteger('id')->primary();
+            $table->id();
             $table->bigInteger('company_id')->index();
             $table->string('currency', 10);
             $table->string('country_code', 5);
@@ -31,7 +31,7 @@ return new class extends Migration
 
         // 3. Transactions Ledger (The Audit Log)
         Schema::connection($this->connection)->create('collection_ledger', function (Blueprint $table) {
-            $table->bigInteger('id')->primary();
+            $table->id();
             $table->bigInteger('company_id')->index();
             $table->bigInteger('wallet_id')->index();
             $table->string('type', 20); // credit, debit, injection
