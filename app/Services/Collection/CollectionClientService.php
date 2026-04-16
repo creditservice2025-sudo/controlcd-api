@@ -316,6 +316,8 @@ class CollectionClientService
                 'status' => $credit->status,
                 'balance' => $realBalance,
                 'total_paid' => (float) ($stats->total_paid_all ?? 0),
+                'total_principal_paid' => (float) ($stats->total_principal_paid ?? 0),
+                'total_interest_paid' => (float) ($stats->total_paid_all ?? 0) - (float) ($stats->total_principal_paid ?? 0),
                 'created_at' => optional($credit->created_at)->toISOString(),
                 'transfer_bank_name' => $meta['transfer_bank_name'] ?? null,
                 'transfer_reference_number' => $meta['transfer_reference_number'] ?? null,
