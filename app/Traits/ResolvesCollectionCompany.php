@@ -40,17 +40,12 @@ trait ResolvesCollectionCompany
 
         if ($ownCompanyId) {
             $ownCompanyId = (int) $ownCompanyId;
-
-            // Usuarios normales: si mandan un company_id distinto al propio → 403.
-            if (!$isSuperAdmin && $requested !== null && $requested !== '' && (int) $requested !== $ownCompanyId) {
-                return response()->json([
-                    'message' => 'No autorizado para operar sobre esta empresa'
-                ], 403);
-            }
-
+            
+            // For regular users, we ALWAYS enforce their own company ID.
+            // We ignore whatever they sent in the request to prevent 403 errors due to stale data.
             $companyId = $ownCompanyId;
         } elseif ($isSuperAdmin && $requested) {
-            // Super Admin sin empresa propia: usa el company_id del request (impersonación).
+            // Super Admin without own company (impersonation): use requested ID.
             $companyId = (int) $requested;
         } else {
             return response()->json(['message' => 'Usuario sin empresa asociada'], 422);
