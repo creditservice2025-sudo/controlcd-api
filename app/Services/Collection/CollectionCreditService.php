@@ -500,5 +500,62 @@ class CollectionCreditService
                 'message' => 'Cobro/Abono eliminado correctamente. La cuota ahora está pendiente.'
             ]);
         });
+    /**
+     * Recalcula el interes de las cuotas futuras pendientes si el capital varia.
+     */
+    public function recalculateFutureInstallments(CollectionCredit $credit): void
+    {
+        $meta = is_array($credit->metadata) ? $credit->metadata : [];
+        if (empty($meta['is_open_ended'])) {
+            return;
+        }
+
+        // 1. Calcular capital pendiente actual
+        $paidPrincipal = (float) DB::connection(self::CONNECTION)
+            ->table('collection_installments')
+            ->where('company_id', $credit->company_id)
+            ->where('credit_id', $credit->id)
+            ->whereNull('deleted_at')
+            ->sum('principal_paid');
+
+        $remainingPrincipal = round((float) $credit->amount - $paidPrincipal, 2);
+
+        if ($remainingPrincipal <= 0) {
+            // Si el capital ya se saldo, marcar todas las pendientes como cerradas (o que el proximo pago liquide el interes)
+             DB::connection(self::CONNECTION)
+                ->table('collection_installments')
+                ->where('company_id', $credit->company_id)
+                ->where('credit_id', $credit->id)
+                ->where('status', 'pendiente')
+                ->update([
+                    'interest_amount' => 0,
+                    'amount' => 0,
+                    'status' => 'pagado', // Opcional: si ya no hay deuda, se cierran
+                ]);
+            $credit->update(['status' => 'pagado']);
+            return;
+        }
+
+        // 2. Buscar todas las cuotas PENDIENTES o PARCIALES (futuras)
+        $futureInstallments = \App\Models\Collection\CollectionInstallment::query()
+            ->where('company_id', $credit->company_id)
+            ->where('credit_id', $credit->id)
+            ->whereIn('status', ['pendiente', 'parcial'])
+            ->get();
+
+        foreach ($futureInstallments as $inst) {
+            $interestRate = (float) $credit->interest_rate;
+            $newInterest = round(($remainingPrincipal * $interestRate) / 100, 2);
+            
+            // Si ya tiene algo pagado de interes, hay que restar eso
+            $pendingInterest = max(0, $newInterest - (float)($inst->interest_paid ?? 0));
+            $pendingPrincipal = max(0, (float)($inst->principal_amount ?? 0) - (float)($inst->principal_paid ?? 0));
+            
+            $inst->update([
+                'interest_amount' => $newInterest,
+                'amount' => round($newInterest + (float)($inst->principal_amount ?? 0), 2),
+                'paid_amount' => (float)($inst->interest_paid ?? 0) + (float)($inst->principal_paid ?? 0),
+            ]);
+        }
     }
 }

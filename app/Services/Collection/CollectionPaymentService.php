@@ -43,6 +43,10 @@ class CollectionPaymentService
             $this->ensurePaymentPartition($companyId);
             
             $results = [];
+            $principalWasReduced = false;
+            $credit = CollectionCredit::find($creditId);
+            $creditMeta = $credit && is_array($credit->metadata) ? $credit->metadata : [];
+            $isOpenEnded = !empty($creditMeta['is_open_ended']);
 
             foreach ($payments as $pData) {
                 $instNum = $pData['installment_number'];
@@ -79,7 +83,20 @@ class CollectionPaymentService
                     $pendingPrincipal = (float) $installment->principal_amount - (float) ($installment->principal_paid ?? 0);
                     $pendingTotal = $pendingInterest + $pendingPrincipal;
 
-                    $appliedToThisInstallment = min($amountToDistribute, $pendingTotal);
+                    // If it's the last available installment of an open-ended credit,
+                    // we allow "overpaying" it to reduce principal directly.
+                    $isLastGenerated = !CollectionInstallment::query()
+                        ->where('company_id', $companyId)
+                        ->where('credit_id', $creditId)
+                        ->where('installment_number', '>', $instNum)
+                        ->exists();
+
+                    if ($isOpenEnded && $isLastGenerated) {
+                        $appliedToThisInstallment = $amountToDistribute;
+                    } else {
+                        $appliedToThisInstallment = min($amountToDistribute, $pendingTotal);
+                    }
+
                     $tempAmount = $appliedToThisInstallment;
 
                     // 1. Pay Interest First
@@ -120,6 +137,8 @@ class CollectionPaymentService
                         'credit_id' => $creditId,
                         'installment_number' => $installment->installment_number,
                         'amount_paid' => $appliedToThisInstallment,
+                        'interest_paid' => $payInterest,
+                        'principal_paid' => $payPrincipal,
                         'payment_date' => $payload['payment_date'] ?? $now->toDateString(),
                         'receipt_number' => $payload['reference'] ?? null,
                         'payment_method' => $pData['payment_method'] ?? $payload['payment_method'] ?? 'Efectivo',
@@ -127,6 +146,10 @@ class CollectionPaymentService
                         'voucher_path' => $payload['voucher_path'] ?? null,
                         'recorded_at' => $now,
                     ]);
+
+                    if ($payPrincipal > 0) {
+                        $principalWasReduced = true;
+                    }
 
                     $results[] = $payment->id;
                     $amountToDistribute -= $appliedToThisInstallment;
@@ -138,9 +161,12 @@ class CollectionPaymentService
             }
 
             // Sync with Centralized Wallet
-            $credit = CollectionCredit::find($creditId);
             $totalAmountCollected = (float) ($payload['amount_total'] ?? 0);
             if ($totalAmountCollected > 0 && $credit) {
+                if ($principalWasReduced) {
+                    app(\App\Services\Collection\CollectionCreditService::class)->recalculateFutureInstallments($credit);
+                }
+
                 app(\App\Services\Collection\CollectionWalletService::class)->recordMovement([
                     'company_id' => $companyId,
                     'currency' => $credit->currency ?? 'COP',

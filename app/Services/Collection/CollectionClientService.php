@@ -290,13 +290,22 @@ class CollectionClientService
         $creditsData = $allCredits->map(function ($credit) use ($companyId) {
             $meta = is_array($credit->metadata) ? $credit->metadata : [];
             
-            // Calculate balance for each credit (total amount - paid amount from installments)
+            // Calculate balance for each credit (Total Principal Remaining + Pending Interest)
             $stats = CollectionInstallment::query()
                 ->where('company_id', $companyId)
                 ->where('credit_id', $credit->id)
-                ->selectRaw('SUM(amount) as total, SUM(paid_amount) as paid')
+                ->whereNull('deleted_at')
+                ->selectRaw('
+                    SUM(COALESCE(principal_paid, 0)) as total_principal_paid,
+                    SUM(COALESCE(interest_amount, 0) - COALESCE(interest_paid, 0)) as pending_interest,
+                    SUM(COALESCE(paid_amount, 0)) as total_paid_all
+                ')
                 ->first();
                 
+            $remainingPrincipal = max(0, (float)($credit->amount) - (float)($stats->total_principal_paid ?? 0));
+            $pendingInterest = max(0, (float)($stats->pending_interest ?? 0));
+            $realBalance = $remainingPrincipal + $pendingInterest;
+
             return [
                 'id' => $credit->id,
                 'amount' => (float) $credit->amount,
@@ -305,8 +314,8 @@ class CollectionClientService
                 'payment_frequency' => $credit->payment_frequency,
                 'first_installment_date' => $credit->first_installment_date?->toDateString(),
                 'status' => $credit->status,
-                'balance' => (float) ($stats->total ?? $credit->amount) - (float) ($stats->paid ?? 0),
-                'total_paid' => (float) ($stats->paid ?? 0),
+                'balance' => $realBalance,
+                'total_paid' => (float) ($stats->total_paid_all ?? 0),
                 'created_at' => optional($credit->created_at)->toISOString(),
                 'transfer_bank_name' => $meta['transfer_bank_name'] ?? null,
                 'transfer_reference_number' => $meta['transfer_reference_number'] ?? null,
@@ -366,6 +375,8 @@ class CollectionClientService
                             return [
                                 'id' => $p->id,
                                 'amount_paid' => (float) $p->amount_paid,
+                                'interest_paid' => (float) ($p->interest_paid ?? 0),
+                                'principal_paid' => (float) ($p->principal_paid ?? 0),
                                 'payment_date' => $p->payment_date?->toDateString(),
                                 'payment_method' => $p->payment_method,
                                 'notes' => $p->notes,

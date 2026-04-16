@@ -25,11 +25,15 @@ class CollectionPayment extends Model
         'receipt_number',
         'payment_method',
         'notes',
+        'interest_paid',
+        'principal_paid',
         'voucher_path',
     ];
 
     protected $casts = [
         'amount_paid' => 'decimal:2',
+        'interest_paid' => 'decimal:2',
+        'principal_paid' => 'decimal:2',
         'payment_date' => 'date',
         'recorded_at' => 'datetime',
     ];
