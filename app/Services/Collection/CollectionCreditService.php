@@ -500,6 +500,8 @@ class CollectionCreditService
                 'message' => 'Cobro/Abono eliminado correctamente. La cuota ahora está pendiente.'
             ]);
         });
+    }
+
     /**
      * Recalcula el interes de las cuotas futuras pendientes si el capital varia.
      */
