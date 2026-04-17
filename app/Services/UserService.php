@@ -72,7 +72,9 @@ class UserService
                 }
             }
 
-            $user->parent_id = $params['role_id'];
+            if (!isset($params['parent_id'])) {
+                $user->parent_id = Auth::id();
+            }
             $user->save();
             DB::commit();
 
@@ -260,27 +262,32 @@ public function me()
     
             // === FILTRO POR ROL ===
             switch ($roleId) {
-                case 1: // Admin: ve todos
-                    // Si el admin está en modo empresa, filtra por company_id
+                case 1: // Super-Admin: ve todos o filtra por empresa si está en modo empresa
                     if ($companyId) {
                         $sellerIds = Seller::where('company_id', $companyId)->pluck('id')->toArray();
                         $userIds = UserRoute::whereIn('seller_id', $sellerIds)->pluck('user_id')->toArray();
-                        $usersQuery->whereIn('users.id', $userIds);
+                        
+                        // Trae el ID del usuario administrador de la empresa seleccionada
+                        $adminUserId = \DB::table('companies')->where('id', $companyId)->value('user_id');
+
+                        $usersQuery->where(function ($q) use ($userIds, $adminUserId) {
+                            $q->whereIn('users.id', $userIds);
+                            if ($adminUserId) {
+                                $q->orWhere('users.parent_id', $adminUserId);
+                            }
+                        });
                     }
                     break;
-                case 2: // Empresa: usuarios relacionados a la empresa por sellers
+                case 2: // Administrador de Empresa: usuarios relacionados a la empresa por sellers o creados por él
                     if ($company) {
-                        // Trae IDs de vendedores de la empresa
                         $sellerIds = Seller::where('company_id', $company->id)->pluck('id')->toArray();
-    
-                        // Trae IDs de usuarios asociados a esos vendedores vía users_routes
                         $userIds = UserRoute::whereIn('seller_id', $sellerIds)->pluck('user_id')->toArray();
-    
-                        // Incluye también al usuario empresa autenticado
                         $userIds[] = $user->id;
-    
-                        // Filtra por esos usuarios
-                        $usersQuery->whereIn('users.id', $userIds);
+
+                        $usersQuery->where(function ($q) use ($userIds, $user) {
+                            $q->whereIn('users.id', $userIds)
+                              ->orWhere('users.parent_id', $user->id);
+                        });
                     }
                     break;
                 default: // Otros roles: no ven nada

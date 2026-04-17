@@ -2017,9 +2017,20 @@ class LiquidationService
      *
      * @return array
      */
-    public function getFirstApprovedLiquidationBySeller()
+    public function getFirstApprovedLiquidationBySeller($user = null)
     {
-        $sellers = Seller::with(['user', 'city.country'])->get();
+        $query = Seller::with(['user', 'city.country']);
+
+        if ($user) {
+            if ($user->role_id == 2) {
+                $companyId = $user->company ? $user->company->id : -1;
+                $query->where('company_id', $companyId);
+            } elseif ($user->role_id == 5) {
+                $query->where('user_id', $user->id);
+            }
+        }
+
+        $sellers = $query->get();
         $result = [];
         foreach ($sellers as $seller) {
             $firstApproved = Liquidation::where('seller_id', $seller->id)

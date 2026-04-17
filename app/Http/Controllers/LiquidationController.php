@@ -1258,7 +1258,8 @@ class LiquidationController extends Controller
      */
     public function getFirstApprovedLiquidationBySeller()
     {
-        $result = $this->liquidationService->getFirstApprovedLiquidationBySeller();
+        $user = Auth::user();
+        $result = $this->liquidationService->getFirstApprovedLiquidationBySeller($user);
         return response()->json([
             'success' => true,
             'data' => $result

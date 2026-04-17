@@ -9,6 +9,9 @@ class TelegramLogController extends Controller
 {
     public function index()
     {
+        if (auth()->user()->role_id !== 1) {
+            return response()->json(['error' => 'Unauthorized'], 403);
+        }
         return TelegramLog::orderBy('created_at', 'desc')->paginate(20);
     }
 }

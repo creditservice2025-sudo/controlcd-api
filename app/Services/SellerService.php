@@ -61,11 +61,16 @@ class SellerService
                 'updated_at' => $params['updated_at'] ?? null
             ]);
 
+            $companyId = $params['company_id'] ?? null;
+            if (Auth::user()->role_id == 2) {
+                $companyId = Auth::user()->company->id ?? $companyId;
+            }
+
             $seller = Seller::create([
                 'user_id' => $user->id,
                 'city_id' => $params['city_id'],
                 'address' => $params['address'] ?? null,
-                'company_id' => $params['company_id'],
+                'company_id' => $companyId,
                 'status' => 'ACTIVE',
                 'routing_order' => $params['routing_order'] ?? null,
                 'created_at' => $params['created_at'] ?? null,
@@ -164,10 +169,15 @@ class SellerService
                 'updated_at' => $params['updated_at'] ?? null
             ]);
 
+            $companyId = $params['company_id'] ?? $seller->company_id;
+            if (Auth::user()->role_id == 2) {
+                $companyId = Auth::user()->company->id ?? $companyId;
+            }
+
             $seller->update([
                 'city_id' => $params['city_id'],
                 'address' => $params['address'] ?? $seller->address,
-                'company_id' => $params['company_id'],
+                'company_id' => $companyId,
                 'routing_order' => $params['routing_order'] ?? $seller->routing_order,
                 'updated_at' => $params['updated_at'] ?? null
             ]);
@@ -842,15 +852,24 @@ class SellerService
     public function getRoutesSelect()
     {
         try {
-            $routes = Seller::with('user:id,name,dni')
+            $user = Auth::user();
+            $query = Seller::with('user:id,name,dni')
                 ->withCount([
                     'clients',
                     'credits' => function ($query) {
                         $query->whereNotIn('status', ['Cartera Irrecuperable', 'Liquidado'])
                               ->whereNull('deleted_at');
                     }
-                ])
-                ->get(['id', 'uuid', 'user_id']); // get() with columns is safer than select() followed by get() for counts
+                ]);
+
+            if ($user->role_id == 2) {
+                $companyId = $user->company ? $user->company->id : -1;
+                $query->where('company_id', $companyId);
+            } elseif ($user->role_id == 5) {
+                $query->where('user_id', $user->id);
+            }
+
+            $routes = $query->get(['id', 'uuid', 'user_id', 'company_id']); 
 
             return $this->successResponse([
                 'success' => true,
