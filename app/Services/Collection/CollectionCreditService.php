@@ -40,9 +40,9 @@ class CollectionCreditService
             return $this->errorNotFoundResponse('Cliente Collection no encontrado');
         }
 
+        $this->partitionService->ensurePartitions($companyId);
+        
         return DB::connection(self::CONNECTION)->transaction(function () use ($payload, $companyId, $clientId) {
-            $this->partitionService->ensurePartitions($companyId);
-
             // id generado por la secuencia de PostgreSQL.
             $creditValue = (float) ($payload['credit_value'] ?? 0);
             $interestRate = (float) ($payload['interest_rate'] ?? 0);

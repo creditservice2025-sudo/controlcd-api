@@ -23,10 +23,11 @@ class CollectionWalletService
      */
     public function recordMovement(array $data)
     {
-        return DB::connection('collection_pgsql')->transaction(function () use ($data) {
-            $companyId = $data['company_id'];
-            $this->partitionService->ensurePartitions($companyId);
-
+        $companyId = $data['company_id'];
+        $this->partitionService->ensurePartitions($companyId);
+        
+        return DB::connection('collection_pgsql')->transaction(function () use ($data, $companyId) {
+            
             $currency = strtoupper($data['currency'] ?? 'COP');
             $countryCode = strtoupper($data['country_code'] ?? 'CO');
             $amount = (float) $data['amount'];

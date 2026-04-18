@@ -122,9 +122,9 @@ class CollectionClientService
             return $this->errorResponse('El documento ya existe en Collection', 422);
         }
 
+        $this->partitionService->ensurePartitions($companyId);
+        
         return DB::connection(self::CONNECTION)->transaction(function () use ($payload, $companyId, $dni) {
-            $this->partitionService->ensurePartitions($companyId);
-
             // id generado por la secuencia de PostgreSQL.
             $metadata = [
                 'email' => $payload['email'] ?? null,

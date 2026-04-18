@@ -43,8 +43,9 @@ class CollectionPaymentService
             return $this->errorResponse('Información de pago incompleta', 422);
         }
 
+        $this->partitionService->ensurePartitions($companyId);
+        
         return DB::connection(self::CONNECTION)->transaction(function () use ($payload, $companyId, $creditId, $payments) {
-            $this->partitionService->ensurePartitions($companyId);
             
             $results = [];
             $principalWasReduced = false;
