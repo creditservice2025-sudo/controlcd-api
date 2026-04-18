@@ -16,6 +16,10 @@ class CollectionPaymentService
 
     private const CONNECTION = 'collection_pgsql';
 
+    public function __construct(private readonly CollectionPartitionService $partitionService)
+    {
+    }
+
     public function recordPayment(array $payload)
     {
         $companyId = (int) ($payload['company_id'] ?? 0);
@@ -40,7 +44,7 @@ class CollectionPaymentService
         }
 
         return DB::connection(self::CONNECTION)->transaction(function () use ($payload, $companyId, $creditId, $payments) {
-            $this->ensurePaymentPartition($companyId);
+            $this->partitionService->ensurePartitions($companyId);
             
             $results = [];
             $principalWasReduced = false;
@@ -198,11 +202,5 @@ class CollectionPaymentService
         });
     }
 
-    private function ensurePaymentPartition(int $companyId): void
-    {
-        $partitionTable = sprintf('collection_payments_company_%d', $companyId);
-        DB::connection(self::CONNECTION)->statement(
-            "CREATE TABLE IF NOT EXISTS {$partitionTable} PARTITION OF collection_payments FOR VALUES IN ({$companyId})"
-        );
-    }
+
 }

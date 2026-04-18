@@ -16,6 +16,10 @@ class CollectionExpenseService
 
     private const CONNECTION = 'collection_pgsql';
 
+    public function __construct(private readonly CollectionPartitionService $partitionService)
+    {
+    }
+
     public function index($request)
     {
         $companyId = $this->resolveCompanyId($request->company_id);
@@ -59,6 +63,8 @@ class CollectionExpenseService
     {
         $companyId = $this->resolveCompanyId($request->company_id);
         if (!$companyId) return $this->errorResponse('Empresa no identificada', 422);
+
+        $this->partitionService->ensurePartitions($companyId);
 
         $validated = $request->validate([
             'amount' => 'required|numeric|min:0.01',

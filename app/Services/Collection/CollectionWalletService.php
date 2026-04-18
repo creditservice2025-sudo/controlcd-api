@@ -14,6 +14,10 @@ class CollectionWalletService
 {
     use ApiResponse;
 
+    public function __construct(private readonly CollectionPartitionService $partitionService)
+    {
+    }
+
     /**
      * Record a financial movement in the ledger and update the wallet balance.
      */
@@ -21,6 +25,8 @@ class CollectionWalletService
     {
         return DB::connection('collection_pgsql')->transaction(function () use ($data) {
             $companyId = $data['company_id'];
+            $this->partitionService->ensurePartitions($companyId);
+
             $currency = strtoupper($data['currency'] ?? 'COP');
             $countryCode = strtoupper($data['country_code'] ?? 'CO');
             $amount = (float) $data['amount'];

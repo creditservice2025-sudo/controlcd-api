@@ -15,6 +15,10 @@ class CollectionCreditService
 
     private const CONNECTION = 'collection_pgsql';
 
+    public function __construct(private readonly CollectionPartitionService $partitionService)
+    {
+    }
+
     public function create(array $payload)
     {
         $companyId = $this->resolveCompanyId($payload['company_id'] ?? null);
@@ -37,7 +41,7 @@ class CollectionCreditService
         }
 
         return DB::connection(self::CONNECTION)->transaction(function () use ($payload, $companyId, $clientId) {
-            $this->ensureCreditPartition($companyId);
+            $this->partitionService->ensurePartitions($companyId);
 
             // id generado por la secuencia de PostgreSQL.
             $creditValue = (float) ($payload['credit_value'] ?? 0);
@@ -131,26 +135,11 @@ class CollectionCreditService
         return null;
     }
 
-    private function ensureCreditPartition(int $companyId): void
-    {
-        if ($companyId <= 0) {
-            return;
-        }
 
-        $partitionTable = sprintf('collection_credits_company_%d', $companyId);
-        DB::connection(self::CONNECTION)->statement(
-            "CREATE TABLE IF NOT EXISTS {$partitionTable} PARTITION OF collection_credits FOR VALUES IN ({$companyId})"
-        );
-
-        $instPartitionTable = sprintf('collection_installments_company_%d', $companyId);
-        DB::connection(self::CONNECTION)->statement(
-            "CREATE TABLE IF NOT EXISTS {$instPartitionTable} PARTITION OF collection_installments FOR VALUES IN ({$companyId})"
-        );
-    }
 
     public function generateInstallments(CollectionCredit $credit, array $excludedDays = []): void
     {
-        $this->ensureCreditPartition($credit->company_id);
+        $this->partitionService->ensurePartitions($credit->company_id);
 
         $principal = (float) $credit->amount;
         $interestRate = (float) $credit->interest_rate;

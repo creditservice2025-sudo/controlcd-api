@@ -17,8 +17,10 @@ class CollectionClientService
 
     private const CONNECTION = 'collection_pgsql';
 
-    public function __construct(private readonly CollectionCreditService $creditService)
-    {
+    public function __construct(
+        private readonly CollectionCreditService $creditService,
+        private readonly CollectionPartitionService $partitionService
+    ) {
     }
 
     public function list(array $filters = [])
@@ -121,6 +123,8 @@ class CollectionClientService
         }
 
         return DB::connection(self::CONNECTION)->transaction(function () use ($payload, $companyId, $dni) {
+            $this->partitionService->ensurePartitions($companyId);
+
             // id generado por la secuencia de PostgreSQL.
             $metadata = [
                 'email' => $payload['email'] ?? null,
