@@ -21,6 +21,8 @@ class CollectionCredit extends Model
         'status',
         'business_date',
         'metadata',
+        'currency',
+        'country_code',
     ];
 
     protected $casts = [

@@ -40,6 +40,10 @@ class CollectionClientService
             $query->where('company_id', $companyId);
         }
 
+        if (!empty($filters['country_code']) && $this->hasClientCountryCodeColumn()) {
+            $query->where('country_code', $filters['country_code']);
+        }
+
         if ($search !== '') {
             $query->where(function ($builder) use ($search) {
                 $builder->where('name', 'ilike', "%{$search}%")
@@ -50,7 +54,8 @@ class CollectionClientService
 
         $paginator = $query->paginate($perPage);
 
-        $rows = $paginator->getCollection()->map(function (CollectionClient $client) use ($companyId) {
+        $hasCountryCode = $this->hasClientCountryCodeColumn();
+        $rows = $paginator->getCollection()->map(function (CollectionClient $client) use ($companyId, $hasCountryCode) {
             $meta = $this->hasClientMetadataColumn() ? ($client->metadata ?? []) : [];
             $latestCredit = CollectionCredit::query()
                 ->where('client_id', $client->id)
@@ -70,6 +75,7 @@ class CollectionClientService
                 'phone' => $client->phone,
                 'email' => $meta['email'] ?? null,
                 'address' => $client->address,
+                'country_code' => $hasCountryCode ? $client->country_code : null,
                 'reference' => $meta['reference'] ?? null,
                 'company_name' => $meta['company_name'] ?? null,
                 'status' => $meta['status'] ?? 'Activo',
@@ -77,6 +83,7 @@ class CollectionClientService
                 'document_photo' => $meta['document_photo'] ?? null,
                 'credit_id' => $latestCredit?->id,
                 'credit_amount' => $latestCredit?->amount,
+                'credit_currency' => $latestCredit?->currency ?? 'COP',
                 'credit_interest_rate' => $latestCredit?->interest_rate,
                 'credit_total_installments' => $latestCredit?->total_installments,
                 'credit_payment_frequency' => $latestCredit?->payment_frequency,
@@ -141,6 +148,10 @@ class CollectionClientService
                 'phone' => trim((string) ($payload['phone'] ?? '')),
                 'address' => trim((string) ($payload['address'] ?? '')),
             ];
+
+            if ($this->hasClientCountryCodeColumn()) {
+                $createData['country_code'] = $payload['country_code'] ?? null;
+            }
 
             if ($this->hasClientCompanyColumn()) {
                 $createData['company_id'] = $companyId;
@@ -233,6 +244,10 @@ class CollectionClientService
                 'phone' => trim((string) ($payload['phone'] ?? $client->phone)),
                 'address' => trim((string) ($payload['address'] ?? $client->address)),
             ];
+
+            if ($this->hasClientCountryCodeColumn()) {
+                $updateData['country_code'] = $payload['country_code'] ?? $client->country_code;
+            }
 
             if ($hasMetadataColumn) {
                 $updateData['metadata'] = $metadata;
@@ -400,6 +415,7 @@ class CollectionClientService
             'name' => $client->name,
             'dni' => $client->dni,
             'phone' => $client->phone,
+            'country_code' => $this->hasClientCountryCodeColumn() ? $client->country_code : null,
             'email' => $meta['email'] ?? null,
             'address' => $client->address,
             'reference' => $meta['reference'] ?? null,
@@ -520,6 +536,11 @@ class CollectionClientService
     private function hasClientMetadataColumn(): bool
     {
         return Schema::connection(self::CONNECTION)->hasColumn('collection_clients', 'metadata');
+    }
+
+    private function hasClientCountryCodeColumn(): bool
+    {
+        return Schema::connection(self::CONNECTION)->hasColumn('collection_clients', 'country_code');
     }
 
     private function hasClientIsActiveColumn(): bool

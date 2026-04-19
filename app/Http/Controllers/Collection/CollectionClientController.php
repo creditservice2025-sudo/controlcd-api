@@ -27,6 +27,7 @@ class CollectionClientController extends Controller
             'page' => (int) $request->input('page', 1),
             'per_page' => (int) $request->input('per_page', 10),
             'company_id' => $companyId,
+            'country_code' => $request->input('country_code'),
         ]);
     }
 

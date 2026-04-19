@@ -23,11 +23,21 @@ class CollectionDashboardService
         $today = Carbon::now()->toDateString();
         $user = Auth::user();
         $isAdmin = in_array($user->role_id, [1, 2]);
+        $countryCode = $request->input('country_code');
+
+        // IDs de créditos filtrados por país (si se especifica)
+        $creditIdsForCountry = null;
+        if ($countryCode) {
+            $creditIdsForCountry = CollectionCredit::where('company_id', $companyId)
+                ->where('country_code', $countryCode)
+                ->pluck('id');
+        }
 
         // ── FLUJO DE CAJA HOY ──
         $paymentsQ = CollectionPayment::where('company_id', $companyId)
             ->whereNull('deleted_at')->whereDate('recorded_at', $today);
         if (!$isAdmin) $paymentsQ->where('user_id', $user->id);
+        if ($creditIdsForCountry !== null) $paymentsQ->whereIn('credit_id', $creditIdsForCountry);
         $collectedToday = (float) $paymentsQ->sum('amount_paid');
         $paymentsCount = $paymentsQ->count();
 
@@ -37,11 +47,16 @@ class CollectionDashboardService
         $expensesToday = (float) $expensesQ->sum('amount');
 
         // ── CARTERA (capital + interes) ──
-        $activeCredits = CollectionCredit::where('company_id', $companyId)->where('status', 'active')->count();
+        $activeCreditsQ = CollectionCredit::where('company_id', $companyId)->where('status', 'active');
+        if ($countryCode) $activeCreditsQ->where('country_code', $countryCode);
+        $activeCredits = $activeCreditsQ->count();
+        $totalCapitalDisbursed = (float) (clone $activeCreditsQ)->sum('amount');
 
         // Totales de cuotas: separamos principal (capital) e interes
-        $portfolioTotals = CollectionInstallment::where('company_id', $companyId)
-            ->whereIn('status', ['pendiente', 'parcial', 'pagado'])
+        $portfolioTotalsQ = CollectionInstallment::where('company_id', $companyId)
+            ->whereIn('status', ['pendiente', 'parcial', 'pagado']);
+        if ($creditIdsForCountry !== null) $portfolioTotalsQ->whereIn('credit_id', $creditIdsForCountry);
+        $portfolioTotals = $portfolioTotalsQ
             ->select(
                 DB::raw('COALESCE(SUM(principal_amount), 0) as total_principal'),
                 DB::raw('COALESCE(SUM(interest_amount), 0) as total_interest'),
@@ -51,19 +66,22 @@ class CollectionDashboardService
                 DB::raw('COALESCE(SUM(paid_amount), 0) as paid_total')
             )->first();
 
-        $totalPrincipal = (float) ($portfolioTotals->total_principal ?? 0);
+        // Capital real desembolsado (suma de montos de créditos activos)
+        $totalPrincipal = $totalCapitalDisbursed;
+        // Datos de cuotas generadas
+        $installmentPrincipal = (float) ($portfolioTotals->total_principal ?? 0);
         $totalInterest = (float) ($portfolioTotals->total_interest ?? 0);
-        $totalCartera = (float) ($portfolioTotals->total_amount ?? 0);
+        $totalCartera = $totalPrincipal + $totalInterest;
         $paidPrincipal = (float) ($portfolioTotals->paid_principal ?? 0);
         $paidInterest = (float) ($portfolioTotals->paid_interest ?? 0);
         $paidTotal = (float) ($portfolioTotals->paid_total ?? 0);
 
-        // Pendiente por cobrar (lo que aun debe entrar)
-        $pendingTotal = $totalCartera - $paidTotal;
-        $pendingPrincipal = $totalPrincipal - $paidPrincipal;
-        $pendingInterest = $totalInterest - $paidInterest;
+        // Pendiente por cobrar
+        $pendingPrincipal = max(0, $totalPrincipal - $paidPrincipal);
+        $pendingInterest = max(0, $totalInterest - $paidInterest);
+        $pendingTotal = $pendingPrincipal + $pendingInterest;
 
-        // % recuperacion de capital
+        // % recuperacion de capital (sobre capital real desembolsado)
         $capitalRecoveryRate = $totalPrincipal > 0 ? round(($paidPrincipal / $totalPrincipal) * 100, 1) : 0;
         // % interes cobrado (ganancia realizada)
         $interestRealizedRate = $totalInterest > 0 ? round(($paidInterest / $totalInterest) * 100, 1) : 0;
@@ -74,9 +92,10 @@ class CollectionDashboardService
 
         // ── MOROSIDAD ──
         $sevenDaysAgo = Carbon::now()->subDays(7)->toDateString();
-        $overdueData = CollectionInstallment::where('company_id', $companyId)
-            ->where('status', 'pendiente')->where('due_date', '<', $today)
-            ->select(
+        $overdueQ = CollectionInstallment::where('company_id', $companyId)
+            ->where('status', 'pendiente')->where('due_date', '<', $today);
+        if ($creditIdsForCountry !== null) $overdueQ->whereIn('credit_id', $creditIdsForCountry);
+        $overdueData = $overdueQ->select(
                 DB::raw('COUNT(*) as total_count'),
                 DB::raw('COALESCE(SUM(amount - paid_amount), 0) as total_amount'),
                 DB::raw("COUNT(CASE WHEN due_date < '{$sevenDaysAgo}' THEN 1 END) as critical_count"),
@@ -85,15 +104,18 @@ class CollectionDashboardService
 
         $overdueCount = (int) ($overdueData->total_count ?? 0);
         $overdueAmount = (float) ($overdueData->total_amount ?? 0);
-        $totalDueInstallments = CollectionInstallment::where('company_id', $companyId)
-            ->where('due_date', '<=', $today)->count();
+        $totalDueQ = CollectionInstallment::where('company_id', $companyId)
+            ->where('due_date', '<=', $today);
+        if ($creditIdsForCountry !== null) $totalDueQ->whereIn('credit_id', $creditIdsForCountry);
+        $totalDueInstallments = $totalDueQ->count();
         $delinquencyRate = $totalDueInstallments > 0 ? round(($overdueCount / $totalDueInstallments) * 100, 1) : 0;
 
         // ── PROXIMOS VENCIMIENTOS (7 dias) ──
-        $upcoming = CollectionInstallment::where('collection_installments.company_id', $companyId)
+        $upcomingQ = CollectionInstallment::where('collection_installments.company_id', $companyId)
             ->whereIn('collection_installments.status', ['pendiente', 'parcial'])
-            ->whereBetween('collection_installments.due_date', [$today, Carbon::now()->addDays(7)->toDateString()])
-            ->join('collection_credits', function ($j) {
+            ->whereBetween('collection_installments.due_date', [$today, Carbon::now()->addDays(7)->toDateString()]);
+        if ($creditIdsForCountry !== null) $upcomingQ->whereIn('collection_installments.credit_id', $creditIdsForCountry);
+        $upcoming = $upcomingQ->join('collection_credits', function ($j) {
                 $j->on('collection_installments.credit_id', '=', 'collection_credits.id')
                   ->on('collection_installments.company_id', '=', 'collection_credits.company_id');
             })
@@ -119,8 +141,10 @@ class CollectionDashboardService
             ]);
 
         // ── ACTIVIDAD RECIENTE ──
-        $recentPayments = CollectionPayment::where('company_id', $companyId)
-            ->whereNull('deleted_at')->orderByDesc('recorded_at')->limit(8)
+        $recentPaymentsQ = CollectionPayment::where('company_id', $companyId)
+            ->whereNull('deleted_at')->orderByDesc('recorded_at');
+        if ($creditIdsForCountry !== null) $recentPaymentsQ->whereIn('credit_id', $creditIdsForCountry);
+        $recentPayments = $recentPaymentsQ->limit(8)
             ->get()->map(fn($p) => [
                 'type' => 'payment', 'amount' => (float) $p->amount_paid,
                 'description' => "Cobro cuota #{$p->installment_number}",

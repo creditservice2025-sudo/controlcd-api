@@ -16,6 +16,7 @@ class CollectionClient extends Model
         'name',
         'phone',
         'address',
+        'country_code',
         'metadata'
     ];
 

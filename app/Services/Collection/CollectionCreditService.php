@@ -72,6 +72,17 @@ class CollectionCreditService
             $currency = $payload['currency'] ?? 'COP';
             $countryCode = $payload['country_code'] ?? 'CO';
 
+            // Validar contra la configuración de la empresa
+            $config = \App\Models\Collection\CollectionCompanyConfig::where('company_id', $companyId)->first();
+            if ($config) {
+                if (!$config->hasCurrency($currency, $countryCode)) {
+                    return $this->errorResponse("La moneda {$currency} ({$countryCode}) no está habilitada para esta empresa.", 422);
+                }
+            } else if ($currency !== 'COP' || $countryCode !== 'CO') {
+                // Si no hay config, solo permitimos COP/CO por defecto
+                return $this->errorResponse("Esta empresa no tiene configuradas monedas adicionales.", 422);
+            }
+
             $credit = CollectionCredit::query()->create([
                 'company_id' => $companyId,
                 'client_id' => $clientId,
