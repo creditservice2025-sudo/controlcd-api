@@ -204,6 +204,113 @@ class CollectionDashboardService
         ]);
     }
 
+    /**
+     * Desglose por crédito que compone los totales del dashboard.
+     * Usa la MISMA query base de instalments que getSummary() para que la
+     * suma de las filas coincida exactamente con las tarjetas.
+     */
+    public function getPortfolioBreakdown($request)
+    {
+        $companyId = $this->resolveCompanyId($request->company_id);
+        if (!$companyId) return $this->errorResponse('Empresa no identificada', 422);
+
+        $countryCode = $request->input('country_code');
+        $search = trim((string) $request->input('search', ''));
+
+        $q = DB::connection('collection_pgsql')
+            ->table('collection_installments as i')
+            ->join('collection_credits as c', function ($j) {
+                $j->on('c.id', '=', 'i.credit_id')
+                  ->on('c.company_id', '=', 'i.company_id');
+            })
+            ->join('collection_clients as cl', function ($j) {
+                $j->on('cl.id', '=', 'c.client_id')
+                  ->on('cl.company_id', '=', 'c.company_id');
+            })
+            ->where('i.company_id', $companyId)
+            ->whereIn('i.status', ['pendiente', 'parcial', 'pagado'])
+            ->select(
+                'c.id as credit_id',
+                'c.amount as credit_amount',
+                'c.country_code',
+                'c.status as credit_status',
+                'c.created_at as credit_created_at',
+                'cl.id as client_id',
+                'cl.name as client_name',
+                'cl.dni as client_dni',
+                DB::raw('COALESCE(SUM(i.principal_amount), 0) as total_principal'),
+                DB::raw('COALESCE(SUM(i.interest_amount), 0) as total_interest'),
+                DB::raw('COALESCE(SUM(i.amount), 0) as total_amount'),
+                DB::raw('COALESCE(SUM(i.principal_paid), 0) as paid_principal'),
+                DB::raw('COALESCE(SUM(i.interest_paid), 0) as paid_interest'),
+                DB::raw('COALESCE(SUM(i.paid_amount), 0) as paid_total')
+            )
+            ->groupBy(
+                'c.id', 'c.amount', 'c.country_code', 'c.status', 'c.created_at',
+                'cl.id', 'cl.name', 'cl.dni'
+            )
+            ->orderByRaw('COALESCE(SUM(i.amount), 0) - COALESCE(SUM(i.paid_amount), 0) DESC');
+
+        if ($countryCode) {
+            $q->where('c.country_code', $countryCode);
+        }
+
+        if ($search !== '') {
+            $like = '%' . str_replace(['%', '_'], ['\\%', '\\_'], $search) . '%';
+            $q->where(function ($w) use ($like) {
+                $w->where('cl.name', 'ilike', $like)
+                  ->orWhere('cl.dni', 'ilike', $like);
+            });
+        }
+
+        $rows = $q->get()->map(function ($r) {
+            // En el modelo monthly_interest_open, las cuotas contienen
+            // únicamente el interés mensual; el capital se conserva en
+            // collection_credits.amount. Por eso Total/Pendiente se calculan
+            // usando credit.amount como el capital real, igual que el
+            // dashboard (getSummary) arma totalPrincipal desde credits.
+            $creditAmount = (float) $r->credit_amount;
+            $installmentPrincipal = (float) $r->total_principal;
+            $totalInterest = (float) $r->total_interest;
+            $paidPrincipal = (float) $r->paid_principal;
+            $paidInterest = (float) $r->paid_interest;
+            $paidTotal = (float) $r->paid_total;
+
+            $pendingPrincipal = max(0, $creditAmount - $paidPrincipal);
+            $pendingInterest = max(0, $totalInterest - $paidInterest);
+            $pendingTotal = $pendingPrincipal + $pendingInterest;
+
+            return [
+                'credit_id' => (int) $r->credit_id,
+                'credit_amount' => $creditAmount,
+                'country_code' => $r->country_code,
+                'credit_status' => $r->credit_status,
+                'created_at' => $r->credit_created_at,
+                'client_id' => (int) $r->client_id,
+                'client_name' => $r->client_name,
+                'client_dni' => $r->client_dni,
+                // Capital real (desembolsado) — coincide con dashboard.total_principal
+                'total_principal' => $creditAmount,
+                // Principal devengado en cuotas (informativo, suele ser 0 en monthly_interest_open)
+                'installment_principal' => $installmentPrincipal,
+                'total_interest' => $totalInterest,
+                // Cartera total por crédito = capital + intereses proyectados
+                'total_amount' => $creditAmount + $totalInterest,
+                'paid_principal' => $paidPrincipal,
+                'paid_interest' => $paidInterest,
+                'paid_total' => $paidTotal,
+                'pending_principal' => $pendingPrincipal,
+                'pending_interest' => $pendingInterest,
+                'pending_total' => $pendingTotal,
+            ];
+        });
+
+        return $this->successResponse([
+            'credits' => $rows,
+            'count' => $rows->count(),
+        ]);
+    }
+
     private function resolveCompanyId($requestedId)
     {
         if ($requestedId) return (int) $requestedId;

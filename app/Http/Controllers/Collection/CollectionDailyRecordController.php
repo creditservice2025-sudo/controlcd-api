@@ -3,17 +3,17 @@
 namespace App\Http\Controllers\Collection;
 
 use App\Http\Controllers\Controller;
-use App\Services\Collection\CollectionDashboardService;
+use App\Services\Collection\CollectionDailyRecordService;
 use App\Traits\ResolvesCollectionCompany;
 use Illuminate\Http\Request;
 
-class CollectionDashboardController extends Controller
+class CollectionDailyRecordController extends Controller
 {
     use ResolvesCollectionCompany;
 
     protected $service;
 
-    public function __construct(CollectionDashboardService $service)
+    public function __construct(CollectionDailyRecordService $service)
     {
         $this->service = $service;
     }
@@ -23,14 +23,22 @@ class CollectionDashboardController extends Controller
         $companyId = $this->resolveOwnCompanyId($request);
         if (!is_int($companyId)) return $companyId;
 
-        return $this->service->getSummary($request);
+        return $this->service->index($request);
     }
 
-    public function portfolioBreakdown(Request $request)
+    public function store(Request $request)
     {
         $companyId = $this->resolveOwnCompanyId($request);
         if (!is_int($companyId)) return $companyId;
 
-        return $this->service->getPortfolioBreakdown($request);
+        return $this->service->create($request);
+    }
+
+    public function destroy(Request $request, int $id)
+    {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
+        return $this->service->destroy($request, $id);
     }
 }

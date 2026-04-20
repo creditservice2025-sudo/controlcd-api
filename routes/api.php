@@ -316,7 +316,14 @@ Route::middleware('auth:api')->group(function () {
         Route::post('payments', [CollectionPaymentController::class, 'store']);
         Route::get('expenses', [\App\Http\Controllers\Collection\CollectionExpenseController::class, 'index']);
         Route::post('expenses', [\App\Http\Controllers\Collection\CollectionExpenseController::class, 'store']);
+
+        // Registros diarios (bit\u00e1cora manual: ingreso | gasto | transferencia | ajuste)
+        // Independiente de wallet/ledger.
+        Route::get('daily-records', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'index']);
+        Route::post('daily-records', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'store']);
+        Route::delete('daily-records/{id}', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'destroy']);
         Route::get('dashboard/summary', [\App\Http\Controllers\Collection\CollectionDashboardController::class, 'index']);
+        Route::get('dashboard/portfolio-breakdown', [\App\Http\Controllers\Collection\CollectionDashboardController::class, 'portfolioBreakdown']);
         
         // WhatsApp Based Security Flow
         Route::post('security/request-deletion', [\App\Http\Controllers\Collection\CollectionSecurityController::class, 'requestDeletionToken']);
