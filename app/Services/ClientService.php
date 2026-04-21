@@ -1883,9 +1883,7 @@ class ClientService
             }
 
             if ($user->role_id == 5 && $seller) {
-                $creditsQuery->whereHas('client', function ($q) use ($seller) {
-                    $q->where('seller_id', $seller->id);
-                });
+                $creditsQuery->where('credits.seller_id', $seller->id);
             }
 
             if (Auth::user()->role_id == 1 && $companyId) {
