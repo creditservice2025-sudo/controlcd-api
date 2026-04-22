@@ -362,6 +362,42 @@ class CreditController extends Controller
         }
     }
 
+    /**
+     * Version ligera para modales de dashboard: devuelve solo columnas necesarias
+     * sin eager loading pesado. Rapido incluso con miles de creditos por vendedor.
+     */
+    public function getSellerCarteraLite(Request $request, int $sellerId)
+    {
+        try {
+            $rows = \DB::table('credits')
+                ->join('clients', 'clients.id', '=', 'credits.client_id')
+                ->where('credits.seller_id', $sellerId)
+                ->whereNull('credits.deleted_at')
+                ->whereNull('clients.deleted_at')
+                ->select(
+                    'credits.id',
+                    'credits.status',
+                    'credits.credit_value',
+                    'credits.total_interest',
+                    'credits.created_at',
+                    'credits.first_quota_date',
+                    'clients.id as client_id',
+                    'clients.name as client_name'
+                )
+                ->orderBy('clients.name')
+                ->get();
+
+            return response()->json([
+                'success' => true,
+                'data' => $rows,
+                'total' => $rows->count(),
+            ]);
+        } catch (\Exception $e) {
+            \Log::error("getSellerCarteraLite error: " . $e->getMessage());
+            return $this->errorResponse('Error al obtener la cartera del vendedor', 500);
+        }
+    }
+
     public function dailyCollectionReport(Request $request)
     {
         try {

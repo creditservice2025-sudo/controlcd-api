@@ -170,6 +170,9 @@ Route::middleware('auth:api')->group(function () {
     Route::get('credits/client/{client}', [CreditController::class, 'getCredits']);
     Route::get('credits/seller/{sellerId}', [CreditController::class, 'getSellerCredits']);
     Route::get('/credits/seller/{sellerId}/by-date', [CreditController::class, 'getSellerCredits']);
+    Route::get('credits/seller/{sellerId}/cartera-lite', [CreditController::class, 'getSellerCarteraLite']);
+    Route::get('payments/seller/{sellerId}/cobrado-lite', [PaymentController::class, 'getSellerCobradoLite']);
+    Route::get('payments/seller/{sellerId}/del-dia-lite', [PaymentController::class, 'getSellerDelDiaLite']);
     Route::put('credit/{creditId}/update-schedule', [CreditController::class, 'updateSchedule']);
     Route::put('credit/{creditId}/update-frequency', [CreditController::class, 'updateFrequency']);
     Route::post('credit/{creditId}/simulate-edit', [CreditController::class, 'simulateEdit']);

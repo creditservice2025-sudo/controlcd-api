@@ -91,6 +91,129 @@ class PaymentController extends Controller
         }
     }
 
+    /**
+     * Version ligera: totales del dia + lista de pagos del vendedor en una unica query.
+     * Reemplaza las 2 llamadas (daily-totals + for-collections) que el modal hacia antes.
+     */
+    public function getSellerDelDiaLite(Request $request, $sellerId)
+    {
+        try {
+            if (!is_numeric($sellerId)) {
+                $seller = \App\Models\Seller::where('uuid', $sellerId)->firstOrFail();
+                $sellerId = $seller->id;
+            }
+
+            $date = $request->get('date') ?: \Carbon\Carbon::now($request->get('timezone', 'America/Lima'))->toDateString();
+
+            $rows = \DB::table('payments')
+                ->join('credits', 'credits.id', '=', 'payments.credit_id')
+                ->join('clients', 'clients.id', '=', 'credits.client_id')
+                ->where('credits.seller_id', $sellerId)
+                ->whereNull('payments.deleted_at')
+                ->whereNull('credits.deleted_at')
+                ->whereNull('clients.deleted_at')
+                ->whereRaw("COALESCE(payments.business_date, DATE(payments.created_at)) = ?", [$date])
+                ->select(
+                    'payments.id',
+                    'payments.amount',
+                    'payments.payment_method',
+                    'payments.status as payment_status',
+                    'credits.id as credit_id',
+                    'clients.id as client_id',
+                    'clients.name as client_name'
+                )
+                ->orderBy('payments.created_at', 'asc')
+                ->get();
+
+            // Agrupar por credit_id (1 fila por credito con monto sumado)
+            $items = $rows->groupBy('credit_id')->map(function ($group) {
+                $first = $group->first();
+                return [
+                    'credit_id' => $first->credit_id,
+                    'client_id' => $first->client_id,
+                    'cliente'   => $first->client_name,
+                    'payment_method' => $first->payment_method,
+                    'monto'     => (float) $group->sum('amount'),
+                ];
+            })->values();
+
+            $cash     = (float) $rows->where('payment_method', 'Efectivo')->sum('amount');
+            $transfer = (float) $rows->where('payment_method', 'Transferencia')->sum('amount');
+
+            return response()->json([
+                'success' => true,
+                'date'    => $date,
+                'totals'  => [
+                    'collected_total' => (float) $rows->sum('amount'),
+                    'cash'            => $cash,
+                    'transfer'        => $transfer,
+                    'clients_count'   => $rows->pluck('client_id')->unique()->count(),
+                    'payments_count'  => $rows->count(),
+                ],
+                'items' => $items,
+            ]);
+        } catch (\Exception $e) {
+            \Log::error("getSellerDelDiaLite error: " . $e->getMessage());
+            return $this->errorResponse('Error al obtener pagos del dia del vendedor', 500);
+        }
+    }
+
+    /**
+     * Version ligera para el modal del dashboard: devuelve todos los pagos del
+     * vendedor con columnas minimas y sin eager loading pesado.
+     * Soporta filtros opcionales start_date / end_date (por business_date).
+     */
+    public function getSellerCobradoLite(Request $request, $sellerId)
+    {
+        try {
+            if (!is_numeric($sellerId)) {
+                $seller = \App\Models\Seller::where('uuid', $sellerId)->firstOrFail();
+                $sellerId = $seller->id;
+            }
+
+            $query = \DB::table('payments')
+                ->join('credits', 'credits.id', '=', 'payments.credit_id')
+                ->join('clients', 'clients.id', '=', 'credits.client_id')
+                ->where('credits.seller_id', $sellerId)
+                ->whereNull('payments.deleted_at')
+                ->whereNull('credits.deleted_at')
+                ->whereNull('clients.deleted_at');
+
+            if ($request->filled('start_date')) {
+                $query->where(\DB::raw("COALESCE(payments.business_date, DATE(payments.created_at))"), '>=', $request->get('start_date'));
+            }
+            if ($request->filled('end_date')) {
+                $query->where(\DB::raw("COALESCE(payments.business_date, DATE(payments.created_at))"), '<=', $request->get('end_date'));
+            }
+
+            $rows = $query
+                ->select(
+                    'payments.id',
+                    'payments.amount',
+                    'payments.payment_method',
+                    'payments.status as payment_status',
+                    'payments.business_date',
+                    'payments.payment_date',
+                    'payments.created_at',
+                    'credits.id as credit_id',
+                    'clients.id as client_id',
+                    'clients.name as client_name'
+                )
+                ->orderBy('payments.created_at', 'desc')
+                ->get();
+
+            return response()->json([
+                'success' => true,
+                'data' => $rows,
+                'total' => $rows->count(),
+                'total_amount' => (float) $rows->sum('amount'),
+            ]);
+        } catch (\Exception $e) {
+            \Log::error("getSellerCobradoLite error: " . $e->getMessage());
+            return $this->errorResponse('Error al obtener los pagos del vendedor', 500);
+        }
+    }
+
     public function show($creditId, $paymentId)
     {
         try {

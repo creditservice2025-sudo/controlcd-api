@@ -371,9 +371,12 @@ class DashboardService
             $user = Auth::user();
             $role = $user->role_id;
 
-            $timezone = 'America/Lima';
-            $startUTC = Carbon::now($timezone)->startOfDay()->timezone('UTC');
-            $endUTC = Carbon::now($timezone)->endOfDay()->timezone('UTC');
+            // Timezone: prioridad request -> company country -> Lima. Evita el hardcode previo.
+            $timezone = $request->get('timezone')
+                ?: (($user->company && $user->company->country) ? $user->company->country->timezone : null)
+                ?: 'America/Lima';
+            $startUTC  = Carbon::now($timezone)->startOfDay()->timezone('UTC');
+            $endUTC    = Carbon::now($timezone)->endOfDay()->timezone('UTC');
             $todayDate = Carbon::now($timezone)->toDateString();
 
             $sellersQuery = Seller::query()
@@ -425,35 +428,32 @@ class DashboardService
                 return response()->json(['success' => true, 'data' => []]);
             }
 
-            // 1. Agregaciones de Cartera (Inicial y Cobrado All Time)
-            // Calculamos Capital e Interés por separado usando el ratio de cada crédito en SQL
+            // 1. Agregaciones de Cartera (Inicial All Time).
+            // IMPORTANTE: NO hacer JOIN con payments aqui. El JOIN 1:N multiplica credit_value por el numero
+            // de pagos de cada credito, inflando los SUMs hasta 15x. Los pagos se calculan aparte en $paymentAggs.
             $portfolioAggs = DB::table('credits')
-                ->leftJoin('payments', function($join) {
-                    $join->on('credits.id', '=', 'payments.credit_id')
-                         ->whereNull('payments.deleted_at');
-                })
                 ->whereIn('credits.seller_id', $sellerIds)
                 ->whereNull('credits.deleted_at')
                 ->select(
                     'credits.seller_id',
+                    DB::raw("COUNT(credits.id) as count_credits"),
                     // Totales All Time (incluyendo irrecuperables)
-                    DB::raw("SUM(DISTINCT credits.id) as count_credits"), // Solo informativo
                     DB::raw("SUM(credits.credit_value) as total_cap_init_all"),
                     DB::raw("SUM(credits.credit_value * credits.total_interest / 100) as total_util_init_all"),
-                    
                     // Totales No Irrecuperables (para 'to_collect' e 'initial_portfolio' visual)
                     DB::raw("SUM(IF(credits.status != 'Cartera Irrecuperable', credits.credit_value, 0)) as init_cap_non_irr"),
                     DB::raw("SUM(IF(credits.status != 'Cartera Irrecuperable', credits.credit_value * credits.total_interest / 100, 0)) as init_util_non_irr"),
-
-                    // Cobrado (Necesitamos la suma de pagos escalados por el ratio de cada crédito)
-                    // Nota: Usar subquery o Map en PHP para los pagos es a veces más seguro si el JOIN multiplica filas.
-                    // Pero para optimizar máximo, calcularemos el cobrado total por crédito primero.
                 )
                 ->groupBy('credits.seller_id')
                 ->get()
                 ->keyBy('seller_id');
 
             // 2. Pagos por Crédito Agrupados por Vendedor (Para precisión de Ratios)
+            // NULLIF blinda ante division por cero (credit_value=0 o total_interest=-100 futuros).
+            $capRatio  = "(credits.credit_value / NULLIF(credits.credit_value + (credits.credit_value * credits.total_interest / 100), 0))";
+            $utilRatio = "((credits.credit_value * credits.total_interest / 100) / NULLIF(credits.credit_value + (credits.credit_value * credits.total_interest / 100), 0))";
+            $todayExpr = "COALESCE(payments.business_date, DATE(payments.created_at)) = '$todayDate'";
+
             $paymentAggs = DB::table('payments')
                 ->join('credits', 'payments.credit_id', '=', 'credits.id')
                 ->whereIn('credits.seller_id', $sellerIds)
@@ -463,14 +463,14 @@ class DashboardService
                     'credits.seller_id',
                     // All Time
                     DB::raw("SUM(payments.amount) as total_paid"),
-                    DB::raw("SUM(payments.amount * (credits.credit_value / (credits.credit_value + (credits.credit_value * credits.total_interest / 100)))) as cap_paid"),
+                    DB::raw("COALESCE(SUM(payments.amount * $capRatio), 0) as cap_paid"),
                     // All Time - Non Irrecuperable (para to_collect)
                     DB::raw("SUM(IF(credits.status != 'Cartera Irrecuperable', payments.amount, 0)) as total_paid_non_irr"),
-                    DB::raw("SUM(IF(credits.status != 'Cartera Irrecuperable', payments.amount * (credits.credit_value / (credits.credit_value + (credits.credit_value * credits.total_interest / 100))), 0)) as cap_paid_non_irr"),
-                    // Hoy
-                    DB::raw("SUM(IF(payments.created_at BETWEEN '$startUTC' AND '$endUTC', payments.amount, 0)) as paid_today"),
-                    DB::raw("SUM(IF(payments.created_at BETWEEN '$startUTC' AND '$endUTC', payments.amount * (credits.credit_value / (credits.credit_value + (credits.credit_value * credits.total_interest / 100))), 0)) as cap_paid_today"),
-                    DB::raw("SUM(IF(payments.created_at BETWEEN '$startUTC' AND '$endUTC', payments.amount * ((credits.credit_value * credits.total_interest / 100) / (credits.credit_value + (credits.credit_value * credits.total_interest / 100))), 0)) as util_paid_today")
+                    DB::raw("COALESCE(SUM(IF(credits.status != 'Cartera Irrecuperable', payments.amount * $capRatio, 0)), 0) as cap_paid_non_irr"),
+                    // Hoy: usar business_date (consistente con wallet y liquidaciones). Fallback a created_at si no existe.
+                    DB::raw("SUM(IF($todayExpr, payments.amount, 0)) as paid_today"),
+                    DB::raw("COALESCE(SUM(IF($todayExpr, payments.amount * $capRatio, 0)), 0) as cap_paid_today"),
+                    DB::raw("COALESCE(SUM(IF($todayExpr, payments.amount * $utilRatio, 0)), 0) as util_paid_today")
                 )
                 ->groupBy('credits.seller_id')
                 ->get()
@@ -504,10 +504,10 @@ class DashboardService
                 ->get()
                 ->keyBy('seller_id');
 
-            // 5. Gastos e Ingresos
+            // 5. Gastos e Ingresos (usar business_date para consistencia con liquidaciones)
             $expensesTodayAgg = DB::table('expenses')
                 ->whereIn('user_id', $userIds)
-                ->whereBetween('created_at', [$startUTC, $endUTC])
+                ->whereRaw("COALESCE(business_date, DATE(created_at)) = ?", [$todayDate])
                 ->where(function ($q) {
                     $q->where('status', 'Aprobado')
                         ->orWhere('description', 'like', '%AJUSTE%');
@@ -519,7 +519,7 @@ class DashboardService
 
             $incomeTodayAgg = DB::table('incomes')
                 ->whereIn('user_id', $userIds)
-                ->whereBetween('created_at', [$startUTC, $endUTC])
+                ->whereRaw("COALESCE(business_date, DATE(created_at)) = ?", [$todayDate])
                 ->select('user_id', DB::raw("SUM(value) as total"))
                 ->groupBy('user_id')
                 ->get()
