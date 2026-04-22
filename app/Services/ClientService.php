@@ -2018,7 +2018,53 @@ class ClientService
                 return $credit;
             });
 
-            return response()->json([
+            // Resumen de pagos del dia INDEPENDIENTE de la paginacion.
+            // La tarjeta "Pagos del dia" debe mostrar el total real del dia del vendedor,
+            // no depender de cuantas paginas de creditos se hayan cargado en memoria.
+            // Solo se popula para vendedores (role 5); admins caen al fallback del frontend.
+            $paymentsTodaySummary = null;
+
+            if ($user->role_id == 5 && $seller) {
+                $summaryRows = Payment::query()
+                    ->join('credits', 'payments.credit_id', '=', 'credits.id')
+                    ->join('clients', 'credits.client_id', '=', 'clients.id')
+                    ->whereNull('payments.deleted_at')
+                    ->whereNull('credits.deleted_at')
+                    ->whereNull('clients.deleted_at')
+                    ->where('payments.business_date', $todayLocal)
+                    ->where('credits.seller_id', $seller->id)
+                    ->orderBy('payments.created_at', 'asc')
+                    ->get([
+                        'payments.id',
+                        'payments.credit_id',
+                        'payments.amount',
+                        'payments.payment_method',
+                        'payments.status as payment_status',
+                        'clients.id as client_id',
+                        'clients.name as cliente',
+                    ]);
+
+                // Agrupar por credit_id para preservar el UX anterior (un registro por credito, monto sumado).
+                $itemsByCredit = $summaryRows->groupBy('credit_id')->map(function ($group) {
+                    $first = $group->first();
+                    return [
+                        'credit_id'      => $first->credit_id,
+                        'client_id'      => $first->client_id,
+                        'cliente'        => $first->cliente,
+                        'monto'          => (float) $group->sum('amount'),
+                        'payment_method' => $first->payment_method,
+                        'status'         => $first->payment_status,
+                    ];
+                })->values();
+
+                $paymentsTodaySummary = [
+                    'total_amount'  => (float) $summaryRows->sum('amount'),
+                    'clients_count' => $summaryRows->pluck('client_id')->unique()->count(),
+                    'items'         => $itemsByCredit,
+                ];
+            }
+
+            $response = [
                 'success' => true,
                 'message' => 'Creditos encontrados',
                 'data' => $transformedItems,
@@ -2027,7 +2073,13 @@ class ClientService
                 'total' => $creditsPaginator->total(),
                 'per_page' => $creditsPaginator->perPage(),
                 'clients_total' => $clientsTotal,
-            ]);
+            ];
+
+            if ($paymentsTodaySummary !== null) {
+                $response['payments_today_summary'] = $paymentsTodaySummary;
+            }
+
+            return response()->json($response);
         } catch (\Exception $e) {
             Log::error("Error en getForCollections: {$e->getMessage()} | " . $e->getTraceAsString());
             return response()->json([
