@@ -33,6 +33,14 @@ return new class extends Migration
             }
         }
 
+        // Sincronizar usuarios (role_id -> Spatie Roles)
+        foreach (\App\Models\User::whereNotNull('role_id')->get() as $user) {
+            $role = Role::find($user->role_id);
+            if ($role && !$user->hasRole($role)) {
+                $user->assignRole($role);
+            }
+        }
+
         // Limpiar cache de permisos
         app()[\Spatie\Permission\PermissionRegistrar::class]->forgetCachedPermissions();
     }
