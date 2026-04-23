@@ -288,13 +288,13 @@ Route::middleware('auth:api')->group(function () {
     Route::get('payments/by-date', [PaymentController::class, 'paymentsByDate']);
     Route::get('payments/{creditId}', [PaymentController::class, 'index']);
     Route::get('payments/today/{creditId}', [PaymentController::class, 'paymentsToday']);
-    Route::post('payment/create', [PaymentController::class, 'create'])
-        ->middleware('permission:crear_pagos|aprobar_pagos');
+    // Operaciones base de pagos (crear/eliminar) son flujo core del cobrador —
+    // la validacion de ownership y fechas editables se resuelve en el controller.
+    // NO se aplica middleware permission:xxx aqui para no bloquear al cobrador en su operatoria diaria.
+    Route::post('payment/create', [PaymentController::class, 'create']);
     Route::get('payment/{creditId}/{paymentId}', [PaymentController::class, 'show']);
-    Route::delete('payment/delete/{paymentId}', [PaymentController::class, 'delete'])
-        ->middleware('permission:reversar_pagos|eliminar_pagos');
-    Route::delete('payment-installment/delete/{paymentInstallmentId}', [PaymentController::class, 'deletePaymentInstallment'])
-        ->middleware('permission:reversar_pagos|eliminar_pagos');
+    Route::delete('payment/delete/{paymentId}', [PaymentController::class, 'delete']);
+    Route::delete('payment-installment/delete/{paymentInstallmentId}', [PaymentController::class, 'deletePaymentInstallment']);
     Route::get('payments/seller/{sellerId}', [PaymentController::class, 'indexBySeller']);
     Route::get('payments/seller/{sellerId}/all', [PaymentController::class, 'getSellerPayments']);
     Route::get('payments/total/{creditId}', [PaymentController::class, 'getTotalWithoutInstallments']);
