@@ -111,7 +111,8 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/total', [ClientController::class, 'totalClients']);
         Route::get('/with-credits', [ClientController::class, 'indexWithCredits']);
         Route::get('/select', [ClientController::class, 'getClientsSelect']);
-        Route::post('/reactivate-by-criteria', [ClientController::class, 'reactivateClientsByIds']);
+        Route::post('/reactivate-by-criteria', [ClientController::class, 'reactivateClientsByIds'])
+            ->middleware('permission:reactivar_clientes');
         Route::delete('/delete-inactive-without-credits', [ClientController::class, 'deleteInactiveClientsWithoutCredits']);
         Route::get('/inactive-without-credits', [ClientController::class, 'getInactiveClientsWithoutCreditsWithFilters']);
         Route::delete('/delete-by-ids', [ClientController::class, 'deleteClientsByIds']);
@@ -143,8 +144,10 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/{id}/history', [ClientController::class, 'history']);
 
         // Transferencia de clientes
-        Route::post('/{id}/transfer', [ClientController::class, 'transfer']);
-        Route::post('/transfer-massive', [ClientController::class, 'transferMassive']);
+        Route::post('/{id}/transfer', [ClientController::class, 'transfer'])
+            ->middleware('permission:transferir_clientes');
+        Route::post('/transfer-massive', [ClientController::class, 'transferMassive'])
+            ->middleware('permission:transferir_clientes');
 
         // Orden de ruta
         Route::post('/update-order', [ClientController::class, 'updateOrder']);
@@ -170,9 +173,13 @@ Route::middleware('auth:api')->group(function () {
     Route::get('credits/client/{client}', [CreditController::class, 'getCredits']);
     Route::get('credits/seller/{sellerId}', [CreditController::class, 'getSellerCredits']);
     Route::get('/credits/seller/{sellerId}/by-date', [CreditController::class, 'getSellerCredits']);
-    Route::get('credits/seller/{sellerId}/cartera-lite', [CreditController::class, 'getSellerCarteraLite']);
-    Route::get('payments/seller/{sellerId}/cobrado-lite', [PaymentController::class, 'getSellerCobradoLite']);
-    Route::get('payments/seller/{sellerId}/del-dia-lite', [PaymentController::class, 'getSellerDelDiaLite']);
+    // Endpoints del modal "Detalle Vendedor" — protegidos por permiso ver_detalle_vendedor.
+    Route::get('credits/seller/{sellerId}/cartera-lite', [CreditController::class, 'getSellerCarteraLite'])
+        ->middleware('permission:ver_detalle_vendedor');
+    Route::get('payments/seller/{sellerId}/cobrado-lite', [PaymentController::class, 'getSellerCobradoLite'])
+        ->middleware('permission:ver_detalle_vendedor');
+    Route::get('payments/seller/{sellerId}/del-dia-lite', [PaymentController::class, 'getSellerDelDiaLite'])
+        ->middleware('permission:ver_detalle_vendedor');
     Route::put('credit/{creditId}/update-schedule', [CreditController::class, 'updateSchedule']);
     Route::put('credit/{creditId}/update-frequency', [CreditController::class, 'updateFrequency']);
     Route::post('credit/{creditId}/simulate-edit', [CreditController::class, 'simulateEdit']);
@@ -228,13 +235,19 @@ Route::middleware('auth:api')->group(function () {
         Route::get('accumulated-by-city-with-sellers', [LiquidationController::class, 'getAccumulatedByCityWithSellers']);
         Route::get('sellers-summary-by-city', [LiquidationController::class, 'getSellersSummaryByCity']);
         Route::get('seller/{sellerId}/liquidations-detail', [LiquidationController::class, 'getSellerLiquidationsDetail']);
-        Route::put('{liquidationId}/approve', [LiquidationController::class, 'approveLiquidation']);
-        Route::post('approve-multiple', [LiquidationController::class, 'approveMultipleLiquidations']);
-        Route::put('{liquidationId}/annul-base', [LiquidationController::class, 'annulBase']);
-        Route::put('update/{liquidationId}', [LiquidationController::class, 'updateLiquidation']);
+        Route::put('{liquidationId}/approve', [LiquidationController::class, 'approveLiquidation'])
+            ->middleware('permission:aprobar_liquidaciones');
+        Route::post('approve-multiple', [LiquidationController::class, 'approveMultipleLiquidations'])
+            ->middleware('permission:aprobar_liquidaciones');
+        Route::put('{liquidationId}/annul-base', [LiquidationController::class, 'annulBase'])
+            ->middleware('permission:rechazar_liquidaciones');
+        Route::put('update/{liquidationId}', [LiquidationController::class, 'updateLiquidation'])
+            ->middleware('permission:editar_liquidaciones');
 
-        Route::post('reopen-route', [LiquidationController::class, 'reopenRoute']);
-        Route::post('adjust-box', [LiquidationController::class, 'adjustBox']);
+        Route::post('reopen-route', [LiquidationController::class, 'reopenRoute'])
+            ->middleware('permission:rechazar_liquidaciones');
+        Route::post('adjust-box', [LiquidationController::class, 'adjustBox'])
+            ->middleware('permission:ajustar_caja');
         Route::get('simulate-recalculation', [LiquidationController::class, 'simulateRecalculation']);
 
         Route::get('download-report/{id}', [LiquidationController::class, 'downloadReport']);
@@ -275,10 +288,13 @@ Route::middleware('auth:api')->group(function () {
     Route::get('payments/by-date', [PaymentController::class, 'paymentsByDate']);
     Route::get('payments/{creditId}', [PaymentController::class, 'index']);
     Route::get('payments/today/{creditId}', [PaymentController::class, 'paymentsToday']);
-    Route::post('payment/create', [PaymentController::class, 'create']);
+    Route::post('payment/create', [PaymentController::class, 'create'])
+        ->middleware('permission:crear_pagos|aprobar_pagos');
     Route::get('payment/{creditId}/{paymentId}', [PaymentController::class, 'show']);
-    Route::delete('payment/delete/{paymentId}', [PaymentController::class, 'delete']);
-    Route::delete('payment-installment/delete/{paymentInstallmentId}', [PaymentController::class, 'deletePaymentInstallment']);
+    Route::delete('payment/delete/{paymentId}', [PaymentController::class, 'delete'])
+        ->middleware('permission:reversar_pagos|eliminar_pagos');
+    Route::delete('payment-installment/delete/{paymentInstallmentId}', [PaymentController::class, 'deletePaymentInstallment'])
+        ->middleware('permission:reversar_pagos|eliminar_pagos');
     Route::get('payments/seller/{sellerId}', [PaymentController::class, 'indexBySeller']);
     Route::get('payments/seller/{sellerId}/all', [PaymentController::class, 'getSellerPayments']);
     Route::get('payments/total/{creditId}', [PaymentController::class, 'getTotalWithoutInstallments']);
@@ -289,14 +305,19 @@ Route::middleware('auth:api')->group(function () {
     Route::get('reports/daily-collection', [CreditController::class, 'dailyCollectionReport']);
     Route::get('reports/credits/{credit}/report', [CreditController::class, 'creditReport']);
     Route::prefix('reports/excel')->group(function () {
-        Route::get('accumulated-by-city', [ReportExportController::class, 'downloadAccumulatedByCityExcel']);
-        Route::get('seller-liquidations/{sellerId}/export-detail', [ReportExportController::class, 'downloadSellerLiquidationsDetailExcel']);
-        Route::get('sellers-summary-by-city/{sellerId}', [ReportExportController::class, 'downloadSellersSummaryByCityExcel']);
+        Route::get('accumulated-by-city', [ReportExportController::class, 'downloadAccumulatedByCityExcel'])
+            ->middleware('permission:exportar_reportes');
+        Route::get('seller-liquidations/{sellerId}/export-detail', [ReportExportController::class, 'downloadSellerLiquidationsDetailExcel'])
+            ->middleware('permission:exportar_liquidaciones');
+        Route::get('sellers-summary-by-city/{sellerId}', [ReportExportController::class, 'downloadSellersSummaryByCityExcel'])
+            ->middleware('permission:exportar_reportes');
     });
 
     // Import Routes (Admin restricted via Controller)
-    Route::post('/import/analyze', [\App\Http\Controllers\ImportController::class, 'analyze']);
-    Route::post('/import/clients', [\App\Http\Controllers\ImportController::class, 'store']);
+    Route::post('/import/analyze', [\App\Http\Controllers\ImportController::class, 'analyze'])
+        ->middleware('permission:importar_clientes');
+    Route::post('/import/clients', [\App\Http\Controllers\ImportController::class, 'store'])
+        ->middleware('permission:importar_clientes');
 
     // Verification Routes
     Route::post('verification/send-otp', [VerificationController::class, 'sendOtp']);

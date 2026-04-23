@@ -1043,7 +1043,11 @@ class ClientService
                 $clientsQuery->where(function ($q) use ($search) {
                     $q->where('clients.name', 'like', "%{$search}%")
                         ->orWhere('clients.dni', 'like', "%{$search}%")
-                        ->orWhere('clients.email', 'like', "%{$search}%");
+                        ->orWhere('clients.email', 'like', "%{$search}%")
+                        // Buscar tambien por numero de credito (credits.id)
+                        ->orWhereHas('credits', function ($cq) use ($search) {
+                            $cq->where('id', 'like', "%{$search}%");
+                        });
                 });
             }
 
@@ -1062,6 +1066,11 @@ class ClientService
 
             $orderDirection = in_array(strtolower($orderDirection), ['asc', 'desc']) ? $orderDirection : 'desc';
             $clientsQuery->orderBy($orderBy, $orderDirection);
+
+            // Limit como safety: con 600+ clientes en Cartera Irrecuperable + eager loads (credits,
+            // payments, installments) la query puede tardar 30+ segundos y timeout. Este cap protege
+            // performance sin cambiar el shape de la respuesta. Si se necesitan mas, agregar paginacion.
+            $clientsQuery->limit(500);
 
             $clients = $clientsQuery->get();
 
