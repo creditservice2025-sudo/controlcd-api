@@ -241,8 +241,7 @@ Route::middleware('auth:api')->group(function () {
             ->middleware('permission:aprobar_liquidaciones');
         Route::put('{liquidationId}/annul-base', [LiquidationController::class, 'annulBase'])
             ->middleware('permission:rechazar_liquidaciones');
-        Route::put('update/{liquidationId}', [LiquidationController::class, 'updateLiquidation'])
-            ->middleware('permission:editar_liquidaciones');
+        Route::put('update/{liquidationId}', [LiquidationController::class, 'updateLiquidation']);
 
         Route::post('reopen-route', [LiquidationController::class, 'reopenRoute'])
             ->middleware('permission:rechazar_liquidaciones');
