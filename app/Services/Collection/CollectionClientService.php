@@ -150,7 +150,10 @@ class CollectionClientService
             ];
 
             if ($this->hasClientCountryCodeColumn()) {
-                $createData['country_code'] = $payload['country_code'] ?? null;
+                // Fallback: si el payload no envia country_code, usar 'CO' (Colombia) por defecto.
+                // Evita que clientes queden con NULL y desaparezcan del listado filtrado por territorio.
+                $countryCode = trim((string) ($payload['country_code'] ?? ''));
+                $createData['country_code'] = $countryCode !== '' ? $countryCode : 'CO';
             }
 
             if ($this->hasClientCompanyColumn()) {

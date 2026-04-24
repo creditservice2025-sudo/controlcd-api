@@ -2,7 +2,11 @@
 
 namespace App\Services\Collection;
 
+use App\Models\Collection\CollectionCapitalAddition;
+use App\Models\Collection\CollectionClient;
+use App\Models\Collection\CollectionCredit;
 use App\Models\Collection\CollectionDailyRecord;
+use App\Models\User;
 use App\Traits\ApiResponse;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
@@ -28,28 +32,130 @@ class CollectionDailyRecordService
         $dayStart = Carbon::parse($date . ' 00:00:00', $tz)->utc();
         $dayEnd = Carbon::parse($date . ' 23:59:59', $tz)->utc();
 
-        $q = CollectionDailyRecord::where('company_id', $companyId)
-            ->whereNull('deleted_at')
-            ->whereBetween('recorded_at', [$dayStart, $dayEnd]);
+        // Si el tipo filtrado es 'capital_addition', no cargamos daily records.
+        $dailyRecords = collect();
+        if ($type !== 'capital_addition') {
+            $q = CollectionDailyRecord::where('company_id', $companyId)
+                ->whereNull('deleted_at')
+                ->whereBetween('recorded_at', [$dayStart, $dayEnd]);
 
-        if ($countryCode) $q->where('country_code', strtoupper($countryCode));
-        if ($type && in_array($type, CollectionDailyRecord::TYPES)) $q->where('type', $type);
+            if ($countryCode) $q->where('country_code', strtoupper($countryCode));
+            if ($type && in_array($type, CollectionDailyRecord::TYPES)) $q->where('type', $type);
 
-        $records = $q->orderBy('recorded_at', 'desc')->get();
+            $dailyRecords = $q->orderBy('recorded_at', 'desc')->get();
+        }
+
+        // Adiciones de capital como filas virtuales (type='capital_addition').
+        $capitalVirtual = collect();
+        if (!$type || $type === 'capital_addition') {
+            $capitalVirtual = $this->buildVirtualCapitalAdditions($companyId, $date, $countryCode);
+        }
+
+        // Combinar y ordenar por timestamp descendente.
+        $all = $dailyRecords->concat($capitalVirtual)->sortByDesc(function ($r) {
+            return is_object($r) && isset($r->recorded_at)
+                ? Carbon::parse($r->recorded_at)->timestamp
+                : (is_array($r) ? strtotime($r['recorded_at'] ?? 'now') : 0);
+        })->values();
 
         $totals = [
-            'ingreso' => (float) $records->where('type', 'ingreso')->sum('amount'),
-            'gasto' => (float) $records->where('type', 'gasto')->sum('amount'),
-            'transferencia' => (float) $records->where('type', 'transferencia')->sum('amount'),
+            'ingreso' => (float) $dailyRecords->where('type', 'ingreso')->sum('amount'),
+            'gasto' => (float) $dailyRecords->where('type', 'gasto')->sum('amount'),
+            'transferencia' => (float) $dailyRecords->where('type', 'transferencia')->sum('amount'),
+            'capital_addition' => (float) $capitalVirtual->sum(fn($r) => (float) ($r['amount'] ?? 0)),
         ];
         $totals['net'] = $totals['ingreso'] - $totals['gasto'];
 
         return $this->successResponse([
-            'records' => $records,
+            'records' => $all,
             'summary' => $totals,
             'date' => $date,
             'timezone' => $tz,
         ]);
+    }
+
+    /**
+     * Construye filas virtuales de tipo 'capital_addition' para el dia dado,
+     * compatibles con la forma de CollectionDailyRecord que consume la UI.
+     */
+    private function buildVirtualCapitalAdditions(int $companyId, string $date, ?string $countryCode): \Illuminate\Support\Collection
+    {
+        $rows = CollectionCapitalAddition::query()
+            ->where('company_id', $companyId)
+            ->where('business_date', $date)
+            ->orderByDesc('id')
+            ->get();
+
+        if ($rows->isEmpty()) return collect();
+
+        $creditIds = $rows->pluck('credit_id')->filter()->unique()->values()->all();
+        $credits = CollectionCredit::query()
+            ->whereIn('id', $creditIds)
+            ->where('company_id', $companyId)
+            ->get(['id', 'client_id', 'amount'])
+            ->keyBy('id');
+
+        $clientIds = $credits->pluck('client_id')->filter()->unique()->values()->all();
+        $clients = CollectionClient::query()
+            ->whereIn('id', $clientIds)
+            ->where('company_id', $companyId)
+            ->get(['id', 'name', 'country_code'])
+            ->keyBy('id');
+
+        // Si se filtra por country_code, aplicarlo al cliente vinculado.
+        if ($countryCode) {
+            $cc = strtoupper($countryCode);
+            $rows = $rows->filter(function ($add) use ($credits, $clients, $cc) {
+                $credit = $credits->get($add->credit_id);
+                if (!$credit) return false;
+                $client = $clients->get($credit->client_id);
+                if (!$client) return false;
+                return strtoupper((string) $client->country_code) === $cc;
+            })->values();
+        }
+
+        $userIds = $rows->pluck('created_by')->filter()->unique()->values()->all();
+        $users = !empty($userIds)
+            ? User::query()->whereIn('id', $userIds)->pluck('name', 'id')->all()
+            : [];
+
+        return $rows->map(function ($add) use ($credits, $clients, $users) {
+            $credit = $credits->get($add->credit_id);
+            $client = $credit ? $clients->get($credit->client_id) : null;
+            $clientName = $client->name ?? null;
+            $countryCode = $client->country_code ?? null;
+
+            $meta = [
+                'credit_id' => $add->credit_id,
+                'client_name' => $clientName,
+                'reference_number' => $add->reference_number,
+                'bank_name' => $add->bank_name,
+                'payment_method' => $add->payment_method,
+                'voucher_photo' => $add->voucher_photo,
+                'virtual' => true,
+            ];
+
+            return [
+                'id' => 'ca_' . $add->id,
+                'company_id' => $add->company_id,
+                'user_id' => $add->created_by,
+                'user_name' => $users[$add->created_by] ?? null,
+                'type' => 'capital_addition',
+                'category' => $clientName
+                    ? ('Crédito #' . $add->credit_id . ' · ' . $clientName)
+                    : ('Crédito #' . $add->credit_id),
+                'amount' => (float) $add->amount,
+                'currency' => 'COP',
+                'country_code' => $countryCode,
+                'description' => $add->notes,
+                'recorded_at' => optional($add->created_at)->toISOString()
+                    ?? ($add->business_date . 'T00:00:00.000Z'),
+                'latitude' => null,
+                'longitude' => null,
+                'metadata' => $meta,
+                'deleted_at' => null,
+            ];
+        })->values();
     }
 
     public function create($request)

@@ -93,4 +93,43 @@ class CollectionCreditController extends Controller
 
         return $this->collectionCreditService->settle($companyId, $creditId, $validated);
     }
+
+    /**
+     * Agrega capital a un credito existente (modo monthly_interest_open).
+     * La cuota vigente no se toca; las siguientes usan el nuevo principal.
+     */
+    public function addCapital(Request $request, int $creditId)
+    {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
+        $validated = $request->validate([
+            'amount' => 'required|numeric|min:0.01',
+            'business_date' => 'nullable|date',
+            'payment_method' => 'nullable|string|max:50',
+            'reference_number' => 'nullable|string|max:120',
+            'bank_name' => 'nullable|string|max:150',
+            'notes' => 'nullable|string|max:500',
+            'voucher' => 'nullable|file|image|max:4096',
+        ]);
+
+        if ($request->hasFile('voucher')) {
+            $validated['voucher_photo'] = $request->file('voucher')->store('collection/capital_additions/voucher', 'public');
+        }
+
+        $validated['company_id'] = $companyId;
+
+        return $this->collectionCreditService->addCapital($creditId, $validated);
+    }
+
+    /**
+     * Historial de adiciones de capital sobre un credito.
+     */
+    public function listCapitalAdditions(Request $request, int $creditId)
+    {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
+        return $this->collectionCreditService->listCapitalAdditions($creditId, $companyId);
+    }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Services\Collection;
 
+use App\Models\Collection\CollectionCapitalAddition;
 use App\Models\Collection\CollectionClient;
 use App\Models\Collection\CollectionCredit;
 use App\Traits\ApiResponse;
@@ -122,6 +123,156 @@ class CollectionCreditService
                 ],
             ]);
         });
+    }
+
+    /**
+     * Agrega capital a un credito existente en modo monthly_interest_open.
+     *
+     * Regla de negocio (confirmada):
+     *  - Solo aplicable a creditos con status = 'active'.
+     *  - La cuota VIGENTE no se toca (puede tener pagos parciales).
+     *  - Al pagarse la cuota vigente y generarse la siguiente, esta usa el nuevo monto.
+     *  - Sin limite superior: se puede agregar cualquier monto.
+     *  - Genera movimiento en wallet tipo debit (action=capital_addition).
+     */
+    public function addCapital(int $creditId, array $payload)
+    {
+        $companyId = $this->resolveCompanyId($payload['company_id'] ?? null);
+        if (!$companyId) {
+            return $this->errorResponse('No se pudo determinar la compañía para Collection', 422);
+        }
+
+        $added = (float) ($payload['amount'] ?? 0);
+        if ($added <= 0) {
+            return $this->errorResponse('El monto a agregar debe ser mayor a 0', 422);
+        }
+
+        $credit = CollectionCredit::query()
+            ->where('id', $creditId)
+            ->where('company_id', $companyId)
+            ->first();
+
+        if (!$credit) {
+            return $this->errorNotFoundResponse('Crédito Collection no encontrado');
+        }
+
+        if ($credit->status !== 'active') {
+            return $this->errorResponse('Solo se puede agregar capital a créditos activos', 422);
+        }
+
+        $this->partitionService->ensurePartitions($companyId);
+
+        return DB::connection(self::CONNECTION)->transaction(function () use ($credit, $added, $payload, $companyId) {
+            $businessDate = $payload['business_date'] ?? Carbon::now()->toDateString();
+
+            // 1) Registro de la adicion (trazabilidad)
+            $addition = CollectionCapitalAddition::query()->create([
+                'company_id' => $companyId,
+                'credit_id' => $credit->id,
+                'amount' => $added,
+                'business_date' => $businessDate,
+                'payment_method' => $payload['payment_method'] ?? null,
+                'reference_number' => $payload['reference_number'] ?? null,
+                'bank_name' => $payload['bank_name'] ?? null,
+                'voucher_photo' => $payload['voucher_photo'] ?? null,
+                'notes' => $payload['notes'] ?? null,
+                'created_by' => Auth::id(),
+            ]);
+
+            // 2) Actualizar amount del credito (nuevo principal)
+            $previousAmount = (float) $credit->amount;
+            $newAmount = round($previousAmount + $added, 2);
+            $credit->amount = $newAmount;
+            $credit->save();
+
+            // 3) Wallet movement: debit por el capital entregado
+            app(\App\Services\Collection\CollectionWalletService::class)->recordMovement([
+                'company_id' => $companyId,
+                'currency' => $credit->currency ?? 'COP',
+                'country_code' => $credit->country_code ?? 'CO',
+                'amount' => $added,
+                'type' => 'debit',
+                'action_type' => 'capital_addition',
+                'reference_type' => 'credit',
+                'reference_id' => $credit->id,
+                'description' => "Adición de capital al crédito #{$credit->id}",
+            ]);
+
+            $nextQuota = round($newAmount * (float) $credit->interest_rate / 100, 2);
+
+            return $this->successCreatedResponse([
+                'success' => true,
+                'message' => 'Capital agregado al crédito',
+                'data' => [
+                    'addition_id' => $addition->id,
+                    'credit_id' => $credit->id,
+                    'previous_amount' => $previousAmount,
+                    'added_amount' => $added,
+                    'new_amount' => $newAmount,
+                    'next_quota_amount' => $nextQuota,
+                ],
+            ]);
+        });
+    }
+
+    /**
+     * Lista las adiciones de capital hechas sobre un credito (historial).
+     * Orden: mas recientes primero. Incluye el nombre del usuario que las hizo.
+     */
+    public function listCapitalAdditions(int $creditId, ?int $companyId = null)
+    {
+        $companyId = $this->resolveCompanyId($companyId);
+        if (!$companyId) {
+            return $this->errorResponse('No se pudo determinar la compañía para Collection', 422);
+        }
+
+        $exists = CollectionCredit::query()
+            ->where('id', $creditId)
+            ->where('company_id', $companyId)
+            ->exists();
+        if (!$exists) {
+            return $this->errorNotFoundResponse('Crédito Collection no encontrado');
+        }
+
+        $rows = CollectionCapitalAddition::query()
+            ->where('credit_id', $creditId)
+            ->where('company_id', $companyId)
+            ->orderByDesc('business_date')
+            ->orderByDesc('id')
+            ->get();
+
+        // Hidratar nombre del usuario (viene del schema MySQL, conexion separada).
+        $userIds = $rows->pluck('created_by')->filter()->unique()->values()->all();
+        $users = [];
+        if (!empty($userIds)) {
+            $users = \App\Models\User::query()
+                ->whereIn('id', $userIds)
+                ->pluck('name', 'id')
+                ->all();
+        }
+
+        $data = $rows->map(fn($r) => [
+            'id'               => $r->id,
+            'amount'           => (float) $r->amount,
+            'business_date'    => optional($r->business_date)->toDateString(),
+            'payment_method'   => $r->payment_method,
+            'reference_number' => $r->reference_number,
+            'bank_name'        => $r->bank_name,
+            'notes'            => $r->notes,
+            'voucher_photo'    => $r->voucher_photo,
+            'created_by'       => $r->created_by,
+            'created_by_name'  => $users[$r->created_by] ?? null,
+            'created_at'       => optional($r->created_at)->toISOString(),
+        ])->values();
+
+        return $this->successResponse([
+            'success' => true,
+            'data' => [
+                'items' => $data,
+                'total_count' => $data->count(),
+                'total_amount' => (float) $rows->sum('amount'),
+            ],
+        ]);
     }
 
     private function resolveCompanyId($requestedCompanyId): ?int

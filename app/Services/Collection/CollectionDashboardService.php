@@ -2,6 +2,7 @@
 
 namespace App\Services\Collection;
 
+use App\Models\Collection\CollectionCapitalAddition;
 use App\Models\Collection\CollectionCredit;
 use App\Models\Collection\CollectionInstallment;
 use App\Models\Collection\CollectionPayment;
@@ -45,6 +46,21 @@ class CollectionDashboardService
             ->whereNull('deleted_at')->whereDate('recorded_at', $today)->where('status', 'approved');
         if (!$isAdmin) $expensesQ->where('user_id', $user->id);
         $expensesToday = (float) $expensesQ->sum('amount');
+
+        // ── CAPITAL ADICIONAL AGREGADO ──
+        $monthStart = Carbon::now()->startOfMonth()->toDateString();
+        $capitalAddedQ = CollectionCapitalAddition::where('company_id', $companyId);
+        if (!$isAdmin) $capitalAddedQ->where('created_by', $user->id);
+        if ($creditIdsForCountry !== null) $capitalAddedQ->whereIn('credit_id', $creditIdsForCountry);
+
+        $capitalAddedToday = (float) (clone $capitalAddedQ)->whereDate('business_date', $today)->sum('amount');
+        $capitalAddedTodayCount = (int) (clone $capitalAddedQ)->whereDate('business_date', $today)->count();
+        $capitalAddedMonth = (float) (clone $capitalAddedQ)
+            ->whereBetween('business_date', [$monthStart, $today])
+            ->sum('amount');
+        $capitalAddedMonthCount = (int) (clone $capitalAddedQ)
+            ->whereBetween('business_date', [$monthStart, $today])
+            ->count();
 
         // ── CARTERA (capital + interes) ──
         $activeCreditsQ = CollectionCredit::where('company_id', $companyId)->where('status', 'active');
@@ -157,7 +173,21 @@ class CollectionDashboardService
                 'description' => $e->description ?: $e->category,
                 'recorded_at' => $e->recorded_at, 'icon' => 'north_east', 'color' => 'red'
             ]);
-        $recentActivity = $recentPayments->concat($recentExpenses)
+        $recentCapitalAdditionsQ = CollectionCapitalAddition::where('company_id', $companyId)
+            ->orderByDesc('created_at');
+        if (!$isAdmin) $recentCapitalAdditionsQ->where('created_by', $user->id);
+        if ($creditIdsForCountry !== null) $recentCapitalAdditionsQ->whereIn('credit_id', $creditIdsForCountry);
+        $recentCapitalAdditions = $recentCapitalAdditionsQ->limit(8)->get()->map(fn($a) => [
+            'type' => 'capital_addition',
+            'amount' => (float) $a->amount,
+            'description' => "Capital agregado a crédito #{$a->credit_id}",
+            'recorded_at' => $a->created_at,
+            'icon' => 'add_circle',
+            'color' => 'teal',
+        ]);
+        $recentActivity = $recentPayments
+            ->concat($recentExpenses)
+            ->concat($recentCapitalAdditions)
             ->sortByDesc('recorded_at')->values()->take(10);
 
         // ── WALLETS + AUTH ──
@@ -175,6 +205,10 @@ class CollectionDashboardService
                 'net_today' => $collectedToday - $expensesToday,
                 'active_portfolio' => $totalPortfolio,
                 'active_credits_count' => $activeCredits,
+                'capital_added_today' => $capitalAddedToday,
+                'capital_added_today_count' => $capitalAddedTodayCount,
+                'capital_added_month' => $capitalAddedMonth,
+                'capital_added_month_count' => $capitalAddedMonthCount,
             ],
             'portfolio' => [
                 'total_cartera' => $totalCartera,           // Capital + Interes proyectado

@@ -312,6 +312,8 @@ Route::middleware('auth:api')->group(function () {
         Route::delete('clients/{clientId}', [CollectionClientController::class, 'destroy']);
         Route::post('credits', [CollectionCreditController::class, 'store']);
         Route::post('credits/{creditId}/settle', [CollectionCreditController::class, 'settle']);
+        Route::post('credits/{creditId}/add-capital', [CollectionCreditController::class, 'addCapital']);
+        Route::get('credits/{creditId}/capital-additions', [CollectionCreditController::class, 'listCapitalAdditions']);
         Route::delete('installments/{id}', [CollectionCreditController::class, 'destroyInstallment']);
         Route::post('payments', [CollectionPaymentController::class, 'store']);
         Route::get('expenses', [\App\Http\Controllers\Collection\CollectionExpenseController::class, 'index']);
@@ -322,6 +324,13 @@ Route::middleware('auth:api')->group(function () {
         Route::get('daily-records', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'index']);
         Route::post('daily-records', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'store']);
         Route::delete('daily-records/{id}', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'destroy']);
+
+        // Cierre de caja diario
+        Route::get('cash-closures', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'show']);
+        Route::get('cash-closures/history', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'index']);
+        Route::post('cash-closures', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'store']);
+        Route::post('cash-closures/{closureId}/reopen', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'reopen']);
+
         Route::get('dashboard/summary', [\App\Http\Controllers\Collection\CollectionDashboardController::class, 'index']);
         Route::get('dashboard/portfolio-breakdown', [\App\Http\Controllers\Collection\CollectionDashboardController::class, 'portfolioBreakdown']);
         
