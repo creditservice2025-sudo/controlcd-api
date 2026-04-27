@@ -324,12 +324,19 @@ Route::middleware('auth:api')->group(function () {
         Route::get('daily-records', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'index']);
         Route::post('daily-records', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'store']);
         Route::delete('daily-records/{id}', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'destroy']);
+        Route::get('daily-records/trend', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'trend']);
 
         // Cierre de caja diario
         Route::get('cash-closures', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'show']);
         Route::get('cash-closures/history', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'index']);
+        Route::get('cash-closures/pending-validation', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'pendingValidation']);
         Route::post('cash-closures', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'store']);
         Route::post('cash-closures/{closureId}/reopen', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'reopen']);
+        Route::post('cash-closures/{closureId}/validate', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'validateClosure']);
+
+        // Configuración Telegram por empresa
+        Route::get('telegram-config', [\App\Http\Controllers\Collection\CollectionTelegramConfigController::class, 'show']);
+        Route::put('telegram-config', [\App\Http\Controllers\Collection\CollectionTelegramConfigController::class, 'update']);
 
         Route::get('dashboard/summary', [\App\Http\Controllers\Collection\CollectionDashboardController::class, 'index']);
         Route::get('dashboard/portfolio-breakdown', [\App\Http\Controllers\Collection\CollectionDashboardController::class, 'portfolioBreakdown']);

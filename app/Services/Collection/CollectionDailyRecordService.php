@@ -6,10 +6,14 @@ use App\Models\Collection\CollectionCapitalAddition;
 use App\Models\Collection\CollectionClient;
 use App\Models\Collection\CollectionCredit;
 use App\Models\Collection\CollectionDailyRecord;
+use App\Models\Collection\CollectionExpense;
+use App\Models\Collection\CollectionLedger;
+use App\Models\Collection\CollectionPayment;
 use App\Models\User;
 use App\Traits\ApiResponse;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Servicio de Registros diarios. No toca wallets ni ledger.
@@ -18,6 +22,147 @@ use Illuminate\Support\Facades\Auth;
 class CollectionDailyRecordService
 {
     use ApiResponse;
+
+    public function __construct(
+        private readonly CollectionCashClosureService $closureSvc,
+        private readonly CollectionWalletService $walletSvc,
+    ) {
+    }
+
+    /**
+     * Tendencia de movimientos día por día en un rango. Devuelve por cada
+     * día: cobros, ingresos manuales, gastos aprobados, egresos manuales,
+     * transferencias salientes, adiciones de capital y balance neto.
+     *
+     * Usado por el reporte Excel "tendencia mensual".
+     */
+    public function getTrend(int $companyId, string $from, string $to, string $tz, ?string $countryCode = null)
+    {
+        $startUtc = Carbon::parse($from . ' 00:00:00', $tz)->utc();
+        $endUtc = Carbon::parse($to . ' 23:59:59', $tz)->utc();
+
+        // 1) Daily records agrupados por día y tipo
+        $drQ = CollectionDailyRecord::where('company_id', $companyId)
+            ->whereNull('deleted_at')
+            ->whereBetween('recorded_at', [$startUtc, $endUtc]);
+        if ($countryCode) $drQ->where('country_code', strtoupper($countryCode));
+        $drRows = $drQ
+            ->selectRaw("to_char(recorded_at AT TIME ZONE ?, 'YYYY-MM-DD') as d, type, SUM(amount) as total", [$tz])
+            ->groupBy('d', 'type')
+            ->get();
+
+        // 2) Cobros (payments)
+        $payQ = CollectionPayment::where('company_id', $companyId)
+            ->whereNull('deleted_at')
+            ->whereBetween('recorded_at', [$startUtc, $endUtc]);
+        if ($countryCode) {
+            $payQ->whereIn('credit_id', function ($sub) use ($companyId, $countryCode) {
+                $sub->select('id')->from('collection_credits')
+                    ->where('company_id', $companyId)
+                    ->where('country_code', strtoupper($countryCode));
+            });
+        }
+        $payRows = $payQ
+            ->selectRaw("to_char(recorded_at AT TIME ZONE ?, 'YYYY-MM-DD') as d, SUM(amount_paid) as total", [$tz])
+            ->groupBy('d')
+            ->get()
+            ->keyBy('d');
+
+        // 3) Gastos aprobados (expenses)
+        $expRows = CollectionExpense::where('company_id', $companyId)
+            ->whereNull('deleted_at')->where('status', 'approved')
+            ->whereBetween('recorded_at', [$startUtc, $endUtc])
+            ->selectRaw("to_char(recorded_at AT TIME ZONE ?, 'YYYY-MM-DD') as d, SUM(amount) as total", [$tz])
+            ->groupBy('d')
+            ->get()
+            ->keyBy('d');
+
+        // 4) Adiciones de capital
+        $adicQ = CollectionCapitalAddition::where('company_id', $companyId)
+            ->whereBetween('business_date', [$from, $to]);
+        if ($countryCode) {
+            $adicQ->whereIn('credit_id', function ($sub) use ($companyId, $countryCode) {
+                $sub->select('id')->from('collection_credits')
+                    ->where('company_id', $companyId)
+                    ->where('country_code', strtoupper($countryCode));
+            });
+        }
+        $adicRows = $adicQ
+            ->selectRaw("to_char(business_date, 'YYYY-MM-DD') as d, SUM(amount) as total")
+            ->groupBy('d')
+            ->get()
+            ->keyBy('d');
+
+        // Construir un mapa día → buckets
+        $bucket = [];
+        $ensure = function (string $d) use (&$bucket) {
+            if (!isset($bucket[$d])) {
+                $bucket[$d] = [
+                    'date' => $d,
+                    'cobros' => 0.0,
+                    'ingresos' => 0.0,
+                    'gastos' => 0.0,
+                    'egresos' => 0.0,
+                    'transferencias' => 0.0,
+                    'adiciones' => 0.0,
+                    'neto' => 0.0,
+                ];
+            }
+            return $d;
+        };
+
+        foreach ($drRows as $r) {
+            $d = $ensure($r->d);
+            $amount = (float) $r->total;
+            if ($r->type === 'ingreso') $bucket[$d]['ingresos'] += $amount;
+            elseif ($r->type === 'gasto') $bucket[$d]['egresos'] += $amount;
+            elseif ($r->type === 'transferencia') $bucket[$d]['transferencias'] += $amount;
+        }
+        foreach ($payRows as $d => $r) {
+            $ensure($d);
+            $bucket[$d]['cobros'] = (float) $r->total;
+        }
+        foreach ($expRows as $d => $r) {
+            $ensure($d);
+            $bucket[$d]['gastos'] = (float) $r->total;
+        }
+        foreach ($adicRows as $d => $r) {
+            $ensure($d);
+            $bucket[$d]['adiciones'] = (float) $r->total;
+        }
+
+        // Calcular neto y ordenar por fecha asc
+        foreach ($bucket as $d => &$row) {
+            $row['neto'] = round(
+                $row['cobros'] + $row['ingresos']
+                - $row['gastos'] - $row['egresos']
+                - $row['transferencias'] - $row['adiciones'],
+                2
+            );
+        }
+        unset($row);
+        ksort($bucket);
+
+        // Totales del rango
+        $totals = [
+            'cobros' => 0.0, 'ingresos' => 0.0, 'gastos' => 0.0,
+            'egresos' => 0.0, 'transferencias' => 0.0,
+            'adiciones' => 0.0, 'neto' => 0.0,
+        ];
+        foreach ($bucket as $row) {
+            foreach ($totals as $k => $_) $totals[$k] += $row[$k];
+        }
+        foreach ($totals as $k => $v) $totals[$k] = round($v, 2);
+
+        return $this->successResponse([
+            'from' => $from,
+            'to' => $to,
+            'timezone' => $tz,
+            'country_code' => $countryCode,
+            'days' => array_values($bucket),
+            'totals' => $totals,
+        ]);
+    }
 
     public function index($request)
     {
@@ -64,7 +209,13 @@ class CollectionDailyRecordService
             'transferencia' => (float) $dailyRecords->where('type', 'transferencia')->sum('amount'),
             'capital_addition' => (float) $capitalVirtual->sum(fn($r) => (float) ($r['amount'] ?? 0)),
         ];
-        $totals['net'] = $totals['ingreso'] - $totals['gasto'];
+        // Balance del día = ingresos − (gastos + transferencias salientes + adiciones de capital).
+        // Las transferencias salen de la wallet (action=transfer_out) y las adiciones
+        // también son salidas hacia el cliente, por eso restan al balance del día.
+        $totals['net'] = $totals['ingreso']
+            - $totals['gasto']
+            - $totals['transferencia']
+            - $totals['capital_addition'];
 
         return $this->successResponse([
             'records' => $all,
@@ -180,6 +331,18 @@ class CollectionDailyRecordService
             'transfer_to' => 'nullable|string|max:100',
         ]);
 
+        // Bloquear si el día del registro tiene cierre de caja activo.
+        $tz = $request->input('timezone', 'America/Bogota');
+        $recordDate = !empty($validated['recorded_at'])
+            ? Carbon::parse($validated['recorded_at'])->setTimezone($tz)->toDateString()
+            : Carbon::now($tz)->toDateString();
+        if ($this->closureSvc->isDayClosed($companyId, $recordDate)) {
+            return $this->errorResponse(
+                'No se pueden registrar movimientos: la caja del día ' . $recordDate . ' está cerrada. Reabre el cierre primero.',
+                409
+            );
+        }
+
         $metadata = [];
         $evidencePaths = [];
         if ($request->hasFile('evidence')) {
@@ -194,29 +357,62 @@ class CollectionDailyRecordService
             }
         }
         if (!empty($evidencePaths)) $metadata['evidence_paths'] = $evidencePaths;
-        if (!empty($validated['transfer_from'])) $metadata['transfer_from'] = $validated['transfer_from'];
-        if (!empty($validated['transfer_to'])) $metadata['transfer_to'] = $validated['transfer_to'];
+        // Para transferencias el origen es SIEMPRE la wallet del módulo.
+        // El payload solo necesita destino. Forzamos transfer_from = "Wallet".
+        if ($validated['type'] === 'transferencia') {
+            $metadata['transfer_from'] = 'Wallet del módulo';
+            if (!empty($validated['transfer_to'])) {
+                $metadata['transfer_to'] = $validated['transfer_to'];
+            }
+        } else {
+            if (!empty($validated['transfer_from'])) $metadata['transfer_from'] = $validated['transfer_from'];
+            if (!empty($validated['transfer_to'])) $metadata['transfer_to'] = $validated['transfer_to'];
+        }
 
-        $record = CollectionDailyRecord::create([
-            'company_id' => $companyId,
-            'user_id' => Auth::id(),
-            'type' => $validated['type'],
-            'category' => $validated['category'] ?? null,
-            'amount' => $validated['amount'],
-            'currency' => strtoupper($validated['currency']),
-            'country_code' => isset($validated['country_code']) ? strtoupper($validated['country_code']) : null,
-            'description' => $validated['description'] ?? null,
-            'recorded_at' => $validated['recorded_at'] ?? Carbon::now(),
-            'latitude' => $validated['latitude'] ?? null,
-            'longitude' => $validated['longitude'] ?? null,
-            'metadata' => $metadata,
-        ]);
+        return DB::connection('collection_pgsql')->transaction(function () use ($validated, $companyId, $metadata) {
+            $currency = strtoupper($validated['currency']);
+            $countryCode = isset($validated['country_code']) ? strtoupper($validated['country_code']) : null;
 
-        return $this->successCreatedResponse([
-            'success' => true,
-            'message' => 'Registro creado correctamente',
-            'data' => $record,
-        ]);
+            $record = CollectionDailyRecord::create([
+                'company_id' => $companyId,
+                'user_id' => Auth::id(),
+                'type' => $validated['type'],
+                'category' => $validated['category'] ?? null,
+                'amount' => $validated['amount'],
+                'currency' => $currency,
+                'country_code' => $countryCode,
+                'description' => $validated['description'] ?? null,
+                'recorded_at' => $validated['recorded_at'] ?? Carbon::now(),
+                'latitude' => $validated['latitude'] ?? null,
+                'longitude' => $validated['longitude'] ?? null,
+                'metadata' => $metadata,
+            ]);
+
+            // Si es transferencia: descontar de la wallet del módulo y dejar
+            // un movimiento en el ledger (action=transfer_out) referenciando
+            // el daily_record. La wallet se elige por currency+country_code.
+            if ($validated['type'] === 'transferencia') {
+                $destino = $metadata['transfer_to'] ?? 'cuenta destino';
+                $this->walletSvc->recordMovement([
+                    'company_id' => $companyId,
+                    'currency' => $currency,
+                    'country_code' => $countryCode ?? 'CO',
+                    'amount' => $validated['amount'],
+                    'type' => 'debit',
+                    'action_type' => 'transfer_out',
+                    'reference_type' => 'daily_record',
+                    'reference_id' => $record->id,
+                    'description' => "Transferencia a {$destino}"
+                        . (!empty($validated['description']) ? ' — ' . $validated['description'] : ''),
+                ]);
+            }
+
+            return $this->successCreatedResponse([
+                'success' => true,
+                'message' => 'Registro creado correctamente',
+                'data' => $record,
+            ]);
+        });
     }
 
     public function destroy($request, int $id)
@@ -230,8 +426,38 @@ class CollectionDailyRecordService
 
         if (!$record) return $this->errorResponse('Registro no encontrado', 404);
 
-        $record->delete();
-        return $this->successResponse(['success' => true, 'message' => 'Registro eliminado']);
+        // Bloquear si el día del registro está cerrado.
+        $tz = $request->input('timezone', 'America/Bogota');
+        $recordDate = optional($record->recorded_at)->setTimezone($tz)->toDateString();
+        if ($recordDate && $this->closureSvc->isDayClosed($companyId, $recordDate)) {
+            return $this->errorResponse(
+                'No se puede eliminar: el día ' . $recordDate . ' tiene la caja cerrada. Reabre el cierre primero.',
+                409
+            );
+        }
+
+        return DB::connection('collection_pgsql')->transaction(function () use ($record) {
+            // Si era transferencia, revertir el movimiento en la wallet
+            // (re-acreditando el monto que se debitó al crearla).
+            if ($record->type === 'transferencia') {
+                $meta = is_array($record->metadata) ? $record->metadata : [];
+                $destino = $meta['transfer_to'] ?? 'cuenta destino';
+                $this->walletSvc->recordMovement([
+                    'company_id' => $record->company_id,
+                    'currency' => strtoupper($record->currency ?: 'COP'),
+                    'country_code' => strtoupper($record->country_code ?: 'CO'),
+                    'amount' => (float) $record->amount,
+                    'type' => 'credit',
+                    'action_type' => 'transfer_out_reversal',
+                    'reference_type' => 'daily_record',
+                    'reference_id' => $record->id,
+                    'description' => "Reversión transferencia a {$destino}",
+                ]);
+            }
+
+            $record->delete();
+            return $this->successResponse(['success' => true, 'message' => 'Registro eliminado']);
+        });
     }
 
     private function resolveCompanyId($requestedId)

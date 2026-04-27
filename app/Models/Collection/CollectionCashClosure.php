@@ -14,6 +14,7 @@ class CollectionCashClosure extends Model
 
     public const STATUS_CLOSED = 'closed';
     public const STATUS_REOPENED = 'reopened';
+    public const STATUS_AUTO_PENDING = 'auto_pending';
 
     protected $fillable = [
         'id',
@@ -38,6 +39,8 @@ class CollectionCashClosure extends Model
         'closed_at',
         'reopened_at',
         'reopened_by',
+        'validated_by',
+        'validated_at',
     ];
 
     protected $casts = [
@@ -55,6 +58,7 @@ class CollectionCashClosure extends Model
         'faltante_sobrante' => 'decimal:2',
         'closed_at' => 'datetime',
         'reopened_at' => 'datetime',
+        'validated_at' => 'datetime',
     ];
 
     public function user()

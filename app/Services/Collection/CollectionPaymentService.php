@@ -16,18 +16,20 @@ class CollectionPaymentService
 
     private const CONNECTION = 'collection_pgsql';
 
-    public function __construct(private readonly CollectionPartitionService $partitionService)
-    {
+    public function __construct(
+        private readonly CollectionPartitionService $partitionService,
+        private readonly CollectionCashClosureService $closureSvc,
+    ) {
     }
 
     public function recordPayment(array $payload)
     {
         $companyId = (int) ($payload['company_id'] ?? 0);
         $creditId = (int) ($payload['credit_id'] ?? 0);
-        
+
         // Support both old installment_numbers array and new detailed payments array
         $payments = $payload['payments'] ?? [];
-        
+
         if (empty($payments) && !empty($payload['installment_numbers'])) {
             foreach ($payload['installment_numbers'] as $num) {
                 $payments[] = [
@@ -38,9 +40,19 @@ class CollectionPaymentService
                 ];
             }
         }
-        
+
         if (!$companyId || !$creditId || empty($payments)) {
             return $this->errorResponse('Información de pago incompleta', 422);
+        }
+
+        // Bloquear si el día del pago tiene cierre de caja activo.
+        $tz = $payload['timezone'] ?? 'America/Bogota';
+        $paymentDate = $payload['payment_date'] ?? Carbon::now($tz)->toDateString();
+        if ($this->closureSvc->isDayClosed($companyId, $paymentDate)) {
+            return $this->errorResponse(
+                'No se pueden registrar pagos: la caja del día ' . $paymentDate . ' está cerrada. Reabre el cierre primero.',
+                409
+            );
         }
 
         $this->partitionService->ensurePartitions($companyId);

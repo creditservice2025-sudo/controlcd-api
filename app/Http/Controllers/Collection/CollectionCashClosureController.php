@@ -83,6 +83,35 @@ class CollectionCashClosureController extends Controller
         }
 
         $reason = $request->input('reason');
-        return $this->service->reopen($companyId, $closureId, $reason);
+        $tz = $request->input('timezone', 'America/Bogota');
+        return $this->service->reopen($companyId, $closureId, $reason, $tz);
+    }
+
+    /**
+     * Lista cierres en estado auto_pending (pendientes de validación admin).
+     */
+    public function pendingValidation(Request $request)
+    {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
+        return $this->service->listPendingValidation($companyId);
+    }
+
+    /**
+     * Valida un cierre auto_pending capturando efectivo y transferencias reales.
+     */
+    public function validateClosure(Request $request, int $closureId)
+    {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
+        $validated = $request->validate([
+            'efectivo_contado' => 'required|numeric|min:0',
+            'transferencias_recibidas' => 'nullable|numeric|min:0',
+            'notas' => 'nullable|string|max:1000',
+        ]);
+
+        return $this->service->validateClosure($companyId, $closureId, $validated);
     }
 }

@@ -16,8 +16,10 @@ class CollectionCreditService
 
     private const CONNECTION = 'collection_pgsql';
 
-    public function __construct(private readonly CollectionPartitionService $partitionService)
-    {
+    public function __construct(
+        private readonly CollectionPartitionService $partitionService,
+        private readonly CollectionCashClosureService $closureSvc,
+    ) {
     }
 
     public function create(array $payload)
@@ -160,10 +162,18 @@ class CollectionCreditService
             return $this->errorResponse('Solo se puede agregar capital a créditos activos', 422);
         }
 
+        // Bloquear si el día de la adición tiene cierre de caja activo.
+        $businessDate = $payload['business_date'] ?? Carbon::now()->toDateString();
+        if ($this->closureSvc->isDayClosed($companyId, $businessDate)) {
+            return $this->errorResponse(
+                'No se puede agregar capital: la caja del día ' . $businessDate . ' está cerrada. Reabre el cierre primero.',
+                409
+            );
+        }
+
         $this->partitionService->ensurePartitions($companyId);
 
-        return DB::connection(self::CONNECTION)->transaction(function () use ($credit, $added, $payload, $companyId) {
-            $businessDate = $payload['business_date'] ?? Carbon::now()->toDateString();
+        return DB::connection(self::CONNECTION)->transaction(function () use ($credit, $added, $payload, $companyId, $businessDate) {
 
             // 1) Registro de la adicion (trazabilidad)
             $addition = CollectionCapitalAddition::query()->create([
@@ -438,6 +448,16 @@ class CollectionCreditService
 
         if ($settlementTotal <= 0) {
             return $this->errorResponse('No hay saldo para liquidar', 422);
+        }
+
+        // Bloquear si el día de la liquidación tiene cierre de caja activo.
+        $tzCheck = $payload['timezone'] ?? 'UTC';
+        $settleDate = $payload['payment_date'] ?? Carbon::now($tzCheck)->toDateString();
+        if ($this->closureSvc->isDayClosed($companyId, $settleDate)) {
+            return $this->errorResponse(
+                'No se puede liquidar: la caja del día ' . $settleDate . ' está cerrada. Reabre el cierre primero.',
+                409
+            );
         }
 
         return DB::connection(self::CONNECTION)->transaction(function () use (

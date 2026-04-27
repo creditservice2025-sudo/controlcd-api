@@ -16,8 +16,10 @@ class CollectionExpenseService
 
     private const CONNECTION = 'collection_pgsql';
 
-    public function __construct(private readonly CollectionPartitionService $partitionService)
-    {
+    public function __construct(
+        private readonly CollectionPartitionService $partitionService,
+        private readonly CollectionCashClosureService $closureSvc,
+    ) {
     }
 
     public function index($request)
@@ -63,6 +65,16 @@ class CollectionExpenseService
     {
         $companyId = $this->resolveCompanyId($request->company_id);
         if (!$companyId) return $this->errorResponse('Empresa no identificada', 422);
+
+        // Bloquear si hoy ya tiene cierre de caja activo.
+        $tz = $request->input('timezone', 'America/Bogota');
+        $today = Carbon::now($tz)->toDateString();
+        if ($this->closureSvc->isDayClosed($companyId, $today)) {
+            return $this->errorResponse(
+                'No se pueden registrar gastos: la caja del día ' . $today . ' está cerrada. Reabre el cierre primero.',
+                409
+            );
+        }
 
         $this->partitionService->ensurePartitions($companyId);
 
