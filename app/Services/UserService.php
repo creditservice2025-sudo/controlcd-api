@@ -73,7 +73,19 @@ class UserService
             }
 
             if (!isset($params['parent_id'])) {
-                $user->parent_id = Auth::id();
+                $authUser = Auth::user();
+                // Si Super Admin (rol 1) crea un usuario impersonando una empresa,
+                // el parent_id debe apuntar al admin de esa empresa (no al Super Admin),
+                // para que la cadena de aislamiento por empresa funcione en services
+                // como IncomeService/ExpenseService que resuelven via parent->company.
+                if ((int) $authUser->role_id === 1 && !empty($params['company_id'])) {
+                    $companyAdminId = DB::table('companies')
+                        ->where('id', $params['company_id'])
+                        ->value('user_id');
+                    $user->parent_id = $companyAdminId ?: Auth::id();
+                } else {
+                    $user->parent_id = Auth::id();
+                }
             }
             $user->save();
             DB::commit();
@@ -373,12 +385,38 @@ public function me()
                 });
             }
 
-            // Filtrar por company_id si el admin está en modo empresa
+            // Filtrar por empresa según rol:
+            //  - Super Admin (1) con company_id explícito (impersonando) → filtra esa empresa
+            //  - Admin (2) → siempre filtra por SU propia empresa (sin necesidad de param)
+            //  - Otros roles → fail-closed (no se les muestran miembros)
             $user = Auth::user();
-            if ($user->role_id == 1 && $companyId) {
-                $sellerIds = Seller::where('company_id', $companyId)->pluck('id')->toArray();
-                $userIds = UserRoute::whereIn('seller_id', $sellerIds)->pluck('user_id')->toArray();
-                $query->whereIn('id', $userIds);
+            $role = (int) $user->role_id;
+
+            $effectiveCompanyId = $companyId;
+            if ($role === 2 && !$effectiveCompanyId) {
+                $effectiveCompanyId = $user->company?->id;
+            }
+
+            if (in_array($role, [1, 2], true) && $effectiveCompanyId) {
+                // Miembros de una company = usuarios vinculados via user_routes a
+                // sellers de esa empresa O usuarios cuyo parent_id es el admin
+                // de la company (subordinados directos).
+                $companyAdminId = DB::table('companies')
+                    ->where('id', $effectiveCompanyId)
+                    ->value('user_id');
+
+                $sellerIds = Seller::where('company_id', $effectiveCompanyId)->pluck('id')->toArray();
+                $userIdsByRoute = UserRoute::whereIn('seller_id', $sellerIds)->pluck('user_id')->toArray();
+
+                $query->where(function ($q) use ($userIdsByRoute, $companyAdminId) {
+                    $q->whereIn('id', $userIdsByRoute);
+                    if ($companyAdminId) {
+                        $q->orWhere('parent_id', $companyAdminId);
+                    }
+                });
+            } elseif ($role !== 1) {
+                // Roles distintos a Super Admin/Admin: no listar miembros
+                $query->whereRaw('1=0');
             }
 
             $users = $query->get();

@@ -99,10 +99,20 @@ Route::middleware('auth:api')->group(function () {
     Route::post('/countries', [CountriesController::class, 'store']);
     Route::put('/countries/{id}', [CountriesController::class, 'update']);
 
-    //route roles
-    Route::apiResource('roles', RoleController::class);
-    Route::post('/roles/{role}/permisos', [RolePermissionController::class, 'assignPermissions']);
-    Route::get('/roles/{role}/permisos', [RolePermissionController::class, 'show']);
+    //route roles — Lectura libre (necesaria para dropdowns al crear/editar usuarios).
+    // Mutaciones y gestión de permisos restringidas a Super-Admin: Spatie Permission
+    // usa roles GLOBALES, así que modificarlos afectaría a TODAS las empresas.
+    Route::get('roles', [RoleController::class, 'index']);
+    Route::get('roles/{role}', [RoleController::class, 'show']);
+
+    Route::middleware('role:Super-Admin')->group(function () {
+        Route::post('roles', [RoleController::class, 'store']);
+        Route::put('roles/{role}', [RoleController::class, 'update']);
+        Route::patch('roles/{role}', [RoleController::class, 'update']);
+        Route::delete('roles/{role}', [RoleController::class, 'destroy']);
+        Route::post('/roles/{role}/permisos', [RolePermissionController::class, 'assignPermissions']);
+        Route::get('/roles/{role}/permisos', [RolePermissionController::class, 'show']);
+    });
 
     //route client
     Route::prefix('clients')->group(function () {

@@ -561,6 +561,25 @@ class ExpenseService
                 $todayEnd = Carbon::now(self::TIMEZONE)->endOfDay()->timezone('UTC');
                 $expensesQuery->where('user_id', $user->id)
                     ->whereBetween('created_at', [$todayStart, $todayEnd]);
+            } else {
+                // Roles intermedios (Socio=3, Asistente=4, Revisador=6, Cobrador-abono=7,
+                // Limitado=8, Digitador=9, Contador=10, Consultor=11): aislamiento por
+                // empresa. Resuelve company del usuario en este orden:
+                //   1) relación directa user->company (admin)
+                //   2) seller asociado (cobradores promovidos)
+                //   3) parent_id->company (subordinados de un admin)
+                // Si nada se puede resolver, fail-closed.
+                $resolvedCompanyId = $user->company?->id
+                    ?? optional(Seller::where('user_id', $user->id)->first())->company_id
+                    ?? optional(User::find($user->parent_id))?->company?->id;
+                if ($resolvedCompanyId) {
+                    $userIds = User::whereHas('seller', function ($query) use ($resolvedCompanyId) {
+                        $query->where('company_id', $resolvedCompanyId);
+                    })->pluck('id');
+                    $expensesQuery->whereIn('user_id', $userIds);
+                } else {
+                    $expensesQuery->whereRaw('1=0');
+                }
             }
 
             if ($request->has('seller_id') && $request->seller_id) {
