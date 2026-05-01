@@ -208,6 +208,15 @@ Route::middleware(['auth:api', 'supervisor.lock', 'active.seller'])->group(funct
     Route::post('credits/toggle-massively', [CreditController::class, 'toggleCreditsStatusMassively']);
     Route::post('credits/unify', [CreditController::class, 'unifyCredits']);
 
+    // Cartera irrecuperable a nivel cliente (mueve TODOS los créditos vigentes
+    // del cliente). Restringido a Super-Admin y Admin. Reversible vía restore.
+    Route::get('clients/{clientId}/uncollectible-summary', [CreditController::class, 'clientUncollectibleSummary']);
+    Route::get('clients/{clientId}/credits/{creditId}/uncollectible-detail', [CreditController::class, 'clientCreditUncollectibleDetail']);
+    Route::middleware('role:Super-Admin|Admin')->group(function () {
+        Route::post('clients/{clientId}/mark-uncollectible', [CreditController::class, 'markClientAsUncollectible']);
+        Route::post('clients/{clientId}/restore-from-uncollectible', [CreditController::class, 'restoreClientFromUncollectible']);
+    });
+
     //route expense
     Route::get('expenses', [ExpenseController::class, 'index']);
     Route::post('expense/create', [ExpenseController::class, 'store']);

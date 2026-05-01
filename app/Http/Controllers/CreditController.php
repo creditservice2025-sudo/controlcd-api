@@ -305,6 +305,68 @@ class CreditController extends Controller
         }
     }
 
+    /**
+     * Detalle de un crédito (cuotas + pagos) para el panel expandible del
+     * modal de cartera irrecuperable. Validación de ownership: el crédito
+     * debe pertenecer al cliente especificado.
+     */
+    public function clientCreditUncollectibleDetail($clientId, $creditId)
+    {
+        try {
+            return $this->creditService->getCreditDetailForUncollectible($clientId, $creditId);
+        } catch (Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Devuelve resumen previo para el modal. Acepta query param `for=mark|restore`:
+     *  - `mark` (default): lista créditos en estado 'Vigente' (a mover)
+     *  - `restore`: lista créditos en estado 'Cartera Irrecuperable' (a restaurar)
+     */
+    public function clientUncollectibleSummary(Request $request, $clientId)
+    {
+        try {
+            $for = $request->query('for', 'mark');
+            $forStatus = $for === 'restore' ? 'Cartera Irrecuperable' : 'Vigente';
+            return $this->creditService->getClientCreditsSummaryForUncollectible($clientId, $forStatus);
+        } catch (Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Marca créditos del cliente como cartera irrecuperable. Si recibe
+     * `credit_ids: int[]` solo mueve los seleccionados; si no, mueve todos
+     * los vigentes. Solo Super-Admin / Admin.
+     */
+    public function markClientAsUncollectible(Request $request, $clientId)
+    {
+        try {
+            $creditIds = $request->input('credit_ids', []);
+            if (!is_array($creditIds)) $creditIds = [];
+            return $this->creditService->markClientAsUncollectible($clientId, $creditIds);
+        } catch (Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Restaura créditos del cliente desde cartera irrecuperable. Si recibe
+     * `credit_ids: int[]` solo restaura los seleccionados; si no, restaura
+     * todos los del cliente en ese estado. Solo Super-Admin / Admin.
+     */
+    public function restoreClientFromUncollectible(Request $request, $clientId)
+    {
+        try {
+            $creditIds = $request->input('credit_ids', []);
+            if (!is_array($creditIds)) $creditIds = [];
+            return $this->creditService->restoreClientFromUncollectible($clientId, $creditIds);
+        } catch (Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
     public function changeCreditClient(Request $request, $creditId)
     {
         try {
