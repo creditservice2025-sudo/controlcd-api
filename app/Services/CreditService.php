@@ -2057,6 +2057,323 @@ class CreditService
         }
     }
 
+    /**
+     * Devuelve un resumen previo para mostrar en el modal de confirmación
+     * antes de marcar un cliente como cartera irrecuperable. Lista todos los
+     * créditos VIGENTES del cliente con monto y saldo pendiente, para que
+     * el usuario sepa qué se va a mover.
+     */
+    /**
+     * Resumen previo para mostrar en el modal de "Pasar a / Restaurar de
+     * Cartera Irrecuperable". Soporta dos modos via parámetro $forStatus:
+     *  - 'Vigente'              → créditos a mover (modo "mark")
+     *  - 'Cartera Irrecuperable' → créditos a restaurar (modo "restore")
+     *
+     * Cada crédito incluye info de cuotas (total, pagadas, % de progreso) y
+     * fecha del último pago para que el admin tenga contexto al decidir.
+     */
+    public function getClientCreditsSummaryForUncollectible($clientId, string $forStatus = 'Vigente')
+    {
+        try {
+            // Diagnóstico de performance: medimos cada query para identificar
+            // cuellos de botella reales (vs latencia de red o middleware).
+            // Logs van a storage/logs/laravel.log con tag [uncollectible].
+            $tStart = microtime(true);
+            $timings = [];
+
+            // Solo necesitamos id/name/dni para el header del modal — evitar
+            // hidratar columnas pesadas como gps_geolocalization (JSON).
+            $tQ = microtime(true);
+            $client = Client::select('id', 'name', 'dni')->find($clientId);
+            $timings['client_ms'] = (int) ((microtime(true) - $tQ) * 1000);
+            if (!$client) {
+                return $this->errorResponse('Cliente no encontrado', 404);
+            }
+
+            $tQ = microtime(true);
+            $credits = Credit::where('client_id', $clientId)
+                ->where('status', $forStatus)
+                ->get(['id', 'credit_value', 'remaining_amount', 'status', 'created_at']);
+            $timings['credits_ms'] = (int) ((microtime(true) - $tQ) * 1000);
+
+            $creditIds = $credits->pluck('id');
+
+            // Stats de cuotas en una sola query agregada (más rápido que 2-3
+            // subconsultas via withCount/withSum cuando se necesitan varios
+            // agregados del mismo set). Filtra soft-deleted explícitamente
+            // porque vamos directo al query builder.
+            $tQ = microtime(true);
+            $statsRaw = $creditIds->isEmpty() ? collect() : DB::table('installments')
+                ->whereIn('credit_id', $creditIds)
+                ->whereNull('deleted_at')
+                ->groupBy('credit_id')
+                ->select('credit_id')
+                ->selectRaw('COUNT(*) as installments_total')
+                ->selectRaw("SUM(CASE WHEN status = 'Pagado' THEN 1 ELSE 0 END) as installments_paid")
+                ->selectRaw('COALESCE(SUM(paid_amount), 0) as installments_paid_amount')
+                ->get();
+            $stats = $statsRaw->keyBy('credit_id');
+            $timings['stats_ms'] = (int) ((microtime(true) - $tQ) * 1000);
+
+            // Último pago por crédito (consulta agregada para no hacer N+1)
+            $tQ = microtime(true);
+            $lastPayments = $creditIds->isEmpty() ? collect() : Payment::whereIn('credit_id', $creditIds)
+                ->selectRaw('credit_id, MAX(payment_date) as last_payment_date')
+                ->groupBy('credit_id')
+                ->pluck('last_payment_date', 'credit_id');
+            $timings['payments_ms'] = (int) ((microtime(true) - $tQ) * 1000);
+
+            $today = Carbon::now()->startOfDay();
+
+            $totalPending = $credits->sum('remaining_amount');
+            $totalValue = $credits->sum('credit_value');
+
+            $tQ = microtime(true);
+            $creditsPayload = $credits->map(function ($c) use ($stats, $lastPayments, $today) {
+                        $value = (float) $c->credit_value;
+                        $pending = (float) $c->remaining_amount;
+                        $row = $stats[$c->id] ?? null;
+                        $totalQ = (int) ($row->installments_total ?? 0);
+                        $paidQ = (int) ($row->installments_paid ?? 0);
+                        // "Pagado" = suma real de paid_amount de cuotas (lo
+                        // que efectivamente abonó el cliente, intereses
+                        // incluidos). NO usar `credit_value - remaining_amount`:
+                        // mezcla capital con deuda total y daba un valor
+                        // menor (el chip mostraba 30 mientras la cuota 1
+                        // ya tenía 90 pagados).
+                        $paidAmount = (float) ($row->installments_paid_amount ?? 0);
+                        $totalDebt = $paidAmount + $pending;
+                        $paidPct = $totalDebt > 0 ? round(($paidAmount / $totalDebt) * 100, 1) : 0;
+
+                        $lastPaymentDate = $lastPayments[$c->id] ?? null;
+                        $daysSincePayment = null;
+                        if ($lastPaymentDate) {
+                            $daysSincePayment = Carbon::parse($lastPaymentDate)->startOfDay()->diffInDays($today);
+                        }
+
+                        return [
+                            'id' => $c->id,
+                            'credit_value' => $value,
+                            'pending_amount' => $pending,
+                            'paid_amount' => round($paidAmount, 2),
+                            'paid_percentage' => $paidPct,
+                            'installments_total' => $totalQ,
+                            'installments_paid' => $paidQ,
+                            'status' => $c->status,
+                            'created_at' => $c->created_at,
+                            'last_payment_date' => $lastPaymentDate,
+                            'days_since_last_payment' => $daysSincePayment,
+                        ];
+                    })->values();
+            $timings['map_ms'] = (int) ((microtime(true) - $tQ) * 1000);
+            $timings['total_ms'] = (int) ((microtime(true) - $tStart) * 1000);
+            \Log::info('[uncollectible] summary timing', array_merge(
+                ['client_id' => (int) $clientId, 'credits' => $credits->count()],
+                $timings,
+            ));
+
+            return $this->successResponse([
+                'success' => true,
+                'data' => [
+                    'client' => [
+                        'id' => $client->id,
+                        'name' => $client->name,
+                        'dni' => $client->dni,
+                    ],
+                    'active_credits_count' => $credits->count(),
+                    'total_credit_value' => round((float) $totalValue, 2),
+                    'total_pending_amount' => round((float) $totalPending, 2),
+                    'credits' => $creditsPayload,
+                ]
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error en getClientCreditsSummaryForUncollectible: ' . $e->getMessage());
+            return $this->errorResponse('Error al obtener resumen del cliente', 500);
+        }
+    }
+
+    /**
+     * Detalle de un crédito (cuotas + pagos) usado para el panel expandible
+     * en el modal de cartera irrecuperable. Carga lazy desde el frontend.
+     * El crédito debe pertenecer al cliente $clientId (validación de ownership).
+     */
+    public function getCreditDetailForUncollectible($clientId, $creditId)
+    {
+        try {
+            $credit = Credit::where('id', $creditId)
+                ->where('client_id', $clientId)
+                ->first();
+            if (!$credit) {
+                return $this->errorResponse('Crédito no encontrado para este cliente', 404);
+            }
+
+            // Incluir cuotas soft-deleted: el admin necesita ver el historial
+            // completo (re-cuoteos / cuotas anuladas) antes de mover a
+            // irrecuperable.
+            $installments = Installment::withTrashed()
+                ->where('credit_id', $creditId)
+                ->orderBy('quota_number')
+                ->get(['id', 'quota_number', 'due_date', 'quota_amount', 'paid_amount', 'status', 'deleted_at']);
+
+            // Última fecha+hora real en que se aplicó un pago a cada cuota
+            // (vía payment_installments). Usamos Payment.created_at porque
+            // payment_date es solo fecha (sin hora).
+            $lastPaidAt = $installments->isEmpty() ? collect() : DB::table('payment_installments as pi')
+                ->join('payments as p', 'p.id', '=', 'pi.payment_id')
+                ->whereIn('pi.installment_id', $installments->pluck('id'))
+                ->whereNull('pi.deleted_at')
+                ->whereNull('p.deleted_at')
+                ->groupBy('pi.installment_id')
+                ->select('pi.installment_id')
+                ->selectRaw('MAX(p.created_at) as last_paid_at')
+                ->pluck('last_paid_at', 'pi.installment_id');
+
+            $payments = Payment::where('credit_id', $creditId)
+                ->orderByDesc('payment_date')
+                ->orderByDesc('created_at')
+                ->get(['id', 'payment_date', 'amount', 'unapplied_amount', 'payment_method', 'payment_reference', 'created_at']);
+
+            return $this->successResponse([
+                'success' => true,
+                'data' => [
+                    'credit_id' => (int) $credit->id,
+                    'installments' => $installments->map(fn($i) => [
+                        'id' => $i->id,
+                        'quota_number' => $i->quota_number,
+                        'due_date' => $i->due_date,
+                        'quota_amount' => (float) $i->quota_amount,
+                        'paid_amount' => (float) $i->paid_amount,
+                        'status' => $i->status,
+                        'last_paid_at' => $lastPaidAt[$i->id] ?? null,
+                        'deleted_at' => $i->deleted_at,
+                        'is_deleted' => $i->trashed(),
+                    ])->values(),
+                    'payments' => $payments->map(fn($p) => [
+                        'id' => $p->id,
+                        'payment_date' => $p->payment_date,
+                        'created_at' => $p->created_at,
+                        'amount' => (float) $p->amount,
+                        'unapplied_amount' => (float) ($p->unapplied_amount ?? 0),
+                        'payment_method' => $p->payment_method,
+                        'payment_reference' => $p->payment_reference,
+                    ])->values(),
+                ]
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error en getCreditDetailForUncollectible: ' . $e->getMessage());
+            return $this->errorResponse('Error al obtener detalle del crédito', 500);
+        }
+    }
+
+    /**
+     * Marca créditos vigentes de un cliente como Cartera Irrecuperable
+     * en transacción atómica. Si se pasa $creditIds (array opcional) solo
+     * mueve los seleccionados; si no, mueve TODOS los vigentes (default).
+     * Reversible vía restoreClientFromUncollectible().
+     */
+    public function markClientAsUncollectible($clientId, array $creditIds = [])
+    {
+        try {
+            $client = Client::find($clientId);
+            if (!$client) {
+                return $this->errorResponse('Cliente no encontrado', 404);
+            }
+
+            $query = Credit::where('client_id', $clientId)->where('status', 'Vigente');
+            if (!empty($creditIds)) {
+                $query->whereIn('id', $creditIds);
+            }
+            $credits = $query->get();
+
+            if ($credits->isEmpty()) {
+                return $this->errorResponse(
+                    !empty($creditIds)
+                        ? 'Ninguno de los créditos seleccionados es válido (deben estar vigentes)'
+                        : 'El cliente no tiene créditos vigentes para mover a cartera irrecuperable',
+                    422
+                );
+            }
+
+            $movedIds = [];
+            $totalMoved = 0;
+            DB::transaction(function () use ($credits, &$movedIds, &$totalMoved) {
+                foreach ($credits as $credit) {
+                    $credit->status = 'Cartera Irrecuperable';
+                    $credit->save();
+                    $movedIds[] = $credit->id;
+                    $totalMoved += (float) $credit->remaining_amount;
+                }
+            });
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Cliente marcado como cartera irrecuperable. ' . count($movedIds) . ' crédito(s) movidos.',
+                'data' => [
+                    'client_id' => (int) $clientId,
+                    'moved_credit_ids' => $movedIds,
+                    'moved_credits_count' => count($movedIds),
+                    'total_pending_moved' => round($totalMoved, 2),
+                ]
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error en markClientAsUncollectible: ' . $e->getMessage());
+            return $this->errorResponse('Error al marcar cliente como cartera irrecuperable', 500);
+        }
+    }
+
+    /**
+     * Restaura créditos de cartera irrecuperable: los vuelve a 'Vigente'.
+     * Si se pasa $creditIds (array opcional) solo restaura los seleccionados;
+     * si no, restaura TODOS los del cliente que estén en irrecuperable.
+     */
+    public function restoreClientFromUncollectible($clientId, array $creditIds = [])
+    {
+        try {
+            $client = Client::find($clientId);
+            if (!$client) {
+                return $this->errorResponse('Cliente no encontrado', 404);
+            }
+
+            $query = Credit::where('client_id', $clientId)
+                ->where('status', 'Cartera Irrecuperable');
+            if (!empty($creditIds)) {
+                $query->whereIn('id', $creditIds);
+            }
+            $credits = $query->get();
+
+            if ($credits->isEmpty()) {
+                return $this->errorResponse(
+                    !empty($creditIds)
+                        ? 'Ninguno de los créditos seleccionados es válido (deben estar en cartera irrecuperable)'
+                        : 'El cliente no tiene créditos en cartera irrecuperable para restaurar',
+                    422
+                );
+            }
+
+            $restoredIds = [];
+            DB::transaction(function () use ($credits, &$restoredIds) {
+                foreach ($credits as $credit) {
+                    $credit->status = 'Vigente';
+                    $credit->save();
+                    $restoredIds[] = $credit->id;
+                }
+            });
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Cliente restaurado de cartera irrecuperable. ' . count($restoredIds) . ' crédito(s) reactivados.',
+                'data' => [
+                    'client_id' => (int) $clientId,
+                    'restored_credit_ids' => $restoredIds,
+                    'restored_credits_count' => count($restoredIds),
+                ]
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error en restoreClientFromUncollectible: ' . $e->getMessage());
+            return $this->errorResponse('Error al restaurar cliente de cartera irrecuperable', 500);
+        }
+    }
+
     public function unifyCredits(Request $request)
     {
         try {

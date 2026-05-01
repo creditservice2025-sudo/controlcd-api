@@ -899,21 +899,39 @@ class ClientService
             elseif ($user->role_id == 5 && $seller)
                 $clientsQuery->where('seller_id', $seller->id);
 
-            // Filtros por estado / créditos
+            // Filtros por estado / créditos.
+            // Regla de "Cartera Irrecuperable": los créditos en ese estado solo
+            // deben aparecer cuando el filtro es explícitamente 'Cartera
+            // Irrecuperable'. En cualquier otro listado se ocultan tanto del
+            // eager load (`with('credits')`) como del filtro `whereHas` (un
+            // cliente con TODOS sus créditos irrecuperables no aparece en
+            // listados generales).
             if ($status === 'Cartera Irrecuperable') {
                 $clientsQuery->whereHas('credits', fn($q) => $q->where('status', $status));
                 $clientsQuery->with(['credits' => fn($q) => $q->where('status', $status)]);
-            } elseif ($status === 'Inactivo') {
-                $clientsQuery->where('status', 'inactive');
-            } elseif ($status === 'Activo' || $status === 'clientes') {
-                $clientsQuery->where('status', 'active');
-            } elseif ($status === 'con_creditos') {
-                $clientsQuery->whereHas('credits', fn($q) => $q->whereIn('status', ['Activo', 'Vigente', 'Vencido']));
-                $clientsQuery->with(['credits' => fn($q) => $q->whereIn('status', ['Activo', 'Vigente', 'Vencido'])]);
-            } elseif ($status === 'sin_creditos') {
-                $clientsQuery->whereDoesntHave('credits', fn($q) => $q->whereIn('status', ['Activo', 'Vigente', 'Vencido']));
             } else {
-                $clientsQuery->where('status', 'active');
+                // Excluir créditos irrecuperables del eager load por defecto
+                $clientsQuery->with(['credits' => fn($q) => $q->where('status', '<>', 'Cartera Irrecuperable')]);
+
+                if ($status === 'Inactivo') {
+                    $clientsQuery->where('status', 'inactive');
+                } elseif ($status === 'Activo' || $status === 'clientes') {
+                    $clientsQuery->where('status', 'active');
+                } elseif ($status === 'con_creditos') {
+                    $clientsQuery->whereHas('credits', fn($q) => $q->whereIn('status', ['Activo', 'Vigente', 'Vencido']));
+                } elseif ($status === 'sin_creditos') {
+                    $clientsQuery->whereDoesntHave('credits', fn($q) => $q->whereIn('status', ['Activo', 'Vigente', 'Vencido']));
+                } else {
+                    $clientsQuery->where('status', 'active');
+                }
+
+                // Ocultar clientes cuyos créditos son TODOS irrecuperables
+                // (no tienen ningún crédito con otro estado). Esto sigue
+                // permitiendo clientes nuevos sin créditos.
+                $clientsQuery->where(function ($q) {
+                    $q->whereDoesntHave('credits') // sin créditos: OK
+                      ->orWhereHas('credits', fn($cq) => $cq->where('status', '<>', 'Cartera Irrecuperable'));
+                });
             }
 
             if ($createdFrom || $createdTo) {
