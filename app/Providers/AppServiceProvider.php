@@ -2,6 +2,8 @@
 
 namespace App\Providers;
 
+use App\Models\SellerConfig;
+use App\Observers\SellerConfigObserver;
 use Illuminate\Auth\Notifications\ResetPassword;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
@@ -29,6 +31,11 @@ class AppServiceProvider extends ServiceProvider
         Passport::tokensExpireIn(now()->addMinutes(90));
         Passport::refreshTokensExpireIn(now()->addMinutes(90));
         Passport::personalAccessTokensExpireIn(now()->addMinutes(90));
+
+        // Auditoría automática de cambios en configuración de seguridad por
+        // vendedor: registra usuario, timestamp y diff de campos modificados
+        // en seller_config_audits.
+        SellerConfig::observe(SellerConfigObserver::class);
 
         // Bypass de permisos para Super-Admin y Admin.
         // Cualquier middleware permission:xxx y cualquier $user->can() retorna true para estos roles,

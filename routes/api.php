@@ -72,6 +72,7 @@ Route::middleware('auth:api')->group(function () {
 
     Route::get('seller/{sellerId}/config', [SellerConfigController::class, 'show']);
     Route::put('seller/{sellerId}/config', [SellerConfigController::class, 'update']);
+    Route::get('seller/{sellerId}/config/history', [SellerConfigController::class, 'history']);
 
     Route::get('me', [UserController::class, 'me']);
 
