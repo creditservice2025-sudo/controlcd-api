@@ -72,6 +72,7 @@ Route::middleware(['auth:api', 'supervisor.lock', 'active.seller'])->group(funct
 
     Route::get('seller/{sellerId}/config', [SellerConfigController::class, 'show']);
     Route::put('seller/{sellerId}/config', [SellerConfigController::class, 'update']);
+    Route::get('seller/{sellerId}/config/history', [SellerConfigController::class, 'history']);
 
     // Supervisor (rol 6) — selección de ruta a supervisar desde el APK
     Route::get('supervisor/active-sellers', [\App\Http\Controllers\SupervisorController::class, 'activeSellers']);
