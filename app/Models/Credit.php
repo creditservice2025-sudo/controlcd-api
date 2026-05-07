@@ -114,4 +114,59 @@ class Credit extends Model
         $totalPaid = $this->payments()->where('status', '!=', 'Anulado')->sum('amount');
         return max(0, $totalCredit - $totalPaid);
     }
+
+    /**
+     * Recalcula remaining_amount y status del crédito desde la verdad
+     * objetiva (suma pendiente de installments). Reemplaza el cálculo
+     * delta `remaining_amount -= amount` que existía disperso en
+     * PaymentService::create / delete / reapplyPayments y que se
+     * desincronizaba con cualquier path no contemplado.
+     *
+     * Llamar después de cualquier operación que cambie installment.paid_amount
+     * o installment.status (crear pago, eliminar pago, reaplicar abonos,
+     * eliminar movimiento de pago).
+     *
+     * Reglas:
+     *  - remaining_amount = SUM(quota_amount - paid_amount) sobre cuotas no
+     *    soft-deleted. Mínimo 0.
+     *  - Si TODAS las cuotas están en 'Pagado' Y remaining ≈ 0 → status
+     *    pasa a 'Liquidado'. Si estaba 'Liquidado' y aparece deuda otra vez
+     *    (ej: alguien eliminó un pago), revierte a 'Vigente'.
+     *  - No toca status si está en 'Renovado', 'Cartera Irrecuperable',
+     *    'Inactivo' o 'Unificado' — esos son terminales/administrativos.
+     */
+    public function recalculateRemainingAndStatus(): void
+    {
+        $remaining = (float) $this->installments()
+            ->whereNull('deleted_at')
+            ->selectRaw('COALESCE(SUM(quota_amount - paid_amount), 0) as pending')
+            ->value('pending');
+
+        $remaining = max(0, round($remaining, 2));
+        $this->remaining_amount = $remaining;
+
+        // Si el status ya es terminal/administrativo, solo actualizamos el
+        // monto y salimos. No queremos resucitar un crédito Renovado o
+        // moverle el status a uno marcado como Cartera Irrecuperable.
+        $terminalStatuses = ['Renovado', 'Cartera Irrecuperable', 'Inactivo', 'Unificado'];
+        if (in_array($this->status, $terminalStatuses, true)) {
+            $this->save();
+            return;
+        }
+
+        $hasUnpaid = $this->installments()
+            ->where('status', '<>', 'Pagado')
+            ->exists();
+
+        if (!$hasUnpaid && $remaining <= 0.001) {
+            if ($this->status !== 'Liquidado') {
+                $this->status = 'Liquidado';
+            }
+        } elseif ($this->status === 'Liquidado') {
+            // Reverso: aparecieron cuotas pendientes (ej: se eliminó un pago).
+            $this->status = 'Vigente';
+        }
+
+        $this->save();
+    }
 }
