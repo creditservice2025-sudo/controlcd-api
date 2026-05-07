@@ -315,32 +315,13 @@ class PaymentService
                     }
                 }
 
-                // Update Credit Remaining Amount
-                // We subtract the TOTAL payment amount from the credit's remaining amount
-                // Logic: remaining_amount tracks total debt.
-                $credit->remaining_amount -= $request->amount;
-                if ($credit->remaining_amount < 0) {
-                    $credit->remaining_amount = 0;
-                }
-
-                // Update Credit Status
-                $pendingInstallmentsExists = Installment::where('credit_id', $credit->id)
-                    ->where('status', '<>', 'Pagado')
-                    ->exists();
-
-                if (!$pendingInstallmentsExists && $credit->remaining_amount <= 0.001) {
-                    $credit->status = 'Liquidado';
-                } elseif ($request->payment_date > $credit->end_date) {
-                    // Only change to Vigente if it was something else?
-                    // Or logic: if not liquidado, check if overdue?
-                    // Original logic: if ($request->payment_date > $credit->end_date) $credit->status = 'Vigente';
-                    // Wait, if payment_date > end_date, it might be 'Vencido' (Overdue)?
-                    // 'Vigente' usually means 'Current/Active'.
-                    // Let's preserve original logic for status update to avoid side effects,
-                    // but 'Vigente' seems to be the default active status.
-                    $credit->status = 'Vigente';
-                }
-                $credit->save();
+                // Recalcular remaining_amount + status desde la verdad
+                // (cuotas), en lugar del delta `-= amount` que se
+                // desincronizaba si había un pago previo con unapplied_amount,
+                // un payment eliminado mal, o cualquier path inesperado.
+                // El método del modelo Credit consolida la lógica.
+                $credit->refresh();
+                $credit->recalculateRemainingAndStatus();
 
                 // Handle Image Upload
                 if ($request->hasFile('image')) {
@@ -483,6 +464,13 @@ class PaymentService
             $paymentInstallment->deleted_by = Auth::id();
             $paymentInstallment->save();
             $paymentInstallment->delete();
+
+            // Recalcular remaining_amount + status del crédito tras revertir
+            // el movimiento. Antes este método actualizaba paid_amount de la
+            // cuota y unapplied_amount del pago, pero no tocaba el crédito,
+            // dejándolo desincronizado.
+            $credit->refresh();
+            $credit->recalculateRemainingAndStatus();
 
             DB::commit();
 
@@ -1240,13 +1228,11 @@ class PaymentService
             PaymentInstallment::where('payment_id', $paymentId)->delete();
             PaymentImage::where('payment_id', $paymentId)->delete();
 
-            // Revertir el pago en el crédito
-            $credit->remaining_amount += $payment->amount;
-
-            if ($credit->status === 'Liquidado') {
-                $credit->status = 'Vigente';
-            }
-            $credit->save();
+            // Recalcular remaining_amount + status desde las cuotas. Si el
+            // pago eliminado dejaba el crédito en Liquidado y ahora hay
+            // cuotas pendientes, el helper revierte a 'Vigente'.
+            $credit->refresh();
+            $credit->recalculateRemainingAndStatus();
 
             // Si hay liquidación, agregar observación
             if ($liquidation) {
@@ -1417,15 +1403,12 @@ class PaymentService
                 }
             }
 
-            // Update Credit Status
-            $pendingInstallmentsExists = Installment::where('credit_id', $credit->id)
-                ->where('status', '<>', 'Pagado')
-                ->exists();
-
-            if (!$pendingInstallmentsExists && (float) $credit->remaining_amount <= 0.001) {
-                $credit->status = 'Liquidado';
-            }
-            $credit->save();
+            // Recalcular remaining_amount + status desde las cuotas. Antes
+            // este método NO actualizaba remaining_amount, así que créditos
+            // que terminaban de cubrirse aplicando abonos previos quedaban
+            // en 'Vigente' aunque todas las cuotas estuvieran 'Pagado'.
+            $credit->refresh();
+            $credit->recalculateRemainingAndStatus();
 
             $remainingUnapplied = Payment::where('credit_id', $creditId)->sum('unapplied_amount');
 
