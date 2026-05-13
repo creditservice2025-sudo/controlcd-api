@@ -41,6 +41,10 @@ class Kernel extends HttpKernel
     protected $routeMiddleware = [
         'auth' => \App\Http\Middleware\Authenticate::class,
         'throttle' => \Illuminate\Routing\Middleware\ThrottleRequests::class,
+        // Bloquea las requests de Cobradores (rol 5) cuando su Supervisor
+        // (rol 6) tiene una revisión activa. Aplicar SIEMPRE después de
+        // auth:api para que el user esté resuelto.
+        'supervisor.lock' => \App\Http\Middleware\CheckSupervisorLock::class,
       /*   'permission' => \Spatie\Permission\Middlewares\PermissionMiddleware::class,
         'role' => \Spatie\Permission\Middlewares\RoleMiddleware::class,
         'permission_or' => \Spatie\Permission\Middlewares\PermissionOrMiddleware::class,

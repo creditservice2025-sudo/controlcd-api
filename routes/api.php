@@ -38,7 +38,7 @@ Route::post('reset-password', [AuthController::class, 'resetPassword'])->middlew
 Route::get('mobile/version-check', [\App\Http\Controllers\Api\MobileVersionController::class, 'check']);
 
 
-Route::middleware('auth:api')->group(function () {
+Route::middleware(['auth:api', 'supervisor.lock', 'active.seller'])->group(function () {
 
     //change password
     Route::post('auth/change-password', [AuthController::class, 'changePassword']);
@@ -72,6 +72,9 @@ Route::middleware('auth:api')->group(function () {
 
     Route::get('seller/{sellerId}/config', [SellerConfigController::class, 'show']);
     Route::put('seller/{sellerId}/config', [SellerConfigController::class, 'update']);
+
+    // Supervisor (rol 6) — selección de ruta a supervisar desde el APK
+    Route::get('supervisor/active-sellers', [\App\Http\Controllers\SupervisorController::class, 'activeSellers']);
 
     Route::get('me', [UserController::class, 'me']);
 

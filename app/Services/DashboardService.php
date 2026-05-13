@@ -64,6 +64,18 @@ class DashboardService
         if ($role === 5 && $user->seller) {
             return collect([$user->seller->id]);
         }
+
+        // Supervisor (rol 6) en APK: si seleccionó una ruta activa (via
+        // header X-Active-Seller-Id resuelto por middleware), restringimos
+        // el dashboard a ese único seller. Sin selección, fallback al
+        // comportamiento legacy (todos los sellers de sus user_routes).
+        if ($role === 6 && $request) {
+            $activeSellerId = $request->attributes->get('active_seller_id');
+            if ($activeSellerId) {
+                return collect([(int) $activeSellerId]);
+            }
+        }
+
         // Consultor: solo los sellers asociados en UserRoute
         if ($role !== 5 && $role !== 1 && $role !== 2) {
             return UserRoute::where('user_id', $user->id)->pluck('seller_id')->unique()->values();

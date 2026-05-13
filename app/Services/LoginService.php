@@ -22,6 +22,63 @@ class LoginService
 
     use ApiResponse;
 
+    /**
+     * Roles permitidos para entrar al APK móvil. Cualquier otro rol queda
+     * limitado al portal web. Frontend Capacitor envía el header
+     * X-Client-Type: mobile en cada request; ausencia del header se asume
+     * como cliente web.
+     */
+    private const MOBILE_ALLOWED_ROLES = [5, 6]; // 5=Cobrador, 6=Revisador
+
+    /**
+     * Código que el frontend usa para distinguir un 401 normal de uno
+     * provocado por el supervisor revocando la sesión. Usado en el
+     * interceptor de axios para mostrar el modal "Sesión finalizada por
+     * supervisión" en lugar del flujo estándar de login expirado.
+     */
+    public const SESSION_REVOKED_BY_SUPERVISOR = 'SESSION_REVOKED_BY_SUPERVISOR';
+
+    /**
+     * Devuelve la clave de cache que marca a un cobrador como bloqueado por
+     * un supervisor activo. Si la clave existe, ese cobrador NO puede entrar
+     * (ni web ni APK) y, si tenía sesión abierta, ya le fueron revocados
+     * los tokens en el momento de bloquearlo.
+     */
+    private function lockKey(int $cobradorUserId): string
+    {
+        return "supervisor_lock:cobrador:{$cobradorUserId}";
+    }
+
+    /**
+     * IDs de los cobradores (User.id) supervisados por este Revisador,
+     * según la tabla user_routes. Se usa al loguear/cerrar sesión del rol 6
+     * para saber a qué cobradores afectar.
+     *
+     * Relaciones reales en BD:
+     *   user_routes(user_id, seller_id) ← supervisor → seller asignado
+     *   sellers(id, user_id)            ← seller → user del cobrador
+     *
+     * Por eso resolvemos: supervisor → seller_ids → user_ids vía
+     * sellers.user_id (NO users.seller_id, que no existe).
+     */
+    private function cobradorIdsSupervisedBy(int $supervisorUserId): array
+    {
+        $sellerIds = \DB::table('user_routes')
+            ->where('user_id', $supervisorUserId)
+            ->pluck('seller_id')
+            ->all();
+
+        if (empty($sellerIds)) return [];
+
+        return \DB::table('sellers')
+            ->whereIn('id', $sellerIds)
+            ->whereNull('deleted_at')
+            ->pluck('user_id')
+            ->filter()
+            ->values()
+            ->all();
+    }
+
     public function login($credentials)
     {
         try {
@@ -44,6 +101,58 @@ class LoginService
 
             if (!$user || !Hash::check($credentials['password'], $user->password)) {
                 return $this->errorResponse(['Los datos introducidos son inválidos, verifica e intenta nuevamente'], 401);
+            }
+
+            // ============================================================
+            // RESTRICCIÓN DE PLATAFORMA (APK vs Web)
+            // El frontend Capacitor envía X-Client-Type: mobile en cada
+            // request; el web NO lo envía. Solo Cobrador (5) y Revisador (6)
+            // pueden entrar al APK.
+            // ============================================================
+            $clientType = request()->header('X-Client-Type', 'web');
+            if ($clientType === 'mobile' && !in_array((int) $user->role_id, self::MOBILE_ALLOWED_ROLES, true)) {
+                return $this->errorResponse([
+                    'Esta aplicación móvil está disponible únicamente para Cobradores y Supervisores de campo. Para acceder a sus funciones administrativas, ingrese al portal web con sus credenciales habituales.'
+                ], 403);
+            }
+
+            // ============================================================
+            // EXCLUSIVIDAD COBRADOR (rol 5) ↔ SUPERVISOR (rol 6)
+            // Si el cobrador intenta entrar mientras su Supervisor tiene
+            // sesión activa, se bloquea independiente de la plataforma.
+            // ============================================================
+            if ((int) $user->role_id === 5 && Cache::has($this->lockKey($user->id))) {
+                return $this->errorResponse([
+                    'Su supervisor se encuentra realizando una revisión operativa de la cartera asignada. Por motivos de control y seguridad, su sesión permanecerá inhabilitada mientras dure este proceso. Para continuar con su operación, comuníquese con su supervisor inmediato o reintente el ingreso más tarde.'
+                ], 403);
+            }
+
+            // ============================================================
+            // SUPERVISOR (rol 6) entrando: revocar sesiones de cobradores
+            // asignados (user_routes) y marcarlos como bloqueados durante
+            // ~90 minutos (vida del token Passport). El logout explícito
+            // del supervisor también libera el bloqueo.
+            // ============================================================
+            if ((int) $user->role_id === 6) {
+                $cobradorIds = $this->cobradorIdsSupervisedBy($user->id);
+                if (!empty($cobradorIds)) {
+                    // Cache lock por 90 minutos (igual a token TTL Passport).
+                    // El middleware CheckSupervisorLock verifica esta clave
+                    // en cada request del cobrador y devuelve 401 con código
+                    // SESSION_REVOKED_BY_SUPERVISOR para que el frontend
+                    // muestre el modal "Sesión finalizada por supervisión".
+                    // No revocamos tokens en oauth_access_tokens porque el
+                    // cache es suficiente y permite recuperar la sesión sin
+                    // re-login cuando el supervisor sale.
+                    foreach ($cobradorIds as $cid) {
+                        Cache::put($this->lockKey($cid), $user->id, now()->addMinutes(90));
+                    }
+
+                    \Log::info('Supervisor inició sesión y bloqueó cobradores', [
+                        'supervisor_id' => $user->id,
+                        'cobrador_ids' => $cobradorIds,
+                    ]);
+                }
             }
 
             $seller = $user->seller;
@@ -132,9 +241,25 @@ class LoginService
                 throw new \Exception('Invalid user instance');
             }
 
+            // Si el que cierra sesión es Supervisor (rol 6), liberar el
+            // bloqueo de sus cobradores. Sin esto, los cobradores seguirían
+            // bloqueados hasta que expire la cache (~90 min).
+            if ((int) $user->role_id === 6) {
+                $cobradorIds = $this->cobradorIdsSupervisedBy($user->id);
+                foreach ($cobradorIds as $cid) {
+                    Cache::forget($this->lockKey($cid));
+                }
+                if (!empty($cobradorIds)) {
+                    \Log::info('Supervisor cerró sesión y liberó cobradores', [
+                        'supervisor_id' => $user->id,
+                        'cobrador_ids' => $cobradorIds,
+                    ]);
+                }
+            }
+
             $timezone = request()->has('timezone') ? request()->get('timezone') : null;
             $logoutAt = $timezone ? Carbon::now($timezone) : now();
-            
+
             // Note: IP is already stored from login, but logout_at is updated
             SessionLog::where('user_id', $user->id)
                 ->whereNull('logout_at')

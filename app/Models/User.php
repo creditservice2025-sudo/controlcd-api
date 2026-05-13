@@ -80,6 +80,22 @@ class User extends Authenticatable
         return $this->hasMany(UserRoute::class);
     }
 
+    /**
+     * Relación directa al rol por users.role_id (lookup simple a la tabla
+     * `roles`). Es independiente de la relación many-to-many `roles()` que
+     * provee Spatie Permissions vía model_has_roles — esa se usa para
+     * permisos finos; ésta para el rol numérico legacy guardado en la
+     * columna users.role_id.
+     *
+     * Permite eager-load del nombre del rol con
+     *     User::with('role:id,name')
+     * y exponerlo al frontend sin duplicar el mapeo role_id → nombre.
+     */
+    public function role()
+    {
+        return $this->belongsTo(\Spatie\Permission\Models\Role::class, 'role_id');
+    }
+
 
     public function clients()
     {

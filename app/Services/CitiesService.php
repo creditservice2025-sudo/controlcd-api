@@ -151,13 +151,26 @@ class CitiesService
             $seller = $user->seller ?? null;
             $company = $user->company ?? null;
 
-            $query = Seller::with('user');
+            // Eager-load city + country para que el frontend pueda mostrar
+            // a qué ruta (ciudad, país) pertenece cada vendedor en el
+            // multi-select de asignación de miembros.
+            $query = Seller::with(['user', 'city', 'city.country']);
 
-            if (!empty($city_id)) {
+            // Filtro por ciudad(es):
+            //   - $city_id (path param) → comportamiento legacy single
+            //   - city_ids[] (query param array) → multi-ciudad nuevo
+            // Si vienen ambos, predomina city_ids (más específico).
+            $cityIds = $request->input('city_ids');
+            if (is_array($cityIds) && count($cityIds) > 0) {
+                $cityIds = array_values(array_filter(array_map('intval', $cityIds)));
+                if (!empty($cityIds)) {
+                    $query->whereIn('city_id', $cityIds);
+                }
+            } elseif (!empty($city_id)) {
                 $query->where('city_id', $city_id);
             }
 
-            \Log::info("Getting sellers for city_id: " . ($city_id ?? 'all') . ", companyId: " . ($companyId ?? 'none') . ", user role: " . $user->role_id);
+            \Log::info("Getting sellers for city(ies): " . (is_array($cityIds) ? json_encode($cityIds) : ($city_id ?? 'all')) . ", companyId: " . ($companyId ?? 'none') . ", user role: " . $user->role_id);
 
             // Aplicar filtro por companyId de ruta si viene
             if ($companyId) {

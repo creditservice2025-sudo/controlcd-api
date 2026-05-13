@@ -720,6 +720,11 @@ class SellerService
 
                 $routes = Seller::with([
                     'userRoutes.user',
+                    // Cargar el rol de cada miembro asignado al vendedor.
+                    // Solo id+name → payload mínimo. El frontend lo usa para
+                    // mostrar tooltip "Juan Pérez · Supervisor" y el
+                    // resumen "1 Supervisor · 2 Asistentes" en la tabla.
+                    'userRoutes.user.role:id,name',
                     'city.country',
                     'user',
                     'images',

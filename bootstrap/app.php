@@ -24,6 +24,13 @@ return Application::configure(basePath: dirname(__DIR__))
             'role'               => \Spatie\Permission\Middleware\RoleMiddleware::class,
             'permission'         => \Spatie\Permission\Middleware\PermissionMiddleware::class,
             'role_or_permission' => \Spatie\Permission\Middleware\RoleOrPermissionMiddleware::class,
+            // Bloquea Cobrador (rol 5) cuando su Supervisor (rol 6) tiene
+            // sesión activa. Aplicado al grupo `auth:api` en routes/api.php.
+            'supervisor.lock'    => \App\Http\Middleware\CheckSupervisorLock::class,
+            // Resuelve el seller "activo" para el Supervisor (rol 6) cuando
+            // selecciona una ruta a supervisar desde el APK. Lee el header
+            // X-Active-Seller-Id y lo expone como $request->active_seller_id.
+            'active.seller'      => \App\Http\Middleware\ResolveActiveSeller::class,
         ]);
 
         $middleware->validateCsrfTokens(except: [
