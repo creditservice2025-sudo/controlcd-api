@@ -268,7 +268,20 @@ public function me()
                     'users.status',
                     'roles.name as role_name'
                 )
-                ->with(['city', 'city.country', 'userRoutes', 'userRoutes.seller'])
+                // userRoutes.seller.{city.country, user}: necesario para
+                // que la tabla de usuarios resuelva la "Ruta" del
+                // Supervisor (rol 6) y otros roles sin city propia,
+                // derivando la ubicación desde sus vendedores asignados y
+                // mostrando además los chips con nombres de cobradores.
+                ->with([
+                    'city',
+                    'city.country',
+                    'userRoutes',
+                    'userRoutes.seller',
+                    'userRoutes.seller.user:id,name',
+                    'userRoutes.seller.city',
+                    'userRoutes.seller.city.country',
+                ])
                 ->whereNull('users.deleted_at')
                 ->whereNotIn('users.role_id', $excludedRoleIds);
     

@@ -702,6 +702,16 @@ class LiquidationController extends Controller
             return $seller && $seller->id == $sellerId;
         }
 
+        // Supervisores (Role 6) acceden a los sellers asignados via
+        // user_routes. El frontend ya filtra al seller activo via header
+        // X-Active-Seller-Id; acá validamos que efectivamente ese seller
+        // esté entre los supervisados para evitar accesos cruzados.
+        if ($user->role_id == 6) {
+            return \App\Models\UserRoute::where('user_id', $user->id)
+                ->where('seller_id', $sellerId)
+                ->exists();
+        }
+
         return false;
     }
 

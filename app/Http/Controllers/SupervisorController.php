@@ -64,7 +64,13 @@ class SupervisorController extends Controller
                 'u.dni as cobrador_dni',
                 'c.id as city_id',
                 'c.name as city_name',
+                'co.id as country_id',
                 'co.name as country_name',
+                // timezone del país: lo usaremos para que el supervisor
+                // vea fechas/horas en el huso horario del cobrador, no del
+                // suyo (evita confusiones cuando supervisa rutas en países
+                // distintos al suyo).
+                'co.timezone as country_timezone',
             )
             ->orderBy('co.name')
             ->orderBy('c.name')
