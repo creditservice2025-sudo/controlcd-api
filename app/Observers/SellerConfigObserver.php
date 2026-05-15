@@ -5,6 +5,7 @@ namespace App\Observers;
 use App\Models\SellerConfig;
 use App\Models\SellerConfigAudit;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
 
 class SellerConfigObserver
 {
@@ -47,16 +48,29 @@ class SellerConfigObserver
 
     private function record(SellerConfig $config, string $event, array $changes): void
     {
-        $user = Auth::user();
-        SellerConfigAudit::create([
-            'seller_config_id' => $config->id,
-            'seller_id' => $config->seller_id,
-            'user_id' => $user?->id,
-            'user_name' => $user?->name,
-            'user_email' => $user?->email,
-            'event' => $event,
-            'changes' => $changes,
-            'created_at' => now(),
-        ]);
+        // Auditoría defensiva: si por cualquier motivo (BD nueva sin la
+        // migración, tabla renombrada, conexión interrumpida) no podemos
+        // escribir el log de auditoría, NO debemos romper la operación
+        // principal (guardar la configuración del vendedor). La auditoría
+        // es un "nice to have", la actualización del config no.
+        try {
+            $user = Auth::user();
+            SellerConfigAudit::create([
+                'seller_config_id' => $config->id,
+                'seller_id' => $config->seller_id,
+                'user_id' => $user?->id,
+                'user_name' => $user?->name,
+                'user_email' => $user?->email,
+                'event' => $event,
+                'changes' => $changes,
+                'created_at' => now(),
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('SellerConfigObserver: no se pudo registrar auditoría', [
+                'seller_config_id' => $config->id,
+                'event' => $event,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 }
