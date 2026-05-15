@@ -1617,34 +1617,70 @@ class LiquidationService
 
         \Log::debug("getAccumulatedByCity - Rango UTC:", ['startUTC' => $startUTC, 'endUTC' => $endUTC, 'company_id' => $companyId]);
 
-        $query = DB::table('liquidations')
-            ->join('sellers', 'liquidations.seller_id', '=', 'sellers.id')
-            ->join('cities', 'sellers.city_id', '=', 'cities.id')
+        // BUG HISTÓRICO CORREGIDO:
+        // Antes este método hacía `SUM(initial_cash)` sobre TODAS las filas
+        // de liquidations del rango. Eso es contablemente incorrecto:
+        // `initial_cash` es un SALDO (caja inicial del día), no un flujo.
+        // En un rango de 14 días con 11 vendedores, sumaba 14×11 = 154
+        // cajas iniciales y multiplicaba ~4-5× el valor real.
+        //
+        // El fix sigue la misma regla que getAccumulatedBySellersInCity:
+        // por cada seller tomamos la caja inicial del PRIMER día con
+        // liquidación aprobada en el rango (es el saldo de apertura), y
+        // luego sumamos entre sellers para el agregado por ciudad.
+        //
+        // Implementación: subquery `per_seller` agrega los flujos por
+        // seller y resuelve su initial_cash con un correlated subquery.
+        // El query externo agrupa por ciudad.
+
+        $perSellerSub = DB::table('liquidations as l')
+            ->join('sellers as s', 'l.seller_id', '=', 's.id')
+            ->select(
+                's.city_id as city_id',
+                'l.seller_id as seller_id',
+                DB::raw('SUM(l.total_collected) as total_collected'),
+                DB::raw('SUM(l.total_expenses) as total_expenses'),
+                DB::raw('SUM(l.new_credits) as new_credits'),
+                DB::raw('SUM(l.base_delivered) as base_delivered'),
+                DB::raw('SUM(l.real_to_deliver) as real_to_deliver'),
+                DB::raw('SUM(l.shortage) as shortage'),
+                DB::raw('SUM(l.surplus) as surplus'),
+                DB::raw('SUM(l.cash_delivered) as cash_delivered'),
+                DB::raw("(SELECT l2.initial_cash FROM liquidations l2
+                          WHERE l2.seller_id = l.seller_id
+                            AND l2.date >= '$startUTC'
+                            AND l2.date <= '$endUTC'
+                            AND l2.status = 'approved'
+                          ORDER BY l2.date ASC LIMIT 1) as initial_cash")
+            )
+            ->whereBetween('l.date', [$startUTC, $endUTC])
+            ->where('l.status', 'approved');
+
+        if ($companyId !== null) {
+            $perSellerSub->where('s.company_id', $companyId);
+        }
+        if ($sellerIds !== null) {
+            $perSellerSub->whereIn('s.id', $sellerIds);
+        }
+        $perSellerSub->groupBy('s.city_id', 'l.seller_id');
+
+        $query = DB::table(DB::raw('(' . $perSellerSub->toSql() . ') as per_seller'))
+            ->mergeBindings($perSellerSub)
+            ->join('cities', 'cities.id', '=', 'per_seller.city_id')
             ->select(
                 'cities.name as city_name',
                 'cities.id as city_id',
-                DB::raw('SUM(liquidations.total_collected) as total_collected'),
-                DB::raw('SUM(liquidations.total_expenses) as total_expenses'),
-                DB::raw('SUM(liquidations.new_credits) as new_credits'),
-                DB::raw('SUM(liquidations.initial_cash) as initial_cash'),
-                DB::raw('SUM(liquidations.base_delivered) as base_delivered'),
-                DB::raw('SUM(liquidations.real_to_deliver) as real_to_deliver'),
-                DB::raw('SUM(liquidations.shortage) as shortage'),
-                DB::raw('SUM(liquidations.surplus) as surplus'),
-                DB::raw('SUM(liquidations.cash_delivered) as cash_delivered')
+                DB::raw('SUM(per_seller.total_collected) as total_collected'),
+                DB::raw('SUM(per_seller.total_expenses) as total_expenses'),
+                DB::raw('SUM(per_seller.new_credits) as new_credits'),
+                DB::raw('SUM(per_seller.initial_cash) as initial_cash'),
+                DB::raw('SUM(per_seller.base_delivered) as base_delivered'),
+                DB::raw('SUM(per_seller.real_to_deliver) as real_to_deliver'),
+                DB::raw('SUM(per_seller.shortage) as shortage'),
+                DB::raw('SUM(per_seller.surplus) as surplus'),
+                DB::raw('SUM(per_seller.cash_delivered) as cash_delivered')
             )
-            ->whereBetween('liquidations.date', [$startUTC, $endUTC])
-            ->where('liquidations.status', 'approved');
-
-        if ($companyId !== null) {
-            $query->where('sellers.company_id', $companyId);
-        }
-
-        if ($sellerIds !== null) {
-            $query->whereIn('sellers.id', $sellerIds);
-        }
-
-        $query->groupBy('cities.id', 'cities.name');
+            ->groupBy('cities.id', 'cities.name');
 
         \Log::debug("getAccumulatedByCity - SQL:", ['sql' => $query->toSql(), 'bindings' => $query->getBindings()]);
 
@@ -1678,6 +1714,11 @@ class LiquidationService
                 DB::raw('SUM(liquidations.cash_delivered) as cash_delivered')
             )
             ->where('cities.id', $cityId)
+            // Filtramos por status 'approved' para mantener consistencia
+            // con getAccumulatedByCity y getAccumulatedBySellersInCity.
+            // Antes este método mezclaba liquidaciones en 'En curso',
+            // 'auto', 'pending', inflando los totales.
+            ->where('liquidations.status', 'approved')
             ->whereBetween('liquidations.date', [$startUTC, $endUTC]);
 
         if ($companyId !== null) {
