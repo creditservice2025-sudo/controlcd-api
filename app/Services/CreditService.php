@@ -87,6 +87,84 @@ class CreditService
                 }
             }
 
+            // Topes y reglas por SellerConfig. Detectamos si es "renovación
+            // lógica" (cliente con al menos un crédito previo no soft-deleted)
+            // para aplicar el tope correspondiente. La diferencia entre
+            // "nuevo" y "renovación" en el frontend es invisible aquí: la app
+            // siempre hace POST /credit/create. El crédito se considera
+            // renovación si el cliente ya tiene historial.
+            $creditValueRequested = floatval($params['credit_value'] ?? 0);
+            $existingCredits = \App\Models\Credit::where('client_id', $params['client_id'])->get();
+            $isRenewal = $existingCredits->isNotEmpty();
+
+            // Bloqueo por máximo de créditos vigentes por cliente. Solo
+            // cuenta los activos (no Liquidado/Renovado/Inactivo/Cartera
+            // Irrecuperable/Unificado). 0 = sin límite.
+            $maxPerClient = $sellerConfig ? intval($sellerConfig->max_credits_per_client ?? 0) : 0;
+            if ($maxPerClient > 0) {
+                $activeCount = $existingCredits
+                    ->whereNotIn('status', ['Liquidado', 'Renovado', 'Inactivo', 'Cartera Irrecuperable', 'Unificado'])
+                    ->count();
+                if ($activeCount >= $maxPerClient) {
+                    return $this->errorResponse(
+                        'El cliente ya tiene ' . $activeCount . ' crédito(s) activo(s). '
+                            . 'El límite por cliente es ' . $maxPerClient . '.',
+                        403
+                    );
+                }
+            }
+
+            // Tope por monto del crédito individual: aplica el de "renovación"
+            // si el cliente tiene historial; si no, el de "nuevo". 0 = sin
+            // límite en cualquiera de los dos.
+            $maxNew = $sellerConfig ? floatval($sellerConfig->max_credit_amount_new ?? 0) : 0;
+            $maxRenewal = $sellerConfig ? floatval($sellerConfig->max_credit_amount_renewal ?? 0) : 0;
+            $cap = $isRenewal ? $maxRenewal : $maxNew;
+            $capLabel = $isRenewal ? 'renovaciones' : 'créditos nuevos';
+            \Log::info('[credit-cap] CreditService::create check', [
+                'seller_id' => $params['seller_id'] ?? null,
+                'client_id' => $params['client_id'] ?? null,
+                'is_renewal' => $isRenewal,
+                'cap_applied' => $cap,
+                'cap_label' => $capLabel,
+                'requested' => $creditValueRequested,
+                'will_block' => $cap > 0 && $creditValueRequested > $cap,
+            ]);
+            if ($cap > 0 && $creditValueRequested > $cap) {
+                return $this->errorResponse(
+                    'El monto del crédito ($' . number_format($creditValueRequested, 2)
+                        . ') supera el límite asignado al cobrador para ' . $capLabel
+                        . ' ($' . number_format($cap, 2) . ').',
+                    403
+                );
+            }
+
+            // Mínimo de cuotas pagadas del crédito previo para permitir otro.
+            // Solo aplica en "renovación lógica". 0 = no se exige.
+            $minQuotasPaid = $sellerConfig ? intval($sellerConfig->renewal_min_quotas_paid ?? 0) : 0;
+            if ($isRenewal && $minQuotasPaid > 0) {
+                // Tomamos el crédito previo más reciente (no terminado) para
+                // medir cuotas pagadas; si todos están Liquidados se omite el
+                // chequeo (el cliente ya pagó todo, no hay deuda pendiente).
+                $lastActive = $existingCredits
+                    ->whereNotIn('status', ['Liquidado', 'Renovado', 'Inactivo', 'Cartera Irrecuperable', 'Unificado'])
+                    ->sortByDesc('created_at')
+                    ->first();
+                if ($lastActive) {
+                    $paidCount = \App\Models\Installment::where('credit_id', $lastActive->id)
+                        ->where('status', 'Pagado')
+                        ->count();
+                    if ($paidCount < $minQuotasPaid) {
+                        return $this->errorResponse(
+                            'No se puede crear el crédito: el crédito anterior tiene '
+                                . $paidCount . ' cuota(s) pagada(s), se requieren al menos '
+                                . $minQuotasPaid . ' para renovar.',
+                            403
+                        );
+                    }
+                }
+            }
+
             // Calculate total interest amount
             $interestRate = floatval($params['interest_rate'] ?? 0);
             $creditValue = floatval($params['credit_value'] ?? 0);
@@ -343,6 +421,21 @@ class CreditService
                 'images.required' => 'La foto es obligatoria para la renovación',
                 'images.min' => 'Debe subir al menos una foto para renovar',
             ]);
+
+            // Validar tope ANTES de abrir la transacción para no dejarla
+            // colgada con un return temprano.
+            $oldCreditPreCheck = Credit::findOrFail($request->old_credit_id);
+            $sellerConfigRenewal = \App\Models\SellerConfig::where('seller_id', $oldCreditPreCheck->seller_id)->first();
+            $maxRenewal = $sellerConfigRenewal ? floatval($sellerConfigRenewal->max_credit_amount_renewal ?? 0) : 0;
+            $newCreditValueRequested = floatval($request->new_credit_value);
+            if ($maxRenewal > 0 && $newCreditValueRequested > $maxRenewal) {
+                return $this->errorResponse(
+                    'El monto de la renovación ($' . number_format($newCreditValueRequested, 2)
+                        . ') supera el límite asignado al cobrador para renovaciones ($'
+                        . number_format($maxRenewal, 2) . ').',
+                    403
+                );
+            }
 
             DB::beginTransaction();
 

@@ -69,6 +69,22 @@ class ClientService
                         return $this->errorResponse('No puedes crear el crédito. El monto total de ventas nuevas por el cobrador hoy supera el límite de $' . number_format($limit, 2), 403);
                     }
                 }
+
+                // Topes por SellerConfig. En este flujo siempre es "crédito
+                // nuevo" porque ClientService::create se usa cuando el cliente
+                // se está creando recién, así que no aplica isRenewal. Si el
+                // cliente ya existe se usa otro endpoint (CreditService::create)
+                // que sí detecta renovación lógica.
+                $maxNew = $sellerConfig ? floatval($sellerConfig->max_credit_amount_new ?? 0) : 0;
+                $creditValueRequested = floatval($params['credit_value']);
+                if ($maxNew > 0 && $creditValueRequested > $maxNew) {
+                    return $this->errorResponse(
+                        'El monto del crédito ($' . number_format($creditValueRequested, 2)
+                            . ') supera el límite asignado al cobrador para créditos nuevos ($'
+                            . number_format($maxNew, 2) . ').',
+                        403
+                    );
+                }
             }
 
             if ($request->has('images')) {
