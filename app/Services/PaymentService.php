@@ -1070,7 +1070,7 @@ class PaymentService
         ]);
     }
 
-    public function getPaymentsByDate($date, $sellerId = null, Request $request)
+    public function getPaymentsByDate($date, Request $request, $sellerId = null)
     {
         $query = Payment::with([
             'credit:id,client_id,credit_value,status',
