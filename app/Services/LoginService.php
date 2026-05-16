@@ -28,7 +28,7 @@ class LoginService
      * X-Client-Type: mobile en cada request; ausencia del header se asume
      * como cliente web.
      */
-    private const MOBILE_ALLOWED_ROLES = [5, 6]; // 5=Cobrador, 6=Revisador
+    private const MOBILE_ALLOWED_ROLES = [5, 6]; // 5=Cobrador, 6=Supervisor
 
     /**
      * Código que el frontend usa para distinguir un 401 normal de uno
@@ -50,7 +50,7 @@ class LoginService
     }
 
     /**
-     * IDs de los cobradores (User.id) supervisados por este Revisador,
+     * IDs de los cobradores (User.id) supervisados por este Supervisor,
      * según la tabla user_routes. Se usa al loguear/cerrar sesión del rol 6
      * para saber a qué cobradores afectar.
      *
@@ -106,7 +106,7 @@ class LoginService
             // ============================================================
             // RESTRICCIÓN DE PLATAFORMA (APK vs Web)
             // El frontend Capacitor envía X-Client-Type: mobile en cada
-            // request; el web NO lo envía. Solo Cobrador (5) y Revisador (6)
+            // request; el web NO lo envía. Solo Cobrador (5) y Supervisor (6, rol "Revisador" en BD)
             // pueden entrar al APK.
             // ============================================================
             $clientType = request()->header('X-Client-Type', 'web');
@@ -120,11 +120,23 @@ class LoginService
             // EXCLUSIVIDAD COBRADOR (rol 5) ↔ SUPERVISOR (rol 6)
             // Si el cobrador intenta entrar mientras su Supervisor tiene
             // sesión activa, se bloquea independiente de la plataforma.
+            // FAIL-OPEN: si la cache no responde, permitimos el login
+            // (más vale que entre uno sin validar que tener a todos los
+            // cobradores fuera del sistema por falla de cache).
             // ============================================================
-            if ((int) $user->role_id === 5 && Cache::has($this->lockKey($user->id))) {
-                return $this->errorResponse([
-                    'Su supervisor se encuentra realizando una revisión operativa de la cartera asignada. Por motivos de control y seguridad, su sesión permanecerá inhabilitada mientras dure este proceso. Para continuar con su operación, comuníquese con su supervisor inmediato o reintente el ingreso más tarde.'
-                ], 403);
+            if ((int) $user->role_id === 5) {
+                try {
+                    if (Cache::has($this->lockKey($user->id))) {
+                        return $this->errorResponse([
+                            'Su supervisor se encuentra realizando una revisión operativa de la cartera asignada. Por motivos de control y seguridad, su sesión permanecerá inhabilitada mientras dure este proceso. Para continuar con su operación, comuníquese con su supervisor inmediato o reintente el ingreso más tarde.'
+                        ], 403);
+                    }
+                } catch (\Throwable $e) {
+                    \Log::warning('[supervisor.lock] cache check fail-open en login cobrador', [
+                        'user_id' => $user->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
             }
 
             // ============================================================
@@ -141,17 +153,26 @@ class LoginService
                     // en cada request del cobrador y devuelve 401 con código
                     // SESSION_REVOKED_BY_SUPERVISOR para que el frontend
                     // muestre el modal "Sesión finalizada por supervisión".
-                    // No revocamos tokens en oauth_access_tokens porque el
-                    // cache es suficiente y permite recuperar la sesión sin
-                    // re-login cuando el supervisor sale.
-                    foreach ($cobradorIds as $cid) {
-                        Cache::put($this->lockKey($cid), $user->id, now()->addMinutes(90));
+                    //
+                    // FAIL-OPEN: si la cache no responde no bloqueamos el
+                    // login del supervisor (puede entrar igual). El peor
+                    // caso es que sus cobradores no queden bloqueados esta
+                    // vez — preferible a impedir que el supervisor opere.
+                    try {
+                        foreach ($cobradorIds as $cid) {
+                            Cache::put($this->lockKey($cid), $user->id, now()->addMinutes(90));
+                        }
+                        \Log::info('Supervisor inició sesión y bloqueó cobradores', [
+                            'supervisor_id' => $user->id,
+                            'cobrador_ids' => $cobradorIds,
+                        ]);
+                    } catch (\Throwable $e) {
+                        \Log::warning('[supervisor.lock] no se pudo aplicar lock a cobradores', [
+                            'supervisor_id' => $user->id,
+                            'cobrador_ids' => $cobradorIds,
+                            'error' => $e->getMessage(),
+                        ]);
                     }
-
-                    \Log::info('Supervisor inició sesión y bloqueó cobradores', [
-                        'supervisor_id' => $user->id,
-                        'cobrador_ids' => $cobradorIds,
-                    ]);
                 }
             }
 
@@ -244,15 +265,24 @@ class LoginService
             // Si el que cierra sesión es Supervisor (rol 6), liberar el
             // bloqueo de sus cobradores. Sin esto, los cobradores seguirían
             // bloqueados hasta que expire la cache (~90 min).
+            // FAIL-OPEN: si la cache no responde, logout sigue su flujo.
+            // En el peor caso el lock expira solo a los 90 min.
             if ((int) $user->role_id === 6) {
-                $cobradorIds = $this->cobradorIdsSupervisedBy($user->id);
-                foreach ($cobradorIds as $cid) {
-                    Cache::forget($this->lockKey($cid));
-                }
-                if (!empty($cobradorIds)) {
-                    \Log::info('Supervisor cerró sesión y liberó cobradores', [
+                try {
+                    $cobradorIds = $this->cobradorIdsSupervisedBy($user->id);
+                    foreach ($cobradorIds as $cid) {
+                        Cache::forget($this->lockKey($cid));
+                    }
+                    if (!empty($cobradorIds)) {
+                        \Log::info('Supervisor cerró sesión y liberó cobradores', [
+                            'supervisor_id' => $user->id,
+                            'cobrador_ids' => $cobradorIds,
+                        ]);
+                    }
+                } catch (\Throwable $e) {
+                    \Log::warning('[supervisor.lock] no se pudo liberar lock en logout', [
                         'supervisor_id' => $user->id,
-                        'cobrador_ids' => $cobradorIds,
+                        'error' => $e->getMessage(),
                     ]);
                 }
             }
