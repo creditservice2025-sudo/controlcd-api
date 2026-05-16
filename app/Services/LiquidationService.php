@@ -29,6 +29,18 @@ class LiquidationService
     }
 
     use ApiResponse;
+
+    /**
+     * Garantiza que un string sea YYYY-MM-DD (solo dígitos y guiones en las
+     * posiciones esperadas) antes de interpolarlo en un subquery raw. Usado
+     * en los métodos getAccumulatedBy* que arman correlated subqueries.
+     */
+    private function assertDateFormat(string $date): void
+    {
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+            throw new \InvalidArgumentException("Formato de fecha inválido: {$date}");
+        }
+    }
     /**
      * Crea una nueva liquidación con validación y cálculos automáticos.
      *
@@ -1615,6 +1627,14 @@ class LiquidationService
         $startUTC = Carbon::parse($startDate, $timezone)->format('Y-m-d');
         $endUTC = Carbon::parse($endDate, $timezone)->format('Y-m-d');
 
+        // Guardrail anti-injection: estos valores se interpolan dentro de un
+        // subquery correlacionado (no se puede bindear con `?` por el patrón
+        // de DB::raw múltiple). Carbon::parse(...)->format('Y-m-d') ya
+        // garantiza el formato, pero validamos explícitamente para que
+        // cualquier futura regresión rompa ruidoso antes de abrir SQLi.
+        $this->assertDateFormat($startUTC);
+        $this->assertDateFormat($endUTC);
+
         \Log::debug("getAccumulatedByCity - Rango UTC:", ['startUTC' => $startUTC, 'endUTC' => $endUTC, 'company_id' => $companyId]);
 
         // BUG HISTÓRICO CORREGIDO:
@@ -1670,15 +1690,20 @@ class LiquidationService
             ->select(
                 'cities.name as city_name',
                 'cities.id as city_id',
-                DB::raw('SUM(per_seller.total_collected) as total_collected'),
-                DB::raw('SUM(per_seller.total_expenses) as total_expenses'),
-                DB::raw('SUM(per_seller.new_credits) as new_credits'),
-                DB::raw('SUM(per_seller.initial_cash) as initial_cash'),
-                DB::raw('SUM(per_seller.base_delivered) as base_delivered'),
-                DB::raw('SUM(per_seller.real_to_deliver) as real_to_deliver'),
-                DB::raw('SUM(per_seller.shortage) as shortage'),
-                DB::raw('SUM(per_seller.surplus) as surplus'),
-                DB::raw('SUM(per_seller.cash_delivered) as cash_delivered')
+                // COALESCE blinda el agregado: si un seller no tuvo
+                // liquidación 'approved' en el rango, el subquery devuelve
+                // NULL → SUM(NULL) sería NULL en MySQL. Forzamos 0 para
+                // que el frontend no muestre vacío y los cálculos posteriores
+                // (utilidad, márgenes) no propaguen NULL.
+                DB::raw('COALESCE(SUM(per_seller.total_collected), 0) as total_collected'),
+                DB::raw('COALESCE(SUM(per_seller.total_expenses), 0) as total_expenses'),
+                DB::raw('COALESCE(SUM(per_seller.new_credits), 0) as new_credits'),
+                DB::raw('COALESCE(SUM(per_seller.initial_cash), 0) as initial_cash'),
+                DB::raw('COALESCE(SUM(per_seller.base_delivered), 0) as base_delivered'),
+                DB::raw('COALESCE(SUM(per_seller.real_to_deliver), 0) as real_to_deliver'),
+                DB::raw('COALESCE(SUM(per_seller.shortage), 0) as shortage'),
+                DB::raw('COALESCE(SUM(per_seller.surplus), 0) as surplus'),
+                DB::raw('COALESCE(SUM(per_seller.cash_delivered), 0) as cash_delivered')
             )
             ->groupBy('cities.id', 'cities.name');
 
@@ -1694,6 +1719,8 @@ class LiquidationService
         $timezone = 'America/Lima';
         $startUTC = Carbon::parse($startDate, $timezone)->format('Y-m-d');
         $endUTC = Carbon::parse($endDate, $timezone)->format('Y-m-d');
+        $this->assertDateFormat($startUTC);
+        $this->assertDateFormat($endUTC);
 
         $query = DB::table('liquidations')
             ->join('sellers', 'liquidations.seller_id', '=', 'sellers.id')
@@ -1738,6 +1765,8 @@ class LiquidationService
         $timezone = 'America/Lima';
         $startUTC = Carbon::parse($startDate, $timezone)->format('Y-m-d');
         $endUTC = Carbon::parse($endDate, $timezone)->format('Y-m-d');
+        $this->assertDateFormat($startUTC);
+        $this->assertDateFormat($endUTC);
 
         $query = DB::table('liquidations')
             ->join('sellers', 'liquidations.seller_id', '=', 'sellers.id')
