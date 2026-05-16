@@ -7,6 +7,7 @@ use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Middleware que aplica la regla de exclusividad Cobrador (rol 5) ↔
@@ -31,7 +32,18 @@ class CheckSupervisorLock
     {
         $user = $request->user() ?? Auth::user();
 
-        if ($user && (int) ($user->role_id ?? 0) === 5) {
+        // Solo aplica al cobrador (rol 5). Otros roles pasan directo.
+        if (!$user || (int) ($user->role_id ?? 0) !== 5) {
+            return $next($request);
+        }
+
+        // FAIL-OPEN: el lock es una regla operativa (no operar mientras
+        // supervisa el rol 6), NO un control de acceso crítico. Si la
+        // cache falla (Redis caído, driver `database` con MySQL caído,
+        // etc.) NO bloqueamos al cobrador — preferimos perder la
+        // funcionalidad de revisión esos segundos antes que dejar a 140+
+        // cobradores sin poder operar por una falla de infraestructura.
+        try {
             $lockKey = "supervisor_lock:cobrador:{$user->id}";
             if (Cache::has($lockKey)) {
                 return response()->json([
@@ -40,6 +52,11 @@ class CheckSupervisorLock
                     'message' => 'Su sesión ha sido cerrada porque su supervisor ha iniciado una revisión de la cartera. Esta acción es parte de los controles operativos de la empresa. Para reanudar sus actividades, comuníquese con su supervisor.',
                 ], 401);
             }
+        } catch (\Throwable $e) {
+            Log::warning('[supervisor.lock] cache check failed, fail-open', [
+                'user_id' => $user->id,
+                'error' => $e->getMessage(),
+            ]);
         }
 
         return $next($request);
