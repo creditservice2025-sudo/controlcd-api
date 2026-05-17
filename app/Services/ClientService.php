@@ -922,12 +922,36 @@ class ClientService
             // eager load (`with('credits')`) como del filtro `whereHas` (un
             // cliente con TODOS sus créditos irrecuperables no aparece en
             // listados generales).
+            //
+            // OJO: Laravel SOBREESCRIBE el with('credits') si lo declaras de
+            // nuevo, así que aquí re-aplicamos TODAS las agregaciones del
+            // bloque inicial (select, withSum, withCount, withMax) ADEMÁS
+            // del filtro de status. Si no, perdemos `payments_sum_amount`
+            // y `pending_installments_count` → frontend muestra Recaudado=$0
+            // y Por cobrar = total sin descontar.
+            $applyCreditAggregates = function ($q) {
+                $q->select('id', 'client_id', 'credit_value', 'number_installments', 'payment_frequency', 'status', 'total_interest')
+                    ->withSum('payments', 'amount')
+                    ->withCount([
+                        'installments as pending_installments_count' => function ($iq) {
+                            $iq->where('status', '<>', 'Pagado');
+                        }
+                    ])
+                    ->withMax('installments', 'due_date');
+            };
+
             if ($status === 'Cartera Irrecuperable') {
                 $clientsQuery->whereHas('credits', fn($q) => $q->where('status', $status));
-                $clientsQuery->with(['credits' => fn($q) => $q->where('status', $status)]);
+                $clientsQuery->with(['credits' => function ($q) use ($status, $applyCreditAggregates) {
+                    $applyCreditAggregates($q);
+                    $q->where('status', $status);
+                }]);
             } else {
                 // Excluir créditos irrecuperables del eager load por defecto
-                $clientsQuery->with(['credits' => fn($q) => $q->where('status', '<>', 'Cartera Irrecuperable')]);
+                $clientsQuery->with(['credits' => function ($q) use ($applyCreditAggregates) {
+                    $applyCreditAggregates($q);
+                    $q->where('status', '<>', 'Cartera Irrecuperable');
+                }]);
 
                 if ($status === 'Inactivo') {
                     $clientsQuery->where('status', 'inactive');

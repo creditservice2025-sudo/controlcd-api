@@ -696,6 +696,123 @@ class SellerService
         }
     }
 
+    /**
+     * Resumen de cartera del vendedor: activa + irrecuperable.
+     *
+     * Definición de "cartera" según el negocio (gota a gota):
+     *   cartera = SUMA(credit_value + credit_value * total_interest / 100)
+     *           - SUMA(payments.amount donde NOT deleted_at)
+     *
+     * NO se usa credits.remaining_amount porque hay créditos históricos
+     * con ese campo desincronizado (recalculo masivo en deploy aparte).
+     * NO se usa installments.paid_amount por la misma razón potencial.
+     * La verdad es: lo colocado con interés MENOS lo que entró por pagos
+     * que siguen vivos en la tabla payments.
+     *
+     * Estados excluidos de la cartera ACTIVA: Liquidado, Renovado,
+     * Inactivo, Cartera Irrecuperable, Unificado. Es el mismo set que
+     * usa CreditService al contar cartera vigente, para mantener
+     * consistencia con el resto del sistema.
+     */
+    public function getPortfolioSummary($sellerId)
+    {
+        try {
+            // Cache 30s: este cálculo recorre todos los créditos vigentes
+            // del vendedor (puede ser >1.000 en operaciones grandes) y se
+            // consulta cada vez que se abre el wallet del vendedor o se
+            // recarga. El TTL corto mantiene "casi-realtime" sin pegarle
+            // a la BD por cada click. El cache se invalida solo por TTL;
+            // no hay invalidación reactiva porque la diferencia de 30s
+            // es aceptable para una métrica de saldo.
+            $cacheKey = "seller_portfolio_summary:{$sellerId}";
+
+            $data = Cache::remember($cacheKey, 30, function () use ($sellerId) {
+                $excludedStatuses = ['Liquidado', 'Renovado', 'Inactivo', 'Cartera Irrecuperable', 'Unificado'];
+
+                $active = $this->sumPortfolioForStatus($sellerId, null, $excludedStatuses);
+                $irrecoverable = $this->sumPortfolioForStatus($sellerId, 'Cartera Irrecuperable', null);
+
+                return [
+                    // Cartera neta: cuánto falta cobrar
+                    // (capital + interés − pagos vivos).
+                    'active_portfolio' => $active['amount'],
+                    'active_portfolio_count' => $active['count'],
+                    // Desglose contable de la cartera activa: capital
+                    // colocado vs. utilidad esperada de esos créditos.
+                    // Útil para mostrar al usuario "de los $360, $300
+                    // son capital y $60 son intereses".
+                    'active_capital' => $active['capital'],
+                    'active_interest' => $active['interest'],
+
+                    'irrecoverable_portfolio' => $irrecoverable['amount'],
+                    'irrecoverable_portfolio_count' => $irrecoverable['count'],
+                    'irrecoverable_capital' => $irrecoverable['capital'],
+                    'irrecoverable_interest' => $irrecoverable['interest'],
+                ];
+            });
+
+            return $this->successResponse([
+                'success' => true,
+                'data' => $data,
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('[seller.portfolio-summary] ' . $e->getMessage(), ['seller_id' => $sellerId]);
+            return $this->errorResponse('Error al calcular el resumen de cartera', 500);
+        }
+    }
+
+    /**
+     * Helper interno: suma (total_con_interes - pagos_vivos) y cuenta
+     * créditos del vendedor. Si $statusIn viene, filtra ==; si viene
+     * $statusNotIn, filtra NOT IN. Uno de los dos debe venir.
+     */
+    private function sumPortfolioForStatus($sellerId, ?string $statusIn, ?array $statusNotIn): array
+    {
+        $query = DB::table('credits as c')
+            ->leftJoin('payments as p', function ($join) {
+                $join->on('p.credit_id', '=', 'c.id')
+                     ->whereNull('p.deleted_at');
+            })
+            ->where('c.seller_id', $sellerId)
+            ->whereNull('c.deleted_at');
+
+        if ($statusIn !== null) {
+            $query->where('c.status', $statusIn);
+        }
+        if ($statusNotIn !== null) {
+            $query->whereNotIn('c.status', $statusNotIn);
+        }
+
+        // Por crédito: capital, interés esperado, total con interés y
+        // suma de pagos vivos. Después agrupamos a nivel vendedor.
+        $perCredit = $query
+            ->select(
+                'c.id',
+                DB::raw('c.credit_value as capital'),
+                DB::raw('(c.credit_value * c.total_interest / 100) as interest'),
+                DB::raw('(c.credit_value + (c.credit_value * c.total_interest / 100)) as credit_total'),
+                DB::raw('COALESCE(SUM(p.amount), 0) as payments_total')
+            )
+            ->groupBy('c.id', 'c.credit_value', 'c.total_interest')
+            ->get();
+
+        $amount = 0.0;
+        $capital = 0.0;
+        $interest = 0.0;
+        foreach ($perCredit as $row) {
+            $amount += max(0, (float) $row->credit_total - (float) $row->payments_total);
+            $capital += (float) $row->capital;
+            $interest += (float) $row->interest;
+        }
+
+        return [
+            'amount' => round($amount, 2),
+            'capital' => round($capital, 2),
+            'interest' => round($interest, 2),
+            'count' => $perCredit->count(),
+        ];
+    }
+
     public function getRoutes($page = 1, $perPage = 10, $search = null, $countryId = null, $cityId = null, $companyId = null)
     {
         try {
