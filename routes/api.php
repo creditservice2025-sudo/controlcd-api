@@ -68,6 +68,7 @@ Route::middleware(['auth:api', 'supervisor.lock', 'active.seller'])->group(funct
 
     Route::get('sellers/{sellerId}/cash-info', [SellerController::class, 'getCashInfo']);
     Route::get('sellers/{sellerId}/liquidations', [SellerController::class, 'getLiquidations']);
+    Route::get('sellers/{sellerId}/portfolio-summary', [SellerController::class, 'getPortfolioSummary']);
 
 
     Route::get('seller/{sellerId}/config', [SellerConfigController::class, 'show']);
