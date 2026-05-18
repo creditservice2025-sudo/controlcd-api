@@ -824,7 +824,19 @@ class ClientService
             }
 
             $clientsQuery = Client::query()
-                ->select('id', 'uuid', 'name', 'dni', 'email', 'phone', 'address', 'reference', 'company_name', 'status', 'seller_id', 'geolocation', 'gps_geolocalization', 'gps_address', 'routing_order', 'capacity', 'created_at')
+                ->select(
+                    'id', 'uuid', 'name', 'dni', 'email', 'phone', 'address',
+                    'reference', 'company_name', 'status', 'seller_id',
+                    'geolocation', 'gps_geolocalization', 'gps_address',
+                    'routing_order', 'capacity', 'created_at',
+                    // Estado de bloqueo de creación de nuevos créditos.
+                    // El frontend usa estos campos para mostrar el badge
+                    // "BLOQUEADO" + el sombreado rojo de la fila + las
+                    // opciones del menú (bloquear vs desbloquear) + el
+                    // tooltip con el motivo.
+                    'credit_block_active', 'credit_block_reason',
+                    'credit_block_notes', 'credit_blocked_at', 'credit_blocked_by'
+                )
                 ->with([
                     'seller' => function ($q) {
                         $q->select('id', 'user_id', 'city_id', 'company_id');
@@ -945,6 +957,16 @@ class ClientService
                 $clientsQuery->with(['credits' => function ($q) use ($status, $applyCreditAggregates) {
                     $applyCreditAggregates($q);
                     $q->where('status', $status);
+                }]);
+            } elseif ($status === 'Bloqueado') {
+                // Pestaña "Clientes bloqueados": clientes con
+                // credit_block_active=true (impedidos de recibir nuevos
+                // créditos). Sus créditos vigentes siguen mostrándose para
+                // contexto.
+                $clientsQuery->where('clients.credit_block_active', true);
+                $clientsQuery->with(['credits' => function ($q) use ($applyCreditAggregates) {
+                    $applyCreditAggregates($q);
+                    $q->where('status', '<>', 'Cartera Irrecuperable');
                 }]);
             } else {
                 // Excluir créditos irrecuperables del eager load por defecto
@@ -3481,5 +3503,150 @@ class ClientService
         $client->capacity = $capacity;
         $client->save();
         return $client;
+    }
+
+    // === Bloqueo de creación de nuevos créditos =========================
+
+    /**
+     * Categorías predefinidas de motivo de bloqueo.
+     * Si llega 'otro' se requiere `notes` con detalle del motivo.
+     */
+    public const CREDIT_BLOCK_REASONS = [
+        'mora_historica',
+        'doble_identidad',
+        'decision_gerencial',
+        'comportamiento_pago',
+        'documentacion_incompleta',
+        'otro',
+    ];
+
+    /**
+     * Bloquea la creación de nuevos créditos para un cliente.
+     *
+     * Permisos:
+     *  - Super-Admin (rol 1): cualquier cliente del sistema.
+     *  - Admin (rol 2): solo clientes cuyo seller pertenece a su empresa.
+     *  - Otros roles: rechazado con 403.
+     *
+     * No toca créditos existentes. Solo levanta el flag; la validación
+     * efectiva ocurre en CreditService::create al intentar abrir uno nuevo.
+     */
+    public function blockCreditCreation($clientId, string $reason, ?string $notes = null)
+    {
+        try {
+            $authUser = Auth::user();
+            if (!$authUser) {
+                return $this->errorResponse('No autenticado.', 401);
+            }
+            $role = (int) $authUser->role_id;
+
+            if (!in_array($role, [1, 2], true)) {
+                return $this->errorResponse('No tiene permisos para bloquear créditos a clientes.', 403);
+            }
+
+            if (!in_array($reason, self::CREDIT_BLOCK_REASONS, true)) {
+                return $this->errorResponse('Motivo de bloqueo no válido.', 422);
+            }
+            if ($reason === 'otro' && empty(trim((string) $notes))) {
+                return $this->errorResponse('Cuando el motivo es "Otro" debe especificar las notas.', 422);
+            }
+
+            $client = Client::with('seller')->find($clientId);
+            if (!$client) {
+                return $this->errorResponse('Cliente no encontrado.', 404);
+            }
+
+            // Admin (rol 2) solo puede bloquear clientes de los vendedores
+            // de SU empresa. Sin esto, un Admin podría bloquear clientes
+            // de otra empresa pasando el ID por la URL.
+            if ($role === 2) {
+                $authCompanyId = $authUser->company?->id;
+                $clientCompanyId = $client->seller?->company_id;
+                if (!$authCompanyId || $authCompanyId !== $clientCompanyId) {
+                    return $this->errorResponse(
+                        'Solo puede bloquear clientes de los vendedores de su empresa.',
+                        403
+                    );
+                }
+            }
+
+            $client->credit_block_active = true;
+            $client->credit_block_reason = $reason;
+            $client->credit_block_notes = $notes ?: null;
+            $client->credit_blocked_at = now();
+            $client->credit_blocked_by = $authUser->id;
+            $client->save();
+
+            \Log::info('[client.credit-block] bloqueado', [
+                'client_id' => $client->id,
+                'by_user_id' => $authUser->id,
+                'reason' => $reason,
+            ]);
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Cliente bloqueado para nuevos créditos.',
+                'data' => $client->fresh(),
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('[client.credit-block] ' . $e->getMessage());
+            return $this->errorResponse('Error al bloquear el cliente.', 500);
+        }
+    }
+
+    /**
+     * Desbloquea la creación de nuevos créditos.
+     * Mismas reglas de permisos que el bloqueo.
+     */
+    public function unblockCreditCreation($clientId)
+    {
+        try {
+            $authUser = Auth::user();
+            if (!$authUser) {
+                return $this->errorResponse('No autenticado.', 401);
+            }
+            $role = (int) $authUser->role_id;
+
+            if (!in_array($role, [1, 2], true)) {
+                return $this->errorResponse('No tiene permisos para desbloquear créditos.', 403);
+            }
+
+            $client = Client::with('seller')->find($clientId);
+            if (!$client) {
+                return $this->errorResponse('Cliente no encontrado.', 404);
+            }
+
+            if ($role === 2) {
+                $authCompanyId = $authUser->company?->id;
+                $clientCompanyId = $client->seller?->company_id;
+                if (!$authCompanyId || $authCompanyId !== $clientCompanyId) {
+                    return $this->errorResponse(
+                        'Solo puede desbloquear clientes de los vendedores de su empresa.',
+                        403
+                    );
+                }
+            }
+
+            $client->credit_block_active = false;
+            $client->credit_block_reason = null;
+            $client->credit_block_notes = null;
+            $client->credit_blocked_at = null;
+            $client->credit_blocked_by = null;
+            $client->save();
+
+            \Log::info('[client.credit-block] desbloqueado', [
+                'client_id' => $client->id,
+                'by_user_id' => $authUser->id,
+            ]);
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Cliente desbloqueado.',
+                'data' => $client->fresh(),
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('[client.credit-unblock] ' . $e->getMessage());
+            return $this->errorResponse('Error al desbloquear el cliente.', 500);
+        }
     }
 }
