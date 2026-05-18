@@ -699,7 +699,7 @@ class SellerService
     /**
      * Resumen de cartera del vendedor: activa + irrecuperable.
      *
-     * Definición de "cartera" según el negocio (gota a gota):
+     * Definición de "cartera":
      *   cartera = SUMA(credit_value + credit_value * total_interest / 100)
      *           - SUMA(payments.amount donde NOT deleted_at)
      *
