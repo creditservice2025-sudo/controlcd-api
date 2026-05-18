@@ -654,6 +654,29 @@ class ClientController extends Controller
         ]);
     }
 
+    /**
+     * Bloquea al cliente para que no se le puedan abrir NUEVOS créditos.
+     * Créditos vigentes siguen operando. Reversible vía unblockCreditCreation.
+     * Permisos validados en el service: rol 1 (todos) o rol 2 (solo su empresa).
+     */
+    public function blockCreditCreation(Request $request, $clientId)
+    {
+        $data = $request->validate([
+            'reason' => 'required|string|max:60',
+            'notes' => 'nullable|string|max:500',
+        ]);
+        return $this->clientService->blockCreditCreation(
+            $clientId,
+            $data['reason'],
+            $data['notes'] ?? null,
+        );
+    }
+
+    public function unblockCreditCreation(Request $request, $clientId)
+    {
+        return $this->clientService->unblockCreditCreation($clientId);
+    }
+
     public function transfer(Request $request, $clientId)
     {
         try {

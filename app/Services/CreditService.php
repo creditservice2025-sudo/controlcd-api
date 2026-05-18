@@ -36,6 +36,24 @@ class CreditService
         try {
             $params = $request->validated();
             \Log::info('Creando crédito con parámetros: ' . json_encode($params));
+
+            // GUARDRAIL: si el cliente fue bloqueado para nuevos créditos,
+            // rechazar antes de cualquier cálculo. El flag se levanta vía
+            // ClientService::blockCreditCreation (rol 1 / rol 2 de la
+            // empresa). Aplica también a renovaciones (cualquier flujo
+            // que cree un nuevo registro en `credits` para ese cliente).
+            if (!empty($params['client_id'])) {
+                $client = \App\Models\Client::find($params['client_id']);
+                if ($client && (bool) $client->credit_block_active) {
+                    $reasonLabel = $this->humanizeBlockReason($client->credit_block_reason);
+                    return $this->errorResponse(
+                        'Cliente bloqueado para nuevos créditos. Motivo: ' . $reasonLabel
+                            . ($client->credit_block_notes ? ' — ' . $client->credit_block_notes : ''),
+                        422
+                    );
+                }
+            }
+
             if (isset($params['timezone']) && !empty($params['timezone'])) {
                 $params['created_at'] = Carbon::now($params['timezone']);
                 $params['updated_at'] = Carbon::now($params['timezone']);
@@ -3650,6 +3668,23 @@ class CreditService
                 $date->addDay();
             }
             return $date;
+        };
+    }
+
+    /**
+     * Etiqueta legible para el motivo de bloqueo crediticio del cliente.
+     * Las categorías son las definidas en ClientService::CREDIT_BLOCK_REASONS.
+     */
+    private function humanizeBlockReason(?string $key): string
+    {
+        return match ($key) {
+            'mora_historica'           => 'Mora histórica',
+            'doble_identidad'          => 'Doble identidad',
+            'decision_gerencial'       => 'Decisión gerencial',
+            'comportamiento_pago'      => 'Comportamiento de pago',
+            'documentacion_incompleta' => 'Documentación incompleta',
+            'otro'                     => 'Otro',
+            default                    => 'Bloqueado',
         };
     }
 }

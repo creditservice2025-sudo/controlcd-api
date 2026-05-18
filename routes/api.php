@@ -242,6 +242,11 @@ Route::middleware(['auth:api', 'supervisor.lock', 'active.seller'])->group(funct
     Route::middleware('role:Super-Admin|Admin')->group(function () {
         Route::post('clients/{clientId}/mark-uncollectible', [CreditController::class, 'markClientAsUncollectible']);
         Route::post('clients/{clientId}/restore-from-uncollectible', [CreditController::class, 'restoreClientFromUncollectible']);
+        // Bloqueo de apertura de nuevos créditos. La validación adicional
+        // (Admin solo su empresa) se hace en el service usando company_id
+        // del seller del cliente.
+        Route::post('clients/{clientId}/block-credit', [ClientController::class, 'blockCreditCreation']);
+        Route::post('clients/{clientId}/unblock-credit', [ClientController::class, 'unblockCreditCreation']);
     });
 
     //route expense
