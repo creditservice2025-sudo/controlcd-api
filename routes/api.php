@@ -78,6 +78,32 @@ Route::middleware(['auth:api', 'supervisor.lock', 'active.seller'])->group(funct
     // Supervisor (rol 6) — selección de ruta a supervisar desde el APK
     Route::get('supervisor/active-sellers', [\App\Http\Controllers\SupervisorController::class, 'activeSellers']);
 
+    // Planes y suscripciones (módulo SaaS).
+    // Catálogo de planes: lectura abierta a admins, mutaciones solo Super-Admin.
+    Route::prefix('plans')->group(function () {
+        Route::get('/', [\App\Http\Controllers\SubscriptionController::class, 'plansIndex']);
+        Route::middleware('role:Super-Admin')->group(function () {
+            Route::post('/', [\App\Http\Controllers\SubscriptionController::class, 'plansStore']);
+            Route::put('/{planId}', [\App\Http\Controllers\SubscriptionController::class, 'plansUpdate']);
+            Route::delete('/{planId}', [\App\Http\Controllers\SubscriptionController::class, 'plansDestroy']);
+        });
+    });
+
+    // Suscripciones por empresa. Las mutaciones son solo para Super-Admin
+    // (asignar plan, registrar pago, suspender, etc.).
+    Route::prefix('companies/{companyId}/subscription')->group(function () {
+        Route::get('/', [\App\Http\Controllers\SubscriptionController::class, 'companySummary']);
+        Route::middleware('role:Super-Admin')->group(function () {
+            Route::post('/', [\App\Http\Controllers\SubscriptionController::class, 'subscribe']);
+        });
+    });
+    Route::prefix('subscriptions/{subscriptionId}')->middleware('role:Super-Admin')->group(function () {
+        Route::post('payments', [\App\Http\Controllers\SubscriptionController::class, 'recordPayment']);
+        Route::post('cancel', [\App\Http\Controllers\SubscriptionController::class, 'cancel']);
+        Route::post('suspend', [\App\Http\Controllers\SubscriptionController::class, 'suspend']);
+        Route::post('reactivate', [\App\Http\Controllers\SubscriptionController::class, 'reactivate']);
+    });
+
     Route::get('me', [UserController::class, 'me']);
 
     //route user

@@ -1118,8 +1118,43 @@ class ClientService
             elseif ($user->role_id == 5 && $seller)
                 $clientsQuery->where('clients.seller_id', $seller->id);
 
-            if (Auth::user()->role_id == 1 && $companyId) {
-                $clientsQuery->whereHas('seller', fn($q) => $q->where('company_id', $companyId));
+            // ROLE SCOPING para AISLAMIENTO multi-empresa.
+            // Antes este método solo filtraba al cobrador (rol 5) y opcionalmente
+            // al Super-Admin (rol 1) si pasaba companyId. Los roles intermedios
+            // (Admin de empresa, Supervisor, Consultor) veían cartera de TODAS
+            // las empresas — fuga de datos. Ahora:
+            //   1 Super-Admin: ve todo (puede filtrar por companyId opcional)
+            //   2 Admin empresa: solo sellers de su company_id
+            //   5 Cobrador: solo su seller (ya manejado arriba)
+            //   6 Supervisor / 7 Consultor / 11: solo sellers de su user_routes
+            $authUser = Auth::user();
+            switch ((int) $authUser->role_id) {
+                case 1: // Super-Admin
+                    if ($companyId) {
+                        $clientsQuery->whereHas('seller', fn($q) => $q->where('company_id', $companyId));
+                    }
+                    break;
+                case 2: // Admin de empresa
+                    $company = $authUser->company;
+                    if ($company) {
+                        $clientsQuery->whereHas('seller', fn($q) => $q->where('company_id', $company->id));
+                    } else {
+                        // Si por alguna razón no tiene company asociada,
+                        // no debe ver nada (en lugar de ver todo).
+                        $clientsQuery->whereRaw('0 = 1');
+                    }
+                    break;
+                case 6:
+                case 7:
+                case 11:
+                    $allowedSellerIds = \App\Models\UserRoute::where('user_id', $authUser->id)
+                        ->pluck('seller_id')->toArray();
+                    if (!empty($allowedSellerIds)) {
+                        $clientsQuery->whereIn('clients.seller_id', $allowedSellerIds);
+                    } else {
+                        $clientsQuery->whereRaw('0 = 1');
+                    }
+                    break;
             }
 
             $orderDirection = in_array(strtolower($orderDirection), ['asc', 'desc']) ? $orderDirection : 'desc';
