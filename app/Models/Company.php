@@ -20,7 +20,28 @@ class Company extends Model
         'name',
         'phone',
         'email',
-        'logo_path'
+        'logo_path',
+        'telegram_feature_enabled',
+        'telegram_enabled',
+        'telegram_chat_id',
+        'telegram_link_token',
+        'telegram_link_expires_at',
+        'telegram_notify_new_client',
+        'telegram_notify_new_credit',
+        'telegram_notify_new_expense',
+        'telegram_notify_deleted_expense',
+        'telegram_notify_deleted_credit',
+    ];
+
+    protected $casts = [
+        'telegram_feature_enabled' => 'boolean',
+        'telegram_enabled' => 'boolean',
+        'telegram_notify_new_client' => 'boolean',
+        'telegram_notify_new_credit' => 'boolean',
+        'telegram_notify_new_expense' => 'boolean',
+        'telegram_notify_deleted_expense' => 'boolean',
+        'telegram_notify_deleted_credit' => 'boolean',
+        'telegram_link_expires_at' => 'datetime',
     ];
 
     public function user(): BelongsTo

@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
+use App\Services\TelegramService;
 
 class ExpenseService
 {
@@ -182,6 +183,17 @@ class ExpenseService
                     'path' => $imagePath,
                     'created_at' => $createdAt ?? null,
                     'updated_at' => $createdAt ?? null
+                ]);
+            }
+
+            // Notificación Telegram. Falla silenciosa: cualquier error NO
+            // afecta la respuesta de creación del gasto.
+            try {
+                app(TelegramService::class)->notifyNewExpense($expense);
+            } catch (\Throwable $e) {
+                Log::warning('[telegram.new_expense] error', [
+                    'expense_id' => $expense->id,
+                    'error' => $e->getMessage(),
                 ]);
             }
 
@@ -448,6 +460,16 @@ class ExpenseService
 
         // Invalidate Liquidation Cache
         $this->metricsCacheService->invalidateLiquidationMetrics($seller->id, $businessDate);
+
+            // Notificación Telegram (instancia aún en memoria con sus campos).
+            try {
+                app(TelegramService::class)->notifyDeletedExpense($expense);
+            } catch (\Throwable $e) {
+                Log::warning('[telegram.deleted_expense] error', [
+                    'expense_id' => $expense->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
 
             return $this->successResponse([
                 'success' => true,

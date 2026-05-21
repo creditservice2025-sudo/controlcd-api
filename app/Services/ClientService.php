@@ -23,6 +23,7 @@ use Throwable;
 use App\Models\ClientHistory;
 use App\Models\Image;
 use App\Models\Liquidation;
+use App\Services\TelegramService;
 
 class ClientService
 {
@@ -224,6 +225,24 @@ class ClientService
                         throw new \Exception("Cliente creado pero {$e->getMessage()}");
                     }
                 }
+
+                // Notificación Telegram (solo si la transacción commitea y la
+                // empresa del vendedor tiene la opción habilitada). Falla
+                // silenciosa: cualquier error de red NO afecta la creación.
+                // NOTA: cuando el cliente nace junto con su crédito inicial,
+                // solo disparamos notify_new_client. El evento notify_new_credit
+                // está pensado para "crédito a cliente existente" (vía
+                // CreditService::create), no para la creación bundleada.
+                DB::afterCommit(function () use ($client) {
+                    try {
+                        app(TelegramService::class)->notifyNewClient($client);
+                    } catch (\Throwable $e) {
+                        Log::warning('[telegram.new_client] error', [
+                            'client_id' => $client->id,
+                            'error' => $e->getMessage(),
+                        ]);
+                    }
+                });
 
                 return $this->successResponse([
                     'success' => true,

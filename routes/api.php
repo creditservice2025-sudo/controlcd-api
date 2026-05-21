@@ -26,6 +26,7 @@ use App\Http\Controllers\ReportExportController;
 
 use App\Http\Controllers\FrontendErrorController;
 use App\Http\Controllers\VerificationController;
+use App\Http\Controllers\TelegramWebhookController;
 
 // Auth routes
 Route::post('login', [AuthController::class, 'login'])->middleware('throttle:6,1');
@@ -36,6 +37,14 @@ Route::post('reset-password', [AuthController::class, 'resetPassword'])->middlew
 
 // Mobile Version Check (Public)
 Route::get('mobile/version-check', [\App\Http\Controllers\Api\MobileVersionController::class, 'check']);
+
+// Telegram Webhook (Public). La autenticidad se valida con el header
+// X-Telegram-Bot-Api-Secret-Token dentro del controlador. NO va dentro
+// del grupo auth:api porque Telegram no manda Bearer tokens.
+// Rate-limit conservador para limitar abuso si alguien descubre la URL.
+Route::post('telegram/webhook', [TelegramWebhookController::class, 'handle'])
+    ->middleware('throttle:60,1')
+    ->name('telegram.webhook');
 
 
 Route::middleware(['auth:api', 'supervisor.lock', 'active.seller'])->group(function () {
@@ -320,12 +329,21 @@ Route::middleware(['auth:api', 'supervisor.lock', 'active.seller'])->group(funct
         Route::get('/', [CompanyController::class, 'index']);
         Route::post('/', [CompanyController::class, 'create']);
         Route::get('/select', [CompanyController::class, 'getCompaniesSelect']);
+        // Empresa del usuario autenticado (útil para rol 2 que solo tiene una).
+        Route::get('/my-company', [CompanyController::class, 'getMyCompany']);
         Route::get('/{companyId}', [CompanyController::class, 'show']);
         Route::put('/{companyId}', [CompanyController::class, 'update']);
         Route::delete('/{companyId}', [CompanyController::class, 'delete']);
         Route::post('/validate-code', [CompanyController::class, 'validateCompanyCode']);
         Route::post('/validate-ruc', [CompanyController::class, 'validateCompanyRuc']);
         Route::post('/{companyId}/resend-welcome', [CompanyController::class, 'resendWelcomeEmail']);
+        // Master switch — solo SuperAdmin. Auth interna en el controller.
+        Route::put('/{companyId}/telegram-feature', [CompanyController::class, 'updateTelegramFeature']);
+        // Lectura / configuración por empresa. Auth interna (rol 1 o dueño rol 2).
+        Route::get('/{companyId}/telegram-config', [CompanyController::class, 'getTelegramConfig']);
+        Route::put('/{companyId}/telegram-config', [CompanyController::class, 'updateTelegramConfig']);
+        Route::post('/{companyId}/telegram-test', [CompanyController::class, 'testTelegram']);
+        Route::post('/{companyId}/telegram-start-link', [CompanyController::class, 'startTelegramLink']);
     });
 
     //route installment

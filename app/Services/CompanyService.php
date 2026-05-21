@@ -140,14 +140,34 @@ class CompanyService
     public function invalidateIndexCache(): void
     {
         try {
-            // Patrón simple: el cache key incluye search+perPage+order.
-            // Una invalidación selectiva sería costosa de mantener;
-            // limpiamos solo los caches que comiencen con 'companies_index:'
-            // con Cache::tags() si el driver soporta tags. Si no, queda
-            // como TTL natural (60s).
-            // Por ahora dejamos que expire solo — TTL corto compensa.
+            $store = config('cache.default');
+
+            // Driver database: DELETE directo sobre la tabla `cache` con LIKE.
+            // Es la opción más limpia para este driver porque Laravel guarda
+            // las entries con un prefix opcional. Cubrimos ambos casos.
+            if ($store === 'database') {
+                $prefix = config('cache.prefix', '');
+                $effectivePrefix = $prefix ? $prefix . ':' : '';
+
+                $deleted = DB::table('cache')
+                    ->where('key', 'LIKE', $effectivePrefix . 'companies_index:%')
+                    ->delete();
+
+                Log::info('[companies.invalidate] cache database invalidado', [
+                    'deleted' => $deleted,
+                ]);
+                return;
+            }
+
+            // Drivers que no soportan LIKE delete: Cache::flush() es muy
+            // agresivo (limpia todo). Mejor dejamos el TTL natural (60s).
+            // Si en el futuro se cambia a redis, conviene usar tags o un
+            // versioning approach (incrementar un counter en cache).
+            Log::info('[companies.invalidate] driver sin soporte LIKE; TTL natural', [
+                'driver' => $store,
+            ]);
         } catch (\Throwable $e) {
-            // no-op
+            Log::warning('[companies.invalidate] error: ' . $e->getMessage());
         }
     }
 

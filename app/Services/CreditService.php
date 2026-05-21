@@ -24,6 +24,7 @@ use App\Models\CreditModification;
 use App\Models\PaymentInstallment;
 use Barryvdh\DomPDF\Facade\Pdf;
 use App\Traits\ApiResponse;
+use App\Services\TelegramService;
 
 class CreditService
 {
@@ -411,6 +412,18 @@ class CreditService
                 \Log::info("Liquidación recalculada tras creación de crédito " . $credit->id);
             } catch (\Exception $e) {
                 \Log::error("Error recalculando liquidación al crear crédito: " . $e->getMessage());
+            }
+
+            // Notificación Telegram a la empresa del vendedor (si tiene
+            // habilitada la opción). Falla silenciosa: cualquier error NO
+            // afecta la respuesta de creación del crédito.
+            try {
+                app(TelegramService::class)->notifyNewCredit($credit);
+            } catch (\Throwable $e) {
+                \Log::warning('[telegram.new_credit] error', [
+                    'credit_id' => $credit->id,
+                    'error' => $e->getMessage(),
+                ]);
             }
 
             return $response;
@@ -2012,6 +2025,18 @@ class CreditService
             }
 
             DB::commit();
+
+            // Notificación Telegram (post-commit). Usa la instancia $credit
+            // todavía en memoria con sus relaciones (seller, client) cargadas
+            // en línea 1903 con el `with(...)`. Falla silenciosa.
+            try {
+                app(TelegramService::class)->notifyDeletedCredit($credit);
+            } catch (\Throwable $e) {
+                \Log::warning('[telegram.deleted_credit] error', [
+                    'credit_id' => $credit->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
 
             return $this->successResponse([
                 'success' => true,

@@ -36,8 +36,24 @@ return [
     ],
 
     'telegram' => [
+        // Bot usado para el OTP de verificación de fotos (cliente ControlC&D).
+        // No se toca: mantiene compatibilidad con el flujo actual.
         'bot_token' => env('TELEGRAM_BOT_TOKEN'),
         'admin_chat_id' => env('TELEGRAM_ADMIN_CHAT_ID'),
+
+        // Bot multi-tenant: notificaciones de cliente/crédito a cada empresa.
+        // Se crea aparte vía @BotFather y se gestiona desde la plataforma.
+        // Cada empresa configura SU chat_id; el bot es uno solo para todas.
+        'notifications_bot_token' => env('TELEGRAM_NOTIFICATIONS_BOT_TOKEN'),
+
+        // Username del bot de notificaciones SIN el @ (ej: ControlCDNotifEmpBot).
+        // Se usa para construir el deep link t.me/<username>?start=<token>.
+        'notifications_bot_username' => env('TELEGRAM_NOTIFICATIONS_BOT_USERNAME', 'ControlCDNotifEmpBot'),
+
+        // Secret compartido con Telegram para validar que los webhooks
+        // vienen realmente de Telegram (header X-Telegram-Bot-Api-Secret-Token).
+        // Se genera random la primera vez y se pega al hacer setWebhook.
+        'webhook_secret' => env('TELEGRAM_WEBHOOK_SECRET'),
     ],
 
 ];
