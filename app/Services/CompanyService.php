@@ -501,43 +501,201 @@ class CompanyService
                 return $this->errorNotFoundResponse('Empresa no encontrada');
             }
 
-            if ($company->sellers()->exists()) {
-                DB::rollBack();
-                return $this->errorResponse('No se puede eliminar la empresa porque tiene vendedores asociados', 422);
-            }
+            $now = $timezone ? \Carbon\Carbon::now($timezone) : \Carbon\Carbon::now();
 
+            // === Cascada de soft-delete ============================
+            // Eliminamos lógicamente TODO lo que cuelga de la empresa.
+            // Niveles profundos primero (hojas), después intermedios,
+            // finalmente la propia empresa. Todo dentro de la misma
+            // transacción: si algo falla, nada se borra.
+            $stats = $this->cascadeSoftDelete($company, $now);
+
+            // Borrar logo físico de disco (la fila del modelo queda
+            // soft-deleted, pero el archivo no nos sirve).
             if ($company->logo_path) {
-                Helper::deleteFile($company->logo_path);
+                try {
+                    Helper::deleteFile($company->logo_path);
+                } catch (\Throwable $logoEx) {
+                    \Log::warning('No se pudo borrar logo de empresa: ' . $logoEx->getMessage());
+                }
             }
 
-            $user = $company->user;
-            if ($timezone) {
-                $company->deleted_at = \Carbon\Carbon::now($timezone);
-                $company->save();
-                $company->delete();
-                if ($user) {
-                    $user->deleted_at = \Carbon\Carbon::now($timezone);
-                    $user->save();
-                    $user->delete();
-                }
-            } else {
-                $company->delete();
-                if ($user) {
-                    $user->delete();
-                }
+            // Usuario dueño de la empresa: también soft-deleted.
+            $companyUser = $company->user;
+            if ($companyUser) {
+                \App\Models\User::where('id', $companyUser->id)->update(['deleted_at' => $now]);
             }
+
+            // Finalmente la empresa.
+            $company->deleted_at = $now;
+            $company->save();
 
             DB::commit();
 
+            // Invalidar el cache del listado para que la empresa
+            // desaparezca de la tabla sin esperar el TTL.
+            $this->invalidateIndexCache();
+
+            \Log::info('[company.delete] cascada soft-delete completa', [
+                'company_id' => $companyId,
+                'company_name' => $company->name,
+                'stats' => $stats,
+            ]);
+
             return $this->successResponse([
                 'success' => true,
-                'message' => "Empresa eliminada con éxito"
+                'message' => "Empresa eliminada junto con todos sus registros asociados",
+                'cascade' => $stats,
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
-            \Log::error($e->getMessage());
-            return $this->errorResponse('Error al eliminar la empresa', 500);
+            \Log::error('[company.delete] error: ' . $e->getMessage(), [
+                'company_id' => $companyId,
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return $this->errorResponse('Error al eliminar la empresa: ' . $e->getMessage(), 500);
         }
+    }
+
+    /**
+     * Soft-delete en cascada de todo lo que cuelga de una empresa.
+     * Devuelve un array con los conteos por entidad. Asume estar dentro
+     * de una transacción abierta — el caller maneja commit/rollback.
+     */
+    private function cascadeSoftDelete(Company $company, \Carbon\Carbon $now): array
+    {
+        // Recolectar IDs por nivel para no recorrer cada fila individual.
+        $sellerIds = $company->sellers()->pluck('id')->toArray();
+
+        $sellerUserIds = empty($sellerIds) ? [] : DB::table('sellers')
+            ->whereIn('id', $sellerIds)
+            ->whereNotNull('user_id')
+            ->pluck('user_id')
+            ->toArray();
+
+        $clientIds = empty($sellerIds) ? [] : DB::table('clients')
+            ->whereIn('seller_id', $sellerIds)
+            ->whereNull('deleted_at')
+            ->pluck('id')
+            ->toArray();
+
+        $creditIds = empty($sellerIds) ? [] : DB::table('credits')
+            ->whereIn('seller_id', $sellerIds)
+            ->whereNull('deleted_at')
+            ->pluck('id')
+            ->toArray();
+
+        $paymentIds = empty($creditIds) ? [] : DB::table('payments')
+            ->whereIn('credit_id', $creditIds)
+            ->whereNull('deleted_at')
+            ->pluck('id')
+            ->toArray();
+
+        $expenseIds = empty($sellerUserIds) ? [] : DB::table('expenses')
+            ->whereIn('user_id', $sellerUserIds)
+            ->whereNull('deleted_at')
+            ->pluck('id')
+            ->toArray();
+
+        $incomeIds = empty($sellerUserIds) ? [] : DB::table('incomes')
+            ->whereIn('user_id', $sellerUserIds)
+            ->whereNull('deleted_at')
+            ->pluck('id')
+            ->toArray();
+
+        $liquidationIds = empty($sellerIds) ? [] : DB::table('liquidations')
+            ->whereIn('seller_id', $sellerIds)
+            ->whereNull('deleted_at')
+            ->pluck('id')
+            ->toArray();
+
+        $subscriptionIds = DB::table('company_subscriptions')
+            ->where('company_id', $company->id)
+            ->whereNull('deleted_at')
+            ->pluck('id')
+            ->toArray();
+
+        $stats = [
+            'sellers' => count($sellerIds),
+            'seller_users' => count($sellerUserIds),
+            'clients' => count($clientIds),
+            'credits' => count($creditIds),
+            'payments' => count($paymentIds),
+            'expenses' => count($expenseIds),
+            'incomes' => count($incomeIds),
+            'liquidations' => count($liquidationIds),
+            'subscriptions' => count($subscriptionIds),
+        ];
+
+        // ─── HOJAS (más profundas) ─────────────────────────────────
+        if (!empty($paymentIds)) {
+            \App\Models\PaymentInstallment::whereIn('payment_id', $paymentIds)
+                ->update(['deleted_at' => $now]);
+            \App\Models\PaymentImage::whereIn('payment_id', $paymentIds)
+                ->update(['deleted_at' => $now]);
+        }
+        if (!empty($expenseIds)) {
+            \App\Models\ExpenseImage::whereIn('expense_id', $expenseIds)
+                ->update(['deleted_at' => $now]);
+        }
+        if (!empty($incomeIds)) {
+            \App\Models\IncomeImage::whereIn('income_id', $incomeIds)
+                ->update(['deleted_at' => $now]);
+        }
+        if (!empty($liquidationIds)) {
+            \App\Models\LiquidationAudit::whereIn('liquidation_id', $liquidationIds)
+                ->update(['deleted_at' => $now]);
+        }
+        if (!empty($clientIds)) {
+            \App\Models\Image::whereIn('client_id', $clientIds)
+                ->update(['deleted_at' => $now]);
+        }
+
+        // ─── INTERMEDIOS ───────────────────────────────────────────
+        if (!empty($creditIds)) {
+            \App\Models\Installment::whereIn('credit_id', $creditIds)
+                ->update(['deleted_at' => $now]);
+            \App\Models\Payment::whereIn('credit_id', $creditIds)
+                ->update(['deleted_at' => $now]);
+            \App\Models\Credit::whereIn('id', $creditIds)
+                ->update(['deleted_at' => $now]);
+        }
+        if (!empty($expenseIds)) {
+            \App\Models\Expense::whereIn('id', $expenseIds)
+                ->update(['deleted_at' => $now]);
+        }
+        if (!empty($incomeIds)) {
+            \App\Models\Income::whereIn('id', $incomeIds)
+                ->update(['deleted_at' => $now]);
+        }
+        if (!empty($liquidationIds)) {
+            \App\Models\Liquidation::whereIn('id', $liquidationIds)
+                ->update(['deleted_at' => $now]);
+        }
+        if (!empty($clientIds)) {
+            \App\Models\Client::whereIn('id', $clientIds)
+                ->update(['deleted_at' => $now]);
+        }
+
+        // ─── SELLERS Y SUS USERS ───────────────────────────────────
+        if (!empty($sellerIds)) {
+            \App\Models\Seller::whereIn('id', $sellerIds)
+                ->update(['deleted_at' => $now]);
+        }
+        if (!empty($sellerUserIds)) {
+            \App\Models\User::whereIn('id', $sellerUserIds)
+                ->update(['deleted_at' => $now]);
+        }
+
+        // ─── SUSCRIPCIONES DE LA EMPRESA ───────────────────────────
+        if (!empty($subscriptionIds)) {
+            \App\Models\SubscriptionPayment::whereIn('subscription_id', $subscriptionIds)
+                ->update(['deleted_at' => $now]);
+            \App\Models\CompanySubscription::whereIn('id', $subscriptionIds)
+                ->update(['deleted_at' => $now]);
+        }
+
+        return $stats;
     }
 
     public function resendWelcomeEmail($companyId, $customPassword = null)
