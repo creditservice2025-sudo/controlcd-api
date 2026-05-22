@@ -230,12 +230,13 @@ class ClientService
                 // empresa del vendedor tiene la opción habilitada). Falla
                 // silenciosa: cualquier error de red NO afecta la creación.
                 // NOTA: cuando el cliente nace junto con su crédito inicial,
-                // solo disparamos notify_new_client. El evento notify_new_credit
-                // está pensado para "crédito a cliente existente" (vía
-                // CreditService::create), no para la creación bundleada.
-                DB::afterCommit(function () use ($client) {
+                // disparamos UN SOLO mensaje que incluye AMBOS datos. El
+                // evento notify_new_credit está reservado para "crédito a
+                // cliente existente" (vía CreditService::create), evitando
+                // así doble notificación al crear cliente+crédito juntos.
+                DB::afterCommit(function () use ($client, $credit) {
                     try {
-                        app(TelegramService::class)->notifyNewClient($client);
+                        app(TelegramService::class)->notifyNewClient($client, $credit);
                     } catch (\Throwable $e) {
                         Log::warning('[telegram.new_client] error', [
                             'client_id' => $client->id,

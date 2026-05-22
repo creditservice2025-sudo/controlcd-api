@@ -344,6 +344,8 @@ Route::middleware(['auth:api', 'supervisor.lock', 'active.seller'])->group(funct
         Route::put('/{companyId}/telegram-config', [CompanyController::class, 'updateTelegramConfig']);
         Route::post('/{companyId}/telegram-test', [CompanyController::class, 'testTelegram']);
         Route::post('/{companyId}/telegram-start-link', [CompanyController::class, 'startTelegramLink']);
+        Route::get('/{companyId}/telegram-history', [CompanyController::class, 'getTelegramHistory']);
+        Route::get('/telegram-metrics', [CompanyController::class, 'getTelegramMetrics']); // SA only, internal in controller
     });
 
     //route installment

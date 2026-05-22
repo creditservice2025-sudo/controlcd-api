@@ -6,5 +6,5 @@ use Illuminate\Database\Eloquent\Model;
 
 class TelegramLog extends Model
 {
-    protected $fillable = ['chat_id', 'message', 'type', 'status'];
+    protected $fillable = ['company_id', 'chat_id', 'message', 'type', 'status'];
 }

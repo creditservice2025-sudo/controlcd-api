@@ -5,7 +5,9 @@ namespace App\Providers;
 use App\Models\SellerConfig;
 use App\Observers\SellerConfigObserver;
 use Illuminate\Auth\Notifications\ResetPassword;
+use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 use Laravel\Passport\Passport;
 
@@ -42,6 +44,13 @@ class AppServiceProvider extends ServiceProvider
         // sin importar si el permiso especifico esta asignado en role_has_permissions.
         // Patron estandar Spatie Laravel Permission para super-admin:
         // https://spatie.be/docs/laravel-permission/v6/basic-usage/super-admin
+        // Rate limit del envío Telegram (Telegram limita ~30 msgs/seg/bot).
+        // Dejamos margen y permitimos 20 por segundo. Si se supera, el job
+        // se reencola automáticamente gracias al middleware RateLimited.
+        RateLimiter::for('telegram-notifications', function () {
+            return Limit::perSecond(20);
+        });
+
         Gate::before(function ($user, $ability) {
             if (!$user) return null;
             // Preferir role_id (numerico) porque es mas rapido y robusto

@@ -695,6 +695,18 @@ class CompanyService
                 ->update(['deleted_at' => $now]);
         }
 
+        // ─── CLEANUP TELEGRAM ──────────────────────────────────────
+        // Limpiamos chat_id, tokens y flags. Si más adelante se restaura
+        // la empresa, ningún chat queda apuntando "fantasma" a registros
+        // borrados. Además, si el chat_id se reasignara a otra empresa
+        // por reciclaje de Telegram, no habría filtración cruzada.
+        $company->forceFill([
+            'telegram_enabled' => false,
+            'telegram_chat_id' => null,
+            'telegram_link_token' => null,
+            'telegram_link_expires_at' => null,
+        ])->save();
+
         return $stats;
     }
 

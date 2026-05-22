@@ -78,16 +78,125 @@ class TelegramWebhookController extends Controller
             return response()->json(['ok' => true]);
         }
 
-        // 5. Cualquier otro texto: respuesta genérica de ayuda.
+        // 5. /stop o /pausar: pausa notificaciones para la empresa cuyo
+        //    chat_id coincide. Útil cuando el admin no quiere recibir más
+        //    pero no tiene acceso al panel en ese momento.
+        if (preg_match('/^\/(stop|pausar|silencio)\s*$/i', $text)) {
+            $this->handleStopCommand($chatId);
+            return response()->json(['ok' => true]);
+        }
+
+        // 6. /resume o /reanudar: reactiva notificaciones para el chat.
+        if (preg_match('/^\/(resume|reanudar|activar)\s*$/i', $text)) {
+            $this->handleResumeCommand($chatId);
+            return response()->json(['ok' => true]);
+        }
+
+        // 7. Cualquier otro texto: respuesta genérica de ayuda.
         $this->replyHelp($chatId);
         return response()->json(['ok' => true]);
+    }
+
+    /**
+     * Comando /stop desde Telegram: busca la empresa vinculada a ese chat_id
+     * y pausa sus notificaciones (telegram_enabled = false). El chat_id NO
+     * se borra, así que /resume puede revertirlo.
+     */
+    private function handleStopCommand(int $chatId): void
+    {
+        $company = \App\Models\Company::where('telegram_chat_id', (string) $chatId)->first();
+
+        if (!$company) {
+            $this->replyText($chatId, "⚠️ Este chat no está vinculado a ninguna empresa.");
+            return;
+        }
+
+        $company->telegram_enabled = false;
+        $company->save();
+
+        \App\Models\TelegramAudit::create([
+            'company_id' => $company->id,
+            'user_id' => null,
+            'action' => 'notifications_paused_via_telegram',
+            'before' => ['telegram_enabled' => true],
+            'after' => ['telegram_enabled' => false],
+            'ip' => null,
+            'user_agent' => 'telegram-bot',
+        ]);
+
+        $this->replyText(
+            $chatId,
+            "⏸️ *Notificaciones pausadas*\n\n" .
+            "No recibirás más notificaciones de *{$company->name}*.\n\n" .
+            "Para reactivar, envía /reanudar o cambia el toggle desde el panel."
+        );
+    }
+
+    /**
+     * Comando /resume desde Telegram: reactiva las notificaciones si la
+     * empresa tiene la feature habilitada por el SA.
+     */
+    private function handleResumeCommand(int $chatId): void
+    {
+        $company = \App\Models\Company::where('telegram_chat_id', (string) $chatId)->first();
+
+        if (!$company) {
+            $this->replyText($chatId, "⚠️ Este chat no está vinculado a ninguna empresa.");
+            return;
+        }
+
+        if (!$company->telegram_feature_enabled) {
+            $this->replyText(
+                $chatId,
+                "❌ El módulo Telegram no está habilitado para *{$company->name}*. Contacta al administrador del sistema."
+            );
+            return;
+        }
+
+        $company->telegram_enabled = true;
+        $company->save();
+
+        \App\Models\TelegramAudit::create([
+            'company_id' => $company->id,
+            'user_id' => null,
+            'action' => 'notifications_resumed_via_telegram',
+            'before' => ['telegram_enabled' => false],
+            'after' => ['telegram_enabled' => true],
+            'ip' => null,
+            'user_agent' => 'telegram-bot',
+        ]);
+
+        $this->replyText(
+            $chatId,
+            "▶️ *Notificaciones reactivadas*\n\n" .
+            "Volverás a recibir notificaciones de *{$company->name}*."
+        );
+    }
+
+    private function replyText(int $chatId, string $text): void
+    {
+        $token = config('services.telegram.notifications_bot_token');
+        if (empty($token)) return;
+        try {
+            \Illuminate\Support\Facades\Http::withoutVerifying()
+                ->timeout(5)
+                ->post("https://api.telegram.org/bot{$token}/sendMessage", [
+                    'chat_id' => $chatId,
+                    'text' => $text,
+                    'parse_mode' => 'Markdown',
+                ]);
+        } catch (\Throwable $e) {
+            Log::error('[telegram.webhook] replyText error: ' . $e->getMessage());
+        }
     }
 
     private function replyHelp(int $chatId): void
     {
         $help  = "👋 Hola! Soy el bot de notificaciones de *Controll CD*.\n\n";
-        $help .= "Para activar las notificaciones de tu empresa, abre el panel de Controll CD, ve a *Empresas*, hace clic en el ícono de Telegram y presiona *Vincular mi Telegram*.\n\n";
-        $help .= "Eso generará un enlace que automáticamente conectará este chat con tu empresa.";
+        $help .= "Comandos disponibles:\n";
+        $help .= "  /pausar — pausar notificaciones temporalmente\n";
+        $help .= "  /reanudar — reactivar notificaciones\n\n";
+        $help .= "Para vincular tu empresa por primera vez, abre el panel de Controll CD, ve a *Empresas*, hace clic en el ícono de Telegram y presiona *Vincular mi Telegram*.";
 
         $expected = config('services.telegram.notifications_bot_token');
         if (empty($expected)) return;

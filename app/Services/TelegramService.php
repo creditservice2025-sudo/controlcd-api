@@ -104,6 +104,20 @@ class TelegramService
             return false;
         }
 
+        // Quiet hours: si el "ahora" (en la zona del primer vendedor de la
+        // empresa) cae dentro del rango configurado, no enviar. Útil para
+        // no despertar al admin con notificaciones nocturnas.
+        if ($this->isInQuietHours($company)) {
+            \App\Models\TelegramLog::create([
+                'company_id' => $company->id,
+                'chat_id' => $company->telegram_chat_id,
+                'message' => $message,
+                'type' => $type,
+                'status' => 'skipped_quiet_hours',
+            ]);
+            return false;
+        }
+
         if (!$this->notificationsToken) {
             Log::warning('TELEGRAM_NOTIFICATIONS_BOT_TOKEN no configurado en .env; abortando sendToCompany.');
             return false;
@@ -139,6 +153,7 @@ class TelegramService
 
         try {
             \App\Models\TelegramLog::create([
+                'company_id' => $company->id,
                 'chat_id' => $chatId,
                 'message' => $message,
                 'type' => $type,
@@ -183,6 +198,7 @@ class TelegramService
 
             try {
                 \App\Models\TelegramLog::create([
+                    'company_id' => $company->id,
                     'chat_id' => $company->telegram_chat_id,
                     'message' => $text,
                     'type' => 'test',
@@ -207,11 +223,60 @@ class TelegramService
     }
 
     /**
+     * Verifica si "ahora" está dentro de la ventana de quiet hours configurada
+     * para la empresa. Usa la zona horaria del primer vendedor de la empresa
+     * (o America/Lima como fallback). El rango puede atravesar medianoche.
+     */
+    private function isInQuietHours(\App\Models\Company $company): bool
+    {
+        $start = $company->telegram_quiet_hours_start;
+        $end   = $company->telegram_quiet_hours_end;
+
+        if (empty($start) || empty($end) || $start === $end) {
+            return false;
+        }
+
+        $tz = $this->resolveCompanyTimezone($company);
+        $now = \Carbon\Carbon::now($tz);
+        $nowMin = $now->hour * 60 + $now->minute;
+
+        // Soporta tanto Carbon como string "HH:mm:ss" o "HH:mm".
+        $startMin = $this->timeToMinutes((string) $start);
+        $endMin   = $this->timeToMinutes((string) $end);
+
+        if ($startMin === null || $endMin === null) return false;
+
+        if ($startMin < $endMin) {
+            // Rango dentro del día: ej 13:00 - 14:00
+            return $nowMin >= $startMin && $nowMin < $endMin;
+        }
+        // Rango que atraviesa medianoche: ej 22:00 - 07:00
+        return $nowMin >= $startMin || $nowMin < $endMin;
+    }
+
+    private function timeToMinutes(string $time): ?int
+    {
+        if (!preg_match('/^(\d{1,2}):(\d{2})/', $time, $m)) return null;
+        return ((int) $m[1]) * 60 + ((int) $m[2]);
+    }
+
+    private function resolveCompanyTimezone(\App\Models\Company $company): string
+    {
+        try {
+            $seller = $company->sellers()->with('city.country')->first();
+            $tz = $seller?->city?->country?->timezone;
+            return $tz ?: 'America/Lima';
+        } catch (\Throwable $e) {
+            return 'America/Lima';
+        }
+    }
+
+    /**
      * Notifica creación de cliente nuevo. Resuelve la empresa desde el vendedor
      * del cliente: el aislamiento es estructural (cada empresa solo ve eventos
-     * de sus propios vendedores).
+     * de sus propios vendedores). Despacha un Job para no bloquear el request.
      */
-    public function notifyNewClient(\App\Models\Client $client): bool
+    public function notifyNewClient(\App\Models\Client $client, ?\App\Models\Credit $credit = null): bool
     {
         $seller  = $client->seller;
         $company = $seller?->company;
@@ -220,8 +285,9 @@ class TelegramService
             return false;
         }
 
-        $message = $this->buildNewClientMessage($client, $seller, $company);
-        return $this->sendToCompany($company, $message, 'new_client');
+        $message = $this->buildNewClientMessage($client, $seller, $company, $credit);
+        $this->dispatchSend($company->id, $message, 'new_client');
+        return true;
     }
 
     /**
@@ -237,13 +303,36 @@ class TelegramService
         }
 
         $message = $this->buildNewCreditMessage($credit, $seller, $company);
-        return $this->sendToCompany($company, $message, 'new_credit');
+        $this->dispatchSend($company->id, $message, 'new_credit');
+        return true;
     }
 
-    private function buildNewClientMessage(\App\Models\Client $client, \App\Models\Seller $seller, \App\Models\Company $company): string
+    /**
+     * Despacha el Job de envío. Centraliza la conversión del "ahora envía"
+     * sincrónico a la cola async.
+     */
+    private function dispatchSend(int $companyId, string $message, string $type): void
+    {
+        try {
+            \App\Jobs\SendTelegramNotificationJob::dispatch($companyId, $message, $type);
+        } catch (\Throwable $e) {
+            // Si la cola está rota, fallback a envío síncrono para no perder
+            // el evento. Loguear para que se detecte el problema de infra.
+            Log::warning('[telegram] dispatch falló, fallback a sync', [
+                'error' => $e->getMessage(),
+            ]);
+            $company = \App\Models\Company::find($companyId);
+            if ($company) {
+                $this->sendToCompany($company, $message, $type);
+            }
+        }
+    }
+
+    private function buildNewClientMessage(\App\Models\Client $client, \App\Models\Seller $seller, \App\Models\Company $company, ?\App\Models\Credit $credit = null): string
     {
         $vendedor = $seller->user->name ?? 'N/D';
-        $fecha    = \Carbon\Carbon::now('America/Lima')->format('d/m/Y H:i');
+        $tz       = $seller->city->country->timezone ?? 'America/Lima';
+        $fecha    = \Carbon\Carbon::now($tz)->format('d/m/Y H:i');
 
         $m  = "👤 *Cliente nuevo registrado*\n\n";
         $m .= "🏢 Empresa: *{$company->name}*\n";
@@ -252,6 +341,45 @@ class TelegramService
         if (!empty($client->phone)) $m .= "📞 Teléfono: {$client->phone}\n";
         $m .= "🛵 Vendedor: {$vendedor}\n";
         $m .= "🕒 Fecha: {$fecha}";
+
+        // Crédito inicial: se incluye en el mismo mensaje cuando el cliente
+        // se crea junto con su crédito (caso típico). Si no hay crédito
+        // bundleado (alta manual sin crédito), simplemente no se agrega.
+        if ($credit) {
+            $currency      = $seller->city->country->currency ?? '';
+            $creditValue   = (float) $credit->credit_value;
+            $interestRate  = (float) ($credit->total_interest ?? 0);
+            $monto         = number_format($creditValue, 2);
+
+            // Total a pagar: si el campo `total_amount` no fue persistido
+            // (ej. flujo de alta de cliente que no lo calcula), lo derivamos
+            // en runtime desde credit_value + interés. Mostramos siempre algo
+            // útil en la notificación sin tocar la lógica del módulo financiero.
+            $totalAmountDB = (float) ($credit->total_amount ?? 0);
+            $totalCalc     = $creditValue * (1 + $interestRate / 100);
+            $totalPagar    = number_format($totalAmountDB > 0 ? $totalAmountDB : $totalCalc, 2);
+
+            $cuotas      = $credit->number_installments ?? '—';
+            $frecuencia  = $credit->payment_frequency ?? '—';
+            $poliza      = (float) ($credit->micro_insurance_amount ?? 0);
+            $primerCuota = $credit->first_quota_date
+                ? \Carbon\Carbon::parse($credit->first_quota_date)->format('d/m/Y')
+                : null;
+
+            $m .= "\n\n💰 *Crédito inicial*\n";
+            $m .= "💵 Monto: *{$currency} {$monto}*\n";
+            $m .= "📅 Cuotas: {$cuotas} ({$frecuencia})\n";
+            if ($interestRate > 0) {
+                $m .= "📊 Interés: " . number_format($interestRate, 2) . "%\n";
+            }
+            $m .= "🧾 Total a pagar: *{$currency} {$totalPagar}*";
+            if ($poliza > 0) {
+                $m .= "\n🛡️ Microseguro: {$currency} " . number_format($poliza, 2);
+            }
+            if ($primerCuota) {
+                $m .= "\n📆 Primera cuota: {$primerCuota}";
+            }
+        }
 
         return $m;
     }
@@ -273,18 +401,25 @@ class TelegramService
 
         // Token random URL-safe. 32 bytes = 256 bits de entropía. Mucho más
         // que suficiente para resistir bruteforce en una ventana de 15 min.
-        $token = \Illuminate\Support\Str::random(32);
+        $plainToken = \Illuminate\Support\Str::random(32);
+
+        // Defense in depth: si la BD se filtra, los tokens NO son utilizables
+        // (sha256 unidireccional). El token "en claro" solo lo conoce el
+        // usuario que lo abre desde el panel y Telegram cuando recibe /start.
+        // Usamos sha256 (no bcrypt) porque queremos lookup rápido — bcrypt
+        // requiere iterar todos los hashes activos.
+        $hashedToken = hash('sha256', $plainToken);
 
         $company->forceFill([
-            'telegram_link_token' => $token,
+            'telegram_link_token' => $hashedToken,
             'telegram_link_expires_at' => now()->addMinutes(15),
         ])->save();
 
-        $url = "https://t.me/{$username}?start={$token}";
+        $url = "https://t.me/{$username}?start={$plainToken}";
 
         return [
             'url' => $url,
-            'token' => $token,
+            'token' => $plainToken, // se devuelve en claro solo en este momento
             'expires_at' => $company->telegram_link_expires_at->toIso8601String(),
             'bot_username' => $username,
         ];
@@ -299,8 +434,12 @@ class TelegramService
      */
     public function handleStartLink(string $token, int $chatId, ?string $firstName = null): array
     {
-        // Búsqueda atómica: solo una fila puede tener este token.
-        $company = \App\Models\Company::where('telegram_link_token', $token)
+        // Recibimos el token "en claro" desde el comando /start de Telegram.
+        // Lo hasheamos para comparar contra lo guardado en BD.
+        $hashedToken = hash('sha256', $token);
+
+        // Búsqueda atómica: solo una fila puede tener este hash de token.
+        $company = \App\Models\Company::where('telegram_link_token', $hashedToken)
             ->where('telegram_link_expires_at', '>', now())
             ->first();
 
@@ -375,7 +514,8 @@ class TelegramService
         }
 
         $message = $this->buildNewExpenseMessage($expense, $seller, $company);
-        return $this->sendToCompany($company, $message, 'new_expense');
+        $this->dispatchSend($company->id, $message, 'new_expense');
+        return true;
     }
 
     /**
@@ -392,7 +532,8 @@ class TelegramService
         }
 
         $message = $this->buildDeletedExpenseMessage($expense, $seller, $company);
-        return $this->sendToCompany($company, $message, 'deleted_expense');
+        $this->dispatchSend($company->id, $message, 'deleted_expense');
+        return true;
     }
 
     /**
@@ -409,7 +550,8 @@ class TelegramService
         }
 
         $message = $this->buildDeletedCreditMessage($credit, $seller, $company);
-        return $this->sendToCompany($company, $message, 'deleted_credit');
+        $this->dispatchSend($company->id, $message, 'deleted_credit');
+        return true;
     }
 
     private function buildNewExpenseMessage(\App\Models\Expense $expense, \App\Models\Seller $seller, \App\Models\Company $company): string
@@ -418,7 +560,8 @@ class TelegramService
         $currency = $seller->city->country->currency ?? '';
         $valor    = number_format((float) $expense->value, 2);
         $desc     = $expense->description ?? 's/d';
-        $fecha    = \Carbon\Carbon::now('America/Lima')->format('d/m/Y H:i');
+        $tz       = $seller->city->country->timezone ?? 'America/Lima';
+        $fecha    = \Carbon\Carbon::now($tz)->format('d/m/Y H:i');
 
         $m  = "💸 *Gasto registrado*\n\n";
         $m .= "🏢 Empresa: *{$company->name}*\n";
@@ -436,7 +579,8 @@ class TelegramService
         $currency = $seller->city->country->currency ?? '';
         $valor    = number_format((float) $expense->value, 2);
         $desc     = $expense->description ?? 's/d';
-        $fecha    = \Carbon\Carbon::now('America/Lima')->format('d/m/Y H:i');
+        $tz       = $seller->city->country->timezone ?? 'America/Lima';
+        $fecha    = \Carbon\Carbon::now($tz)->format('d/m/Y H:i');
 
         $m  = "🗑️ *Gasto eliminado*\n\n";
         $m .= "🏢 Empresa: *{$company->name}*\n";
@@ -454,7 +598,8 @@ class TelegramService
         $cliente  = $credit->client->name ?? 'N/D';
         $currency = $seller->city->country->currency ?? '';
         $valor    = number_format((float) $credit->credit_value, 2);
-        $fecha    = \Carbon\Carbon::now('America/Lima')->format('d/m/Y H:i');
+        $tz       = $seller->city->country->timezone ?? 'America/Lima';
+        $fecha    = \Carbon\Carbon::now($tz)->format('d/m/Y H:i');
 
         $m  = "🗑️ *Crédito eliminado*\n\n";
         $m .= "🏢 Empresa: *{$company->name}*\n";
