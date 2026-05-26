@@ -301,12 +301,21 @@ class ClientService
             }
         }
 
+        // Fix del bug raíz: sin estas inicializaciones, total_amount y
+        // remaining_amount quedan en 0 (default de la migración). Causaba
+        // ~120 créditos rotos/día generados por esta ruta.
+        $creditValueFloat = (float) $params['credit_value'];
+        $interestRateFloat = (float) ($params['interest_rate'] ?? 0);
+        $totalAmount = round($creditValueFloat + ($creditValueFloat * $interestRateFloat / 100), 2);
+
         $credit = Credit::create([
             'client_id' => $client->id,
             'guarantor_id' => $guarantorId,
             'seller_id' => $params['seller_id'] ?? $client->seller_id,
             'credit_value' => $params['credit_value'],
             'total_interest' => $params['interest_rate'] ?? 0,
+            'total_amount' => $totalAmount,
+            'remaining_amount' => $totalAmount,
             'number_installments' => $params['number_installments'] ?? $params['installment_count'] ?? 1,
             'payment_frequency' => $paymentFrequency,
             'first_quota_date' => $firstQuotaDate,
@@ -321,6 +330,9 @@ class ClientService
 
         $quotaAmount = (($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value) / max(1, $credit->number_installments);
         $this->generateInstallmentsForCredit($credit, (float) $quotaAmount);
+
+        // Red de seguridad: sincroniza remaining_amount desde installments
+        $credit->refresh()->recalculateRemainingAndStatus();
 
         return $credit;
     }
