@@ -496,6 +496,8 @@ class IncomeService
                     $query->where('company_id', $companyId);
                 })->pluck('id');
                 $incomeQuery->whereIn('user_id', $userIds);
+            } else if ($role === 1) {
+                // Admin: sin restricciones (ve todo). Misma semántica que ClientService.
             } else if ($role === 2) {
                 if (!$user->company) {
                     return $this->successResponse([
