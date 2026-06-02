@@ -2301,7 +2301,8 @@ class ClientService
                 },
                 'guarantors' => function ($query) {
                     $query->select('guarantors.id as id', 'guarantors.name', 'guarantors.dni', 'guarantors.phone');
-                }
+                },
+                'images'
             ])
                 ->where('seller_id', $sellerId)
                 ->get();
@@ -2328,8 +2329,15 @@ class ClientService
                 foreach ($debtorCredits as $credit) {
                     $clientEntries[] = [
                         'client_id' => $client->id,
+                        'client_uuid' => $client->uuid,
                         'client_name' => $client->name,
                         'client_code' => $client->id,
+                        'client_phone' => $client->phone,
+                        'client_dni' => $client->dni,
+                        'client_email' => $client->email,
+                        'client_address' => $client->address,
+                        'client_reference' => $client->reference,
+                        'client_images' => $client->images,
                         'seller_name' => $client->seller->user->name ?? 'Sin vendedor',
                         'credit_info' => $credit,
                         'delinquency' => [
@@ -2472,10 +2480,14 @@ class ClientService
         foreach ($client->credits as $credit) {
             $creditDelinquency = [
                 'credit_id' => $credit->id,
+                'credit_uuid' => $credit->uuid,
                 'credit_code' => $credit->code ?? '#00' . $credit->id,
                 'total_amount' => ($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value,
                 'balance' => $credit->remaining_amount ?? $credit->balance,
                 'number_installments' => $credit->number_installments,
+                'start_date' => $credit->start_date,
+                'end_date' => $credit->end_date,
+                'created_at' => $credit->created_at,
                 'installments' => []
             ];
 

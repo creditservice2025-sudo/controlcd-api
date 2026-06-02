@@ -437,6 +437,20 @@ class ClientController extends Controller
                 return $this->errorResponse('Vendedor no encontrado', 404);
             }
 
+            // Aislamiento por empresa: Admin (role 2) solo puede consultar
+            // sellers de su propia compañía. Super-Admin (role 1) sin restriccion.
+            // Cobrador (role 5) solo su propio seller.
+            $user = \Illuminate\Support\Facades\Auth::user();
+            if ($user->role_id === 2 && $user->company && $seller->company_id !== $user->company->id) {
+                return $this->errorResponse('No tiene acceso a este vendedor', 403);
+            }
+            if ($user->role_id === 5) {
+                $ownSeller = Seller::where('user_id', $user->id)->first();
+                if (!$ownSeller || $ownSeller->id !== (int) $sellerId) {
+                    return $this->errorResponse('No tiene acceso a este vendedor', 403);
+                }
+            }
+
             return $this->clientService->getDebtorClientsBySeller($sellerId);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
