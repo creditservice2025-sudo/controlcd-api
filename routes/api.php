@@ -51,6 +51,11 @@ Route::middleware(['auth:api', 'supervisor.lock', 'active.seller'])->group(funct
 
     //change password
     Route::post('auth/change-password', [AuthController::class, 'changePassword']);
+    // Logout propio. Sin esta ruta el frontend solo limpia localStorage y
+    // LoginService::logout() (donde se libera el lock supervisor/cobrador)
+    // nunca se ejecuta -> cobradores quedan bloqueados hasta que expira el
+    // TTL del cache (~90 min) aunque el supervisor haya cerrado sesion.
+    Route::post('logout', [AuthController::class, 'logout']);
     Route::post('auth/session/logout/{sessionId}', [AuthController::class, 'logoutSession']);
 
     // notification routes
