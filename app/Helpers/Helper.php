@@ -182,6 +182,166 @@ class Helper
     }
 
     /**
+     * Dibuja un overlay con fecha/hora y dirección en la esquina inferior
+     * derecha de la imagen. Reemplaza al overlay que antes hacía el frontend
+     * con canvas, que causaba OOM en Samsung A17 al crear más de un crédito.
+     *
+     * Falla silenciosamente: si no encuentra fuente TTF o algo falla, la
+     * imagen queda intacta y se loguea un warning. La metadata sigue
+     * guardándose en BD por el flujo normal.
+     *
+     * @param string $relativePath Ruta relativa devuelta por uploadFile
+     *                             (ej. "images/clients/abc_123.jpg").
+     * @param string|null $timestamp ISO 8601 o cualquier formato parseable.
+     * @param string|null $address Dirección legible para el humano.
+     * @return void
+     */
+    public static function applyTimestampOverlay($relativePath, $timestamp = null, $address = null)
+    {
+        try {
+            if (!$timestamp && !$address) {
+                return;
+            }
+            if (!extension_loaded('gd')) {
+                \Log::warning('[overlay] GD no esta cargado, skip');
+                return;
+            }
+
+            $fullPath = public_path($relativePath);
+            if (!file_exists($fullPath)) {
+                return;
+            }
+
+            $info = @getimagesize($fullPath);
+            if (!$info) {
+                return;
+            }
+
+            $mime = $info['mime'];
+            switch ($mime) {
+                case 'image/jpeg':
+                    $img = @imagecreatefromjpeg($fullPath);
+                    break;
+                case 'image/png':
+                    $img = @imagecreatefrompng($fullPath);
+                    break;
+                default:
+                    return;
+            }
+            if (!$img) {
+                return;
+            }
+
+            $w = imagesx($img);
+            $h = imagesy($img);
+
+            // Texto a dibujar
+            $lines = [];
+            if ($timestamp) {
+                try {
+                    $dt = \Carbon\Carbon::parse($timestamp);
+                    $lines[] = $dt->format('d/m/Y H:i');
+                } catch (\Exception $e) {
+                    $lines[] = (string) $timestamp;
+                }
+            }
+            if ($address) {
+                $addr = (string) $address;
+                $maxChars = 70;
+                if (mb_strlen($addr) > $maxChars) {
+                    $addr = mb_substr($addr, 0, $maxChars - 3) . '...';
+                }
+                $lines[] = $addr;
+            }
+
+            // Buscar fuente TTF. Si no hay ninguna, fallback a bitmap font.
+            $fontPath = null;
+            $candidates = [
+                public_path('fonts/DejaVuSans-Bold.ttf'),
+                public_path('fonts/DejaVuSans.ttf'),
+                public_path('fonts/arial.ttf'),
+                '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+                '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+                '/Library/Fonts/Arial.ttf',
+                'C:\\Windows\\Fonts\\arial.ttf',
+            ];
+            foreach ($candidates as $candidate) {
+                if (@file_exists($candidate)) {
+                    $fontPath = $candidate;
+                    break;
+                }
+            }
+
+            $white = imagecolorallocate($img, 255, 255, 255);
+            $black = imagecolorallocate($img, 0, 0, 0);
+            $padding = max(8, (int) ($h * 0.012));
+
+            if ($fontPath) {
+                $fontSize = max(12, (int) ($h * 0.025));
+                $lineHeight = (int) ($fontSize * 1.4);
+                $totalH = count($lines) * $lineHeight;
+                $baselineY = $h - $padding - $totalH + $fontSize;
+
+                foreach ($lines as $i => $line) {
+                    $bbox = imagettfbbox($fontSize, 0, $fontPath, $line);
+                    $textW = abs($bbox[2] - $bbox[0]);
+                    $x = $w - $textW - $padding;
+                    $y = (int) ($baselineY + $i * $lineHeight);
+
+                    // Outline negro para legibilidad
+                    for ($dx = -1; $dx <= 1; $dx++) {
+                        for ($dy = -1; $dy <= 1; $dy++) {
+                            if ($dx === 0 && $dy === 0) {
+                                continue;
+                            }
+                            imagettftext($img, $fontSize, 0, $x + $dx, $y + $dy, $black, $fontPath, $line);
+                        }
+                    }
+                    imagettftext($img, $fontSize, 0, $x, $y, $white, $fontPath, $line);
+                }
+            } else {
+                // Fallback con bitmap font de GD (tamaño limitado, max 5).
+                \Log::warning('[overlay] No se encontro fuente TTF, usando bitmap fallback');
+                $fontGd = 5;
+                $charW = imagefontwidth($fontGd);
+                $charH = imagefontheight($fontGd);
+                $lineHeight = $charH + 4;
+                $totalH = count($lines) * $lineHeight;
+                $startY = $h - $padding - $totalH;
+
+                foreach ($lines as $i => $line) {
+                    $textW = strlen($line) * $charW;
+                    $x = $w - $textW - $padding;
+                    $y = $startY + $i * $lineHeight;
+                    // Outline
+                    imagestring($img, $fontGd, $x - 1, $y, $line, $black);
+                    imagestring($img, $fontGd, $x + 1, $y, $line, $black);
+                    imagestring($img, $fontGd, $x, $y - 1, $line, $black);
+                    imagestring($img, $fontGd, $x, $y + 1, $line, $black);
+                    // Fill
+                    imagestring($img, $fontGd, $x, $y, $line, $white);
+                }
+            }
+
+            // Guardar in-place
+            switch ($mime) {
+                case 'image/jpeg':
+                    imagejpeg($img, $fullPath, 80);
+                    break;
+                case 'image/png':
+                    imagepng($img, $fullPath);
+                    break;
+            }
+            imagedestroy($img);
+        } catch (\Exception $e) {
+            \Log::warning('[overlay] Error aplicando overlay: ' . $e->getMessage(), [
+                'path' => $relativePath,
+            ]);
+            // No interrumpir el flujo: la imagen queda sin overlay.
+        }
+    }
+
+    /**
      * Elimina un archivo del storage de Laravel.
      *
      * @param string $filePath La ruta del archivo a eliminar.

@@ -341,6 +341,16 @@ class CreditService
 
                     $imagePath = Helper::uploadFile($imageFile, 'clients');
 
+                    // Dibujar overlay (fecha + direccion) sobre la imagen
+                    // ya guardada. Esto reemplaza al overlay del frontend
+                    // (addTimestampOverlay) que en Samsung A17 / One UI 6
+                    // causaba OOM y mataba el WebView al crear el 2do credito.
+                    Helper::applyTimestampOverlay(
+                        $imagePath,
+                        $imageData['location_timestamp'] ?? null,
+                        $imageData['address'] ?? null
+                    );
+
                     $imageRecord = [
                         'path' => $imagePath,
                         'type' => $imageData['type'],
@@ -651,6 +661,14 @@ class CreditService
                 foreach ($images as $index => $imageData) {
                     $imageFile = $request->file("images.{$index}.file");
                     $imagePath = Helper::uploadFile($imageFile, 'clients');
+
+                    // Overlay (fecha + direccion) sobre la imagen guardada.
+                    // Reemplaza al overlay del frontend para evitar OOM en A17.
+                    Helper::applyTimestampOverlay(
+                        $imagePath,
+                        $imageData['location_timestamp'] ?? null,
+                        $imageData['address'] ?? null
+                    );
 
                     $imageRecord = [
                         'path' => $imagePath,
