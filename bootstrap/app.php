@@ -27,10 +27,18 @@ return Application::configure(basePath: dirname(__DIR__))
             // Bloquea Cobrador (rol 5) cuando su Supervisor (rol 6) tiene
             // sesión activa. Aplicado al grupo `auth:api` en routes/api.php.
             'supervisor.lock'    => \App\Http\Middleware\CheckSupervisorLock::class,
+            // Bloquea Cobrador (rol 5) tras cerrar su liquidación: cualquier
+            // dispositivo del mismo user recibe 401 hasta nuevo login.
+            // Paralelo a supervisor.lock pero independiente.
+            'liquidation.closed' => \App\Http\Middleware\CheckLiquidationClosed::class,
             // Resuelve el seller "activo" para el Supervisor (rol 6) cuando
             // selecciona una ruta a supervisar desde el APK. Lee el header
             // X-Active-Seller-Id y lo expone como $request->active_seller_id.
             'active.seller'      => \App\Http\Middleware\ResolveActiveSeller::class,
+            // Modo solo-lectura para Supervisor (rol 6) cuando supervisa a
+            // un vendedor con caja cerrada. Debe ir después de active.seller
+            // porque depende del atributo active_seller_id.
+            'block.writes.cash.closed' => \App\Http\Middleware\BlockSupervisorWritesOnClosedCash::class,
         ]);
 
         $middleware->validateCsrfTokens(except: [

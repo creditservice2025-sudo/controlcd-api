@@ -39,6 +39,25 @@ class LoginService
     public const SESSION_REVOKED_BY_SUPERVISOR = 'SESSION_REVOKED_BY_SUPERVISOR';
 
     /**
+     * Código que el frontend usa cuando se invalida la sesión del cobrador
+     * porque cerró su liquidación en algún dispositivo. Su efecto: cualquier
+     * teléfono donde el mismo usuario siga logueado recibirá un 401 con este
+     * código y mostrará el modal "Liquidación cerrada — vuelve a iniciar
+     * sesión". Es independiente del supervisor.lock.
+     */
+    public const SESSION_REVOKED_BY_LIQUIDATION_CLOSE = 'SESSION_REVOKED_BY_LIQUIDATION_CLOSE';
+
+    /**
+     * Clave de cache que marca al cobrador como bloqueado por haber cerrado
+     * su liquidación. Mientras la clave exista (TTL 24h o hasta su próximo
+     * login exitoso), el middleware CheckLiquidationClosed devuelve 401.
+     */
+    public static function liquidationClosedKey(int $cobradorUserId): string
+    {
+        return "liquidation_closed:cobrador:{$cobradorUserId}";
+    }
+
+    /**
      * Devuelve la clave de cache que marca a un cobrador como bloqueado por
      * un supervisor activo. Si la clave existe, ese cobrador NO puede entrar
      * (ni web ni APK) y, si tenía sesión abierta, ya le fueron revocados
@@ -47,6 +66,17 @@ class LoginService
     private function lockKey(int $cobradorUserId): string
     {
         return "supervisor_lock:cobrador:{$cobradorUserId}";
+    }
+
+    /**
+     * Clave que guarda el SET exacto de cobradores que un supervisor bloqueó
+     * al iniciar sesión. Se usa en el logout para liberar justo a esos
+     * cobradores, aunque sus user_routes hayan cambiado durante la sesión
+     * (reasignación de rutas) y `cobradorIdsSupervisedBy` ya devuelva otros.
+     */
+    private function lockedSetKey(int $supervisorUserId): string
+    {
+        return "supervisor_lock_set:supervisor:{$supervisorUserId}";
     }
 
     /**
@@ -106,7 +136,7 @@ class LoginService
             // ============================================================
             // RESTRICCIÓN DE PLATAFORMA (APK vs Web)
             // El frontend Capacitor envía X-Client-Type: mobile en cada
-            // request; el web NO lo envía. Solo Cobrador (5) y Supervisor (6, rol "Revisador" en BD)
+            // request; el web NO lo envía. Solo Cobrador (5) y Supervisor (6)
             // pueden entrar al APK.
             // ============================================================
             $clientType = request()->header('X-Client-Type', 'web');
@@ -162,6 +192,10 @@ class LoginService
                         foreach ($cobradorIds as $cid) {
                             Cache::put($this->lockKey($cid), $user->id, now()->addMinutes(90));
                         }
+                        // Guardar el set exacto bloqueado para liberarlo en el
+                        // logout aunque las rutas del supervisor cambien durante
+                        // la sesión.
+                        Cache::put($this->lockedSetKey($user->id), $cobradorIds, now()->addMinutes(90));
                         \Log::info('Supervisor inició sesión y bloqueó cobradores', [
                             'supervisor_id' => $user->id,
                             'cobrador_ids' => $cobradorIds,
@@ -197,6 +231,20 @@ class LoginService
                 $user->update([
                     "token_revoked" => 0
                 ]);
+            }
+
+            // Login exitoso del cobrador → limpiar cualquier lock residual de
+            // cierre de liquidación. Si quedó algo de un día anterior (TTL
+            // 24h), este forget asegura que no aplique al nuevo día. Idempotente.
+            if ((int) $user->role_id === 5) {
+                try {
+                    Cache::forget(self::liquidationClosedKey((int) $user->id));
+                } catch (\Throwable $e) {
+                    \Log::warning('[liquidation.closed] no se pudo limpiar lock en login', [
+                        'user_id' => $user->id,
+                        'error'   => $e->getMessage(),
+                    ]);
+                }
             }
 
             $timezone = request()->has('timezone') ? request()->get('timezone') : null;
@@ -255,24 +303,29 @@ class LoginService
     {
         try {
             $user = Auth::user();
-            $user->token_revoked = 1;
-            if ($user instanceof \App\Models\User) {
-                $user->save();
-            } else {
+            if (!($user instanceof \App\Models\User)) {
                 throw new \Exception('Invalid user instance');
             }
 
-            // Si el que cierra sesión es Supervisor (rol 6), liberar el
-            // bloqueo de sus cobradores. Sin esto, los cobradores seguirían
-            // bloqueados hasta que expire la cache (~90 min).
-            // FAIL-OPEN: si la cache no responde, logout sigue su flujo.
-            // En el peor caso el lock expira solo a los 90 min.
+            // PRIMERO liberar el bloqueo supervisor→cobrador, ANTES de
+            // cualquier otra operación que pueda fallar (ej: el save de
+            // token_revoked). Así el cobrador SIEMPRE queda libre aunque algo
+            // más en el logout falle. FAIL-OPEN: si la cache no responde,
+            // logout sigue su flujo (en el peor caso el lock expira a los 90 min).
             if ((int) $user->role_id === 6) {
                 try {
-                    $cobradorIds = $this->cobradorIdsSupervisedBy($user->id);
+                    // Preferir el set EXACTO bloqueado al login; si no existe
+                    // (cache expirada o sesión previa a este cambio) caer a las
+                    // rutas actuales. Así se libera al cobrador correcto aunque
+                    // las rutas se hayan reasignado durante la sesión.
+                    $cobradorIds = Cache::get($this->lockedSetKey($user->id));
+                    if (!is_array($cobradorIds) || empty($cobradorIds)) {
+                        $cobradorIds = $this->cobradorIdsSupervisedBy($user->id);
+                    }
                     foreach ($cobradorIds as $cid) {
                         Cache::forget($this->lockKey($cid));
                     }
+                    Cache::forget($this->lockedSetKey($user->id));
                     if (!empty($cobradorIds)) {
                         \Log::info('Supervisor cerró sesión y liberó cobradores', [
                             'supervisor_id' => $user->id,
@@ -287,6 +340,18 @@ class LoginService
                 }
             }
 
+            // Marcar token revocado (best-effort). Va DESPUÉS de liberar el
+            // lock para que, si algo falla acá, el cobrador ya quedó libre.
+            try {
+                $user->token_revoked = 1;
+                $user->save();
+            } catch (\Throwable $e) {
+                \Log::warning('[logout] no se pudo marcar token_revoked', [
+                    'user_id' => $user->id,
+                    'error'   => $e->getMessage(),
+                ]);
+            }
+
             $timezone = request()->has('timezone') ? request()->get('timezone') : null;
             $logoutAt = $timezone ? Carbon::now($timezone) : now();
 
@@ -297,7 +362,18 @@ class LoginService
                 ->first()
                 ?->update(['logout_at' => $logoutAt]);
 
-            Auth::logout();
+            // Best-effort: en el guard `api` (Passport TokenGuard/RequestGuard)
+            // Auth::logout() no tiene un logout() real y puede lanzar. El cierre
+            // efectivo en Passport lo hace el frontend al descartar el token;
+            // acá no debe romper la respuesta (el lock ya fue liberado arriba).
+            try {
+                Auth::logout();
+            } catch (\Throwable $e) {
+                \Log::warning('[logout] Auth::logout no soportado en guard api', [
+                    'user_id' => $user->id,
+                    'error'   => $e->getMessage(),
+                ]);
+            }
 
             return $this->successResponse([
                 'success' => true,

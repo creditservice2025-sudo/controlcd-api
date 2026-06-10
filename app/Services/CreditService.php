@@ -2,7 +2,9 @@
 
 namespace App\Services;
 
+use App\Exceptions\CashClosedException;
 use App\Helpers\Helper;
+use App\Services\Traits\EnforcesCashOpen;
 use Illuminate\Support\Facades\Hash;
 use App\Models\Client;
 use Illuminate\Support\Facades\Log;
@@ -28,7 +30,7 @@ use App\Services\TelegramService;
 
 class CreditService
 {
-    use ApiResponse;
+    use ApiResponse, EnforcesCashOpen;
 
     const TIMEZONE = 'America/Lima';
 
@@ -87,6 +89,16 @@ class CreditService
                     default:
                         $firstQuotaDate = $today->addDay()->format('Y-m-d');
                 }
+            }
+
+            // Guard de defensa en profundidad: rechaza el crédito si la
+            // liquidación del día del vendedor ya está cerrada. Se hace
+            // antes de cualquier validación de topes para no gastar trabajo
+            // en un crédito que de todas formas será rechazado.
+            if (!empty($params['seller_id'])) {
+                $tzGuard = $userTimezone ?: self::TIMEZONE;
+                $businessDateGuard = Carbon::now($tzGuard)->toDateString();
+                $this->assertSellerCashOpen((int) $params['seller_id'], $businessDateGuard);
             }
 
             // Restricción por monto total de ventas nuevas en el día
@@ -427,6 +439,8 @@ class CreditService
             }
 
             return $response;
+        } catch (CashClosedException $e) {
+            return $this->errorResponse($e->getMessage(), 422);
         } catch (\Exception $e) {
             \Log::error("Error al crear crédito: " . $e->getMessage());
             /* \Log::error($e->getTraceAsString()); */

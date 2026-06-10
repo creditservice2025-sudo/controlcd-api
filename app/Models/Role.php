@@ -12,5 +12,10 @@ class Role extends Model
     protected $fillable = [
         'name',
         'guard_name',
+        'is_assignable',
+    ];
+
+    protected $casts = [
+        'is_assignable' => 'boolean',
     ];
 }

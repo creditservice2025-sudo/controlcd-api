@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Traits\ApiResponse;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 
@@ -76,6 +77,31 @@ class SupervisorController extends Controller
             ->orderBy('c.name')
             ->orderBy('u.name')
             ->get();
+
+        // Para que el APK pueda mostrar un badge "Caja cerrada" en el modal
+        // de selección de ruta (y mostrar el alerta correspondiente al
+        // elegirla), añadimos por cada cobrador el estado de su liquidación
+        // del día calculada en el timezone del país del vendedor.
+        //
+        // Estados considerados "caja cerrada": pending, auto, approved.
+        // (En curso = caja abierta, operando normalmente.)
+        $rows = $rows->map(function ($row) {
+            $tz = $row->country_timezone ?: 'America/Lima';
+            $today = Carbon::now($tz)->toDateString();
+
+            $liq = DB::table('liquidations')
+                ->where('seller_id', $row->seller_id)
+                ->whereDate('date', $today)
+                ->select('status')
+                ->first();
+
+            $row->liquidation_today_status = $liq->status ?? null;
+            $row->liquidation_today_closed = $liq
+                ? in_array($liq->status, ['pending', 'auto', 'approved'], true)
+                : false;
+
+            return $row;
+        });
 
         return $this->successResponse([
             'success' => true,

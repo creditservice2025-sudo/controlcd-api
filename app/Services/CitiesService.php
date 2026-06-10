@@ -199,7 +199,7 @@ class CitiesService
                     $query->whereRaw('0 = 1');
                 }
             } else {
-                // Consultor: solo sellers asociados en user_routes
+                // Secretaria/Supervisor/otros con UserRoute: solo sellers asociados
                 $sellerIds = UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
                 if (empty($sellerIds)) {
                     return response()->json([

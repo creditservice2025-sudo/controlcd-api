@@ -35,6 +35,8 @@ class User extends Authenticatable
         'role_id',
         'status',
         'must_change_password',
+        'updated_by',
+        'token_revoked',
     ];
 
     /**
@@ -69,6 +71,16 @@ class User extends Authenticatable
     public function parent()
     {
         return $this->belongsTo(User::class);
+    }
+
+    /**
+     * Usuario que realizó la última actualización de este miembro (auditoría).
+     * Se nombra `updatedByUser` (no `updatedBy`) para que su serialización
+     * snake_case `updated_by_user` NO choque con la columna `updated_by`.
+     */
+    public function updatedByUser()
+    {
+        return $this->belongsTo(User::class, 'updated_by');
     }
 
     public function routes()

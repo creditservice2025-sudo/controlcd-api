@@ -12,6 +12,15 @@ class ExpenseController extends Controller
     public function __construct(ExpenseService $expenseService)
     {
         $this->expenseService = $expenseService;
+        // Supervisor (rol 6) en modo solo-lectura cuando supervisa un
+        // vendedor con caja cerrada. El middleware filtra por rol y por
+        // active_seller_id; otros roles pasan transparentes.
+        $this->middleware('block.writes.cash.closed')->only([
+            'store',
+            'update',
+            'destroy',
+            'changeStatus',
+        ]);
         /* $this->middleware('permission:ver_egresos')->only('index');
         $this->middleware('permission:crear_egresos')->only('store');
         $this->middleware('permission:editar_egresos')->only('update');

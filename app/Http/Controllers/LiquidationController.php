@@ -6,9 +6,11 @@ use App\Helpers\Helper;
 use App\Models\Income;
 use App\Models\LiquidationAudit;
 use App\Services\LiquidationService;
+use App\Services\LoginService;
 use Illuminate\Http\Request;
 use App\Traits\ApiResponse;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
 use App\Models\Liquidation;
@@ -40,6 +42,18 @@ class LiquidationController extends Controller
     ) {
         $this->liquidationService = $liquidationService;
         $this->metricsCacheService = $metricsCacheService;
+        // Supervisor (rol 6) en modo solo-lectura cuando supervisa un
+        // vendedor con caja cerrada. El middleware filtra por rol y por
+        // active_seller_id; otros roles pasan transparentes. No incluimos
+        // approveLiquidation / approveMultipleLiquidations porque ya están
+        // restringidos a admin (rol 1/2) en el service.
+        $this->middleware('block.writes.cash.closed')->only([
+            'storeLiquidation',
+            'updateLiquidation',
+            'reopenRoute',
+            'annulBase',
+            'adjustBox',
+        ]);
     }
     public function calculateLiquidation(CalculateLiquidationRequest $request)
     {
@@ -265,6 +279,11 @@ class LiquidationController extends Controller
                     'surplus' => $surplus,
                 ];
             });
+
+            // (Invalidación de sesiones del cobrador la maneja el observer
+            // `Liquidation::saved` en el modelo: se dispara automáticamente
+            // ante cualquier transición a status pending/auto/approved,
+            // sin depender del controller usado para cerrar la caja.)
 
             // === NOTIFICACIONES (Fuera de transacción, async) ===
             $this->sendLiquidationNotifications(

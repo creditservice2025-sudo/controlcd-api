@@ -2,7 +2,9 @@
 
 namespace App\Services;
 
+use App\Exceptions\CashClosedException;
 use App\Helpers\Helper;
+use App\Services\Traits\EnforcesCashOpen;
 use App\Traits\ApiResponse;
 use App\Models\Expense;
 use App\Models\ExpenseImage;
@@ -19,7 +21,7 @@ use App\Services\TelegramService;
 
 class ExpenseService
 {
-    use ApiResponse;
+    use ApiResponse, EnforcesCashOpen;
 
     const TIMEZONE = 'America/Lima';
     protected $metricsCacheService;
@@ -114,6 +116,12 @@ class ExpenseService
             
             $businessDate = $businessTimestamp->toDateString();
 
+            // Guard de defensa en profundidad: rechaza el gasto si la
+            // liquidación del día del vendedor ya está cerrada.
+            if ($seller) {
+                $this->assertSellerCashOpen($seller->id, $businessDate);
+            }
+
             $expenseData = [
                 'value' => $validated['value'],
                 'description' => $validated['description'],
@@ -202,6 +210,8 @@ class ExpenseService
                 'message' => 'Gasto creado con éxito',
                 'data' => $expense,
             ]);
+        } catch (CashClosedException $e) {
+            return $this->errorResponse($e->getMessage(), 422);
         } catch (\Exception $e) {
             Log::error($e->getMessage());
             return $this->errorResponse('Error al crear el gasto', 500);
@@ -586,8 +596,8 @@ class ExpenseService
                 $expensesQuery->where('user_id', $user->id)
                     ->whereBetween('created_at', [$todayStart, $todayEnd]);
             } else {
-                // Roles intermedios (Socio=3, Asistente=4, Revisador=6, Cobrador-abono=7,
-                // Limitado=8, Digitador=9, Contador=10, Consultor=11): aislamiento por
+                // Roles intermedios (Socio=3, Asistente=4, Supervisor=6, Cobrador-abono=7,
+                // Limitado=8, Digitador=9, Contador=10, Secretaria=11): aislamiento por
                 // empresa. Resuelve company del usuario en este orden:
                 //   1) relación directa user->company (admin)
                 //   2) seller asociado (cobradores promovidos)

@@ -12,6 +12,14 @@ class IncomeController extends Controller
     public function __construct(IncomeService $incomeService)
     {
         $this->incomeService = $incomeService;
+        // Supervisor (rol 6) en modo solo-lectura cuando supervisa un
+        // vendedor con caja cerrada. El middleware filtra por rol y por
+        // active_seller_id; otros roles pasan transparentes.
+        $this->middleware('block.writes.cash.closed')->only([
+            'store',
+            'update',
+            'destroy',
+        ]);
         /* $this->middleware('permission:ver_ingresos')->only('index');
         $this->middleware('permission:crear_ingresos')->only('store');
         $this->middleware('permission:editar_ingresos')->only('update');

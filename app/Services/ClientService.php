@@ -850,7 +850,7 @@ class ClientService
             $seller = $user->seller;
             $company = $user->company;
 
-            // Consultor (rol 7), Supervisor (11) y rol 6 pueden tener rutas asociadas
+            // Supervisor (rol 6), Cobrador-abono (7) y Secretaria (11) pueden tener rutas asociadas
             if (in_array($user->role_id, [6, 7, 11])) {
                 $sellerIds = \App\Models\UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
             }
@@ -1175,12 +1175,12 @@ class ClientService
             // ROLE SCOPING para AISLAMIENTO multi-empresa.
             // Antes este método solo filtraba al cobrador (rol 5) y opcionalmente
             // al Super-Admin (rol 1) si pasaba companyId. Los roles intermedios
-            // (Admin de empresa, Supervisor, Consultor) veían cartera de TODAS
+            // (Admin de empresa, Supervisor, Secretaria) veían cartera de TODAS
             // las empresas — fuga de datos. Ahora:
             //   1 Super-Admin: ve todo (puede filtrar por companyId opcional)
             //   2 Admin empresa: solo sellers de su company_id
             //   5 Cobrador: solo su seller (ya manejado arriba)
-            //   6 Supervisor / 7 Consultor / 11: solo sellers de su user_routes
+            //   6 Supervisor / 7 Cobrador-abono / 11 Secretaria: solo sellers de su user_routes
             $authUser = Auth::user();
             switch ((int) $authUser->role_id) {
                 case 1: // Super-Admin

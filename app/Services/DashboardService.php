@@ -76,7 +76,7 @@ class DashboardService
             }
         }
 
-        // Consultor: solo los sellers asociados en UserRoute
+        // Secretaria/Supervisor/otros con UserRoute: solo los sellers asociados
         if ($role !== 5 && $role !== 1 && $role !== 2) {
             return UserRoute::where('user_id', $user->id)->pluck('seller_id')->unique()->values();
         }
@@ -321,7 +321,7 @@ class DashboardService
                             $query->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable']);
                         })->count();
                 }
-                // Consultor: solo los sellers asociados en UserRoute
+                // Secretaria/Supervisor/otros con UserRoute: solo los sellers asociados
             } else {
                 $sellerIds = UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
                 $data['routes'] = count($sellerIds);

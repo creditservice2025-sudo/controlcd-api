@@ -2,7 +2,9 @@
 
 namespace App\Services;
 
+use App\Exceptions\CashClosedException;
 use App\Helpers\Helper;
+use App\Services\Traits\EnforcesCashOpen;
 use App\Traits\ApiResponse;
 use App\Models\Client;
 use Illuminate\Support\Facades\DB;
@@ -24,7 +26,7 @@ use Illuminate\Support\Facades\Redis;
 
 class PaymentService
 {
-    use ApiResponse;
+    use ApiResponse, EnforcesCashOpen;
 
     private GeolocationHistoryService $geolocationHistoryService;
     private MetricsCacheService $metricsCacheService;
@@ -81,6 +83,13 @@ class PaymentService
             if (!$credit) {
                 throw new \Exception('El crédito no existe.');
             }
+
+            // ======= GUARD: caja del día ya cerrada =======
+            // Defensa en profundidad: aun si el middleware liquidation.closed
+            // se desregistra, el cache lock falla o el flujo viene por otra
+            // vía, este check rechaza pagos cuando la liquidación del día
+            // del vendedor está en pending/auto/approved.
+            $this->assertSellerCashOpen($credit->seller_id, $businessDate);
 
             // ======= IDEMPOTENCY CHECK =======
             $idempotencyKey = $request->header('X-Idempotency-Key');
@@ -384,6 +393,9 @@ class PaymentService
                 }
             }
 
+        } catch (CashClosedException $e) {
+            DB::rollBack();
+            return $this->errorResponse($e->getMessage(), 422);
         } catch (\Exception $e) {
             DB::rollBack();
             Log::error('Error processing payment for Credit ID: ' . ($request->credit_id ?? 'N/A') . '. Message: ' . $e->getMessage(), ['exception' => $e]);

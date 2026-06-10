@@ -31,6 +31,9 @@ class UserService
 
             $params['password'] = Hash::make($params['password']);
 
+            // Auditoría: quién creó/actualizó por última vez al miembro.
+            $params['updated_by'] = Auth::id();
+
             if (isset($params['timezone']) && !empty($params['timezone'])) {
                 $params['created_at'] = \Carbon\Carbon::now($params['timezone']);
                 $params['updated_at'] = \Carbon\Carbon::now($params['timezone']);
@@ -117,6 +120,9 @@ class UserService
             } else {
                 unset($params['password']);
             }
+
+            // Auditoría: registrar quién realizó esta actualización.
+            $params['updated_by'] = Auth::id();
 
             if (isset($params['timezone']) && !empty($params['timezone'])) {
                 $params['updated_at'] = \Carbon\Carbon::now($params['timezone']);
@@ -266,6 +272,8 @@ public function me()
                     'users.parent_id',
                     'users.role_id',
                     'users.status',
+                    'users.updated_by',
+                    'users.updated_at',
                     'roles.name as role_name'
                 )
                 // userRoutes.seller.{city.country, user}: necesario para
@@ -276,6 +284,7 @@ public function me()
                 ->with([
                     'city',
                     'city.country',
+                    'updatedByUser:id,name',
                     'userRoutes',
                     'userRoutes.seller',
                     'userRoutes.seller.user:id,name',

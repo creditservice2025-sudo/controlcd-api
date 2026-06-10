@@ -47,16 +47,23 @@ Route::post('telegram/webhook', [TelegramWebhookController::class, 'handle'])
     ->name('telegram.webhook');
 
 
-Route::middleware(['auth:api', 'supervisor.lock', 'active.seller'])->group(function () {
+// Logout y cierre de sesiones: SOLO requieren auth:api. NO deben pasar por
+// supervisor.lock / liquidation.closed / active.seller. Si alguno de esos
+// rechaza el request (ej: active.seller devuelve 403 cuando el supervisor
+// manda un X-Active-Seller-Id que ya no está en sus user_routes —p. ej. tras
+// reasignarle rutas—), LoginService::logout() NO corre y el lock
+// supervisor→cobrador nunca se libera: los cobradores quedan bloqueados hasta
+// que expira el TTL del cache (~90 min) aunque el supervisor "haya salido".
+// El usuario SIEMPRE debe poder cerrar sesión.
+Route::middleware('auth:api')->group(function () {
+    Route::post('logout', [AuthController::class, 'logout']);
+    Route::post('auth/session/logout/{sessionId}', [AuthController::class, 'logoutSession']);
+});
+
+Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.seller'])->group(function () {
 
     //change password
     Route::post('auth/change-password', [AuthController::class, 'changePassword']);
-    // Logout propio. Sin esta ruta el frontend solo limpia localStorage y
-    // LoginService::logout() (donde se libera el lock supervisor/cobrador)
-    // nunca se ejecuta -> cobradores quedan bloqueados hasta que expira el
-    // TTL del cache (~90 min) aunque el supervisor haya cerrado sesion.
-    Route::post('logout', [AuthController::class, 'logout']);
-    Route::post('auth/session/logout/{sessionId}', [AuthController::class, 'logoutSession']);
 
     // notification routes
     Route::get('/notifications', [NotificationController::class, 'index']);

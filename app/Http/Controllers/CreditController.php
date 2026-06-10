@@ -18,6 +18,24 @@ class CreditController extends Controller
     public function __construct(CreditService $creditService)
     {
         $this->creditService = $creditService;
+        // Supervisor (rol 6) en modo solo-lectura cuando supervisa un
+        // vendedor con caja cerrada. El middleware filtra por rol y por
+        // active_seller_id; otros roles pasan transparentes.
+        $this->middleware('block.writes.cash.closed')->only([
+            'create',
+            'renew',
+            'unifyCredits',
+            'update',
+            'updateSchedule',
+            'updateFrequency',
+            'setRenewalBlocked',
+            'delete',
+            'toggleCreditStatus',
+            'toggleCreditsStatusMassively',
+            'markClientAsUncollectible',
+            'restoreClientFromUncollectible',
+            'changeCreditClient',
+        ]);
         /*  $this->middleware('permission:ver_creditos')->only('index');
          $this->middleware('permission:crear_creditos')->only('create');
          $this->middleware('permission:editar_creditos')->only('update');

@@ -19,6 +19,15 @@ class PaymentController extends Controller
     public function __construct(PaymentService $paymentService)
     {
         $this->paymentService = $paymentService;
+        // Supervisor (rol 6) en modo solo-lectura cuando supervisa un
+        // vendedor con caja cerrada. El middleware filtra por rol y por
+        // active_seller_id; otros roles pasan transparentes.
+        $this->middleware('block.writes.cash.closed')->only([
+            'create',
+            'delete',
+            'deletePaymentInstallment',
+            'reapply',
+        ]);
     }
 
     public function create(PaymentRequest $request)
