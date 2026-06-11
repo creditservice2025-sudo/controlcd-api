@@ -81,7 +81,12 @@ class IncomeService
 
             // Guard de defensa en profundidad: rechaza el ingreso si la
             // liquidación del día del vendedor ya está cerrada.
-            if ($seller) {
+            //
+            // El admin/superadmin (rol 1 y 2) SÍ puede registrar movimientos
+            // sobre una caja cerrada: es justamente quien "reabre/ajusta" la
+            // caja (ver mensaje del guard). El bloqueo solo aplica al vendedor
+            // y demás roles operativos.
+            if ($seller && !$isAdmin) {
                 $this->assertSellerCashOpen($seller->id, $businessDate);
             }
 
@@ -267,9 +272,15 @@ class IncomeService
             }
         }
 
-        if ($seller) {
-            $incomeDate = $income->business_date 
-                ? $income->business_date->format('Y-m-d') 
+        // El admin/superadmin (rol 1 y 2) puede ajustar el ingreso aunque la
+        // liquidación de la fecha ya exista/esté cerrada. Es quien reabre/ajusta
+        // la caja. El resto de roles sí queda bloqueado.
+        $currentUser = Auth::user();
+        $isAdmin = $currentUser && in_array($currentUser->role_id, [1, 2]);
+
+        if ($seller && !$isAdmin) {
+            $incomeDate = $income->business_date
+                ? $income->business_date->format('Y-m-d')
                 : ($income->created_at ? Carbon::parse($income->created_at)->toDateString() : date('Y-m-d'));
 
             $liquidation = Liquidation::where('seller_id', $seller->id)

@@ -118,7 +118,11 @@ class ExpenseService
 
             // Guard de defensa en profundidad: rechaza el gasto si la
             // liquidación del día del vendedor ya está cerrada.
-            if ($seller) {
+            //
+            // El admin/superadmin (rol 1 y 2) SÍ puede registrar movimientos
+            // sobre una caja cerrada: es justamente quien "reabre/ajusta" la
+            // caja. El bloqueo solo aplica al vendedor y demás roles operativos.
+            if ($seller && !$isAdmin) {
                 $this->assertSellerCashOpen($seller->id, $businessDate);
             }
 
@@ -334,12 +338,18 @@ class ExpenseService
                 ? $expense->business_date->format('Y-m-d') 
                 : $expense->created_at->format('Y-m-d'); // Fallback para antiguos
 
+            // El admin/superadmin (rol 1 y 2) puede ajustar el gasto aunque la
+            // liquidación de la fecha ya exista/esté cerrada. Es quien
+            // reabre/ajusta la caja. El resto de roles sí queda bloqueado.
+            $currentUser = Auth::user();
+            $isAdmin = $currentUser && in_array($currentUser->role_id, [1, 2]);
+
             // Verificar si existe liquidación aprobada para la fecha del gasto
             $liquidation = Liquidation::where('seller_id', $seller->id)
                 ->whereDate('date', $businessDate)
                 ->first();
 
-            if ($liquidation) {
+            if ($liquidation && !$isAdmin) {
                 return response()->json([
                     'success' => false,
                     'message' => 'No se puede editar el gasto porque ya existe una liquidación aprobada para esta fecha'
