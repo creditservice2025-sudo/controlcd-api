@@ -130,6 +130,9 @@ class ExpenseService
                 'value' => $validated['value'],
                 'description' => $validated['description'],
                 'user_id' => $userId,
+                // Quién REGISTRÓ el gasto (auditoría). Puede ser un admin
+                // creando el gasto por cuenta del vendedor ($userId).
+                'created_by' => $user->id,
                 'category_id' => $validated['category_id'],
                 'status' => 'Aprobado',
                 'created_at' => $createdAt,
@@ -356,9 +359,12 @@ class ExpenseService
                 ], 422);
             }
 
+            // El monto (value) NO se edita: cambiarlo alteraría la caja/
+            // liquidación. Solo se permiten categoría y descripción. Aunque el
+            // cliente enviara 'value', no se incluye en $validated, por lo que
+            // nunca se actualiza.
             $validated = $request->validate([
                 'category_id' => 'required|numeric',
-                'value' => 'required|numeric|min:0',
                 'description' => 'required|string',
                 'timezone' => 'nullable|string',
             ]);
@@ -564,7 +570,7 @@ class ExpenseService
             $user = Auth::user();
             $role = $user->role_id;
 
-            $expensesQuery = Expense::with(['user', 'category', 'images']);
+            $expensesQuery = Expense::with(['user', 'category', 'images', 'createdByUser:id,name,email']);
 
             if ($request->has('include_deleted') && filter_var($request->include_deleted, FILTER_VALIDATE_BOOLEAN)) {
                 $expensesQuery->withTrashed();
@@ -780,7 +786,7 @@ class ExpenseService
                         ->whereNull('deleted_at')
                         ->limit(1)
                 ])
-                ->with(['user', 'category', 'images']);
+                ->with(['user', 'category', 'images', 'createdByUser:id,name,email']);
 
             if ($request->has('include_deleted') && filter_var($request->include_deleted, FILTER_VALIDATE_BOOLEAN)) {
                 $expensesQuery->withTrashed();
