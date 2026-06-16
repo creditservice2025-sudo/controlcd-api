@@ -2860,8 +2860,13 @@ class CreditService
             // Usar el parámetro $perPage pasado desde el controlador
             $credits = $creditsQuery->orderBy('created_at', 'desc')->paginate($perPage);
 
-            $sellerForTz = \App\Models\Seller::find($sellerId);
+            $sellerForTz = \App\Models\Seller::with('city.country')->find($sellerId);
             $sellerTz = \App\Helpers\TimezoneHelper::getSellerTimezone($sellerForTz);
+
+            // Moneda del país del vendedor (seller -> city -> country -> currency).
+            // Permite que el frontend muestre los montos con el símbolo correcto
+            // (S/, Bs, $, etc.) según el país donde opera el vendedor. Fallback PEN.
+            $sellerCurrency = $sellerForTz?->city?->country?->currency ?? 'PEN';
 
             // Map each item in the paginator
             $credits->getCollection()->transform(function ($credit) use ($sellerTz) {
@@ -2917,6 +2922,7 @@ class CreditService
                 'current_page' => $credits->currentPage(),
                 'last_page' => $credits->lastPage(),
                 'grand_total' => round((float) $grandTotal, 2),
+                'currency' => $sellerCurrency,
             ]);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
