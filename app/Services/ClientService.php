@@ -842,7 +842,10 @@ class ClientService
         $createdFrom = null,
         $createdTo = null,
         $perPage = 30,
-        $page = 1
+        $page = 1,
+        // Sub-modo del filtro "Clientes recurrentes": 'vigente_otro' |
+        // 'liquido_reactivo' | null (combinado). Lo envía el switch del front.
+        $recurrentMode = null
     ) {
         try {
             $search = (string) $search;
@@ -897,7 +900,9 @@ class ClientService
                         $q->select('id', 'credit_id', 'quota_number', 'due_date', 'quota_amount', 'status');
                     },
                     'images'
-                ]);
+                ])
+                // Conteo de comentarios para el distintivo en el listado.
+                ->withCount('comments');
 
             // Role scoping
             switch ($user->role_id) {
@@ -915,7 +920,13 @@ class ClientService
                         $clientsQuery->whereRaw('0 = 1');
                     break;
                 case 6:
-                    if (!empty($sellerIds)) {
+                    // Supervisor: si seleccionó una ruta activa (header
+                    // X-Active-Seller-Id resuelto por middleware), mostrar
+                    // SOLO ese vendedor; sin selección, todas sus rutas.
+                    $activeSellerId = request()->attributes->get('active_seller_id');
+                    if ($activeSellerId) {
+                        $clientsQuery->where('seller_id', (int) $activeSellerId);
+                    } elseif (!empty($sellerIds)) {
                         $clientsQuery->whereIn('seller_id', $sellerIds);
                     } else {
                         $clientsQuery->whereRaw('0 = 1');
@@ -984,6 +995,41 @@ class ClientService
                     ->withMax('installments', 'due_date');
             };
 
+            // Filtro por rango de creación (created_at). Se aplica ANTES del
+            // bloque de status para que los conteos del switch de "Clientes
+            // recurrentes" (que clonan $clientsQuery) también respeten la fecha.
+            // El orden de los WHERE no altera el resultado del listado.
+            if ($createdFrom || $createdTo) {
+                try {
+                    $from = null;
+                    $to = null;
+
+                    if ($createdFrom) {
+                        $createdFromNorm = str_replace('/', '-', $createdFrom);
+                        $from = Carbon::parse($createdFromNorm)->startOfDay();
+                    }
+
+                    if ($createdTo) {
+                        $createdToNorm = str_replace('/', '-', $createdTo);
+                        $to = Carbon::parse($createdToNorm)->endOfDay();
+                    }
+
+                    if (!empty($from) && !empty($to)) {
+                        $clientsQuery->whereBetween('created_at', [$from, $to]);
+                    } elseif (!empty($from)) {
+                        $clientsQuery->where('created_at', '>=', $from);
+                    } elseif (!empty($to)) {
+                        $clientsQuery->where('created_at', '<=', $to);
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Created_from/created_to parse error: ' . $e->getMessage());
+                }
+            }
+
+            // Conteos por sub-modo del switch de "Clientes recurrentes".
+            // Solo se calculan/devuelven cuando $status === 'recurrentes'.
+            $recurrentCounts = null;
+
             if ($status === 'Cartera Irrecuperable') {
                 $clientsQuery->whereHas('credits', fn($q) => $q->where('status', $status));
                 $clientsQuery->with(['credits' => function ($q) use ($status, $applyCreditAggregates) {
@@ -1015,6 +1061,64 @@ class ClientService
                     $clientsQuery->whereHas('credits', fn($q) => $q->whereIn('status', ['Activo', 'Vigente', 'Vencido']));
                 } elseif ($status === 'sin_creditos') {
                     $clientsQuery->whereDoesntHave('credits', fn($q) => $q->whereIn('status', ['Activo', 'Vigente', 'Vencido']));
+                } elseif ($status === 'recurrentes') {
+                    // Clientes recurrentes: cliente existente al que se le agregó
+                    // más de un crédito. El switch del front elige el sub-modo
+                    // (param recurrent_mode):
+                    //   - 'vigente_otro'     => tiene >=2 créditos VIVOS a la vez
+                    //                           (Activo/Vigente/Vencido): se le
+                    //                           activó otro teniendo uno vigente.
+                    //   - 'liquido_reactivo' => LIQUIDÓ un crédito (status
+                    //                           'Liquidado') y se le activó uno
+                    //                           nuevo (>=1 crédito vivo actual).
+                    //   - null (combinado)   => cualquiera de los dos casos
+                    //                           (comportamiento previo).
+                    $liveStatuses = ['Activo', 'Vigente', 'Vencido'];
+
+                    // Subquery AGRUPADO (rápido) por client_id: evita el whereHas
+                    // con count correlacionado (~3.5s con 32k clientes); el
+                    // agrupado usa el índice de credits.client_id (~1s).
+                    $twoLiveSubquery = fn() => \App\Models\Credit::query()
+                        ->whereIn('status', $liveStatuses)
+                        ->select('client_id')
+                        ->groupBy('client_id')
+                        ->havingRaw('COUNT(*) >= 2');
+
+                    // Conteos para los badges del switch, sobre el MISMO alcance
+                    // (rol + ubicación + búsqueda) ya aplicado a $clientsQuery.
+                    // Eloquent\Builder::__clone() clona la query base, así que
+                    // cada clon es independiente.
+                    $countVigenteOtro = (clone $clientsQuery)
+                        ->whereIn('clients.id', $twoLiveSubquery())
+                        ->count();
+                    $countLiquidoReactivo = (clone $clientsQuery)
+                        ->whereHas('credits', fn($q) => $q->where('status', 'Liquidado'))
+                        ->whereHas('credits', fn($q) => $q->whereIn('status', $liveStatuses))
+                        ->count();
+                    $recurrentCounts = [
+                        'vigente_otro' => $countVigenteOtro,
+                        'liquido_reactivo' => $countLiquidoReactivo,
+                    ];
+
+                    if ($recurrentMode === 'vigente_otro') {
+                        $clientsQuery->whereIn('clients.id', $twoLiveSubquery());
+                    } elseif ($recurrentMode === 'liquido_reactivo') {
+                        $clientsQuery
+                            ->whereHas('credits', fn($q) => $q->where('status', 'Liquidado'))
+                            ->whereHas('credits', fn($q) => $q->whereIn('status', $liveStatuses));
+                    } else {
+                        // Combinado: >=2 créditos reales (sin Anulado/Unificado)
+                        // y al menos uno vivo actualmente. Evita listar clientes
+                        // que liquidaron todo y hoy no tienen crédito.
+                        $recurrentClientIds = \App\Models\Credit::query()
+                            ->whereNotIn('status', ['Anulado', 'Unificado'])
+                            ->select('client_id')
+                            ->groupBy('client_id')
+                            ->havingRaw('COUNT(*) >= 2');
+                        $clientsQuery
+                            ->whereIn('clients.id', $recurrentClientIds)
+                            ->whereHas('credits', fn($q) => $q->whereIn('status', $liveStatuses));
+                    }
                 } else {
                     $clientsQuery->where('status', 'active');
                 }
@@ -1026,33 +1130,6 @@ class ClientService
                     $q->whereDoesntHave('credits') // sin créditos: OK
                       ->orWhereHas('credits', fn($cq) => $cq->where('status', '<>', 'Cartera Irrecuperable'));
                 });
-            }
-
-            if ($createdFrom || $createdTo) {
-                try {
-                    $from = null;
-                    $to = null;
-
-                    if ($createdFrom) {
-                        $createdFromNorm = str_replace('/', '-', $createdFrom);
-                        $from = Carbon::parse($createdFromNorm)->startOfDay();
-                    }
-
-                    if ($createdTo) {
-                        $createdToNorm = str_replace('/', '-', $createdTo);
-                        $to = Carbon::parse($createdToNorm)->endOfDay();
-                    }
-
-                    if (!empty($from) && !empty($to)) {
-                        $clientsQuery->whereBetween('created_at', [$from, $to]);
-                    } elseif (!empty($from)) {
-                        $clientsQuery->where('created_at', '>=', $from);
-                    } elseif (!empty($to)) {
-                        $clientsQuery->where('created_at', '<=', $to);
-                    }
-                } catch (\Exception $e) {
-                    Log::warning('Created_from/created_to parse error: ' . $e->getMessage());
-                }
             }
 
             $validOrderDirections = ['asc', 'desc'];
@@ -1089,7 +1166,7 @@ class ClientService
                 return $client;
             });
 
-            return $this->successResponse([
+            $payload = [
                 'success' => true,
                 'message' => 'Clientes encontrados',
                 'data' => $paginator->items(),
@@ -1101,7 +1178,14 @@ class ClientService
                     'from' => $paginator->firstItem(),
                     'to' => $paginator->lastItem(),
                 ]
-            ]);
+            ];
+
+            // Contadores del switch de "Clientes recurrentes" (badges del front).
+            if ($recurrentCounts !== null) {
+                $payload['recurrent_counts'] = $recurrentCounts;
+            }
+
+            return $this->successResponse($payload);
         } catch (Throwable $e) {
             Log::error("Error en index clientes: {$e->getMessage()} | " . $e->getTraceAsString());
             return $this->errorResponse('Error al obtener los clientes', 500);
@@ -1914,6 +1998,23 @@ class ClientService
             $seller = $user->seller;
             $timezone = $timezone ?: self::TIMEZONE;
 
+            // Supervisor (rol 6): restringir el listado de cobro al vendedor
+            // seleccionado (ruta activa resuelta por el middleware desde el header
+            // X-Active-Seller-Id). Sin selección, fallback a sus rutas vinculadas.
+            // Si no tiene rutas, fail-closed (no lista nada).
+            $supervisorSellerIds = null;
+            if ($user->role_id == 6) {
+                $activeSellerId = request()->attributes->get('active_seller_id');
+                if ($activeSellerId) {
+                    $supervisorSellerIds = [(int) $activeSellerId];
+                } else {
+                    $supervisorSellerIds = \App\Models\UserRoute::where('user_id', $user->id)
+                        ->pluck('seller_id')->map(fn($id) => (int) $id)->all();
+                    if (empty($supervisorSellerIds)) {
+                        $supervisorSellerIds = [-1];
+                    }
+                }
+            }
 
             $referenceDate = $date
                 ? Carbon::createFromFormat('Y-m-d', $date, $timezone)
@@ -1942,6 +2043,8 @@ class ClientService
             // OPTIMIZATION: Apply filters inside subquery to prevent full-scan
             if ($user->role_id == 5 && $seller) {
                 $paymentPrioritySubquery->where('clients.seller_id', $seller->id);
+            } elseif ($supervisorSellerIds !== null) {
+                $paymentPrioritySubquery->whereIn('clients.seller_id', $supervisorSellerIds);
             }
             if (!empty($search)) {
                 $paymentPrioritySubquery->where(function ($q) use ($search) {
@@ -1968,6 +2071,10 @@ class ClientService
                 })
                 // Eager load only required relationships and columns; payments constrained to the selected date
                 ->with([
+                    // Conteo de comentarios para el distintivo en la tarjeta de cobro.
+                    'client' => function ($q) {
+                        $q->withCount('comments');
+                    },
                     'client.guarantors',
                     'client.images',
                     'client.seller',
@@ -2041,6 +2148,10 @@ class ClientService
             if ($user->role_id == 5 && $seller) {
                 $creditsQuery->whereHas('client', function ($q) use ($seller) {
                     $q->where('seller_id', $seller->id);
+                });
+            } elseif ($supervisorSellerIds !== null) {
+                $creditsQuery->whereHas('client', function ($q) use ($supervisorSellerIds) {
+                    $q->whereIn('seller_id', $supervisorSellerIds);
                 });
             }
 

@@ -1787,6 +1787,17 @@ class CreditService
                 $creditsQuery->whereHas('client', function ($query) use ($seller) {
                     $query->where('seller_id', $seller->id);
                 });
+            } elseif ($user->role_id == 6) {
+                // Supervisor: si seleccionó una ruta activa (header X-Active-Seller-Id
+                // resuelto por middleware), mostrar SOLO los créditos de ese vendedor;
+                // sin selección, los de todas sus rutas vinculadas.
+                $activeSellerId = request()->attributes->get('active_seller_id');
+                if ($activeSellerId) {
+                    $creditsQuery->where('seller_id', (int) $activeSellerId);
+                } else {
+                    $sellerIds = \App\Models\UserRoute::where('user_id', $user->id)->pluck('seller_id');
+                    $creditsQuery->whereIn('seller_id', $sellerIds);
+                }
             }
 
             $credits = $creditsQuery->paginate($perPage);

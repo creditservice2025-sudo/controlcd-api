@@ -215,6 +215,9 @@ class ClientController extends Controller
             $perPage = (int) $request->input('per_page', 50);
             $page = (int) $request->input('page', 1);
 
+            // Sub-modo del switch de "Clientes recurrentes".
+            $recurrentMode = $request->input('recurrent_mode');
+
             return $this->clientService->index(
                 $search,
                 $orderBy,
@@ -227,7 +230,8 @@ class ClientController extends Controller
                 $createdFrom,
                 $createdTo,
                 $perPage,
-                $page
+                $page,
+                $recurrentMode
             );
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);

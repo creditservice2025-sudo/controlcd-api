@@ -321,9 +321,12 @@ class DashboardService
                             $query->whereNotIn('status', ['Liquidado', 'Cartera Irrecuperable']);
                         })->count();
                 }
-                // Secretaria/Supervisor/otros con UserRoute: solo los sellers asociados
+                // Secretaria/Supervisor/otros con UserRoute: solo los sellers asociados.
+                // Para el supervisor (rol 6) que seleccionó una ruta activa (header
+                // X-Active-Seller-Id resuelto por middleware), getSellerIdsForUser
+                // restringe a ese único seller; sin selección, devuelve todas sus rutas.
             } else {
-                $sellerIds = UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
+                $sellerIds = $this->getSellerIdsForUser($user, $request)->all();
                 $data['routes'] = count($sellerIds);
                 $data['members'] = User::whereHas('seller', function ($query) use ($sellerIds) {
                     $query->whereIn('id', $sellerIds);
@@ -414,7 +417,19 @@ class DashboardService
             if ($role === 1 && $companyId) {
                 $sellersQuery->where('sellers.company_id', $companyId);
             }
-            if (!in_array($role, [1, 2, 5])) {
+            // Supervisor (rol 6): si seleccionó una ruta activa (header
+            // X-Active-Seller-Id resuelto por middleware), mostrar SOLO la cartera
+            // de ese vendedor; sin selección, las de todas sus rutas vinculadas.
+            if ($role === 6) {
+                $activeSellerId = $request->attributes->get('active_seller_id');
+                if ($activeSellerId) {
+                    $sellersQuery->where('sellers.id', (int) $activeSellerId);
+                } else {
+                    $sellerIds = UserRoute::where('user_id', $user->id)->pluck('seller_id');
+                    $sellersQuery->whereIn('sellers.id', $sellerIds);
+                }
+            }
+            if (!in_array($role, [1, 2, 5, 6])) {
                 return response()->json(['success' => true, 'data' => []]);
             }
 

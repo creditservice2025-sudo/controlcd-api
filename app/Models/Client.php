@@ -108,6 +108,12 @@ class Client extends Model
         return $this->hasMany(ClientHistory::class)->orderBy('created_at', 'desc');
     }
 
+    // Comentarios / bitácora del cliente (hilo, más reciente primero).
+    public function comments()
+    {
+        return $this->hasMany(ClientComment::class)->orderBy('created_at', 'desc');
+    }
+
     public function seller(): BelongsTo
     {
         return $this->belongsTo(Seller::class);

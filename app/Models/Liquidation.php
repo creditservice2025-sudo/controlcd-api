@@ -91,7 +91,11 @@ class Liquidation extends Model
         'clients_liquidated_and_renewed_count',
         'created_at',
         'observation', // ✅ Nuevo
-        'capture_path' // ✅ Nuevo
+        'capture_path', // ✅ Nuevo
+        // Trazabilidad de quién realizó el cierre (vendedor rol 5 o supervisor rol 6)
+        'closed_by',
+        'closed_by_role',
+        'closed_at',
     ];
 
     protected $casts = [
@@ -117,6 +121,7 @@ class Liquidation extends Model
         'clients_liquidated_and_renewed_count' => 'integer',
         'end_date' => 'datetime',
         'created_at' => 'datetime',
+        'closed_at' => 'datetime',
         'path' => 'string',
     ];
 
@@ -134,5 +139,11 @@ class Liquidation extends Model
     public function audits()
     {
         return $this->hasMany(LiquidationAudit::class, 'liquidation_id');
+    }
+
+    // Usuario (vendedor o supervisor) que realizó el cierre de la liquidación.
+    public function closedByUser(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'closed_by');
     }
 }

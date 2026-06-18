@@ -227,6 +227,11 @@ class LiquidationController extends Controller
                     'irrecoverable_credits_amount' => $irrecoverableCredits,
                     'renewal_disbursed_total' => $total_renewal_disbursed,
                     'poliza' => $poliza,
+                    // Trazabilidad: quién realizó el cierre (vendedor rol 5 o
+                    // supervisor rol 6 operando sobre la ruta seleccionada).
+                    'closed_by' => $user->id,
+                    'closed_by_role' => $user->role_id,
+                    'closed_at' => Carbon::now($timezone),
                 ];
 
                 if ($request->has('created_at')) {

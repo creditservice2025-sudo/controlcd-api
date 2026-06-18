@@ -611,6 +611,17 @@ class ExpenseService
                 $todayEnd = Carbon::now(self::TIMEZONE)->endOfDay()->timezone('UTC');
                 $expensesQuery->where('user_id', $user->id)
                     ->whereBetween('created_at', [$todayStart, $todayEnd]);
+            } else if ($role === 6 && $request->attributes->get('active_seller_id')) {
+                // Supervisor con ruta activa seleccionada (header X-Active-Seller-Id
+                // resuelto por middleware): mostrar SOLO los gastos del cobrador
+                // seleccionado, sin mezclar los de las demás rutas vinculadas.
+                $activeSellerId = (int) $request->attributes->get('active_seller_id');
+                $sellerUserId = Seller::where('id', $activeSellerId)->value('user_id');
+                if ($sellerUserId) {
+                    $expensesQuery->where('user_id', $sellerUserId);
+                } else {
+                    $expensesQuery->whereRaw('1=0');
+                }
             } else {
                 // Roles intermedios (Socio=3, Asistente=4, Supervisor=6, Cobrador-abono=7,
                 // Limitado=8, Digitador=9, Contador=10, Secretaria=11): aislamiento por

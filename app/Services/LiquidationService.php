@@ -391,7 +391,7 @@ class LiquidationService
     public function getLiquidationsBySeller(int $sellerId, Request $request)
     {
         try {
-            $query = Liquidation::with(['seller', 'seller.city.country', 'seller.user'])
+            $query = Liquidation::with(['seller', 'seller.city.country', 'seller.user', 'closedByUser:id,name,role_id'])
                 ->where('seller_id', $sellerId);
 
             $timezone = $request->get('timezone', 'America/Lima');
