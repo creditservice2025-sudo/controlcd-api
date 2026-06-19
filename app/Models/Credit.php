@@ -55,6 +55,9 @@ class Credit extends Model
         'last_modified_at',
         'last_modified_by',
         'imported_at',
+        // Trazabilidad de creación: quién y con qué rol creó el crédito.
+        'created_by',
+        'created_by_role',
     ];
 
     public function client()
@@ -70,6 +73,14 @@ class Credit extends Model
     public function seller()
     {
         return $this->belongsTo(Seller::class, 'seller_id');
+    }
+
+    /**
+     * Usuario que creó el crédito (Auth::id() al momento del alta).
+     */
+    public function createdByUser()
+    {
+        return $this->belongsTo(\App\Models\User::class, 'created_by');
     }
 
     public function installments()

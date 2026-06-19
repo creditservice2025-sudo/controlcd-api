@@ -139,6 +139,9 @@ class ClientService
                         'company_name' => $params['company_name'] ?? null,
                         'seller_id' => $params['seller_id'] ?? null,
                         'routing_order' => $params['routing_order'] ?? null,
+                        // Trazabilidad: quién y con qué rol creó el cliente.
+                        'created_by' => Auth::id(),
+                        'created_by_role' => optional(Auth::user())->role_id,
                     ]);
 
                     // Record Geolocation History
@@ -323,7 +326,10 @@ class ClientService
             'micro_insurance_percentage' => $params['micro_insurance_percentage'] ?? null,
             'micro_insurance_amount' => $params['micro_insurance_amount'] ?? null,
             'is_advance_payment' => $isAdvance,
-            'status' => 'Vigente'
+            'status' => 'Vigente',
+            // Trazabilidad: quién y con qué rol creó el crédito.
+            'created_by' => Auth::id(),
+            'created_by_role' => optional(Auth::user())->role_id,
         ]);
 
 
@@ -1200,10 +1206,16 @@ class ClientService
                         ->join('payments', 'payments.credit_id', '=', 'credits.id')
                         ->where('credits.status', 'Liquidado')
                         ->whereNull('credits.deleted_at')
-                        ->where('payments.status', '<>', 'Anulado')
+                        // Solo pagos REALES que cierran el crédito: excluye
+                        // pagos borrados (soft-delete), 'Anulado', marcadores
+                        // 'No pagado' y montos en 0. Usa payment_date (fecha
+                        // de negocio del pago que finiquitó la deuda).
+                        ->whereNull('payments.deleted_at')
+                        ->where('payments.status', 'Pagado')
+                        ->where('payments.amount', '>', 0)
                         ->whereIn('credits.client_id', $pageClientIds)
                         ->groupBy('credits.client_id')
-                        ->selectRaw('credits.client_id as cid, MAX(payments.created_at) as d')
+                        ->selectRaw('credits.client_id as cid, MAX(payments.payment_date) as d')
                         ->pluck('d', 'cid');
                 }
             }
@@ -1513,6 +1525,9 @@ class ClientService
                         $q->select('id', 'credit_id', 'quota_number', 'due_date', 'quota_amount', 'status');
                     },
                 ])
+                // Conteo de comentarios para el distintivo en el listado
+                // (mismo badge que la pantalla general de Clientes).
+                ->withCount('comments')
                 ->where('seller_id', $sellerId)
                 ->when(Auth::user()->role_id == 1 && $companyId, function ($q) use ($companyId) {
                     $q->whereHas('seller', fn($sq) => $sq->where('company_id', $companyId));

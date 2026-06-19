@@ -33,6 +33,9 @@ class Client extends Model
         'capacity',
         'needs_update',
         'transferred_at',
+        // Trazabilidad de creación: quién y con qué rol creó el cliente.
+        'created_by',
+        'created_by_role',
     ];
 
     protected $casts = [
@@ -117,6 +120,14 @@ class Client extends Model
     public function seller(): BelongsTo
     {
         return $this->belongsTo(Seller::class);
+    }
+
+    /**
+     * Usuario que creó el cliente (Auth::id() al momento del alta).
+     */
+    public function createdByUser(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'created_by');
     }
 
 

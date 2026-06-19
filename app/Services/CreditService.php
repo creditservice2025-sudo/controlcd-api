@@ -231,7 +231,10 @@ class CreditService
                 'is_advance_payment' => $params['is_advance_payment'] ?? false,
                 'status' => 'Vigente',
                 'created_at' => $createdAt,
-                'updated_at' => $updatedAt
+                'updated_at' => $updatedAt,
+                // Trazabilidad: quién y con qué rol creó el crédito.
+                'created_by' => Auth::id(),
+                'created_by_role' => optional(Auth::user())->role_id,
             ];
 
             $credit = Credit::create($creditData);
@@ -553,7 +556,10 @@ class CreditService
                 'excluded_days' => !empty($request->input('excluded_days')) && is_array($request->input('excluded_days')) ? json_encode($request->input('excluded_days')) : ($oldCredit->excluded_days ?? json_encode(['Domingo'])),
                 'status' => 'Vigente',
                 'created_at' => $createdAt,
-                'updated_at' => $updatedAt
+                'updated_at' => $updatedAt,
+                // Trazabilidad: quién y con qué rol creó el crédito (renovación).
+                'created_by' => Auth::id(),
+                'created_by_role' => optional(Auth::user())->role_id,
             ]);
 
             $quotaAmount = $newCredit->total_amount / $newCredit->number_installments;
@@ -2608,7 +2614,10 @@ class CreditService
                 'status' => 'Vigente',
                 'unification_reason' => $params['description'] ?? null,
                 'created_at' => $createdAt,
-                'updated_at' => $updatedAt
+                'updated_at' => $updatedAt,
+                // Trazabilidad: quién y con qué rol creó el crédito (unificación).
+                'created_by' => Auth::id(),
+                'created_by_role' => optional(Auth::user())->role_id,
             ]);
 
             // 3. Generar cuotas para el nuevo crédito
@@ -3205,6 +3214,10 @@ class CreditService
             $paymentInstallmentsDetails = \DB::table('payment_installments')
                 ->join('payments', 'payment_installments.payment_id', '=', 'payments.id')
                 ->where('payments.credit_id', $credit->id)
+                // Excluir pagos y asignaciones ELIMINADAS (soft-delete): no
+                // deben sumar en cuotas ni totales. Se listan aparte abajo.
+                ->whereNull('payments.deleted_at')
+                ->whereNull('payment_installments.deleted_at')
                 ->select(
                     'payment_installments.installment_id',
                     'payment_installments.payment_id',
@@ -3227,7 +3240,8 @@ class CreditService
         try {
             $payments = \DB::table('payments')
                 ->where('credit_id', $credit->id)
-                ->select('id', 'amount', 'status', 'payment_date', 'created_at')
+                ->whereNull('deleted_at') // Solo pagos vivos en la lista principal
+                ->select('id', 'amount', 'status', 'payment_date', 'created_at', 'business_timestamp')
                 ->orderBy('created_at', 'asc')
                 ->get();
         } catch (\Throwable $e) {
@@ -3373,6 +3387,7 @@ class CreditService
             $appliedRows = \DB::table('payment_installments')
                 ->join('installments', 'payment_installments.installment_id', '=', 'installments.id')
                 ->where('payment_installments.payment_id', $p->id)
+                ->whereNull('payment_installments.deleted_at')
                 ->select('payment_installments.installment_id', 'payment_installments.applied_amount', 'installments.quota_number', 'installments.due_date')
                 ->get();
 
@@ -3399,15 +3414,115 @@ class CreditService
                 'amount' => round((float) $p->amount, 2),
                 'status' => $p->status,
                 'created_at' => Carbon::parse($p->created_at)->format('Y-m-d H:i:s'),
+                // F. Pago = hora de negocio real (business_timestamp), en zona
+                // local del pago; fallback a created_at si no existe.
+                'business_timestamp' => $p->business_timestamp
+                    ? Carbon::parse($p->business_timestamp)->format('Y-m-d H:i:s')
+                    : Carbon::parse($p->created_at)->format('Y-m-d H:i:s'),
                 'payment_date' => $p->payment_date ? Carbon::parse($p->payment_date)->format('Y-m-d H:i:s') : Carbon::parse($p->created_at)->format('Y-m-d H:i:s'),
                 'is_global' => (count($appliedTo) === 0),
                 'applied_to' => $appliedTo,
             ];
         }
 
+        // --- PAGOS ELIMINADOS (sección aparte del reporte) ---
+        // Los pagos borrados (soft-delete) NO se mezclan con los reales. Se
+        // listan aparte indicando quién los eliminó. El "eliminado por" no se
+        // guarda en `payments` (no hay columna deleted_by); el sistema lo deja
+        // en la observación de la liquidación del vendedor en esa fecha, con el
+        // formato: "Eliminación de pago #<id> por $<monto> realizada por
+        // <nombre> el <fecha>". Se parsea de ahí.
+        $deletedPaymentsList = [];
+        try {
+            $deletedRaw = \DB::table('payments')
+                ->where('credit_id', $credit->id)
+                ->whereNotNull('deleted_at')
+                ->select('id', 'amount', 'status', 'payment_date', 'business_date', 'business_timestamp', 'created_at', 'deleted_at', 'latitude', 'longitude', 'deleted_by', 'address')
+                ->orderBy('deleted_at', 'asc')
+                ->get();
+
+            if ($deletedRaw->isNotEmpty()) {
+                $sellerIdForObs = optional($credit->client)->seller_id ?? $credit->seller_id;
+                $businessDates = $deletedRaw->pluck('business_date')->filter()->unique()->values()->all();
+
+                // Fuente PRIMARIA del "eliminado por": columna estructurada
+                // payments.deleted_by (pagos borrados desde el deploy nuevo).
+                // Para pagos viejos (deleted_by NULL) se cae al parseo de la
+                // observación de liquidación (abajo).
+                $deleterUserNames = \DB::table('users')
+                    ->whereIn('id', $deletedRaw->pluck('deleted_by')->filter()->unique()->values()->all() ?: [0])
+                    ->pluck('name', 'id');
+
+                // Mapa payment_id => ['by' => nombre, 'at' => fecha] parseado
+                // de las observaciones de las liquidaciones involucradas.
+                $deleterMap = [];
+                if ($sellerIdForObs && !empty($businessDates)) {
+                    $observations = \DB::table('liquidations')
+                        ->where('seller_id', $sellerIdForObs)
+                        ->where(function ($q) use ($businessDates) {
+                            foreach ($businessDates as $d) {
+                                $q->orWhereDate('date', $d);
+                            }
+                        })
+                        ->pluck('observation');
+
+                    foreach ($observations as $text) {
+                        if (!$text) continue;
+                        if (preg_match_all('/Eliminación de pago #(\d+) por \$[\d.,]+ realizada por (.+?) el ([\d\-:\s]+)/u', $text, $matches, PREG_SET_ORDER)) {
+                            foreach ($matches as $mm) {
+                                $deleterMap[(int) $mm[1]] = ['by' => trim($mm[2]), 'at' => trim($mm[3])];
+                            }
+                        }
+                    }
+                }
+
+                foreach ($deletedRaw as $dp) {
+                    $info = $deleterMap[$dp->id] ?? null;
+
+                    // "Eliminado por": columna estructurada primero; si no, la
+                    // observación parseada (datos viejos); si no, no registrado.
+                    $deletedByName = ($dp->deleted_by && isset($deleterUserNames[$dp->deleted_by]))
+                        ? $deleterUserNames[$dp->deleted_by]
+                        : ($info['by'] ?? null);
+
+                    // Ubicación: dirección textual (payments.address) si la app
+                    // la registró; si no, la coordenada GPS + enlace a Maps.
+                    $hasGps = $dp->latitude !== null && $dp->longitude !== null
+                        && (float) $dp->latitude != 0 && (float) $dp->longitude != 0;
+                    $coords = $hasGps ? ((float) $dp->latitude) . ', ' . ((float) $dp->longitude) : null;
+                    $mapsUrl = $hasGps
+                        ? 'https://www.google.com/maps?q=' . $dp->latitude . ',' . $dp->longitude
+                        : null;
+
+                    $deletedPaymentsList[] = [
+                        'payment_id' => $dp->id,
+                        'amount' => round((float) $dp->amount, 2),
+                        'status' => $dp->status,
+                        // F. Pago = business_timestamp (hora real del pago);
+                        // fallback a payment_date / created_at.
+                        'payment_date' => $dp->business_timestamp
+                            ? Carbon::parse($dp->business_timestamp)->format('Y-m-d H:i:s')
+                            : ($dp->payment_date
+                                ? Carbon::parse($dp->payment_date)->format('Y-m-d H:i:s')
+                                : Carbon::parse($dp->created_at)->format('Y-m-d H:i:s')),
+                        'deleted_by' => $deletedByName,
+                        'deleted_at' => $dp->deleted_at
+                            ? Carbon::parse($dp->deleted_at)->format('Y-m-d H:i:s')
+                            : ($info['at'] ?? null),
+                        'address' => $dp->address ?: null,
+                        'location' => $dp->address ?: $coords,
+                        'maps_url' => $mapsUrl,
+                    ];
+                }
+            }
+        } catch (\Throwable $e) {
+            \Log::warning("generateCreditReport - error armando pagos eliminados: " . $e->getMessage(), ['credit_id' => $credit->id]);
+            $deletedPaymentsList = [];
+        }
+
         // Totales
         $totalApplied = collect($installmentsData)->sum('paid_amount');
-        $totalCollected = $totalApplied + (float) (\DB::table('payments')->leftJoin('payment_installments', 'payments.id', '=', 'payment_installments.payment_id')->where('payments.credit_id', $credit->id)->whereNull('payment_installments.id')->sum('payments.amount'));
+        $totalCollected = $totalApplied + (float) (\DB::table('payments')->leftJoin('payment_installments', 'payments.id', '=', 'payment_installments.payment_id')->where('payments.credit_id', $credit->id)->whereNull('payments.deleted_at')->whereNull('payment_installments.id')->sum('payments.amount'));
 
         $report = [
             'credit' => $credit,
@@ -3424,6 +3539,7 @@ class CreditService
             'number_installments' => $credit->number_installments,
             'installments' => $installmentsData,
             'payments_list' => $paymentsList,
+            'deleted_payments_list' => $deletedPaymentsList,
             'total_collected' => round($totalCollected, 2),
             'total_applied' => round($totalApplied, 2),
         ];
