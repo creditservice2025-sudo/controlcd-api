@@ -995,35 +995,54 @@ class ClientService
                     ->withMax('installments', 'due_date');
             };
 
-            // Filtro por rango de creación (created_at). Se aplica ANTES del
-            // bloque de status para que los conteos del switch de "Clientes
-            // recurrentes" (que clonan $clientsQuery) también respeten la fecha.
-            // El orden de los WHERE no altera el resultado del listado.
+            // Rango de fecha del filtro. Se parsea una sola vez aquí.
+            //
+            // OJO con la semántica según el modo:
+            //   - Modos normales  → el rango filtra clients.created_at (cuándo
+            //                       se creó el REGISTRO del cliente).
+            //   - 'recurrentes'   → el rango filtra credits.created_at del
+            //                       crédito vivo/reactivado (cuándo se ACTIVÓ
+            //                       el crédito nuevo). Un cliente recurrente es
+            //                       por definición existente: se creó en el
+            //                       pasado, así que filtrar por su created_at
+            //                       siempre da vacío. El evento recurrente es
+            //                       el crédito, no el cliente. Por eso ese
+            //                       filtro se aplica dentro del bloque de
+            //                       'recurrentes' sobre los créditos vivos.
+            $from = null;
+            $to = null;
             if ($createdFrom || $createdTo) {
                 try {
-                    $from = null;
-                    $to = null;
-
                     if ($createdFrom) {
-                        $createdFromNorm = str_replace('/', '-', $createdFrom);
-                        $from = Carbon::parse($createdFromNorm)->startOfDay();
+                        $from = Carbon::parse(str_replace('/', '-', $createdFrom))->startOfDay();
                     }
-
                     if ($createdTo) {
-                        $createdToNorm = str_replace('/', '-', $createdTo);
-                        $to = Carbon::parse($createdToNorm)->endOfDay();
-                    }
-
-                    if (!empty($from) && !empty($to)) {
-                        $clientsQuery->whereBetween('created_at', [$from, $to]);
-                    } elseif (!empty($from)) {
-                        $clientsQuery->where('created_at', '>=', $from);
-                    } elseif (!empty($to)) {
-                        $clientsQuery->where('created_at', '<=', $to);
+                        $to = Carbon::parse(str_replace('/', '-', $createdTo))->endOfDay();
                     }
                 } catch (\Exception $e) {
                     Log::warning('Created_from/created_to parse error: ' . $e->getMessage());
+                    $from = null;
+                    $to = null;
                 }
+            }
+
+            // Aplica el rango ($from/$to ya parseados) sobre created_at de
+            // cualquier builder (query de clientes o subquery de créditos).
+            $applyDateRange = function ($q, $column = 'created_at') use ($from, $to) {
+                if ($from && $to) {
+                    $q->whereBetween($column, [$from, $to]);
+                } elseif ($from) {
+                    $q->where($column, '>=', $from);
+                } elseif ($to) {
+                    $q->where($column, '<=', $to);
+                }
+            };
+
+            // Modos normales: el rango filtra la creación del cliente. En
+            // 'recurrentes' NO se aplica aquí (ver nota arriba); se aplica
+            // sobre los créditos vivos dentro del bloque de 'recurrentes'.
+            if (($from || $to) && $status !== 'recurrentes') {
+                $applyDateRange($clientsQuery);
             }
 
             // Conteos por sub-modo del switch de "Clientes recurrentes".
@@ -1075,6 +1094,16 @@ class ClientService
                     //                           (comportamiento previo).
                     $liveStatuses = ['Activo', 'Vigente', 'Vencido'];
 
+                    // En 'recurrentes' el rango de fecha (si lo hay) filtra por
+                    // credits.created_at del crédito vivo/reactivado, no por la
+                    // creación del cliente. Restringe a clientes con al menos un
+                    // crédito vivo activado dentro del rango.
+                    $hasFilter = (bool) ($from || $to);
+                    $liveInRange = function ($q) use ($liveStatuses, $applyDateRange) {
+                        $q->whereIn('status', $liveStatuses);
+                        $applyDateRange($q);
+                    };
+
                     // Subquery AGRUPADO (rápido) por client_id: evita el whereHas
                     // con count correlacionado (~3.5s con 32k clientes); el
                     // agrupado usa el índice de credits.client_id (~1s).
@@ -1087,13 +1116,16 @@ class ClientService
                     // Conteos para los badges del switch, sobre el MISMO alcance
                     // (rol + ubicación + búsqueda) ya aplicado a $clientsQuery.
                     // Eloquent\Builder::__clone() clona la query base, así que
-                    // cada clon es independiente.
+                    // cada clon es independiente. Si hay rango de fecha, también
+                    // restringen al crédito vivo activado en ese rango para que
+                    // los badges cuadren con el listado.
                     $countVigenteOtro = (clone $clientsQuery)
                         ->whereIn('clients.id', $twoLiveSubquery())
+                        ->when($hasFilter, fn($cq) => $cq->whereHas('credits', $liveInRange))
                         ->count();
                     $countLiquidoReactivo = (clone $clientsQuery)
                         ->whereHas('credits', fn($q) => $q->where('status', 'Liquidado'))
-                        ->whereHas('credits', fn($q) => $q->whereIn('status', $liveStatuses))
+                        ->whereHas('credits', $hasFilter ? $liveInRange : fn($q) => $q->whereIn('status', $liveStatuses))
                         ->count();
                     $recurrentCounts = [
                         'vigente_otro' => $countVigenteOtro,
@@ -1102,10 +1134,13 @@ class ClientService
 
                     if ($recurrentMode === 'vigente_otro') {
                         $clientsQuery->whereIn('clients.id', $twoLiveSubquery());
+                        if ($hasFilter) {
+                            $clientsQuery->whereHas('credits', $liveInRange);
+                        }
                     } elseif ($recurrentMode === 'liquido_reactivo') {
                         $clientsQuery
                             ->whereHas('credits', fn($q) => $q->where('status', 'Liquidado'))
-                            ->whereHas('credits', fn($q) => $q->whereIn('status', $liveStatuses));
+                            ->whereHas('credits', $hasFilter ? $liveInRange : fn($q) => $q->whereIn('status', $liveStatuses));
                     } else {
                         // Combinado: >=2 créditos reales (sin Anulado/Unificado)
                         // y al menos uno vivo actualmente. Evita listar clientes
@@ -1117,7 +1152,7 @@ class ClientService
                             ->havingRaw('COUNT(*) >= 2');
                         $clientsQuery
                             ->whereIn('clients.id', $recurrentClientIds)
-                            ->whereHas('credits', fn($q) => $q->whereIn('status', $liveStatuses));
+                            ->whereHas('credits', $hasFilter ? $liveInRange : fn($q) => $q->whereIn('status', $liveStatuses));
                     }
                 } else {
                     $clientsQuery->where('status', 'active');
@@ -1139,8 +1174,47 @@ class ClientService
             // Implementar paginación
             $paginator = $clientsQuery->paginate($perPage, ['*'], 'page', $page);
 
+            // Fechas de recurrencia (solo modo 'recurrentes'): para cada cliente
+            // de la página, en dos consultas batch (sin N+1):
+            //   - new_credit_date  → created_at más reciente de un crédito VIVO
+            //                        (el crédito nuevo/reactivado).
+            //   - liquidated_at    → fecha del ÚLTIMO pago de su crédito
+            //                        Liquidado más reciente (≈ cuándo cerró el
+            //                        anterior). No existe columna liquidated_at;
+            //                        el último pago es la fecha real de cierre.
+            // Read-only: no altera nada del módulo financing.
+            $newCreditDates = [];
+            $liquidatedDates = [];
+            if ($status === 'recurrentes') {
+                $pageClientIds = collect($paginator->items())->pluck('id')->all();
+                if (!empty($pageClientIds)) {
+                    $newCreditDates = \DB::table('credits')
+                        ->whereIn('status', ['Activo', 'Vigente', 'Vencido'])
+                        ->whereNull('deleted_at')
+                        ->whereIn('client_id', $pageClientIds)
+                        ->groupBy('client_id')
+                        ->selectRaw('client_id, MAX(created_at) as d')
+                        ->pluck('d', 'client_id');
+
+                    $liquidatedDates = \DB::table('credits')
+                        ->join('payments', 'payments.credit_id', '=', 'credits.id')
+                        ->where('credits.status', 'Liquidado')
+                        ->whereNull('credits.deleted_at')
+                        ->where('payments.status', '<>', 'Anulado')
+                        ->whereIn('credits.client_id', $pageClientIds)
+                        ->groupBy('credits.client_id')
+                        ->selectRaw('credits.client_id as cid, MAX(payments.created_at) as d')
+                        ->pluck('d', 'cid');
+                }
+            }
+
             // Agregar campo total_credits_value a cada cliente
-            $paginator->getCollection()->transform(function ($client) {
+            $paginator->getCollection()->transform(function ($client) use ($status, $newCreditDates, $liquidatedDates) {
+                if ($status === 'recurrentes') {
+                    $client->new_credit_date = $newCreditDates[$client->id] ?? null;
+                    $client->liquidated_at = $liquidatedDates[$client->id] ?? null;
+                }
+
                 $totalCreditsValue = $client->credits
                     ->whereIn('status', ['Activo', 'Vigente'])
                     ->sum('credit_value');
