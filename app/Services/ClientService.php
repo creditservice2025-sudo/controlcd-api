@@ -478,7 +478,34 @@ class ClientService
                         }
 
                         $path = Helper::uploadFile($imageFile, 'clients', $imageType);
-                        $client->images()->create(['path' => $path, 'type' => $imageType]);
+
+                        // Persistir la metadata de geolocalización de la foto
+                        // (igual que storeClientImages en el alta). Antes el
+                        // update guardaba SOLO path/type y perdía la dirección
+                        // y GPS — crítico para clientes de carga masiva que
+                        // completan fotos por "actualización de datos".
+                        $imageRecord = ['path' => $path, 'type' => $imageType];
+                        if (isset($imageData['latitude'])) {
+                            $imageRecord['latitude'] = $imageData['latitude'];
+                        }
+                        if (isset($imageData['longitude'])) {
+                            $imageRecord['longitude'] = $imageData['longitude'];
+                        }
+                        if (isset($imageData['accuracy'])) {
+                            $imageRecord['accuracy'] = $imageData['accuracy'];
+                        }
+                        if (isset($imageData['address'])) {
+                            $imageRecord['address'] = $imageData['address'];
+                        }
+                        if (isset($imageData['location_timestamp'])) {
+                            try {
+                                $imageRecord['location_timestamp'] = \Carbon\Carbon::parse($imageData['location_timestamp'])->format('Y-m-d H:i:s');
+                            } catch (\Exception $e) {
+                                $imageRecord['location_timestamp'] = null;
+                            }
+                        }
+
+                        $client->images()->create($imageRecord);
 
                         // Log history if there was a change
                         if ($oldPath && $oldPath !== $path) {
