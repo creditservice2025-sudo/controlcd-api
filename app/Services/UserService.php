@@ -231,12 +231,21 @@ public function me()
         }
     }
 
+    $company = $user->company;
+
+    $modules = [
+        'controlcd' => $company ? (bool) $company->is_financing_enabled : true,
+        'collection' => $company ? (bool) $company->is_collection_enabled : false,
+    ];
+
     return $this->successResponse([
         'id' => $user->id,
         'name' => $user->name,
         'email' => $user->email,
         'roles' => $roles,
         'permissions' => $permissions,
+        'company' => $company,
+        'modules' => $modules,
         'is_liquidated_today' => ($user->role_id === 5 && $user->seller)
             ? \App\Models\Liquidation::where('seller_id', $user->seller->id)
                 ->whereDate('date', \Carbon\Carbon::now('America/Lima')->toDateString())

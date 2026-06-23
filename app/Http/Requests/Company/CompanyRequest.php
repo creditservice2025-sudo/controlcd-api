@@ -59,6 +59,8 @@ class CompanyRequest extends FormRequest
             'company_email' => 'nullable|email|max:255',
             'logo' => 'nullable|image|mimes:jpeg,png,jpg,gif,svg|max:2048',
             'timezone' => 'nullable|string',
+            'is_financing_enabled' => 'nullable|boolean',
+            'is_collection_enabled' => 'nullable|boolean',
         ];
     }
 
@@ -66,6 +68,14 @@ class CompanyRequest extends FormRequest
     {
         if ($this->route('companyId') && !$this->password) {
             $this->request->remove('password');
+        }
+
+        // Convert strings "0"/"1" to true/false for boolean validation and persistence
+        if ($this->has('is_financing_enabled')) {
+            $this->merge(['is_financing_enabled' => filter_var($this->is_financing_enabled, FILTER_VALIDATE_BOOLEAN)]);
+        }
+        if ($this->has('is_collection_enabled')) {
+            $this->merge(['is_collection_enabled' => filter_var($this->is_collection_enabled, FILTER_VALIDATE_BOOLEAN)]);
         }
     }
 

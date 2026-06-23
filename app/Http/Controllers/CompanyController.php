@@ -47,6 +47,16 @@ class CompanyController extends Controller
         }
     }
 
+    public function toggleModule(Request $request, $companyId)
+    {
+        try {
+            $module = $request->input('module'); // 'financing' or 'collection'
+            return $this->companyService->toggleModule($companyId, $module);
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
     public function delete($companyId)
     {
         try {

@@ -11,6 +11,7 @@ use Illuminate\Notifications\Notifiable;
 
 class Company extends Model
 {
+    protected $connection = 'mysql';
 
     use HasFactory, Notifiable, SoftDeletes;
     protected $fillable = [
@@ -31,6 +32,8 @@ class Company extends Model
         'telegram_notify_new_expense',
         'telegram_notify_deleted_expense',
         'telegram_notify_deleted_credit',
+        'is_financing_enabled',
+        'is_collection_enabled',
     ];
 
     protected $casts = [
@@ -42,6 +45,8 @@ class Company extends Model
         'telegram_notify_deleted_expense' => 'boolean',
         'telegram_notify_deleted_credit' => 'boolean',
         'telegram_link_expires_at' => 'datetime',
+        'is_financing_enabled' => 'boolean',
+        'is_collection_enabled' => 'boolean',
     ];
 
     public function user(): BelongsTo

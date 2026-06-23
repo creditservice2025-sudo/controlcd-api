@@ -24,6 +24,9 @@ use App\Http\Controllers\CountriesController;
 use App\Http\Controllers\IncomeController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\ReportExportController;
+use App\Http\Controllers\Collection\CollectionClientController;
+use App\Http\Controllers\Collection\CollectionCreditController;
+use App\Http\Controllers\Collection\CollectionPaymentController;
 
 use App\Http\Controllers\FrontendErrorController;
 use App\Http\Controllers\VerificationController;
@@ -355,6 +358,7 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         Route::get('/my-company', [CompanyController::class, 'getMyCompany']);
         Route::get('/{companyId}', [CompanyController::class, 'show']);
         Route::put('/{companyId}', [CompanyController::class, 'update']);
+        Route::patch('/{companyId}/toggle-module', [CompanyController::class, 'toggleModule']);
         Route::delete('/{companyId}', [CompanyController::class, 'delete']);
         Route::post('/validate-code', [CompanyController::class, 'validateCompanyCode']);
         Route::post('/validate-ruc', [CompanyController::class, 'validateCompanyRuc']);
@@ -418,6 +422,82 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
     // Verification Routes
     Route::post('verification/send-otp', [VerificationController::class, 'sendOtp']);
     Route::post('verification/verify-otp', [VerificationController::class, 'verifyOtp']);
+
+    // Isolated Collection module (Deuda & Abono)
+    Route::prefix('collection/v1')->group(function () {
+        Route::get('clients', [CollectionClientController::class, 'index']);
+        Route::get('clients/{clientId}', [CollectionClientController::class, 'show']);
+        Route::post('clients', [CollectionClientController::class, 'store']);
+        Route::match(['post', 'put'], 'clients/{clientId}', [CollectionClientController::class, 'update']);
+        Route::delete('clients/{clientId}', [CollectionClientController::class, 'destroy']);
+        Route::post('credits', [CollectionCreditController::class, 'store']);
+        Route::post('credits/{creditId}/settle', [CollectionCreditController::class, 'settle']);
+        Route::post('credits/{creditId}/add-capital', [CollectionCreditController::class, 'addCapital']);
+        Route::get('credits/{creditId}/capital-additions', [CollectionCreditController::class, 'listCapitalAdditions']);
+        Route::delete('installments/{id}', [CollectionCreditController::class, 'destroyInstallment']);
+        Route::post('payments', [CollectionPaymentController::class, 'store']);
+        Route::get('expenses', [\App\Http\Controllers\Collection\CollectionExpenseController::class, 'index']);
+        Route::post('expenses', [\App\Http\Controllers\Collection\CollectionExpenseController::class, 'store']);
+
+        // Registros diarios (bit\u00e1cora manual: ingreso | gasto | transferencia | ajuste)
+        // Independiente de wallet/ledger.
+        Route::get('daily-records', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'index']);
+        Route::post('daily-records', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'store']);
+        Route::delete('daily-records/{id}', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'destroy']);
+        Route::get('daily-records/trend', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'trend']);
+
+        // Cierre de caja diario
+        Route::get('cash-closures', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'show']);
+        Route::get('cash-closures/history', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'index']);
+        Route::get('cash-closures/pending-validation', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'pendingValidation']);
+        Route::post('cash-closures', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'store']);
+        Route::post('cash-closures/{closureId}/reopen', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'reopen']);
+        Route::post('cash-closures/{closureId}/validate', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'validateClosure']);
+
+        // Configuración Telegram por empresa
+        Route::get('telegram-config', [\App\Http\Controllers\Collection\CollectionTelegramConfigController::class, 'show']);
+        Route::put('telegram-config', [\App\Http\Controllers\Collection\CollectionTelegramConfigController::class, 'update']);
+
+        Route::get('dashboard/summary', [\App\Http\Controllers\Collection\CollectionDashboardController::class, 'index']);
+        Route::get('dashboard/portfolio-breakdown', [\App\Http\Controllers\Collection\CollectionDashboardController::class, 'portfolioBreakdown']);
+        
+        // WhatsApp Based Security Flow
+        Route::post('security/request-deletion', [\App\Http\Controllers\Collection\CollectionSecurityController::class, 'requestDeletionToken']);
+        Route::get('security/pending-codes', [\App\Http\Controllers\Collection\CollectionSecurityController::class, 'getPendingTokens']);
+
+        // Centralized Wallet & Ledger Flow
+        Route::get('wallets/balances', [\App\Http\Controllers\Collection\CollectionWalletController::class, 'getBalances']);
+        Route::post('wallets/inject', [\App\Http\Controllers\Collection\CollectionWalletController::class, 'inject']);
+        Route::get('wallets/ledger', [\App\Http\Controllers\Collection\CollectionWalletController::class, 'indexLedger']);
+
+        // Company Config (currencies, settings)
+        Route::get('config', [\App\Http\Controllers\Collection\CollectionConfigController::class, 'index']);
+        Route::put('config/currencies', [\App\Http\Controllers\Collection\CollectionConfigController::class, 'updateCurrencies']);
+
+        // Reports
+        Route::get('reports/caja-diaria', [\App\Http\Controllers\Collection\CollectionReportsController::class, 'cajaDiaria']);
+        Route::get('reports/morosidad', [\App\Http\Controllers\Collection\CollectionReportsController::class, 'morosidad']);
+        Route::get('reports/recaudo', [\App\Http\Controllers\Collection\CollectionReportsController::class, 'recaudo']);
+        Route::get('reports/gastos', [\App\Http\Controllers\Collection\CollectionReportsController::class, 'gastos']);
+        Route::get('reports/cartera', [\App\Http\Controllers\Collection\CollectionReportsController::class, 'cartera']);
+        Route::get('reports/estado-cuenta/{clientId}', [\App\Http\Controllers\Collection\CollectionReportsController::class, 'estadoCuenta']);
+
+        // Recordatorios de pago (WhatsApp)
+        Route::get('reminders/upcoming', [\App\Http\Controllers\Collection\CollectionRemindersController::class, 'upcoming']);
+        Route::post('reminders/{installmentId}/mark-sent', [\App\Http\Controllers\Collection\CollectionRemindersController::class, 'markSent']);
+        Route::get('reminders/history', [\App\Http\Controllers\Collection\CollectionRemindersController::class, 'history']);
+
+        // User Management
+        Route::get('users', [\App\Http\Controllers\Collection\CollectionUserController::class, 'index']);
+        Route::post('users', [\App\Http\Controllers\Collection\CollectionUserController::class, 'store']);
+        Route::post('users/{userId}/toggle', [\App\Http\Controllers\Collection\CollectionUserController::class, 'toggleAccess']);
+        Route::put('users/{userId}/role', [\App\Http\Controllers\Collection\CollectionUserController::class, 'updateRole']);
+        Route::put('users/{userId}/permissions', [\App\Http\Controllers\Collection\CollectionUserController::class, 'updatePermissions']);
+        Route::get('users-permissions/available', [\App\Http\Controllers\Collection\CollectionUserController::class, 'availablePermissions']);
+        Route::post('users/{userId}/reset-password', [\App\Http\Controllers\Collection\CollectionUserController::class, 'resetPassword']);
+        Route::get('users/{userId}/activity', [\App\Http\Controllers\Collection\CollectionUserController::class, 'activity']);
+        Route::get('users/roles', [\App\Http\Controllers\Collection\CollectionUserController::class, 'roles']);
+    });
 
     // Telegram Logs
     Route::get('/telegram-logs', [\App\Http\Controllers\TelegramLogController::class, 'index']);
