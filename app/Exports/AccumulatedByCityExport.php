@@ -108,11 +108,15 @@ class AccumulatedByCityExport implements FromArray, WithEvents
             AfterSheet::class => function (AfterSheet $event) {
                 $sheet = $event->sheet;
 
-                foreach (range('A', $sheet->getHighestColumn()) as $col) {
+                // PHP range() falla con strings multi-byte. Con >13 ciudades
+                // getHighestColumn() devuelve "AA", "AB", ..., "AL" y rompe.
+                $highestColumnIndex = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::columnIndexFromString($sheet->getHighestColumn());
+                for ($i = 1; $i <= $highestColumnIndex; $i++) {
+                    $col = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($i);
                     $sheet->getColumnDimension($col)->setWidth(25);
                 }
 
-                $highestRow = $sheet->getHighestRow(); 
+                $highestRow = $sheet->getHighestRow();
 
                 $sheet->getStyle('B1')->getFill()
                     ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
@@ -146,7 +150,8 @@ class AccumulatedByCityExport implements FromArray, WithEvents
                 $sheet->getStyle('A6:' . $sheet->getHighestColumn() . '6')->getAlignment()->setHorizontal(\PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER);
                 $sheet->getStyle('A6:' . $sheet->getHighestColumn() . '6')->getAlignment()->setVertical(\PhpOffice\PhpSpreadsheet\Style\Alignment::VERTICAL_CENTER);
 
-                foreach (range('A', $sheet->getHighestColumn()) as $col) {
+                for ($i = 1; $i <= $highestColumnIndex; $i++) {
+                    $col = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($i);
                     $sheet->getColumnDimension($col)->setWidth(30);
                 }
 
@@ -188,7 +193,8 @@ class AccumulatedByCityExport implements FromArray, WithEvents
                 $sheet->getStyle('A6:' . $sheet->getHighestColumn() . '6')->getAlignment()->setHorizontal(\PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER);
                 $sheet->getStyle('A6:' . $sheet->getHighestColumn() . '6')->getAlignment()->setVertical(\PhpOffice\PhpSpreadsheet\Style\Alignment::VERTICAL_CENTER);
 
-                foreach (range('A', $sheet->getHighestColumn()) as $col) {
+                for ($i = 1; $i <= $highestColumnIndex; $i++) {
+                    $col = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($i);
                     $sheet->getColumnDimension($col)->setWidth(30);
                 }
 

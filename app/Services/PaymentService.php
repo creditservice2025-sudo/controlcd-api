@@ -2,7 +2,9 @@
 
 namespace App\Services;
 
+use App\Exceptions\CashClosedException;
 use App\Helpers\Helper;
+use App\Services\Traits\EnforcesCashOpen;
 use App\Traits\ApiResponse;
 use App\Models\Client;
 use Illuminate\Support\Facades\DB;
@@ -24,7 +26,7 @@ use Illuminate\Support\Facades\Redis;
 
 class PaymentService
 {
-    use ApiResponse;
+    use ApiResponse, EnforcesCashOpen;
 
     private GeolocationHistoryService $geolocationHistoryService;
     private MetricsCacheService $metricsCacheService;
@@ -81,6 +83,13 @@ class PaymentService
             if (!$credit) {
                 throw new \Exception('El crédito no existe.');
             }
+
+            // ======= GUARD: caja del día ya cerrada =======
+            // Defensa en profundidad: aun si el middleware liquidation.closed
+            // se desregistra, el cache lock falla o el flujo viene por otra
+            // vía, este check rechaza pagos cuando la liquidación del día
+            // del vendedor está en pending/auto/approved.
+            $this->assertSellerCashOpen($credit->seller_id, $businessDate);
 
             // ======= IDEMPOTENCY CHECK =======
             $idempotencyKey = $request->header('X-Idempotency-Key');
@@ -146,13 +155,15 @@ class PaymentService
                     // Logic for "No Pago" remains mostly the same but ensure it's robust
                     $paymentData = [
                         'credit_id' => $credit->id,
-                        'user_id' => $user->id,
+                        // Quién registró el pago (servidor, no falsificable).
+                        'created_by' => $user->id,
                         'amount' => $request->amount,
                         'status' => 'No pagado',
                         'payment_method' => $params['payment_method'] ?? null,
                         'payment_reference' => $params['payment_reference'] ?? 'No pagó',
                         'latitude' => $params['latitude'] ?? null,
                         'longitude' => $params['longitude'] ?? null,
+                        'address' => $params['address'] ?? null,
 
                         // TIMESTAMPS TÉCNICOS (auditoría)
                         'created_at' => $serverNow,
@@ -224,13 +235,15 @@ class PaymentService
 
                 $paymentData = [
                     'credit_id' => $credit->id,
-                    'user_id' => $user->id,
+                    // Quién registró el pago (servidor, no falsificable).
+                    'created_by' => $user->id,
                     'amount' => $request->amount,
                     'status' => $isAbono ? 'Abonado' : 'Pagado',
                     'payment_method' => $params['payment_method'] ?? null,
                     'payment_reference' => $params['payment_reference'] ?? '',
                     'latitude' => $params['latitude'] ?? null,
                     'longitude' => $params['longitude'] ?? null,
+                    'address' => $params['address'] ?? null,
 
                     // TIMESTAMPS TÉCNICOS (auditoría)
                     'created_at' => $serverNow,
@@ -315,32 +328,13 @@ class PaymentService
                     }
                 }
 
-                // Update Credit Remaining Amount
-                // We subtract the TOTAL payment amount from the credit's remaining amount
-                // Logic: remaining_amount tracks total debt.
-                $credit->remaining_amount -= $request->amount;
-                if ($credit->remaining_amount < 0) {
-                    $credit->remaining_amount = 0;
-                }
-
-                // Update Credit Status
-                $pendingInstallmentsExists = Installment::where('credit_id', $credit->id)
-                    ->where('status', '<>', 'Pagado')
-                    ->exists();
-
-                if (!$pendingInstallmentsExists && $credit->remaining_amount <= 0.001) {
-                    $credit->status = 'Liquidado';
-                } elseif ($request->payment_date > $credit->end_date) {
-                    // Only change to Vigente if it was something else?
-                    // Or logic: if not liquidado, check if overdue?
-                    // Original logic: if ($request->payment_date > $credit->end_date) $credit->status = 'Vigente';
-                    // Wait, if payment_date > end_date, it might be 'Vencido' (Overdue)?
-                    // 'Vigente' usually means 'Current/Active'.
-                    // Let's preserve original logic for status update to avoid side effects,
-                    // but 'Vigente' seems to be the default active status.
-                    $credit->status = 'Vigente';
-                }
-                $credit->save();
+                // Recalcular remaining_amount + status desde la verdad
+                // (cuotas), en lugar del delta `-= amount` que se
+                // desincronizaba si había un pago previo con unapplied_amount,
+                // un payment eliminado mal, o cualquier path inesperado.
+                // El método del modelo Credit consolida la lógica.
+                $credit->refresh();
+                $credit->recalculateRemainingAndStatus();
 
                 // Handle Image Upload
                 if ($request->hasFile('image')) {
@@ -403,6 +397,9 @@ class PaymentService
                 }
             }
 
+        } catch (CashClosedException $e) {
+            DB::rollBack();
+            return $this->errorResponse($e->getMessage(), 422);
         } catch (\Exception $e) {
             DB::rollBack();
             Log::error('Error processing payment for Credit ID: ' . ($request->credit_id ?? 'N/A') . '. Message: ' . $e->getMessage(), ['exception' => $e]);
@@ -483,6 +480,13 @@ class PaymentService
             $paymentInstallment->deleted_by = Auth::id();
             $paymentInstallment->save();
             $paymentInstallment->delete();
+
+            // Recalcular remaining_amount + status del crédito tras revertir
+            // el movimiento. Antes este método actualizaba paid_amount de la
+            // cuota y unapplied_amount del pago, pero no tocaba el crédito,
+            // dejándolo desincronizado.
+            $credit->refresh();
+            $credit->recalculateRemainingAndStatus();
 
             DB::commit();
 
@@ -797,6 +801,48 @@ class PaymentService
         $credits = collect($creditsPaginator->items());
         $pageCreditIds = $credits->pluck('id');
 
+        // --- Estado del crédito A LA FECHA filtrada (solo presentación) ---
+        // La columna `credits.status` es un único valor mutable: refleja el
+        // estado de HOY, no el del día del pago. Por eso, al filtrar pagos de
+        // una fecha pasada, un crédito liquidado DESPUÉS se ve "Liquidado" en
+        // esa fecha (cuando en realidad estaba Activo). Esto NO altera datos ni
+        // lógica: solo se calcula un campo derivado `status_as_of_date`.
+        //
+        // Regla acotada (Fase A): si el crédito está Liquidado pero su fecha de
+        // liquidación real (último pago vivo que lo finiquitó) es POSTERIOR a la
+        // fecha filtrada, entonces a esa fecha todavía estaba VIGENTE. Se
+        // devuelve el CÓDIGO 'Vigente' (no la etiqueta "Activo"): el front lo
+        // traduce a "Activo" y lo pinta en verde vía getStatusText/Color. Los
+        // demás estados se dejan tal cual (no son derivables desde pagos).
+        $asOfDate = $request->has('end_date')
+            ? Carbon::parse($request->get('end_date'), $timezone)->toDateString()
+            : ($request->has('date')
+                ? Carbon::parse($request->get('date'), $timezone)->toDateString()
+                : Carbon::now($timezone)->toDateString());
+
+        $liquidatedCreditIds = $credits->where('status', 'Liquidado')->pluck('id');
+        $liquidationDates = collect();
+        if ($liquidatedCreditIds->isNotEmpty()) {
+            $liquidationDates = DB::table('payments')
+                ->whereIn('credit_id', $liquidatedCreditIds)
+                ->whereNull('deleted_at')
+                ->where('status', 'Pagado')
+                ->where('amount', '>', 0)
+                ->groupBy('credit_id')
+                ->selectRaw('credit_id, MAX(business_date) as d')
+                ->pluck('d', 'credit_id');
+        }
+
+        $statusAsOfFor = function ($credit) use ($liquidationDates, $asOfDate) {
+            if ($credit->status === 'Liquidado') {
+                $ld = $liquidationDates[$credit->id] ?? null;
+                if ($ld && $ld > $asOfDate) {
+                    return 'Vigente';
+                }
+            }
+            return $credit->status;
+        };
+
         // 5. Traer TODOS los pagos requeridos para estos créditos en UNA sola consulta
         $paymentsQuery = Payment::whereIn('credit_id', $pageCreditIds)
             ->orderBy('created_at', 'desc');
@@ -853,6 +899,7 @@ class PaymentService
 
             foreach ($credits as $credit) {
                 $creditPayments = $paymentsByCredit->get($credit->id, collect());
+                $creditStatusAsOf = $statusAsOfFor($credit);
 
                 foreach ($creditPayments as $payment) {
                     $paymentInstallments = $installmentsDetails->get($payment->id, collect());
@@ -866,6 +913,7 @@ class PaymentService
                         'client_dni' => $credit->client->dni,
                         'client' => $credit->client, // Incluir objeto completo
                         'credit_info' => $credit->loadMissing(['installments', 'payments']), // Cargar relaciones necesarias para el historial
+                        'credit_status_as_of_date' => $creditStatusAsOf, // Estado del crédito a la fecha filtrada (display)
                         'payment_date' => $payment->created_at, // Usar created_at para fecha y hora exacta
                         'business_date' => $payment->business_date,
                         'amount' => $payment->amount,
@@ -927,6 +975,10 @@ class PaymentService
                 'credit_id' => $credit->id,
                 'credit_value' => $credit->credit_value,
                 'status' => $credit->status,
+                // Estado vigente A LA FECHA filtrada (solo display). Igual a
+                // `status` salvo cuando un crédito Liquidado aún no lo estaba
+                // en esa fecha → 'Activo'. El front pinta este campo.
+                'status_as_of_date' => $statusAsOfFor($credit),
                 'total_interest' => $credit->total_interest,
                 'total_amount' => $credit->total_amount,
                 'number_installments' => $credit->number_installments,
@@ -1022,10 +1074,17 @@ class PaymentService
             $q->where('seller_id', $sellerId);
         });
 
-        // Cargar relaciones para el crédito
+        // Cargar relaciones para el crédito. El cliente trae withCount de
+        // comentarios para el distintivo (bitácora) en la lista de pagos.
         $paymentsQuery->with([
             'credit' => function($q) {
-                $q->withTrashed()->with(['client', 'installments', 'payments']);
+                $q->withTrashed()->with([
+                    'client' => function ($cq) {
+                        $cq->withCount('comments');
+                    },
+                    'installments',
+                    'payments',
+                ]);
             }
         ]);
 
@@ -1049,6 +1108,7 @@ class PaymentService
                     'client_name' => $credit->client->name ?? 'N/A',
                     'client_dni' => $credit->client->dni ?? 'N/A',
                     'client' => $credit->client ?? null,
+                    'client_comments_count' => optional($credit->client)->comments_count ?? 0,
                     'credit_info' => $credit, // Objeto completo con relaciones cargadas
                     'payment_date' => $payment->created_at, // Exact time
                     'business_date' => $payment->business_date,
@@ -1082,7 +1142,7 @@ class PaymentService
         ]);
     }
 
-    public function getPaymentsByDate($date, $sellerId = null, Request $request)
+    public function getPaymentsByDate($date, Request $request, $sellerId = null)
     {
         $query = Payment::with([
             'credit:id,client_id,credit_value,status',
@@ -1240,13 +1300,11 @@ class PaymentService
             PaymentInstallment::where('payment_id', $paymentId)->delete();
             PaymentImage::where('payment_id', $paymentId)->delete();
 
-            // Revertir el pago en el crédito
-            $credit->remaining_amount += $payment->amount;
-
-            if ($credit->status === 'Liquidado') {
-                $credit->status = 'Vigente';
-            }
-            $credit->save();
+            // Recalcular remaining_amount + status desde las cuotas. Si el
+            // pago eliminado dejaba el crédito en Liquidado y ahora hay
+            // cuotas pendientes, el helper revierte a 'Vigente'.
+            $credit->refresh();
+            $credit->recalculateRemainingAndStatus();
 
             // Si hay liquidación, agregar observación
             if ($liquidation) {
@@ -1258,6 +1316,11 @@ class PaymentService
                     : $newObservation;
                 $liquidation->save();
             }
+
+            // Registrar QUIÉN elimina (servidor) antes del soft-delete.
+            // Auth::id() puede ser null en procesos sin sesión → columna nullable.
+            $payment->deleted_by = Auth::id();
+            $payment->save();
 
             // Eliminar el pago
             $payment->delete();
@@ -1417,15 +1480,12 @@ class PaymentService
                 }
             }
 
-            // Update Credit Status
-            $pendingInstallmentsExists = Installment::where('credit_id', $credit->id)
-                ->where('status', '<>', 'Pagado')
-                ->exists();
-
-            if (!$pendingInstallmentsExists && (float) $credit->remaining_amount <= 0.001) {
-                $credit->status = 'Liquidado';
-            }
-            $credit->save();
+            // Recalcular remaining_amount + status desde las cuotas. Antes
+            // este método NO actualizaba remaining_amount, así que créditos
+            // que terminaban de cubrirse aplicando abonos previos quedaban
+            // en 'Vigente' aunque todas las cuotas estuvieran 'Pagado'.
+            $credit->refresh();
+            $credit->recalculateRemainingAndStatus();
 
             $remainingUnapplied = Payment::where('credit_id', $creditId)->sum('unapplied_amount');
 

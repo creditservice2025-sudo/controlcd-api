@@ -133,4 +133,17 @@ class SellerController extends Controller
             return $this->errorResponse($e->getMessage(), 500);
         }
     }
+
+    /**
+     * Resumen de cartera del vendedor (activa + irrecuperable). Calculado
+     * desde credits + payments (no usa credits.remaining_amount).
+     */
+    public function getPortfolioSummary(Request $request, $sellerId)
+    {
+        try {
+            return $this->sellerService->getPortfolioSummary($sellerId);
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
 }

@@ -31,7 +31,11 @@ class Payment extends Model
         'business_timezone',
         'created_at',
         'updated_at',
-        'unapplied_amount'
+        'unapplied_amount',
+        // Trazabilidad: quién registró / eliminó el pago y dónde se registró.
+        'created_by',
+        'deleted_by',
+        'address',
     ];
 
     /**
@@ -82,5 +86,22 @@ class Payment extends Model
     public function image()
     {
         return $this->hasOne(PaymentImage::class, 'payment_id');
+    }
+
+    /**
+     * Usuario que REGISTRÓ el pago. Se setea del lado servidor con Auth::id()
+     * al crear (no desde el request, para que no se pueda falsificar).
+     */
+    public function createdByUser()
+    {
+        return $this->belongsTo(User::class, 'created_by');
+    }
+
+    /**
+     * Usuario que ELIMINÓ el pago (pareja de deleted_at).
+     */
+    public function deletedByUser()
+    {
+        return $this->belongsTo(User::class, 'deleted_by');
     }
 }

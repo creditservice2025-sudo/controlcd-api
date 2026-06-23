@@ -2,8 +2,10 @@
 
 namespace App\Services;
 
+use App\Exceptions\CashClosedException;
 use App\Helpers\Helper;
 use App\Models\IncomeImage;
+use App\Services\Traits\EnforcesCashOpen;
 use App\Traits\ApiResponse;
 use App\Models\Income;
 use App\Models\Liquidation;
@@ -17,7 +19,7 @@ use Illuminate\Support\Facades\Auth;
 
 class IncomeService
 {
-    use ApiResponse;
+    use ApiResponse, EnforcesCashOpen;
 
     const TIMEZONE = 'America/Lima';
 
@@ -77,6 +79,17 @@ class IncomeService
             
             $businessDate = $businessTimestamp->toDateString();
 
+            // Guard de defensa en profundidad: rechaza el ingreso si la
+            // liquidación del día del vendedor ya está cerrada.
+            //
+            // El admin/superadmin (rol 1 y 2) SÍ puede registrar movimientos
+            // sobre una caja cerrada: es justamente quien "reabre/ajusta" la
+            // caja (ver mensaje del guard). El bloqueo solo aplica al vendedor
+            // y demás roles operativos.
+            if ($seller && !$isAdmin) {
+                $this->assertSellerCashOpen($seller->id, $businessDate);
+            }
+
             $incomeData = [
                 'value' => $validated['value'],
                 'description' => $validated['description'],
@@ -115,6 +128,8 @@ class IncomeService
                 'message' => 'Ingreso creado con éxito',
                 'data' => $income,
             ]);
+        } catch (CashClosedException $e) {
+            return $this->errorResponse($e->getMessage(), 422);
         } catch (\Exception $e) {
             \Log::error("Error changing income status: " . $e->getMessage());
             return $this->errorResponse('Error al cambiar estado del ingreso', 500);
@@ -257,9 +272,15 @@ class IncomeService
             }
         }
 
-        if ($seller) {
-            $incomeDate = $income->business_date 
-                ? $income->business_date->format('Y-m-d') 
+        // El admin/superadmin (rol 1 y 2) puede ajustar el ingreso aunque la
+        // liquidación de la fecha ya exista/esté cerrada. Es quien reabre/ajusta
+        // la caja. El resto de roles sí queda bloqueado.
+        $currentUser = Auth::user();
+        $isAdmin = $currentUser && in_array($currentUser->role_id, [1, 2]);
+
+        if ($seller && !$isAdmin) {
+            $incomeDate = $income->business_date
+                ? $income->business_date->format('Y-m-d')
                 : ($income->created_at ? Carbon::parse($income->created_at)->toDateString() : date('Y-m-d'));
 
             $liquidation = Liquidation::where('seller_id', $seller->id)
@@ -496,6 +517,8 @@ class IncomeService
                     $query->where('company_id', $companyId);
                 })->pluck('id');
                 $incomeQuery->whereIn('user_id', $userIds);
+            } else if ($role === 1) {
+                // Admin: sin restricciones (ve todo). Misma semántica que ClientService.
             } else if ($role === 2) {
                 if (!$user->company) {
                     return $this->successResponse([
@@ -513,7 +536,7 @@ class IncomeService
                 // Vendedor: Ver ingresos de hoy (Negocio)
                 $seller = Seller::where('user_id', $user->id)->first();
                 $todayDate = \App\Helpers\TimezoneHelper::getBusinessNow($seller)->toDateString();
-                
+
                 $incomeQuery->where(function($q) use ($todayDate) {
                      $q->where('business_date', $todayDate)
                        ->orWhere(function($sub) use ($todayDate) {
@@ -524,6 +547,36 @@ class IncomeService
                         ]); // Fallback aproximado con rango UTC
                        });
                 });
+            } else if ($role === 6 && $request->attributes->get('active_seller_id')) {
+                // Supervisor con ruta activa seleccionada (header X-Active-Seller-Id
+                // resuelto por middleware): mostrar SOLO los ingresos del cobrador
+                // seleccionado, sin mezclar los de las demás rutas vinculadas.
+                $activeSellerId = (int) $request->attributes->get('active_seller_id');
+                $sellerUserId = Seller::where('id', $activeSellerId)->value('user_id');
+                if ($sellerUserId) {
+                    $incomeQuery->where('user_id', $sellerUserId);
+                } else {
+                    $incomeQuery->whereRaw('1=0');
+                }
+            } else {
+                // Roles intermedios (Socio=3, Asistente=4, Supervisor=6, Cobrador-abono=7,
+                // Limitado=8, Digitador=9, Contador=10, Secretaria=11): aislamiento por
+                // empresa. Resuelve company del usuario en este orden:
+                //   1) relación directa user->company (admin)
+                //   2) seller asociado (cobradores promovidos)
+                //   3) parent_id->company (subordinados de un admin)
+                // Si nada se puede resolver, fail-closed.
+                $resolvedCompanyId = $user->company?->id
+                    ?? optional(Seller::where('user_id', $user->id)->first())->company_id
+                    ?? optional(User::find($user->parent_id))?->company?->id;
+                if ($resolvedCompanyId) {
+                    $userIds = User::whereHas('seller', function ($query) use ($resolvedCompanyId) {
+                        $query->where('company_id', $resolvedCompanyId);
+                    })->pluck('id');
+                    $incomeQuery->whereIn('user_id', $userIds);
+                } else {
+                    $incomeQuery->whereRaw('1=0');
+                }
             }
 
             if ($request->has('seller_id') && $request->seller_id) {

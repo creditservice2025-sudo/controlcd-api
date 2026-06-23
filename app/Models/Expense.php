@@ -16,6 +16,7 @@ class Expense extends Model
         'value',
         'description',
         'user_id',
+        'created_by',
         'category_id',
         'status',
         'created_at',
@@ -37,6 +38,17 @@ class Expense extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    /**
+     * Usuario que registró/realizó el gasto (puede ser un admin operando por
+     * cuenta del vendedor). Distinto de user() que es el vendedor dueño.
+     * Nombre del método != columna `created_by` para evitar colisión al
+     * serializar (se expone como `created_by_user`).
+     */
+    public function createdByUser(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'created_by');
     }
 
     public function category(): BelongsTo

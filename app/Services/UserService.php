@@ -31,6 +31,9 @@ class UserService
 
             $params['password'] = Hash::make($params['password']);
 
+            // Auditoría: quién creó/actualizó por última vez al miembro.
+            $params['updated_by'] = Auth::id();
+
             if (isset($params['timezone']) && !empty($params['timezone'])) {
                 $params['created_at'] = \Carbon\Carbon::now($params['timezone']);
                 $params['updated_at'] = \Carbon\Carbon::now($params['timezone']);
@@ -72,7 +75,21 @@ class UserService
                 }
             }
 
-            $user->parent_id = $params['role_id'];
+            if (!isset($params['parent_id'])) {
+                $authUser = Auth::user();
+                // Si Super Admin (rol 1) crea un usuario impersonando una empresa,
+                // el parent_id debe apuntar al admin de esa empresa (no al Super Admin),
+                // para que la cadena de aislamiento por empresa funcione en services
+                // como IncomeService/ExpenseService que resuelven via parent->company.
+                if ((int) $authUser->role_id === 1 && !empty($params['company_id'])) {
+                    $companyAdminId = DB::table('companies')
+                        ->where('id', $params['company_id'])
+                        ->value('user_id');
+                    $user->parent_id = $companyAdminId ?: Auth::id();
+                } else {
+                    $user->parent_id = Auth::id();
+                }
+            }
             $user->save();
             DB::commit();
 
@@ -103,6 +120,9 @@ class UserService
             } else {
                 unset($params['password']);
             }
+
+            // Auditoría: registrar quién realizó esta actualización.
+            $params['updated_by'] = Auth::id();
 
             if (isset($params['timezone']) && !empty($params['timezone'])) {
                 $params['updated_at'] = \Carbon\Carbon::now($params['timezone']);
@@ -261,35 +281,56 @@ public function me()
                     'users.parent_id',
                     'users.role_id',
                     'users.status',
+                    'users.updated_by',
+                    'users.updated_at',
                     'roles.name as role_name'
                 )
-                ->with(['city', 'city.country', 'userRoutes', 'userRoutes.seller'])
+                // userRoutes.seller.{city.country, user}: necesario para
+                // que la tabla de usuarios resuelva la "Ruta" del
+                // Supervisor (rol 6) y otros roles sin city propia,
+                // derivando la ubicación desde sus vendedores asignados y
+                // mostrando además los chips con nombres de cobradores.
+                ->with([
+                    'city',
+                    'city.country',
+                    'updatedByUser:id,name',
+                    'userRoutes',
+                    'userRoutes.seller',
+                    'userRoutes.seller.user:id,name',
+                    'userRoutes.seller.city',
+                    'userRoutes.seller.city.country',
+                ])
                 ->whereNull('users.deleted_at')
                 ->whereNotIn('users.role_id', $excludedRoleIds);
     
             // === FILTRO POR ROL ===
             switch ($roleId) {
-                case 1: // Admin: ve todos
-                    // Si el admin está en modo empresa, filtra por company_id
+                case 1: // Super-Admin: ve todos o filtra por empresa si está en modo empresa
                     if ($companyId) {
                         $sellerIds = Seller::where('company_id', $companyId)->pluck('id')->toArray();
                         $userIds = UserRoute::whereIn('seller_id', $sellerIds)->pluck('user_id')->toArray();
-                        $usersQuery->whereIn('users.id', $userIds);
+                        
+                        // Trae el ID del usuario administrador de la empresa seleccionada
+                        $adminUserId = \DB::table('companies')->where('id', $companyId)->value('user_id');
+
+                        $usersQuery->where(function ($q) use ($userIds, $adminUserId) {
+                            $q->whereIn('users.id', $userIds);
+                            if ($adminUserId) {
+                                $q->orWhere('users.parent_id', $adminUserId);
+                            }
+                        });
                     }
                     break;
-                case 2: // Empresa: usuarios relacionados a la empresa por sellers
+                case 2: // Administrador de Empresa: usuarios relacionados a la empresa por sellers o creados por él
                     if ($company) {
-                        // Trae IDs de vendedores de la empresa
                         $sellerIds = Seller::where('company_id', $company->id)->pluck('id')->toArray();
-    
-                        // Trae IDs de usuarios asociados a esos vendedores vía users_routes
                         $userIds = UserRoute::whereIn('seller_id', $sellerIds)->pluck('user_id')->toArray();
-    
-                        // Incluye también al usuario empresa autenticado
                         $userIds[] = $user->id;
-    
-                        // Filtra por esos usuarios
-                        $usersQuery->whereIn('users.id', $userIds);
+
+                        $usersQuery->where(function ($q) use ($userIds, $user) {
+                            $q->whereIn('users.id', $userIds)
+                              ->orWhere('users.parent_id', $user->id);
+                        });
                     }
                     break;
                 default: // Otros roles: no ven nada
@@ -375,12 +416,38 @@ public function me()
                 });
             }
 
-            // Filtrar por company_id si el admin está en modo empresa
+            // Filtrar por empresa según rol:
+            //  - Super Admin (1) con company_id explícito (impersonando) → filtra esa empresa
+            //  - Admin (2) → siempre filtra por SU propia empresa (sin necesidad de param)
+            //  - Otros roles → fail-closed (no se les muestran miembros)
             $user = Auth::user();
-            if ($user->role_id == 1 && $companyId) {
-                $sellerIds = Seller::where('company_id', $companyId)->pluck('id')->toArray();
-                $userIds = UserRoute::whereIn('seller_id', $sellerIds)->pluck('user_id')->toArray();
-                $query->whereIn('id', $userIds);
+            $role = (int) $user->role_id;
+
+            $effectiveCompanyId = $companyId;
+            if ($role === 2 && !$effectiveCompanyId) {
+                $effectiveCompanyId = $user->company?->id;
+            }
+
+            if (in_array($role, [1, 2], true) && $effectiveCompanyId) {
+                // Miembros de una company = usuarios vinculados via user_routes a
+                // sellers de esa empresa O usuarios cuyo parent_id es el admin
+                // de la company (subordinados directos).
+                $companyAdminId = DB::table('companies')
+                    ->where('id', $effectiveCompanyId)
+                    ->value('user_id');
+
+                $sellerIds = Seller::where('company_id', $effectiveCompanyId)->pluck('id')->toArray();
+                $userIdsByRoute = UserRoute::whereIn('seller_id', $sellerIds)->pluck('user_id')->toArray();
+
+                $query->where(function ($q) use ($userIdsByRoute, $companyAdminId) {
+                    $q->whereIn('id', $userIdsByRoute);
+                    if ($companyAdminId) {
+                        $q->orWhere('parent_id', $companyAdminId);
+                    }
+                });
+            } elseif ($role !== 1) {
+                // Roles distintos a Super Admin/Admin: no listar miembros
+                $query->whereRaw('1=0');
             }
 
             $users = $query->get();

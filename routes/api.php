@@ -13,6 +13,7 @@ use App\Http\Controllers\UserController;
 use App\Http\Controllers\CitiesController;
 use App\Http\Controllers\RoleController;
 use App\Http\Controllers\ClientController;
+use App\Http\Controllers\ClientCommentController;
 use App\Http\Controllers\CompanyController;
 use App\Http\Controllers\GuarantorController;
 use App\Http\Controllers\CreditController;
@@ -29,6 +30,7 @@ use App\Http\Controllers\Collection\CollectionPaymentController;
 
 use App\Http\Controllers\FrontendErrorController;
 use App\Http\Controllers\VerificationController;
+use App\Http\Controllers\TelegramWebhookController;
 
 // Auth routes
 Route::post('login', [AuthController::class, 'login'])->middleware('throttle:6,1');
@@ -40,12 +42,32 @@ Route::post('reset-password', [AuthController::class, 'resetPassword'])->middlew
 // Mobile Version Check (Public)
 Route::get('mobile/version-check', [\App\Http\Controllers\Api\MobileVersionController::class, 'check']);
 
+// Telegram Webhook (Public). La autenticidad se valida con el header
+// X-Telegram-Bot-Api-Secret-Token dentro del controlador. NO va dentro
+// del grupo auth:api porque Telegram no manda Bearer tokens.
+// Rate-limit conservador para limitar abuso si alguien descubre la URL.
+Route::post('telegram/webhook', [TelegramWebhookController::class, 'handle'])
+    ->middleware('throttle:60,1')
+    ->name('telegram.webhook');
 
+
+// Logout y cierre de sesiones: SOLO requieren auth:api. NO deben pasar por
+// supervisor.lock / liquidation.closed / active.seller. Si alguno de esos
+// rechaza el request (ej: active.seller devuelve 403 cuando el supervisor
+// manda un X-Active-Seller-Id que ya no está en sus user_routes —p. ej. tras
+// reasignarle rutas—), LoginService::logout() NO corre y el lock
+// supervisor→cobrador nunca se libera: los cobradores quedan bloqueados hasta
+// que expira el TTL del cache (~90 min) aunque el supervisor "haya salido".
+// El usuario SIEMPRE debe poder cerrar sesión.
 Route::middleware('auth:api')->group(function () {
+    Route::post('logout', [AuthController::class, 'logout']);
+    Route::post('auth/session/logout/{sessionId}', [AuthController::class, 'logoutSession']);
+});
+
+Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.seller'])->group(function () {
 
     //change password
     Route::post('auth/change-password', [AuthController::class, 'changePassword']);
-    Route::post('auth/session/logout/{sessionId}', [AuthController::class, 'logoutSession']);
 
     // notification routes
     Route::get('/notifications', [NotificationController::class, 'index']);
@@ -71,10 +93,41 @@ Route::middleware('auth:api')->group(function () {
 
     Route::get('sellers/{sellerId}/cash-info', [SellerController::class, 'getCashInfo']);
     Route::get('sellers/{sellerId}/liquidations', [SellerController::class, 'getLiquidations']);
+    Route::get('sellers/{sellerId}/portfolio-summary', [SellerController::class, 'getPortfolioSummary']);
 
 
     Route::get('seller/{sellerId}/config', [SellerConfigController::class, 'show']);
     Route::put('seller/{sellerId}/config', [SellerConfigController::class, 'update']);
+    Route::get('seller/{sellerId}/config/history', [SellerConfigController::class, 'history']);
+
+    // Supervisor (rol 6) — selección de ruta a supervisar desde el APK
+    Route::get('supervisor/active-sellers', [\App\Http\Controllers\SupervisorController::class, 'activeSellers']);
+
+    // Planes y suscripciones (módulo SaaS).
+    // Catálogo de planes: lectura abierta a admins, mutaciones solo Super-Admin.
+    Route::prefix('plans')->group(function () {
+        Route::get('/', [\App\Http\Controllers\SubscriptionController::class, 'plansIndex']);
+        Route::middleware('role:Super-Admin')->group(function () {
+            Route::post('/', [\App\Http\Controllers\SubscriptionController::class, 'plansStore']);
+            Route::put('/{planId}', [\App\Http\Controllers\SubscriptionController::class, 'plansUpdate']);
+            Route::delete('/{planId}', [\App\Http\Controllers\SubscriptionController::class, 'plansDestroy']);
+        });
+    });
+
+    // Suscripciones por empresa. Las mutaciones son solo para Super-Admin
+    // (asignar plan, registrar pago, suspender, etc.).
+    Route::prefix('companies/{companyId}/subscription')->group(function () {
+        Route::get('/', [\App\Http\Controllers\SubscriptionController::class, 'companySummary']);
+        Route::middleware('role:Super-Admin')->group(function () {
+            Route::post('/', [\App\Http\Controllers\SubscriptionController::class, 'subscribe']);
+        });
+    });
+    Route::prefix('subscriptions/{subscriptionId}')->middleware('role:Super-Admin')->group(function () {
+        Route::post('payments', [\App\Http\Controllers\SubscriptionController::class, 'recordPayment']);
+        Route::post('cancel', [\App\Http\Controllers\SubscriptionController::class, 'cancel']);
+        Route::post('suspend', [\App\Http\Controllers\SubscriptionController::class, 'suspend']);
+        Route::post('reactivate', [\App\Http\Controllers\SubscriptionController::class, 'reactivate']);
+    });
 
     Route::get('me', [UserController::class, 'me']);
 
@@ -102,10 +155,20 @@ Route::middleware('auth:api')->group(function () {
     Route::post('/countries', [CountriesController::class, 'store']);
     Route::put('/countries/{id}', [CountriesController::class, 'update']);
 
-    //route roles
-    Route::apiResource('roles', RoleController::class);
-    Route::post('/roles/{role}/permisos', [RolePermissionController::class, 'assignPermissions']);
-    Route::get('/roles/{role}/permisos', [RolePermissionController::class, 'show']);
+    //route roles — Lectura libre (necesaria para dropdowns al crear/editar usuarios).
+    // Mutaciones y gestión de permisos restringidas a Super-Admin: Spatie Permission
+    // usa roles GLOBALES, así que modificarlos afectaría a TODAS las empresas.
+    Route::get('roles', [RoleController::class, 'index']);
+    Route::get('roles/{role}', [RoleController::class, 'show']);
+
+    Route::middleware('role:Super-Admin')->group(function () {
+        Route::post('roles', [RoleController::class, 'store']);
+        Route::put('roles/{role}', [RoleController::class, 'update']);
+        Route::patch('roles/{role}', [RoleController::class, 'update']);
+        Route::delete('roles/{role}', [RoleController::class, 'destroy']);
+        Route::post('/roles/{role}/permisos', [RolePermissionController::class, 'assignPermissions']);
+        Route::get('/roles/{role}/permisos', [RolePermissionController::class, 'show']);
+    });
 
     //route client
     Route::prefix('clients')->group(function () {
@@ -114,7 +177,8 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/total', [ClientController::class, 'totalClients']);
         Route::get('/with-credits', [ClientController::class, 'indexWithCredits']);
         Route::get('/select', [ClientController::class, 'getClientsSelect']);
-        Route::post('/reactivate-by-criteria', [ClientController::class, 'reactivateClientsByIds']);
+        Route::post('/reactivate-by-criteria', [ClientController::class, 'reactivateClientsByIds'])
+            ->middleware('permission:reactivar_clientes');
         Route::delete('/delete-inactive-without-credits', [ClientController::class, 'deleteInactiveClientsWithoutCredits']);
         Route::get('/inactive-without-credits', [ClientController::class, 'getInactiveClientsWithoutCreditsWithFilters']);
         Route::delete('/delete-by-ids', [ClientController::class, 'deleteClientsByIds']);
@@ -145,13 +209,24 @@ Route::middleware('auth:api')->group(function () {
         Route::post('/{id}/capacity', [ClientController::class, 'updateCapacity']);
         Route::get('/{id}/history', [ClientController::class, 'history']);
 
+        // Comentarios / bitácora del cliente (todos agregan y ven).
+        Route::get('/{id}/comments', [ClientCommentController::class, 'index']);
+        Route::post('/{id}/comments', [ClientCommentController::class, 'store']);
+        Route::delete('/{id}/comments/{commentId}', [ClientCommentController::class, 'destroy']);
+
         // Transferencia de clientes
-        Route::post('/{id}/transfer', [ClientController::class, 'transfer']);
-        Route::post('/transfer-massive', [ClientController::class, 'transferMassive']);
+        Route::post('/{id}/transfer', [ClientController::class, 'transfer'])
+            ->middleware('permission:transferir_clientes');
+        Route::post('/transfer-massive', [ClientController::class, 'transferMassive'])
+            ->middleware('permission:transferir_clientes');
 
         // Orden de ruta
         Route::post('/update-order', [ClientController::class, 'updateOrder']);
     });
+
+    // Categorías de comentarios de clientes (set propio, separado de Gastos).
+    Route::get('comment-categories', [ClientCommentController::class, 'categories']);
+    Route::post('comment-categories', [ClientCommentController::class, 'storeCategory']);
 
     //route guarantor
     Route::get('guarantors', [GuarantorController::class, 'index']);
@@ -173,6 +248,13 @@ Route::middleware('auth:api')->group(function () {
     Route::get('credits/client/{client}', [CreditController::class, 'getCredits']);
     Route::get('credits/seller/{sellerId}', [CreditController::class, 'getSellerCredits']);
     Route::get('/credits/seller/{sellerId}/by-date', [CreditController::class, 'getSellerCredits']);
+    // Endpoints del modal "Detalle Vendedor" — protegidos por permiso ver_detalle_vendedor.
+    Route::get('credits/seller/{sellerId}/cartera-lite', [CreditController::class, 'getSellerCarteraLite'])
+        ->middleware('permission:ver_detalle_vendedor');
+    Route::get('payments/seller/{sellerId}/cobrado-lite', [PaymentController::class, 'getSellerCobradoLite'])
+        ->middleware('permission:ver_detalle_vendedor');
+    Route::get('payments/seller/{sellerId}/del-dia-lite', [PaymentController::class, 'getSellerDelDiaLite'])
+        ->middleware('permission:ver_detalle_vendedor');
     Route::put('credit/{creditId}/update-schedule', [CreditController::class, 'updateSchedule']);
     Route::put('credit/{creditId}/update-frequency', [CreditController::class, 'updateFrequency']);
     Route::post('credit/{creditId}/simulate-edit', [CreditController::class, 'simulateEdit']);
@@ -186,6 +268,20 @@ Route::middleware('auth:api')->group(function () {
     Route::put('credit/{creditId}/toggle-status', [CreditController::class, 'toggleCreditStatus']);
     Route::post('credits/toggle-massively', [CreditController::class, 'toggleCreditsStatusMassively']);
     Route::post('credits/unify', [CreditController::class, 'unifyCredits']);
+
+    // Cartera irrecuperable a nivel cliente (mueve TODOS los créditos vigentes
+    // del cliente). Restringido a Super-Admin y Admin. Reversible vía restore.
+    Route::get('clients/{clientId}/uncollectible-summary', [CreditController::class, 'clientUncollectibleSummary']);
+    Route::get('clients/{clientId}/credits/{creditId}/uncollectible-detail', [CreditController::class, 'clientCreditUncollectibleDetail']);
+    Route::middleware('role:Super-Admin|Admin')->group(function () {
+        Route::post('clients/{clientId}/mark-uncollectible', [CreditController::class, 'markClientAsUncollectible']);
+        Route::post('clients/{clientId}/restore-from-uncollectible', [CreditController::class, 'restoreClientFromUncollectible']);
+        // Bloqueo de apertura de nuevos créditos. La validación adicional
+        // (Admin solo su empresa) se hace en el service usando company_id
+        // del seller del cliente.
+        Route::post('clients/{clientId}/block-credit', [ClientController::class, 'blockCreditCreation']);
+        Route::post('clients/{clientId}/unblock-credit', [ClientController::class, 'unblockCreditCreation']);
+    });
 
     //route expense
     Route::get('expenses', [ExpenseController::class, 'index']);
@@ -228,13 +324,18 @@ Route::middleware('auth:api')->group(function () {
         Route::get('accumulated-by-city-with-sellers', [LiquidationController::class, 'getAccumulatedByCityWithSellers']);
         Route::get('sellers-summary-by-city', [LiquidationController::class, 'getSellersSummaryByCity']);
         Route::get('seller/{sellerId}/liquidations-detail', [LiquidationController::class, 'getSellerLiquidationsDetail']);
-        Route::put('{liquidationId}/approve', [LiquidationController::class, 'approveLiquidation']);
-        Route::post('approve-multiple', [LiquidationController::class, 'approveMultipleLiquidations']);
-        Route::put('{liquidationId}/annul-base', [LiquidationController::class, 'annulBase']);
+        Route::put('{liquidationId}/approve', [LiquidationController::class, 'approveLiquidation'])
+            ->middleware('permission:aprobar_liquidaciones');
+        Route::post('approve-multiple', [LiquidationController::class, 'approveMultipleLiquidations'])
+            ->middleware('permission:aprobar_liquidaciones');
+        Route::put('{liquidationId}/annul-base', [LiquidationController::class, 'annulBase'])
+            ->middleware('permission:rechazar_liquidaciones');
         Route::put('update/{liquidationId}', [LiquidationController::class, 'updateLiquidation']);
 
-        Route::post('reopen-route', [LiquidationController::class, 'reopenRoute']);
-        Route::post('adjust-box', [LiquidationController::class, 'adjustBox']);
+        Route::post('reopen-route', [LiquidationController::class, 'reopenRoute'])
+            ->middleware('permission:rechazar_liquidaciones');
+        Route::post('adjust-box', [LiquidationController::class, 'adjustBox'])
+            ->middleware('permission:ajustar_caja');
         Route::get('simulate-recalculation', [LiquidationController::class, 'simulateRecalculation']);
 
         Route::get('download-report/{id}', [LiquidationController::class, 'downloadReport']);
@@ -253,6 +354,8 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/', [CompanyController::class, 'index']);
         Route::post('/', [CompanyController::class, 'create']);
         Route::get('/select', [CompanyController::class, 'getCompaniesSelect']);
+        // Empresa del usuario autenticado (útil para rol 2 que solo tiene una).
+        Route::get('/my-company', [CompanyController::class, 'getMyCompany']);
         Route::get('/{companyId}', [CompanyController::class, 'show']);
         Route::put('/{companyId}', [CompanyController::class, 'update']);
         Route::patch('/{companyId}/toggle-module', [CompanyController::class, 'toggleModule']);
@@ -260,6 +363,15 @@ Route::middleware('auth:api')->group(function () {
         Route::post('/validate-code', [CompanyController::class, 'validateCompanyCode']);
         Route::post('/validate-ruc', [CompanyController::class, 'validateCompanyRuc']);
         Route::post('/{companyId}/resend-welcome', [CompanyController::class, 'resendWelcomeEmail']);
+        // Master switch — solo SuperAdmin. Auth interna en el controller.
+        Route::put('/{companyId}/telegram-feature', [CompanyController::class, 'updateTelegramFeature']);
+        // Lectura / configuración por empresa. Auth interna (rol 1 o dueño rol 2).
+        Route::get('/{companyId}/telegram-config', [CompanyController::class, 'getTelegramConfig']);
+        Route::put('/{companyId}/telegram-config', [CompanyController::class, 'updateTelegramConfig']);
+        Route::post('/{companyId}/telegram-test', [CompanyController::class, 'testTelegram']);
+        Route::post('/{companyId}/telegram-start-link', [CompanyController::class, 'startTelegramLink']);
+        Route::get('/{companyId}/telegram-history', [CompanyController::class, 'getTelegramHistory']);
+        Route::get('/telegram-metrics', [CompanyController::class, 'getTelegramMetrics']); // SA only, internal in controller
     });
 
     //route installment
@@ -276,6 +388,9 @@ Route::middleware('auth:api')->group(function () {
     Route::get('payments/by-date', [PaymentController::class, 'paymentsByDate']);
     Route::get('payments/{creditId}', [PaymentController::class, 'index']);
     Route::get('payments/today/{creditId}', [PaymentController::class, 'paymentsToday']);
+    // Operaciones base de pagos (crear/eliminar) son flujo core del cobrador —
+    // la validacion de ownership y fechas editables se resuelve en el controller.
+    // NO se aplica middleware permission:xxx aqui para no bloquear al cobrador en su operatoria diaria.
     Route::post('payment/create', [PaymentController::class, 'create']);
     Route::get('payment/{creditId}/{paymentId}', [PaymentController::class, 'show']);
     Route::delete('payment/delete/{paymentId}', [PaymentController::class, 'delete']);
@@ -290,14 +405,19 @@ Route::middleware('auth:api')->group(function () {
     Route::get('reports/daily-collection', [CreditController::class, 'dailyCollectionReport']);
     Route::get('reports/credits/{credit}/report', [CreditController::class, 'creditReport']);
     Route::prefix('reports/excel')->group(function () {
-        Route::get('accumulated-by-city', [ReportExportController::class, 'downloadAccumulatedByCityExcel']);
-        Route::get('seller-liquidations/{sellerId}/export-detail', [ReportExportController::class, 'downloadSellerLiquidationsDetailExcel']);
-        Route::get('sellers-summary-by-city/{sellerId}', [ReportExportController::class, 'downloadSellersSummaryByCityExcel']);
+        Route::get('accumulated-by-city', [ReportExportController::class, 'downloadAccumulatedByCityExcel'])
+            ->middleware('permission:exportar_reportes');
+        Route::get('seller-liquidations/{sellerId}/export-detail', [ReportExportController::class, 'downloadSellerLiquidationsDetailExcel'])
+            ->middleware('permission:exportar_liquidaciones');
+        Route::get('sellers-summary-by-city/{sellerId}', [ReportExportController::class, 'downloadSellersSummaryByCityExcel'])
+            ->middleware('permission:exportar_reportes');
     });
 
     // Import Routes (Admin restricted via Controller)
-    Route::post('/import/analyze', [\App\Http\Controllers\ImportController::class, 'analyze']);
-    Route::post('/import/clients', [\App\Http\Controllers\ImportController::class, 'store']);
+    Route::post('/import/analyze', [\App\Http\Controllers\ImportController::class, 'analyze'])
+        ->middleware('permission:importar_clientes');
+    Route::post('/import/clients', [\App\Http\Controllers\ImportController::class, 'store'])
+        ->middleware('permission:importar_clientes');
 
     // Verification Routes
     Route::post('verification/send-otp', [VerificationController::class, 'sendOtp']);

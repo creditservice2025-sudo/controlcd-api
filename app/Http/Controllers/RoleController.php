@@ -21,7 +21,10 @@ class RoleController extends Controller
     {
         try {
             $search = $request->get('search') ?? '';
-            $perPage = $request->get('perPage') ?? 10;
+            // Default 100 (no 10): hay 11 roles y "Supervisor" es el último
+            // alfabéticamente; con perPage=10 caía en la página 2 y el front
+            // (que solo pide la página 1) nunca lo recibía → no se listaba.
+            $perPage = $request->get('perPage') ?? 100;
             return  $this->roleService->getAllRoles($search, $perPage);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);

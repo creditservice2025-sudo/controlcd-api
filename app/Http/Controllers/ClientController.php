@@ -215,6 +215,9 @@ class ClientController extends Controller
             $perPage = (int) $request->input('per_page', 50);
             $page = (int) $request->input('page', 1);
 
+            // Sub-modo del switch de "Clientes recurrentes".
+            $recurrentMode = $request->input('recurrent_mode');
+
             return $this->clientService->index(
                 $search,
                 $orderBy,
@@ -227,7 +230,8 @@ class ClientController extends Controller
                 $createdFrom,
                 $createdTo,
                 $perPage,
-                $page
+                $page,
+                $recurrentMode
             );
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
@@ -435,6 +439,20 @@ class ClientController extends Controller
             $seller = Seller::find($sellerId);
             if (!$seller) {
                 return $this->errorResponse('Vendedor no encontrado', 404);
+            }
+
+            // Aislamiento por empresa: Admin (role 2) solo puede consultar
+            // sellers de su propia compañía. Super-Admin (role 1) sin restriccion.
+            // Cobrador (role 5) solo su propio seller.
+            $user = \Illuminate\Support\Facades\Auth::user();
+            if ($user->role_id === 2 && $user->company && $seller->company_id !== $user->company->id) {
+                return $this->errorResponse('No tiene acceso a este vendedor', 403);
+            }
+            if ($user->role_id === 5) {
+                $ownSeller = Seller::where('user_id', $user->id)->first();
+                if (!$ownSeller || $ownSeller->id !== (int) $sellerId) {
+                    return $this->errorResponse('No tiene acceso a este vendedor', 403);
+                }
             }
 
             return $this->clientService->getDebtorClientsBySeller($sellerId);
@@ -652,6 +670,29 @@ class ClientController extends Controller
             'message' => 'Cupo actualizado correctamente',
             'data' => $client
         ]);
+    }
+
+    /**
+     * Bloquea al cliente para que no se le puedan abrir NUEVOS créditos.
+     * Créditos vigentes siguen operando. Reversible vía unblockCreditCreation.
+     * Permisos validados en el service: rol 1 (todos) o rol 2 (solo su empresa).
+     */
+    public function blockCreditCreation(Request $request, $clientId)
+    {
+        $data = $request->validate([
+            'reason' => 'required|string|max:60',
+            'notes' => 'nullable|string|max:500',
+        ]);
+        return $this->clientService->blockCreditCreation(
+            $clientId,
+            $data['reason'],
+            $data['notes'] ?? null,
+        );
+    }
+
+    public function unblockCreditCreation(Request $request, $clientId)
+    {
+        return $this->clientService->unblockCreditCreation($clientId);
     }
 
     public function transfer(Request $request, $clientId)

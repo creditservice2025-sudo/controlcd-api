@@ -18,6 +18,24 @@ class CreditController extends Controller
     public function __construct(CreditService $creditService)
     {
         $this->creditService = $creditService;
+        // Supervisor (rol 6) en modo solo-lectura cuando supervisa un
+        // vendedor con caja cerrada. El middleware filtra por rol y por
+        // active_seller_id; otros roles pasan transparentes.
+        $this->middleware('block.writes.cash.closed')->only([
+            'create',
+            'renew',
+            'unifyCredits',
+            'update',
+            'updateSchedule',
+            'updateFrequency',
+            'setRenewalBlocked',
+            'delete',
+            'toggleCreditStatus',
+            'toggleCreditsStatusMassively',
+            'markClientAsUncollectible',
+            'restoreClientFromUncollectible',
+            'changeCreditClient',
+        ]);
         /*  $this->middleware('permission:ver_creditos')->only('index');
          $this->middleware('permission:crear_creditos')->only('create');
          $this->middleware('permission:editar_creditos')->only('update');
@@ -305,6 +323,68 @@ class CreditController extends Controller
         }
     }
 
+    /**
+     * Detalle de un crédito (cuotas + pagos) para el panel expandible del
+     * modal de cartera irrecuperable. Validación de ownership: el crédito
+     * debe pertenecer al cliente especificado.
+     */
+    public function clientCreditUncollectibleDetail($clientId, $creditId)
+    {
+        try {
+            return $this->creditService->getCreditDetailForUncollectible($clientId, $creditId);
+        } catch (Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Devuelve resumen previo para el modal. Acepta query param `for=mark|restore`:
+     *  - `mark` (default): lista créditos en estado 'Vigente' (a mover)
+     *  - `restore`: lista créditos en estado 'Cartera Irrecuperable' (a restaurar)
+     */
+    public function clientUncollectibleSummary(Request $request, $clientId)
+    {
+        try {
+            $for = $request->query('for', 'mark');
+            $forStatus = $for === 'restore' ? 'Cartera Irrecuperable' : 'Vigente';
+            return $this->creditService->getClientCreditsSummaryForUncollectible($clientId, $forStatus);
+        } catch (Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Marca créditos del cliente como cartera irrecuperable. Si recibe
+     * `credit_ids: int[]` solo mueve los seleccionados; si no, mueve todos
+     * los vigentes. Solo Super-Admin / Admin.
+     */
+    public function markClientAsUncollectible(Request $request, $clientId)
+    {
+        try {
+            $creditIds = $request->input('credit_ids', []);
+            if (!is_array($creditIds)) $creditIds = [];
+            return $this->creditService->markClientAsUncollectible($clientId, $creditIds);
+        } catch (Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Restaura créditos del cliente desde cartera irrecuperable. Si recibe
+     * `credit_ids: int[]` solo restaura los seleccionados; si no, restaura
+     * todos los del cliente en ese estado. Solo Super-Admin / Admin.
+     */
+    public function restoreClientFromUncollectible(Request $request, $clientId)
+    {
+        try {
+            $creditIds = $request->input('credit_ids', []);
+            if (!is_array($creditIds)) $creditIds = [];
+            return $this->creditService->restoreClientFromUncollectible($clientId, $creditIds);
+        } catch (Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
+
     public function changeCreditClient(Request $request, $creditId)
     {
         try {
@@ -359,6 +439,42 @@ class CreditController extends Controller
         } catch (Exception $e) {
             \Log::error($e->getMessage());
             return $this->errorResponse('Error al obtener los créditos del vendedor: ' . $e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Version ligera para modales de dashboard: devuelve solo columnas necesarias
+     * sin eager loading pesado. Rapido incluso con miles de creditos por vendedor.
+     */
+    public function getSellerCarteraLite(Request $request, int $sellerId)
+    {
+        try {
+            $rows = \DB::table('credits')
+                ->join('clients', 'clients.id', '=', 'credits.client_id')
+                ->where('credits.seller_id', $sellerId)
+                ->whereNull('credits.deleted_at')
+                ->whereNull('clients.deleted_at')
+                ->select(
+                    'credits.id',
+                    'credits.status',
+                    'credits.credit_value',
+                    'credits.total_interest',
+                    'credits.created_at',
+                    'credits.first_quota_date',
+                    'clients.id as client_id',
+                    'clients.name as client_name'
+                )
+                ->orderBy('clients.name')
+                ->get();
+
+            return response()->json([
+                'success' => true,
+                'data' => $rows,
+                'total' => $rows->count(),
+            ]);
+        } catch (\Exception $e) {
+            \Log::error("getSellerCarteraLite error: " . $e->getMessage());
+            return $this->errorResponse('Error al obtener la cartera del vendedor', 500);
         }
     }
 

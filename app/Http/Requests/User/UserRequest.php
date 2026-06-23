@@ -3,6 +3,7 @@
 namespace App\Http\Requests\User;
 
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
 class UserRequest extends FormRequest
 {
@@ -22,13 +23,18 @@ class UserRequest extends FormRequest
     public function rules(): array
     {
         return [
+            // El nombre (mostrado como "Nombre del Usuario") es el nombre de la
+            // persona y SÍ puede repetirse. La credencial única de login es el
+            // email (regla 'unique' abajo), que en la UI se muestra como "Username".
             'name' => 'required|string|max:255',
             'email' => 'required|string|email|max:255|unique:users',
             'dni' => 'required|integer|unique:users',
             'address' => 'required|string|max:255',
             'password' => 'required|string|min:8',
             'routes' => 'array',
-            'phone' => 'required|integer|unique:users',
+            // phone ahora es string: incluye el código de país (ej "+57310...").
+            // whereNull('deleted_at') para no chocar con usuarios borrados.
+            'phone' => ['required', 'string', 'max:25', Rule::unique('users', 'phone')->whereNull('deleted_at')],
             'role_id' => 'required|integer',
             'timezone' => 'nullable|string',
         ];

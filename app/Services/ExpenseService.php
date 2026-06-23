@@ -2,7 +2,9 @@
 
 namespace App\Services;
 
+use App\Exceptions\CashClosedException;
 use App\Helpers\Helper;
+use App\Services\Traits\EnforcesCashOpen;
 use App\Traits\ApiResponse;
 use App\Models\Expense;
 use App\Models\ExpenseImage;
@@ -15,10 +17,11 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
+use App\Services\TelegramService;
 
 class ExpenseService
 {
-    use ApiResponse;
+    use ApiResponse, EnforcesCashOpen;
 
     const TIMEZONE = 'America/Lima';
     protected $metricsCacheService;
@@ -113,10 +116,23 @@ class ExpenseService
             
             $businessDate = $businessTimestamp->toDateString();
 
+            // Guard de defensa en profundidad: rechaza el gasto si la
+            // liquidación del día del vendedor ya está cerrada.
+            //
+            // El admin/superadmin (rol 1 y 2) SÍ puede registrar movimientos
+            // sobre una caja cerrada: es justamente quien "reabre/ajusta" la
+            // caja. El bloqueo solo aplica al vendedor y demás roles operativos.
+            if ($seller && !$isAdmin) {
+                $this->assertSellerCashOpen($seller->id, $businessDate);
+            }
+
             $expenseData = [
                 'value' => $validated['value'],
                 'description' => $validated['description'],
                 'user_id' => $userId,
+                // Quién REGISTRÓ el gasto (auditoría). Puede ser un admin
+                // creando el gasto por cuenta del vendedor ($userId).
+                'created_by' => $user->id,
                 'category_id' => $validated['category_id'],
                 'status' => 'Aprobado',
                 'created_at' => $createdAt,
@@ -185,11 +201,24 @@ class ExpenseService
                 ]);
             }
 
+            // Notificación Telegram. Falla silenciosa: cualquier error NO
+            // afecta la respuesta de creación del gasto.
+            try {
+                app(TelegramService::class)->notifyNewExpense($expense);
+            } catch (\Throwable $e) {
+                Log::warning('[telegram.new_expense] error', [
+                    'expense_id' => $expense->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Gasto creado con éxito',
                 'data' => $expense,
             ]);
+        } catch (CashClosedException $e) {
+            return $this->errorResponse($e->getMessage(), 422);
         } catch (\Exception $e) {
             Log::error($e->getMessage());
             return $this->errorResponse('Error al crear el gasto', 500);
@@ -312,21 +341,30 @@ class ExpenseService
                 ? $expense->business_date->format('Y-m-d') 
                 : $expense->created_at->format('Y-m-d'); // Fallback para antiguos
 
+            // El admin/superadmin (rol 1 y 2) puede ajustar el gasto aunque la
+            // liquidación de la fecha ya exista/esté cerrada. Es quien
+            // reabre/ajusta la caja. El resto de roles sí queda bloqueado.
+            $currentUser = Auth::user();
+            $isAdmin = $currentUser && in_array($currentUser->role_id, [1, 2]);
+
             // Verificar si existe liquidación aprobada para la fecha del gasto
             $liquidation = Liquidation::where('seller_id', $seller->id)
                 ->whereDate('date', $businessDate)
                 ->first();
 
-            if ($liquidation) {
+            if ($liquidation && !$isAdmin) {
                 return response()->json([
                     'success' => false,
                     'message' => 'No se puede editar el gasto porque ya existe una liquidación aprobada para esta fecha'
                 ], 422);
             }
 
+            // El monto (value) NO se edita: cambiarlo alteraría la caja/
+            // liquidación. Solo se permiten categoría y descripción. Aunque el
+            // cliente enviara 'value', no se incluye en $validated, por lo que
+            // nunca se actualiza.
             $validated = $request->validate([
                 'category_id' => 'required|numeric',
-                'value' => 'required|numeric|min:0',
                 'description' => 'required|string',
                 'timezone' => 'nullable|string',
             ]);
@@ -449,6 +487,16 @@ class ExpenseService
         // Invalidate Liquidation Cache
         $this->metricsCacheService->invalidateLiquidationMetrics($seller->id, $businessDate);
 
+            // Notificación Telegram (instancia aún en memoria con sus campos).
+            try {
+                app(TelegramService::class)->notifyDeletedExpense($expense);
+            } catch (\Throwable $e) {
+                Log::warning('[telegram.deleted_expense] error', [
+                    'expense_id' => $expense->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
             return $this->successResponse([
                 'success' => true,
                 'message' => "Gasto eliminado con éxito y liquidaciones actualizadas",
@@ -522,7 +570,7 @@ class ExpenseService
             $user = Auth::user();
             $role = $user->role_id;
 
-            $expensesQuery = Expense::with(['user', 'category', 'images']);
+            $expensesQuery = Expense::with(['user', 'category', 'images', 'createdByUser:id,name,email']);
 
             if ($request->has('include_deleted') && filter_var($request->include_deleted, FILTER_VALIDATE_BOOLEAN)) {
                 $expensesQuery->withTrashed();
@@ -543,6 +591,8 @@ class ExpenseService
                     $query->where('company_id', $companyId);
                 })->pluck('id');
                 $expensesQuery->whereIn('user_id', $userIds);
+            } else if ($role === 1) {
+                // Admin: sin restricciones (ve todo). Misma semántica que ClientService.
             } else if ($role === 2) {
                 if (!$user->company) {
                     return $this->successResponse([
@@ -561,6 +611,36 @@ class ExpenseService
                 $todayEnd = Carbon::now(self::TIMEZONE)->endOfDay()->timezone('UTC');
                 $expensesQuery->where('user_id', $user->id)
                     ->whereBetween('created_at', [$todayStart, $todayEnd]);
+            } else if ($role === 6 && $request->attributes->get('active_seller_id')) {
+                // Supervisor con ruta activa seleccionada (header X-Active-Seller-Id
+                // resuelto por middleware): mostrar SOLO los gastos del cobrador
+                // seleccionado, sin mezclar los de las demás rutas vinculadas.
+                $activeSellerId = (int) $request->attributes->get('active_seller_id');
+                $sellerUserId = Seller::where('id', $activeSellerId)->value('user_id');
+                if ($sellerUserId) {
+                    $expensesQuery->where('user_id', $sellerUserId);
+                } else {
+                    $expensesQuery->whereRaw('1=0');
+                }
+            } else {
+                // Roles intermedios (Socio=3, Asistente=4, Supervisor=6, Cobrador-abono=7,
+                // Limitado=8, Digitador=9, Contador=10, Secretaria=11): aislamiento por
+                // empresa. Resuelve company del usuario en este orden:
+                //   1) relación directa user->company (admin)
+                //   2) seller asociado (cobradores promovidos)
+                //   3) parent_id->company (subordinados de un admin)
+                // Si nada se puede resolver, fail-closed.
+                $resolvedCompanyId = $user->company?->id
+                    ?? optional(Seller::where('user_id', $user->id)->first())->company_id
+                    ?? optional(User::find($user->parent_id))?->company?->id;
+                if ($resolvedCompanyId) {
+                    $userIds = User::whereHas('seller', function ($query) use ($resolvedCompanyId) {
+                        $query->where('company_id', $resolvedCompanyId);
+                    })->pluck('id');
+                    $expensesQuery->whereIn('user_id', $userIds);
+                } else {
+                    $expensesQuery->whereRaw('1=0');
+                }
             }
 
             if ($request->has('seller_id') && $request->seller_id) {
@@ -717,7 +797,7 @@ class ExpenseService
                         ->whereNull('deleted_at')
                         ->limit(1)
                 ])
-                ->with(['user', 'category', 'images']);
+                ->with(['user', 'category', 'images', 'createdByUser:id,name,email']);
 
             if ($request->has('include_deleted') && filter_var($request->include_deleted, FILTER_VALIDATE_BOOLEAN)) {
                 $expensesQuery->withTrashed();

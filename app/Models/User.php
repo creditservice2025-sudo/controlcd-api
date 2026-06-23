@@ -36,7 +36,8 @@ class User extends Authenticatable
         'role_id',
         'status',
         'must_change_password',
-        'is_collection_user',
+        'updated_by',
+        'token_revoked',
     ];
 
     /**
@@ -74,6 +75,16 @@ class User extends Authenticatable
         return $this->belongsTo(User::class);
     }
 
+    /**
+     * Usuario que realizó la última actualización de este miembro (auditoría).
+     * Se nombra `updatedByUser` (no `updatedBy`) para que su serialización
+     * snake_case `updated_by_user` NO choque con la columna `updated_by`.
+     */
+    public function updatedByUser()
+    {
+        return $this->belongsTo(User::class, 'updated_by');
+    }
+
     public function routes()
     {
        return $this->belongsToMany(Seller::class, 'user_routes', 'user_id', 'seller_id');
@@ -81,6 +92,22 @@ class User extends Authenticatable
     public function userRoutes()
     {
         return $this->hasMany(UserRoute::class);
+    }
+
+    /**
+     * Relación directa al rol por users.role_id (lookup simple a la tabla
+     * `roles`). Es independiente de la relación many-to-many `roles()` que
+     * provee Spatie Permissions vía model_has_roles — esa se usa para
+     * permisos finos; ésta para el rol numérico legacy guardado en la
+     * columna users.role_id.
+     *
+     * Permite eager-load del nombre del rol con
+     *     User::with('role:id,name')
+     * y exponerlo al frontend sin duplicar el mapeo role_id → nombre.
+     */
+    public function role()
+    {
+        return $this->belongsTo(\Spatie\Permission\Models\Role::class, 'role_id');
     }
 
 

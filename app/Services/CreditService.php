@@ -2,7 +2,9 @@
 
 namespace App\Services;
 
+use App\Exceptions\CashClosedException;
 use App\Helpers\Helper;
+use App\Services\Traits\EnforcesCashOpen;
 use Illuminate\Support\Facades\Hash;
 use App\Models\Client;
 use Illuminate\Support\Facades\Log;
@@ -24,10 +26,11 @@ use App\Models\CreditModification;
 use App\Models\PaymentInstallment;
 use Barryvdh\DomPDF\Facade\Pdf;
 use App\Traits\ApiResponse;
+use App\Services\TelegramService;
 
 class CreditService
 {
-    use ApiResponse;
+    use ApiResponse, EnforcesCashOpen;
 
     const TIMEZONE = 'America/Lima';
 
@@ -36,6 +39,24 @@ class CreditService
         try {
             $params = $request->validated();
             \Log::info('Creando crédito con parámetros: ' . json_encode($params));
+
+            // GUARDRAIL: si el cliente fue bloqueado para nuevos créditos,
+            // rechazar antes de cualquier cálculo. El flag se levanta vía
+            // ClientService::blockCreditCreation (rol 1 / rol 2 de la
+            // empresa). Aplica también a renovaciones (cualquier flujo
+            // que cree un nuevo registro en `credits` para ese cliente).
+            if (!empty($params['client_id'])) {
+                $client = \App\Models\Client::find($params['client_id']);
+                if ($client && (bool) $client->credit_block_active) {
+                    $reasonLabel = $this->humanizeBlockReason($client->credit_block_reason);
+                    return $this->errorResponse(
+                        'Cliente bloqueado para nuevos créditos. Motivo: ' . $reasonLabel
+                            . ($client->credit_block_notes ? ' — ' . $client->credit_block_notes : ''),
+                        422
+                    );
+                }
+            }
+
             if (isset($params['timezone']) && !empty($params['timezone'])) {
                 $params['created_at'] = Carbon::now($params['timezone']);
                 $params['updated_at'] = Carbon::now($params['timezone']);
@@ -70,6 +91,16 @@ class CreditService
                 }
             }
 
+            // Guard de defensa en profundidad: rechaza el crédito si la
+            // liquidación del día del vendedor ya está cerrada. Se hace
+            // antes de cualquier validación de topes para no gastar trabajo
+            // en un crédito que de todas formas será rechazado.
+            if (!empty($params['seller_id'])) {
+                $tzGuard = $userTimezone ?: self::TIMEZONE;
+                $businessDateGuard = Carbon::now($tzGuard)->toDateString();
+                $this->assertSellerCashOpen((int) $params['seller_id'], $businessDateGuard);
+            }
+
             // Restricción por monto total de ventas nuevas en el día
             $sellerConfig = \App\Models\SellerConfig::where('seller_id', $params['seller_id'])->first();
             $limit = $sellerConfig ? floatval($sellerConfig->restrict_new_sales_amount ?? 0) : 0;
@@ -84,6 +115,84 @@ class CreditService
                 $totalWithNew = $newCreditsAmount + floatval($params['credit_value']);
                 if ($totalWithNew > $limit) {
                     return $this->errorResponse('No puedes crear el crédito. El monto total de ventas nuevas por el cobrador hoy supera el límite de $' . number_format($limit, 2), 403);
+                }
+            }
+
+            // Topes y reglas por SellerConfig. Detectamos si es "renovación
+            // lógica" (cliente con al menos un crédito previo no soft-deleted)
+            // para aplicar el tope correspondiente. La diferencia entre
+            // "nuevo" y "renovación" en el frontend es invisible aquí: la app
+            // siempre hace POST /credit/create. El crédito se considera
+            // renovación si el cliente ya tiene historial.
+            $creditValueRequested = floatval($params['credit_value'] ?? 0);
+            $existingCredits = \App\Models\Credit::where('client_id', $params['client_id'])->get();
+            $isRenewal = $existingCredits->isNotEmpty();
+
+            // Bloqueo por máximo de créditos vigentes por cliente. Solo
+            // cuenta los activos (no Liquidado/Renovado/Inactivo/Cartera
+            // Irrecuperable/Unificado). 0 = sin límite.
+            $maxPerClient = $sellerConfig ? intval($sellerConfig->max_credits_per_client ?? 0) : 0;
+            if ($maxPerClient > 0) {
+                $activeCount = $existingCredits
+                    ->whereNotIn('status', ['Liquidado', 'Renovado', 'Inactivo', 'Cartera Irrecuperable', 'Unificado'])
+                    ->count();
+                if ($activeCount >= $maxPerClient) {
+                    return $this->errorResponse(
+                        'El cliente ya tiene ' . $activeCount . ' crédito(s) activo(s). '
+                            . 'El límite por cliente es ' . $maxPerClient . '.',
+                        403
+                    );
+                }
+            }
+
+            // Tope por monto del crédito individual: aplica el de "renovación"
+            // si el cliente tiene historial; si no, el de "nuevo". 0 = sin
+            // límite en cualquiera de los dos.
+            $maxNew = $sellerConfig ? floatval($sellerConfig->max_credit_amount_new ?? 0) : 0;
+            $maxRenewal = $sellerConfig ? floatval($sellerConfig->max_credit_amount_renewal ?? 0) : 0;
+            $cap = $isRenewal ? $maxRenewal : $maxNew;
+            $capLabel = $isRenewal ? 'renovaciones' : 'créditos nuevos';
+            \Log::info('[credit-cap] CreditService::create check', [
+                'seller_id' => $params['seller_id'] ?? null,
+                'client_id' => $params['client_id'] ?? null,
+                'is_renewal' => $isRenewal,
+                'cap_applied' => $cap,
+                'cap_label' => $capLabel,
+                'requested' => $creditValueRequested,
+                'will_block' => $cap > 0 && $creditValueRequested > $cap,
+            ]);
+            if ($cap > 0 && $creditValueRequested > $cap) {
+                return $this->errorResponse(
+                    'El monto del crédito ($' . number_format($creditValueRequested, 2)
+                        . ') supera el límite asignado al cobrador para ' . $capLabel
+                        . ' ($' . number_format($cap, 2) . ').',
+                    403
+                );
+            }
+
+            // Mínimo de cuotas pagadas del crédito previo para permitir otro.
+            // Solo aplica en "renovación lógica". 0 = no se exige.
+            $minQuotasPaid = $sellerConfig ? intval($sellerConfig->renewal_min_quotas_paid ?? 0) : 0;
+            if ($isRenewal && $minQuotasPaid > 0) {
+                // Tomamos el crédito previo más reciente (no terminado) para
+                // medir cuotas pagadas; si todos están Liquidados se omite el
+                // chequeo (el cliente ya pagó todo, no hay deuda pendiente).
+                $lastActive = $existingCredits
+                    ->whereNotIn('status', ['Liquidado', 'Renovado', 'Inactivo', 'Cartera Irrecuperable', 'Unificado'])
+                    ->sortByDesc('created_at')
+                    ->first();
+                if ($lastActive) {
+                    $paidCount = \App\Models\Installment::where('credit_id', $lastActive->id)
+                        ->where('status', 'Pagado')
+                        ->count();
+                    if ($paidCount < $minQuotasPaid) {
+                        return $this->errorResponse(
+                            'No se puede crear el crédito: el crédito anterior tiene '
+                                . $paidCount . ' cuota(s) pagada(s), se requieren al menos '
+                                . $minQuotasPaid . ' para renovar.',
+                            403
+                        );
+                    }
                 }
             }
 
@@ -122,7 +231,10 @@ class CreditService
                 'is_advance_payment' => $params['is_advance_payment'] ?? false,
                 'status' => 'Vigente',
                 'created_at' => $createdAt,
-                'updated_at' => $updatedAt
+                'updated_at' => $updatedAt,
+                // Trazabilidad: quién y con qué rol creó el crédito.
+                'created_by' => Auth::id(),
+                'created_by_role' => optional(Auth::user())->role_id,
             ];
 
             $credit = Credit::create($creditData);
@@ -317,7 +429,21 @@ class CreditService
                 \Log::error("Error recalculando liquidación al crear crédito: " . $e->getMessage());
             }
 
+            // Notificación Telegram a la empresa del vendedor (si tiene
+            // habilitada la opción). Falla silenciosa: cualquier error NO
+            // afecta la respuesta de creación del crédito.
+            try {
+                app(TelegramService::class)->notifyNewCredit($credit);
+            } catch (\Throwable $e) {
+                \Log::warning('[telegram.new_credit] error', [
+                    'credit_id' => $credit->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
             return $response;
+        } catch (CashClosedException $e) {
+            return $this->errorResponse($e->getMessage(), 422);
         } catch (\Exception $e) {
             \Log::error("Error al crear crédito: " . $e->getMessage());
             /* \Log::error($e->getTraceAsString()); */
@@ -343,6 +469,21 @@ class CreditService
                 'images.required' => 'La foto es obligatoria para la renovación',
                 'images.min' => 'Debe subir al menos una foto para renovar',
             ]);
+
+            // Validar tope ANTES de abrir la transacción para no dejarla
+            // colgada con un return temprano.
+            $oldCreditPreCheck = Credit::findOrFail($request->old_credit_id);
+            $sellerConfigRenewal = \App\Models\SellerConfig::where('seller_id', $oldCreditPreCheck->seller_id)->first();
+            $maxRenewal = $sellerConfigRenewal ? floatval($sellerConfigRenewal->max_credit_amount_renewal ?? 0) : 0;
+            $newCreditValueRequested = floatval($request->new_credit_value);
+            if ($maxRenewal > 0 && $newCreditValueRequested > $maxRenewal) {
+                return $this->errorResponse(
+                    'El monto de la renovación ($' . number_format($newCreditValueRequested, 2)
+                        . ') supera el límite asignado al cobrador para renovaciones ($'
+                        . number_format($maxRenewal, 2) . ').',
+                    403
+                );
+            }
 
             DB::beginTransaction();
 
@@ -415,7 +556,10 @@ class CreditService
                 'excluded_days' => !empty($request->input('excluded_days')) && is_array($request->input('excluded_days')) ? json_encode($request->input('excluded_days')) : ($oldCredit->excluded_days ?? json_encode(['Domingo'])),
                 'status' => 'Vigente',
                 'created_at' => $createdAt,
-                'updated_at' => $updatedAt
+                'updated_at' => $updatedAt,
+                // Trazabilidad: quién y con qué rol creó el crédito (renovación).
+                'created_by' => Auth::id(),
+                'created_by_role' => optional(Auth::user())->role_id,
             ]);
 
             $quotaAmount = $newCredit->total_amount / $newCredit->number_installments;
@@ -1649,6 +1793,17 @@ class CreditService
                 $creditsQuery->whereHas('client', function ($query) use ($seller) {
                     $query->where('seller_id', $seller->id);
                 });
+            } elseif ($user->role_id == 6) {
+                // Supervisor: si seleccionó una ruta activa (header X-Active-Seller-Id
+                // resuelto por middleware), mostrar SOLO los créditos de ese vendedor;
+                // sin selección, los de todas sus rutas vinculadas.
+                $activeSellerId = request()->attributes->get('active_seller_id');
+                if ($activeSellerId) {
+                    $creditsQuery->where('seller_id', (int) $activeSellerId);
+                } else {
+                    $sellerIds = \App\Models\UserRoute::where('user_id', $user->id)->pluck('seller_id');
+                    $creditsQuery->whereIn('seller_id', $sellerIds);
+                }
             }
 
             $credits = $creditsQuery->paginate($perPage);
@@ -1902,6 +2057,18 @@ class CreditService
 
             DB::commit();
 
+            // Notificación Telegram (post-commit). Usa la instancia $credit
+            // todavía en memoria con sus relaciones (seller, client) cargadas
+            // en línea 1903 con el `with(...)`. Falla silenciosa.
+            try {
+                app(TelegramService::class)->notifyDeletedCredit($credit);
+            } catch (\Throwable $e) {
+                \Log::warning('[telegram.deleted_credit] error', [
+                    'credit_id' => $credit->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Crédito eliminado y liquidaciones actualizadas correctamente'
@@ -2057,6 +2224,323 @@ class CreditService
         }
     }
 
+    /**
+     * Devuelve un resumen previo para mostrar en el modal de confirmación
+     * antes de marcar un cliente como cartera irrecuperable. Lista todos los
+     * créditos VIGENTES del cliente con monto y saldo pendiente, para que
+     * el usuario sepa qué se va a mover.
+     */
+    /**
+     * Resumen previo para mostrar en el modal de "Pasar a / Restaurar de
+     * Cartera Irrecuperable". Soporta dos modos via parámetro $forStatus:
+     *  - 'Vigente'              → créditos a mover (modo "mark")
+     *  - 'Cartera Irrecuperable' → créditos a restaurar (modo "restore")
+     *
+     * Cada crédito incluye info de cuotas (total, pagadas, % de progreso) y
+     * fecha del último pago para que el admin tenga contexto al decidir.
+     */
+    public function getClientCreditsSummaryForUncollectible($clientId, string $forStatus = 'Vigente')
+    {
+        try {
+            // Diagnóstico de performance: medimos cada query para identificar
+            // cuellos de botella reales (vs latencia de red o middleware).
+            // Logs van a storage/logs/laravel.log con tag [uncollectible].
+            $tStart = microtime(true);
+            $timings = [];
+
+            // Solo necesitamos id/name/dni para el header del modal — evitar
+            // hidratar columnas pesadas como gps_geolocalization (JSON).
+            $tQ = microtime(true);
+            $client = Client::select('id', 'name', 'dni')->find($clientId);
+            $timings['client_ms'] = (int) ((microtime(true) - $tQ) * 1000);
+            if (!$client) {
+                return $this->errorResponse('Cliente no encontrado', 404);
+            }
+
+            $tQ = microtime(true);
+            $credits = Credit::where('client_id', $clientId)
+                ->where('status', $forStatus)
+                ->get(['id', 'credit_value', 'remaining_amount', 'status', 'created_at']);
+            $timings['credits_ms'] = (int) ((microtime(true) - $tQ) * 1000);
+
+            $creditIds = $credits->pluck('id');
+
+            // Stats de cuotas en una sola query agregada (más rápido que 2-3
+            // subconsultas via withCount/withSum cuando se necesitan varios
+            // agregados del mismo set). Filtra soft-deleted explícitamente
+            // porque vamos directo al query builder.
+            $tQ = microtime(true);
+            $statsRaw = $creditIds->isEmpty() ? collect() : DB::table('installments')
+                ->whereIn('credit_id', $creditIds)
+                ->whereNull('deleted_at')
+                ->groupBy('credit_id')
+                ->select('credit_id')
+                ->selectRaw('COUNT(*) as installments_total')
+                ->selectRaw("SUM(CASE WHEN status = 'Pagado' THEN 1 ELSE 0 END) as installments_paid")
+                ->selectRaw('COALESCE(SUM(paid_amount), 0) as installments_paid_amount')
+                ->get();
+            $stats = $statsRaw->keyBy('credit_id');
+            $timings['stats_ms'] = (int) ((microtime(true) - $tQ) * 1000);
+
+            // Último pago por crédito (consulta agregada para no hacer N+1)
+            $tQ = microtime(true);
+            $lastPayments = $creditIds->isEmpty() ? collect() : Payment::whereIn('credit_id', $creditIds)
+                ->selectRaw('credit_id, MAX(payment_date) as last_payment_date')
+                ->groupBy('credit_id')
+                ->pluck('last_payment_date', 'credit_id');
+            $timings['payments_ms'] = (int) ((microtime(true) - $tQ) * 1000);
+
+            $today = Carbon::now()->startOfDay();
+
+            $totalPending = $credits->sum('remaining_amount');
+            $totalValue = $credits->sum('credit_value');
+
+            $tQ = microtime(true);
+            $creditsPayload = $credits->map(function ($c) use ($stats, $lastPayments, $today) {
+                        $value = (float) $c->credit_value;
+                        $pending = (float) $c->remaining_amount;
+                        $row = $stats[$c->id] ?? null;
+                        $totalQ = (int) ($row->installments_total ?? 0);
+                        $paidQ = (int) ($row->installments_paid ?? 0);
+                        // "Pagado" = suma real de paid_amount de cuotas (lo
+                        // que efectivamente abonó el cliente, intereses
+                        // incluidos). NO usar `credit_value - remaining_amount`:
+                        // mezcla capital con deuda total y daba un valor
+                        // menor (el chip mostraba 30 mientras la cuota 1
+                        // ya tenía 90 pagados).
+                        $paidAmount = (float) ($row->installments_paid_amount ?? 0);
+                        $totalDebt = $paidAmount + $pending;
+                        $paidPct = $totalDebt > 0 ? round(($paidAmount / $totalDebt) * 100, 1) : 0;
+
+                        $lastPaymentDate = $lastPayments[$c->id] ?? null;
+                        $daysSincePayment = null;
+                        if ($lastPaymentDate) {
+                            $daysSincePayment = Carbon::parse($lastPaymentDate)->startOfDay()->diffInDays($today);
+                        }
+
+                        return [
+                            'id' => $c->id,
+                            'credit_value' => $value,
+                            'pending_amount' => $pending,
+                            'paid_amount' => round($paidAmount, 2),
+                            'paid_percentage' => $paidPct,
+                            'installments_total' => $totalQ,
+                            'installments_paid' => $paidQ,
+                            'status' => $c->status,
+                            'created_at' => $c->created_at,
+                            'last_payment_date' => $lastPaymentDate,
+                            'days_since_last_payment' => $daysSincePayment,
+                        ];
+                    })->values();
+            $timings['map_ms'] = (int) ((microtime(true) - $tQ) * 1000);
+            $timings['total_ms'] = (int) ((microtime(true) - $tStart) * 1000);
+            \Log::info('[uncollectible] summary timing', array_merge(
+                ['client_id' => (int) $clientId, 'credits' => $credits->count()],
+                $timings,
+            ));
+
+            return $this->successResponse([
+                'success' => true,
+                'data' => [
+                    'client' => [
+                        'id' => $client->id,
+                        'name' => $client->name,
+                        'dni' => $client->dni,
+                    ],
+                    'active_credits_count' => $credits->count(),
+                    'total_credit_value' => round((float) $totalValue, 2),
+                    'total_pending_amount' => round((float) $totalPending, 2),
+                    'credits' => $creditsPayload,
+                ]
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error en getClientCreditsSummaryForUncollectible: ' . $e->getMessage());
+            return $this->errorResponse('Error al obtener resumen del cliente', 500);
+        }
+    }
+
+    /**
+     * Detalle de un crédito (cuotas + pagos) usado para el panel expandible
+     * en el modal de cartera irrecuperable. Carga lazy desde el frontend.
+     * El crédito debe pertenecer al cliente $clientId (validación de ownership).
+     */
+    public function getCreditDetailForUncollectible($clientId, $creditId)
+    {
+        try {
+            $credit = Credit::where('id', $creditId)
+                ->where('client_id', $clientId)
+                ->first();
+            if (!$credit) {
+                return $this->errorResponse('Crédito no encontrado para este cliente', 404);
+            }
+
+            // Incluir cuotas soft-deleted: el admin necesita ver el historial
+            // completo (re-cuoteos / cuotas anuladas) antes de mover a
+            // irrecuperable.
+            $installments = Installment::withTrashed()
+                ->where('credit_id', $creditId)
+                ->orderBy('quota_number')
+                ->get(['id', 'quota_number', 'due_date', 'quota_amount', 'paid_amount', 'status', 'deleted_at']);
+
+            // Última fecha+hora real en que se aplicó un pago a cada cuota
+            // (vía payment_installments). Usamos Payment.created_at porque
+            // payment_date es solo fecha (sin hora).
+            $lastPaidAt = $installments->isEmpty() ? collect() : DB::table('payment_installments as pi')
+                ->join('payments as p', 'p.id', '=', 'pi.payment_id')
+                ->whereIn('pi.installment_id', $installments->pluck('id'))
+                ->whereNull('pi.deleted_at')
+                ->whereNull('p.deleted_at')
+                ->groupBy('pi.installment_id')
+                ->select('pi.installment_id')
+                ->selectRaw('MAX(p.created_at) as last_paid_at')
+                ->pluck('last_paid_at', 'pi.installment_id');
+
+            $payments = Payment::where('credit_id', $creditId)
+                ->orderByDesc('payment_date')
+                ->orderByDesc('created_at')
+                ->get(['id', 'payment_date', 'amount', 'unapplied_amount', 'payment_method', 'payment_reference', 'created_at']);
+
+            return $this->successResponse([
+                'success' => true,
+                'data' => [
+                    'credit_id' => (int) $credit->id,
+                    'installments' => $installments->map(fn($i) => [
+                        'id' => $i->id,
+                        'quota_number' => $i->quota_number,
+                        'due_date' => $i->due_date,
+                        'quota_amount' => (float) $i->quota_amount,
+                        'paid_amount' => (float) $i->paid_amount,
+                        'status' => $i->status,
+                        'last_paid_at' => $lastPaidAt[$i->id] ?? null,
+                        'deleted_at' => $i->deleted_at,
+                        'is_deleted' => $i->trashed(),
+                    ])->values(),
+                    'payments' => $payments->map(fn($p) => [
+                        'id' => $p->id,
+                        'payment_date' => $p->payment_date,
+                        'created_at' => $p->created_at,
+                        'amount' => (float) $p->amount,
+                        'unapplied_amount' => (float) ($p->unapplied_amount ?? 0),
+                        'payment_method' => $p->payment_method,
+                        'payment_reference' => $p->payment_reference,
+                    ])->values(),
+                ]
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error en getCreditDetailForUncollectible: ' . $e->getMessage());
+            return $this->errorResponse('Error al obtener detalle del crédito', 500);
+        }
+    }
+
+    /**
+     * Marca créditos vigentes de un cliente como Cartera Irrecuperable
+     * en transacción atómica. Si se pasa $creditIds (array opcional) solo
+     * mueve los seleccionados; si no, mueve TODOS los vigentes (default).
+     * Reversible vía restoreClientFromUncollectible().
+     */
+    public function markClientAsUncollectible($clientId, array $creditIds = [])
+    {
+        try {
+            $client = Client::find($clientId);
+            if (!$client) {
+                return $this->errorResponse('Cliente no encontrado', 404);
+            }
+
+            $query = Credit::where('client_id', $clientId)->where('status', 'Vigente');
+            if (!empty($creditIds)) {
+                $query->whereIn('id', $creditIds);
+            }
+            $credits = $query->get();
+
+            if ($credits->isEmpty()) {
+                return $this->errorResponse(
+                    !empty($creditIds)
+                        ? 'Ninguno de los créditos seleccionados es válido (deben estar vigentes)'
+                        : 'El cliente no tiene créditos vigentes para mover a cartera irrecuperable',
+                    422
+                );
+            }
+
+            $movedIds = [];
+            $totalMoved = 0;
+            DB::transaction(function () use ($credits, &$movedIds, &$totalMoved) {
+                foreach ($credits as $credit) {
+                    $credit->status = 'Cartera Irrecuperable';
+                    $credit->save();
+                    $movedIds[] = $credit->id;
+                    $totalMoved += (float) $credit->remaining_amount;
+                }
+            });
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Cliente marcado como cartera irrecuperable. ' . count($movedIds) . ' crédito(s) movidos.',
+                'data' => [
+                    'client_id' => (int) $clientId,
+                    'moved_credit_ids' => $movedIds,
+                    'moved_credits_count' => count($movedIds),
+                    'total_pending_moved' => round($totalMoved, 2),
+                ]
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error en markClientAsUncollectible: ' . $e->getMessage());
+            return $this->errorResponse('Error al marcar cliente como cartera irrecuperable', 500);
+        }
+    }
+
+    /**
+     * Restaura créditos de cartera irrecuperable: los vuelve a 'Vigente'.
+     * Si se pasa $creditIds (array opcional) solo restaura los seleccionados;
+     * si no, restaura TODOS los del cliente que estén en irrecuperable.
+     */
+    public function restoreClientFromUncollectible($clientId, array $creditIds = [])
+    {
+        try {
+            $client = Client::find($clientId);
+            if (!$client) {
+                return $this->errorResponse('Cliente no encontrado', 404);
+            }
+
+            $query = Credit::where('client_id', $clientId)
+                ->where('status', 'Cartera Irrecuperable');
+            if (!empty($creditIds)) {
+                $query->whereIn('id', $creditIds);
+            }
+            $credits = $query->get();
+
+            if ($credits->isEmpty()) {
+                return $this->errorResponse(
+                    !empty($creditIds)
+                        ? 'Ninguno de los créditos seleccionados es válido (deben estar en cartera irrecuperable)'
+                        : 'El cliente no tiene créditos en cartera irrecuperable para restaurar',
+                    422
+                );
+            }
+
+            $restoredIds = [];
+            DB::transaction(function () use ($credits, &$restoredIds) {
+                foreach ($credits as $credit) {
+                    $credit->status = 'Vigente';
+                    $credit->save();
+                    $restoredIds[] = $credit->id;
+                }
+            });
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Cliente restaurado de cartera irrecuperable. ' . count($restoredIds) . ' crédito(s) reactivados.',
+                'data' => [
+                    'client_id' => (int) $clientId,
+                    'restored_credit_ids' => $restoredIds,
+                    'restored_credits_count' => count($restoredIds),
+                ]
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error en restoreClientFromUncollectible: ' . $e->getMessage());
+            return $this->errorResponse('Error al restaurar cliente de cartera irrecuperable', 500);
+        }
+    }
+
     public function unifyCredits(Request $request)
     {
         try {
@@ -2130,7 +2614,10 @@ class CreditService
                 'status' => 'Vigente',
                 'unification_reason' => $params['description'] ?? null,
                 'created_at' => $createdAt,
-                'updated_at' => $updatedAt
+                'updated_at' => $updatedAt,
+                // Trazabilidad: quién y con qué rol creó el crédito (unificación).
+                'created_by' => Auth::id(),
+                'created_by_role' => optional(Auth::user())->role_id,
             ]);
 
             // 3. Generar cuotas para el nuevo crédito
@@ -2393,8 +2880,13 @@ class CreditService
             // Usar el parámetro $perPage pasado desde el controlador
             $credits = $creditsQuery->orderBy('created_at', 'desc')->paginate($perPage);
 
-            $sellerForTz = \App\Models\Seller::find($sellerId);
+            $sellerForTz = \App\Models\Seller::with('city.country')->find($sellerId);
             $sellerTz = \App\Helpers\TimezoneHelper::getSellerTimezone($sellerForTz);
+
+            // Moneda del país del vendedor (seller -> city -> country -> currency).
+            // Permite que el frontend muestre los montos con el símbolo correcto
+            // (S/, Bs, $, etc.) según el país donde opera el vendedor. Fallback PEN.
+            $sellerCurrency = $sellerForTz?->city?->country?->currency ?? 'PEN';
 
             // Map each item in the paginator
             $credits->getCollection()->transform(function ($credit) use ($sellerTz) {
@@ -2450,6 +2942,7 @@ class CreditService
                 'current_page' => $credits->currentPage(),
                 'last_page' => $credits->lastPage(),
                 'grand_total' => round((float) $grandTotal, 2),
+                'currency' => $sellerCurrency,
             ]);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
@@ -2721,6 +3214,10 @@ class CreditService
             $paymentInstallmentsDetails = \DB::table('payment_installments')
                 ->join('payments', 'payment_installments.payment_id', '=', 'payments.id')
                 ->where('payments.credit_id', $credit->id)
+                // Excluir pagos y asignaciones ELIMINADAS (soft-delete): no
+                // deben sumar en cuotas ni totales. Se listan aparte abajo.
+                ->whereNull('payments.deleted_at')
+                ->whereNull('payment_installments.deleted_at')
                 ->select(
                     'payment_installments.installment_id',
                     'payment_installments.payment_id',
@@ -2743,7 +3240,8 @@ class CreditService
         try {
             $payments = \DB::table('payments')
                 ->where('credit_id', $credit->id)
-                ->select('id', 'amount', 'status', 'payment_date', 'created_at')
+                ->whereNull('deleted_at') // Solo pagos vivos en la lista principal
+                ->select('id', 'amount', 'status', 'payment_date', 'created_at', 'business_timestamp')
                 ->orderBy('created_at', 'asc')
                 ->get();
         } catch (\Throwable $e) {
@@ -2889,6 +3387,7 @@ class CreditService
             $appliedRows = \DB::table('payment_installments')
                 ->join('installments', 'payment_installments.installment_id', '=', 'installments.id')
                 ->where('payment_installments.payment_id', $p->id)
+                ->whereNull('payment_installments.deleted_at')
                 ->select('payment_installments.installment_id', 'payment_installments.applied_amount', 'installments.quota_number', 'installments.due_date')
                 ->get();
 
@@ -2915,15 +3414,115 @@ class CreditService
                 'amount' => round((float) $p->amount, 2),
                 'status' => $p->status,
                 'created_at' => Carbon::parse($p->created_at)->format('Y-m-d H:i:s'),
+                // F. Pago = hora de negocio real (business_timestamp), en zona
+                // local del pago; fallback a created_at si no existe.
+                'business_timestamp' => $p->business_timestamp
+                    ? Carbon::parse($p->business_timestamp)->format('Y-m-d H:i:s')
+                    : Carbon::parse($p->created_at)->format('Y-m-d H:i:s'),
                 'payment_date' => $p->payment_date ? Carbon::parse($p->payment_date)->format('Y-m-d H:i:s') : Carbon::parse($p->created_at)->format('Y-m-d H:i:s'),
                 'is_global' => (count($appliedTo) === 0),
                 'applied_to' => $appliedTo,
             ];
         }
 
+        // --- PAGOS ELIMINADOS (sección aparte del reporte) ---
+        // Los pagos borrados (soft-delete) NO se mezclan con los reales. Se
+        // listan aparte indicando quién los eliminó. El "eliminado por" no se
+        // guarda en `payments` (no hay columna deleted_by); el sistema lo deja
+        // en la observación de la liquidación del vendedor en esa fecha, con el
+        // formato: "Eliminación de pago #<id> por $<monto> realizada por
+        // <nombre> el <fecha>". Se parsea de ahí.
+        $deletedPaymentsList = [];
+        try {
+            $deletedRaw = \DB::table('payments')
+                ->where('credit_id', $credit->id)
+                ->whereNotNull('deleted_at')
+                ->select('id', 'amount', 'status', 'payment_date', 'business_date', 'business_timestamp', 'created_at', 'deleted_at', 'latitude', 'longitude', 'deleted_by', 'address')
+                ->orderBy('deleted_at', 'asc')
+                ->get();
+
+            if ($deletedRaw->isNotEmpty()) {
+                $sellerIdForObs = optional($credit->client)->seller_id ?? $credit->seller_id;
+                $businessDates = $deletedRaw->pluck('business_date')->filter()->unique()->values()->all();
+
+                // Fuente PRIMARIA del "eliminado por": columna estructurada
+                // payments.deleted_by (pagos borrados desde el deploy nuevo).
+                // Para pagos viejos (deleted_by NULL) se cae al parseo de la
+                // observación de liquidación (abajo).
+                $deleterUserNames = \DB::table('users')
+                    ->whereIn('id', $deletedRaw->pluck('deleted_by')->filter()->unique()->values()->all() ?: [0])
+                    ->pluck('name', 'id');
+
+                // Mapa payment_id => ['by' => nombre, 'at' => fecha] parseado
+                // de las observaciones de las liquidaciones involucradas.
+                $deleterMap = [];
+                if ($sellerIdForObs && !empty($businessDates)) {
+                    $observations = \DB::table('liquidations')
+                        ->where('seller_id', $sellerIdForObs)
+                        ->where(function ($q) use ($businessDates) {
+                            foreach ($businessDates as $d) {
+                                $q->orWhereDate('date', $d);
+                            }
+                        })
+                        ->pluck('observation');
+
+                    foreach ($observations as $text) {
+                        if (!$text) continue;
+                        if (preg_match_all('/Eliminación de pago #(\d+) por \$[\d.,]+ realizada por (.+?) el ([\d\-:\s]+)/u', $text, $matches, PREG_SET_ORDER)) {
+                            foreach ($matches as $mm) {
+                                $deleterMap[(int) $mm[1]] = ['by' => trim($mm[2]), 'at' => trim($mm[3])];
+                            }
+                        }
+                    }
+                }
+
+                foreach ($deletedRaw as $dp) {
+                    $info = $deleterMap[$dp->id] ?? null;
+
+                    // "Eliminado por": columna estructurada primero; si no, la
+                    // observación parseada (datos viejos); si no, no registrado.
+                    $deletedByName = ($dp->deleted_by && isset($deleterUserNames[$dp->deleted_by]))
+                        ? $deleterUserNames[$dp->deleted_by]
+                        : ($info['by'] ?? null);
+
+                    // Ubicación: dirección textual (payments.address) si la app
+                    // la registró; si no, la coordenada GPS + enlace a Maps.
+                    $hasGps = $dp->latitude !== null && $dp->longitude !== null
+                        && (float) $dp->latitude != 0 && (float) $dp->longitude != 0;
+                    $coords = $hasGps ? ((float) $dp->latitude) . ', ' . ((float) $dp->longitude) : null;
+                    $mapsUrl = $hasGps
+                        ? 'https://www.google.com/maps?q=' . $dp->latitude . ',' . $dp->longitude
+                        : null;
+
+                    $deletedPaymentsList[] = [
+                        'payment_id' => $dp->id,
+                        'amount' => round((float) $dp->amount, 2),
+                        'status' => $dp->status,
+                        // F. Pago = business_timestamp (hora real del pago);
+                        // fallback a payment_date / created_at.
+                        'payment_date' => $dp->business_timestamp
+                            ? Carbon::parse($dp->business_timestamp)->format('Y-m-d H:i:s')
+                            : ($dp->payment_date
+                                ? Carbon::parse($dp->payment_date)->format('Y-m-d H:i:s')
+                                : Carbon::parse($dp->created_at)->format('Y-m-d H:i:s')),
+                        'deleted_by' => $deletedByName,
+                        'deleted_at' => $dp->deleted_at
+                            ? Carbon::parse($dp->deleted_at)->format('Y-m-d H:i:s')
+                            : ($info['at'] ?? null),
+                        'address' => $dp->address ?: null,
+                        'location' => $dp->address ?: $coords,
+                        'maps_url' => $mapsUrl,
+                    ];
+                }
+            }
+        } catch (\Throwable $e) {
+            \Log::warning("generateCreditReport - error armando pagos eliminados: " . $e->getMessage(), ['credit_id' => $credit->id]);
+            $deletedPaymentsList = [];
+        }
+
         // Totales
         $totalApplied = collect($installmentsData)->sum('paid_amount');
-        $totalCollected = $totalApplied + (float) (\DB::table('payments')->leftJoin('payment_installments', 'payments.id', '=', 'payment_installments.payment_id')->where('payments.credit_id', $credit->id)->whereNull('payment_installments.id')->sum('payments.amount'));
+        $totalCollected = $totalApplied + (float) (\DB::table('payments')->leftJoin('payment_installments', 'payments.id', '=', 'payment_installments.payment_id')->where('payments.credit_id', $credit->id)->whereNull('payments.deleted_at')->whereNull('payment_installments.id')->sum('payments.amount'));
 
         $report = [
             'credit' => $credit,
@@ -2940,6 +3539,7 @@ class CreditService
             'number_installments' => $credit->number_installments,
             'installments' => $installmentsData,
             'payments_list' => $paymentsList,
+            'deleted_payments_list' => $deletedPaymentsList,
             'total_collected' => round($totalCollected, 2),
             'total_applied' => round($totalApplied, 2),
         ];
@@ -3240,6 +3840,23 @@ class CreditService
                 $date->addDay();
             }
             return $date;
+        };
+    }
+
+    /**
+     * Etiqueta legible para el motivo de bloqueo crediticio del cliente.
+     * Las categorías son las definidas en ClientService::CREDIT_BLOCK_REASONS.
+     */
+    private function humanizeBlockReason(?string $key): string
+    {
+        return match ($key) {
+            'mora_historica'           => 'Mora histórica',
+            'doble_identidad'          => 'Doble identidad',
+            'decision_gerencial'       => 'Decisión gerencial',
+            'comportamiento_pago'      => 'Comportamiento de pago',
+            'documentacion_incompleta' => 'Documentación incompleta',
+            'otro'                     => 'Otro',
+            default                    => 'Bloqueado',
         };
     }
 }

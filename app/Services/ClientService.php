@@ -23,6 +23,7 @@ use Throwable;
 use App\Models\ClientHistory;
 use App\Models\Image;
 use App\Models\Liquidation;
+use App\Services\TelegramService;
 
 class ClientService
 {
@@ -68,6 +69,22 @@ class ClientService
                     if ($totalWithNew > $limit) {
                         return $this->errorResponse('No puedes crear el crédito. El monto total de ventas nuevas por el cobrador hoy supera el límite de $' . number_format($limit, 2), 403);
                     }
+                }
+
+                // Topes por SellerConfig. En este flujo siempre es "crédito
+                // nuevo" porque ClientService::create se usa cuando el cliente
+                // se está creando recién, así que no aplica isRenewal. Si el
+                // cliente ya existe se usa otro endpoint (CreditService::create)
+                // que sí detecta renovación lógica.
+                $maxNew = $sellerConfig ? floatval($sellerConfig->max_credit_amount_new ?? 0) : 0;
+                $creditValueRequested = floatval($params['credit_value']);
+                if ($maxNew > 0 && $creditValueRequested > $maxNew) {
+                    return $this->errorResponse(
+                        'El monto del crédito ($' . number_format($creditValueRequested, 2)
+                            . ') supera el límite asignado al cobrador para créditos nuevos ($'
+                            . number_format($maxNew, 2) . ').',
+                        403
+                    );
                 }
             }
 
@@ -122,6 +139,9 @@ class ClientService
                         'company_name' => $params['company_name'] ?? null,
                         'seller_id' => $params['seller_id'] ?? null,
                         'routing_order' => $params['routing_order'] ?? null,
+                        // Trazabilidad: quién y con qué rol creó el cliente.
+                        'created_by' => Auth::id(),
+                        'created_by_role' => optional(Auth::user())->role_id,
                     ]);
 
                     // Record Geolocation History
@@ -209,6 +229,25 @@ class ClientService
                     }
                 }
 
+                // Notificación Telegram (solo si la transacción commitea y la
+                // empresa del vendedor tiene la opción habilitada). Falla
+                // silenciosa: cualquier error de red NO afecta la creación.
+                // NOTA: cuando el cliente nace junto con su crédito inicial,
+                // disparamos UN SOLO mensaje que incluye AMBOS datos. El
+                // evento notify_new_credit está reservado para "crédito a
+                // cliente existente" (vía CreditService::create), evitando
+                // así doble notificación al crear cliente+crédito juntos.
+                DB::afterCommit(function () use ($client, $credit) {
+                    try {
+                        app(TelegramService::class)->notifyNewClient($client, $credit);
+                    } catch (\Throwable $e) {
+                        Log::warning('[telegram.new_client] error', [
+                            'client_id' => $client->id,
+                            'error' => $e->getMessage(),
+                        ]);
+                    }
+                });
+
                 return $this->successResponse([
                     'success' => true,
                     'message' => 'Cliente creado con éxito',
@@ -265,12 +304,21 @@ class ClientService
             }
         }
 
+        // Fix del bug raíz: sin estas inicializaciones, total_amount y
+        // remaining_amount quedan en 0 (default de la migración). Causaba
+        // ~120 créditos rotos/día generados por esta ruta.
+        $creditValueFloat = (float) $params['credit_value'];
+        $interestRateFloat = (float) ($params['interest_rate'] ?? 0);
+        $totalAmount = round($creditValueFloat + ($creditValueFloat * $interestRateFloat / 100), 2);
+
         $credit = Credit::create([
             'client_id' => $client->id,
             'guarantor_id' => $guarantorId,
             'seller_id' => $params['seller_id'] ?? $client->seller_id,
             'credit_value' => $params['credit_value'],
             'total_interest' => $params['interest_rate'] ?? 0,
+            'total_amount' => $totalAmount,
+            'remaining_amount' => $totalAmount,
             'number_installments' => $params['number_installments'] ?? $params['installment_count'] ?? 1,
             'payment_frequency' => $paymentFrequency,
             'first_quota_date' => $firstQuotaDate,
@@ -278,13 +326,19 @@ class ClientService
             'micro_insurance_percentage' => $params['micro_insurance_percentage'] ?? null,
             'micro_insurance_amount' => $params['micro_insurance_amount'] ?? null,
             'is_advance_payment' => $isAdvance,
-            'status' => 'Vigente'
+            'status' => 'Vigente',
+            // Trazabilidad: quién y con qué rol creó el crédito.
+            'created_by' => Auth::id(),
+            'created_by_role' => optional(Auth::user())->role_id,
         ]);
 
 
 
         $quotaAmount = (($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value) / max(1, $credit->number_installments);
         $this->generateInstallmentsForCredit($credit, (float) $quotaAmount);
+
+        // Red de seguridad: sincroniza remaining_amount desde installments
+        $credit->refresh()->recalculateRemainingAndStatus();
 
         return $credit;
     }
@@ -424,7 +478,34 @@ class ClientService
                         }
 
                         $path = Helper::uploadFile($imageFile, 'clients', $imageType);
-                        $client->images()->create(['path' => $path, 'type' => $imageType]);
+
+                        // Persistir la metadata de geolocalización de la foto
+                        // (igual que storeClientImages en el alta). Antes el
+                        // update guardaba SOLO path/type y perdía la dirección
+                        // y GPS — crítico para clientes de carga masiva que
+                        // completan fotos por "actualización de datos".
+                        $imageRecord = ['path' => $path, 'type' => $imageType];
+                        if (isset($imageData['latitude'])) {
+                            $imageRecord['latitude'] = $imageData['latitude'];
+                        }
+                        if (isset($imageData['longitude'])) {
+                            $imageRecord['longitude'] = $imageData['longitude'];
+                        }
+                        if (isset($imageData['accuracy'])) {
+                            $imageRecord['accuracy'] = $imageData['accuracy'];
+                        }
+                        if (isset($imageData['address'])) {
+                            $imageRecord['address'] = $imageData['address'];
+                        }
+                        if (isset($imageData['location_timestamp'])) {
+                            try {
+                                $imageRecord['location_timestamp'] = \Carbon\Carbon::parse($imageData['location_timestamp'])->format('Y-m-d H:i:s');
+                            } catch (\Exception $e) {
+                                $imageRecord['location_timestamp'] = null;
+                            }
+                        }
+
+                        $client->images()->create($imageRecord);
 
                         // Log history if there was a change
                         if ($oldPath && $oldPath !== $path) {
@@ -794,7 +875,10 @@ class ClientService
         $createdFrom = null,
         $createdTo = null,
         $perPage = 30,
-        $page = 1
+        $page = 1,
+        // Sub-modo del filtro "Clientes recurrentes": 'vigente_otro' |
+        // 'liquido_reactivo' | null (combinado). Lo envía el switch del front.
+        $recurrentMode = null
     ) {
         try {
             $search = (string) $search;
@@ -802,13 +886,25 @@ class ClientService
             $seller = $user->seller;
             $company = $user->company;
 
-            // Consultor (rol 7), Supervisor (11) y rol 6 pueden tener rutas asociadas
+            // Supervisor (rol 6), Cobrador-abono (7) y Secretaria (11) pueden tener rutas asociadas
             if (in_array($user->role_id, [6, 7, 11])) {
                 $sellerIds = \App\Models\UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
             }
 
             $clientsQuery = Client::query()
-                ->select('id', 'uuid', 'name', 'dni', 'email', 'phone', 'address', 'reference', 'company_name', 'status', 'seller_id', 'geolocation', 'gps_geolocalization', 'gps_address', 'routing_order', 'capacity', 'created_at')
+                ->select(
+                    'id', 'uuid', 'name', 'dni', 'email', 'phone', 'address',
+                    'reference', 'company_name', 'status', 'seller_id',
+                    'geolocation', 'gps_geolocalization', 'gps_address',
+                    'routing_order', 'capacity', 'created_at',
+                    // Estado de bloqueo de creación de nuevos créditos.
+                    // El frontend usa estos campos para mostrar el badge
+                    // "BLOQUEADO" + el sombreado rojo de la fila + las
+                    // opciones del menú (bloquear vs desbloquear) + el
+                    // tooltip con el motivo.
+                    'credit_block_active', 'credit_block_reason',
+                    'credit_block_notes', 'credit_blocked_at', 'credit_blocked_by'
+                )
                 ->with([
                     'seller' => function ($q) {
                         $q->select('id', 'user_id', 'city_id', 'company_id');
@@ -837,7 +933,9 @@ class ClientService
                         $q->select('id', 'credit_id', 'quota_number', 'due_date', 'quota_amount', 'status');
                     },
                     'images'
-                ]);
+                ])
+                // Conteo de comentarios para el distintivo en el listado.
+                ->withCount('comments');
 
             // Role scoping
             switch ($user->role_id) {
@@ -855,7 +953,13 @@ class ClientService
                         $clientsQuery->whereRaw('0 = 1');
                     break;
                 case 6:
-                    if (!empty($sellerIds)) {
+                    // Supervisor: si seleccionó una ruta activa (header
+                    // X-Active-Seller-Id resuelto por middleware), mostrar
+                    // SOLO ese vendedor; sin selección, todas sus rutas.
+                    $activeSellerId = request()->attributes->get('active_seller_id');
+                    if ($activeSellerId) {
+                        $clientsQuery->where('seller_id', (int) $activeSellerId);
+                    } elseif (!empty($sellerIds)) {
                         $clientsQuery->whereIn('seller_id', $sellerIds);
                     } else {
                         $clientsQuery->whereRaw('0 = 1');
@@ -899,48 +1003,201 @@ class ClientService
             elseif ($user->role_id == 5 && $seller)
                 $clientsQuery->where('seller_id', $seller->id);
 
-            // Filtros por estado / créditos
-            if ($status === 'Cartera Irrecuperable') {
-                $clientsQuery->whereHas('credits', fn($q) => $q->where('status', $status));
-                $clientsQuery->with(['credits' => fn($q) => $q->where('status', $status)]);
-            } elseif ($status === 'Inactivo') {
-                $clientsQuery->where('status', 'inactive');
-            } elseif ($status === 'Activo' || $status === 'clientes') {
-                $clientsQuery->where('status', 'active');
-            } elseif ($status === 'con_creditos') {
-                $clientsQuery->whereHas('credits', fn($q) => $q->whereIn('status', ['Activo', 'Vigente', 'Vencido']));
-                $clientsQuery->with(['credits' => fn($q) => $q->whereIn('status', ['Activo', 'Vigente', 'Vencido'])]);
-            } elseif ($status === 'sin_creditos') {
-                $clientsQuery->whereDoesntHave('credits', fn($q) => $q->whereIn('status', ['Activo', 'Vigente', 'Vencido']));
-            } else {
-                $clientsQuery->where('status', 'active');
-            }
+            // Filtros por estado / créditos.
+            // Regla de "Cartera Irrecuperable": los créditos en ese estado solo
+            // deben aparecer cuando el filtro es explícitamente 'Cartera
+            // Irrecuperable'. En cualquier otro listado se ocultan tanto del
+            // eager load (`with('credits')`) como del filtro `whereHas` (un
+            // cliente con TODOS sus créditos irrecuperables no aparece en
+            // listados generales).
+            //
+            // OJO: Laravel SOBREESCRIBE el with('credits') si lo declaras de
+            // nuevo, así que aquí re-aplicamos TODAS las agregaciones del
+            // bloque inicial (select, withSum, withCount, withMax) ADEMÁS
+            // del filtro de status. Si no, perdemos `payments_sum_amount`
+            // y `pending_installments_count` → frontend muestra Recaudado=$0
+            // y Por cobrar = total sin descontar.
+            $applyCreditAggregates = function ($q) {
+                $q->select('id', 'client_id', 'credit_value', 'number_installments', 'payment_frequency', 'status', 'total_interest')
+                    ->withSum('payments', 'amount')
+                    ->withCount([
+                        'installments as pending_installments_count' => function ($iq) {
+                            $iq->where('status', '<>', 'Pagado');
+                        }
+                    ])
+                    ->withMax('installments', 'due_date');
+            };
 
+            // Rango de fecha del filtro. Se parsea una sola vez aquí.
+            //
+            // OJO con la semántica según el modo:
+            //   - Modos normales  → el rango filtra clients.created_at (cuándo
+            //                       se creó el REGISTRO del cliente).
+            //   - 'recurrentes'   → el rango filtra credits.created_at del
+            //                       crédito vivo/reactivado (cuándo se ACTIVÓ
+            //                       el crédito nuevo). Un cliente recurrente es
+            //                       por definición existente: se creó en el
+            //                       pasado, así que filtrar por su created_at
+            //                       siempre da vacío. El evento recurrente es
+            //                       el crédito, no el cliente. Por eso ese
+            //                       filtro se aplica dentro del bloque de
+            //                       'recurrentes' sobre los créditos vivos.
+            $from = null;
+            $to = null;
             if ($createdFrom || $createdTo) {
                 try {
-                    $from = null;
-                    $to = null;
-
                     if ($createdFrom) {
-                        $createdFromNorm = str_replace('/', '-', $createdFrom);
-                        $from = Carbon::parse($createdFromNorm)->startOfDay();
+                        $from = Carbon::parse(str_replace('/', '-', $createdFrom))->startOfDay();
                     }
-
                     if ($createdTo) {
-                        $createdToNorm = str_replace('/', '-', $createdTo);
-                        $to = Carbon::parse($createdToNorm)->endOfDay();
-                    }
-
-                    if (!empty($from) && !empty($to)) {
-                        $clientsQuery->whereBetween('created_at', [$from, $to]);
-                    } elseif (!empty($from)) {
-                        $clientsQuery->where('created_at', '>=', $from);
-                    } elseif (!empty($to)) {
-                        $clientsQuery->where('created_at', '<=', $to);
+                        $to = Carbon::parse(str_replace('/', '-', $createdTo))->endOfDay();
                     }
                 } catch (\Exception $e) {
                     Log::warning('Created_from/created_to parse error: ' . $e->getMessage());
+                    $from = null;
+                    $to = null;
                 }
+            }
+
+            // Aplica el rango ($from/$to ya parseados) sobre created_at de
+            // cualquier builder (query de clientes o subquery de créditos).
+            $applyDateRange = function ($q, $column = 'created_at') use ($from, $to) {
+                if ($from && $to) {
+                    $q->whereBetween($column, [$from, $to]);
+                } elseif ($from) {
+                    $q->where($column, '>=', $from);
+                } elseif ($to) {
+                    $q->where($column, '<=', $to);
+                }
+            };
+
+            // Modos normales: el rango filtra la creación del cliente. En
+            // 'recurrentes' NO se aplica aquí (ver nota arriba); se aplica
+            // sobre los créditos vivos dentro del bloque de 'recurrentes'.
+            if (($from || $to) && $status !== 'recurrentes') {
+                $applyDateRange($clientsQuery);
+            }
+
+            // Conteos por sub-modo del switch de "Clientes recurrentes".
+            // Solo se calculan/devuelven cuando $status === 'recurrentes'.
+            $recurrentCounts = null;
+
+            if ($status === 'Cartera Irrecuperable') {
+                $clientsQuery->whereHas('credits', fn($q) => $q->where('status', $status));
+                $clientsQuery->with(['credits' => function ($q) use ($status, $applyCreditAggregates) {
+                    $applyCreditAggregates($q);
+                    $q->where('status', $status);
+                }]);
+            } elseif ($status === 'Bloqueado') {
+                // Pestaña "Clientes bloqueados": clientes con
+                // credit_block_active=true (impedidos de recibir nuevos
+                // créditos). Sus créditos vigentes siguen mostrándose para
+                // contexto.
+                $clientsQuery->where('clients.credit_block_active', true);
+                $clientsQuery->with(['credits' => function ($q) use ($applyCreditAggregates) {
+                    $applyCreditAggregates($q);
+                    $q->where('status', '<>', 'Cartera Irrecuperable');
+                }]);
+            } else {
+                // Excluir créditos irrecuperables del eager load por defecto
+                $clientsQuery->with(['credits' => function ($q) use ($applyCreditAggregates) {
+                    $applyCreditAggregates($q);
+                    $q->where('status', '<>', 'Cartera Irrecuperable');
+                }]);
+
+                if ($status === 'Inactivo') {
+                    $clientsQuery->where('status', 'inactive');
+                } elseif ($status === 'Activo' || $status === 'clientes') {
+                    $clientsQuery->where('status', 'active');
+                } elseif ($status === 'con_creditos') {
+                    $clientsQuery->whereHas('credits', fn($q) => $q->whereIn('status', ['Activo', 'Vigente', 'Vencido']));
+                } elseif ($status === 'sin_creditos') {
+                    $clientsQuery->whereDoesntHave('credits', fn($q) => $q->whereIn('status', ['Activo', 'Vigente', 'Vencido']));
+                } elseif ($status === 'recurrentes') {
+                    // Clientes recurrentes: cliente existente al que se le agregó
+                    // más de un crédito. El switch del front elige el sub-modo
+                    // (param recurrent_mode):
+                    //   - 'vigente_otro'     => tiene >=2 créditos VIVOS a la vez
+                    //                           (Activo/Vigente/Vencido): se le
+                    //                           activó otro teniendo uno vigente.
+                    //   - 'liquido_reactivo' => LIQUIDÓ un crédito (status
+                    //                           'Liquidado') y se le activó uno
+                    //                           nuevo (>=1 crédito vivo actual).
+                    //   - null (combinado)   => cualquiera de los dos casos
+                    //                           (comportamiento previo).
+                    $liveStatuses = ['Activo', 'Vigente', 'Vencido'];
+
+                    // En 'recurrentes' el rango de fecha (si lo hay) filtra por
+                    // credits.created_at del crédito vivo/reactivado, no por la
+                    // creación del cliente. Restringe a clientes con al menos un
+                    // crédito vivo activado dentro del rango.
+                    $hasFilter = (bool) ($from || $to);
+                    $liveInRange = function ($q) use ($liveStatuses, $applyDateRange) {
+                        $q->whereIn('status', $liveStatuses);
+                        $applyDateRange($q);
+                    };
+
+                    // Subquery AGRUPADO (rápido) por client_id: evita el whereHas
+                    // con count correlacionado (~3.5s con 32k clientes); el
+                    // agrupado usa el índice de credits.client_id (~1s).
+                    $twoLiveSubquery = fn() => \App\Models\Credit::query()
+                        ->whereIn('status', $liveStatuses)
+                        ->select('client_id')
+                        ->groupBy('client_id')
+                        ->havingRaw('COUNT(*) >= 2');
+
+                    // Conteos para los badges del switch, sobre el MISMO alcance
+                    // (rol + ubicación + búsqueda) ya aplicado a $clientsQuery.
+                    // Eloquent\Builder::__clone() clona la query base, así que
+                    // cada clon es independiente. Si hay rango de fecha, también
+                    // restringen al crédito vivo activado en ese rango para que
+                    // los badges cuadren con el listado.
+                    $countVigenteOtro = (clone $clientsQuery)
+                        ->whereIn('clients.id', $twoLiveSubquery())
+                        ->when($hasFilter, fn($cq) => $cq->whereHas('credits', $liveInRange))
+                        ->count();
+                    $countLiquidoReactivo = (clone $clientsQuery)
+                        ->whereHas('credits', fn($q) => $q->where('status', 'Liquidado'))
+                        ->whereHas('credits', $hasFilter ? $liveInRange : fn($q) => $q->whereIn('status', $liveStatuses))
+                        ->count();
+                    $recurrentCounts = [
+                        'vigente_otro' => $countVigenteOtro,
+                        'liquido_reactivo' => $countLiquidoReactivo,
+                    ];
+
+                    if ($recurrentMode === 'vigente_otro') {
+                        $clientsQuery->whereIn('clients.id', $twoLiveSubquery());
+                        if ($hasFilter) {
+                            $clientsQuery->whereHas('credits', $liveInRange);
+                        }
+                    } elseif ($recurrentMode === 'liquido_reactivo') {
+                        $clientsQuery
+                            ->whereHas('credits', fn($q) => $q->where('status', 'Liquidado'))
+                            ->whereHas('credits', $hasFilter ? $liveInRange : fn($q) => $q->whereIn('status', $liveStatuses));
+                    } else {
+                        // Combinado: >=2 créditos reales (sin Anulado/Unificado)
+                        // y al menos uno vivo actualmente. Evita listar clientes
+                        // que liquidaron todo y hoy no tienen crédito.
+                        $recurrentClientIds = \App\Models\Credit::query()
+                            ->whereNotIn('status', ['Anulado', 'Unificado'])
+                            ->select('client_id')
+                            ->groupBy('client_id')
+                            ->havingRaw('COUNT(*) >= 2');
+                        $clientsQuery
+                            ->whereIn('clients.id', $recurrentClientIds)
+                            ->whereHas('credits', $hasFilter ? $liveInRange : fn($q) => $q->whereIn('status', $liveStatuses));
+                    }
+                } else {
+                    $clientsQuery->where('status', 'active');
+                }
+
+                // Ocultar clientes cuyos créditos son TODOS irrecuperables
+                // (no tienen ningún crédito con otro estado). Esto sigue
+                // permitiendo clientes nuevos sin créditos.
+                $clientsQuery->where(function ($q) {
+                    $q->whereDoesntHave('credits') // sin créditos: OK
+                      ->orWhereHas('credits', fn($cq) => $cq->where('status', '<>', 'Cartera Irrecuperable'));
+                });
             }
 
             $validOrderDirections = ['asc', 'desc'];
@@ -950,8 +1207,53 @@ class ClientService
             // Implementar paginación
             $paginator = $clientsQuery->paginate($perPage, ['*'], 'page', $page);
 
+            // Fechas de recurrencia (solo modo 'recurrentes'): para cada cliente
+            // de la página, en dos consultas batch (sin N+1):
+            //   - new_credit_date  → created_at más reciente de un crédito VIVO
+            //                        (el crédito nuevo/reactivado).
+            //   - liquidated_at    → fecha del ÚLTIMO pago de su crédito
+            //                        Liquidado más reciente (≈ cuándo cerró el
+            //                        anterior). No existe columna liquidated_at;
+            //                        el último pago es la fecha real de cierre.
+            // Read-only: no altera nada del módulo financing.
+            $newCreditDates = [];
+            $liquidatedDates = [];
+            if ($status === 'recurrentes') {
+                $pageClientIds = collect($paginator->items())->pluck('id')->all();
+                if (!empty($pageClientIds)) {
+                    $newCreditDates = \DB::table('credits')
+                        ->whereIn('status', ['Activo', 'Vigente', 'Vencido'])
+                        ->whereNull('deleted_at')
+                        ->whereIn('client_id', $pageClientIds)
+                        ->groupBy('client_id')
+                        ->selectRaw('client_id, MAX(created_at) as d')
+                        ->pluck('d', 'client_id');
+
+                    $liquidatedDates = \DB::table('credits')
+                        ->join('payments', 'payments.credit_id', '=', 'credits.id')
+                        ->where('credits.status', 'Liquidado')
+                        ->whereNull('credits.deleted_at')
+                        // Solo pagos REALES que cierran el crédito: excluye
+                        // pagos borrados (soft-delete), 'Anulado', marcadores
+                        // 'No pagado' y montos en 0. Usa payment_date (fecha
+                        // de negocio del pago que finiquitó la deuda).
+                        ->whereNull('payments.deleted_at')
+                        ->where('payments.status', 'Pagado')
+                        ->where('payments.amount', '>', 0)
+                        ->whereIn('credits.client_id', $pageClientIds)
+                        ->groupBy('credits.client_id')
+                        ->selectRaw('credits.client_id as cid, MAX(payments.payment_date) as d')
+                        ->pluck('d', 'cid');
+                }
+            }
+
             // Agregar campo total_credits_value a cada cliente
-            $paginator->getCollection()->transform(function ($client) {
+            $paginator->getCollection()->transform(function ($client) use ($status, $newCreditDates, $liquidatedDates) {
+                if ($status === 'recurrentes') {
+                    $client->new_credit_date = $newCreditDates[$client->id] ?? null;
+                    $client->liquidated_at = $liquidatedDates[$client->id] ?? null;
+                }
+
                 $totalCreditsValue = $client->credits
                     ->whereIn('status', ['Activo', 'Vigente'])
                     ->sum('credit_value');
@@ -977,7 +1279,7 @@ class ClientService
                 return $client;
             });
 
-            return $this->successResponse([
+            $payload = [
                 'success' => true,
                 'message' => 'Clientes encontrados',
                 'data' => $paginator->items(),
@@ -989,7 +1291,14 @@ class ClientService
                     'from' => $paginator->firstItem(),
                     'to' => $paginator->lastItem(),
                 ]
-            ]);
+            ];
+
+            // Contadores del switch de "Clientes recurrentes" (badges del front).
+            if ($recurrentCounts !== null) {
+                $payload['recurrent_counts'] = $recurrentCounts;
+            }
+
+            return $this->successResponse($payload);
         } catch (Throwable $e) {
             Log::error("Error en index clientes: {$e->getMessage()} | " . $e->getTraceAsString());
             return $this->errorResponse('Error al obtener los clientes', 500);
@@ -1043,7 +1352,11 @@ class ClientService
                 $clientsQuery->where(function ($q) use ($search) {
                     $q->where('clients.name', 'like', "%{$search}%")
                         ->orWhere('clients.dni', 'like', "%{$search}%")
-                        ->orWhere('clients.email', 'like', "%{$search}%");
+                        ->orWhere('clients.email', 'like', "%{$search}%")
+                        // Buscar tambien por numero de credito (credits.id)
+                        ->orWhereHas('credits', function ($cq) use ($search) {
+                            $cq->where('id', 'like', "%{$search}%");
+                        });
                 });
             }
 
@@ -1056,12 +1369,52 @@ class ClientService
             elseif ($user->role_id == 5 && $seller)
                 $clientsQuery->where('clients.seller_id', $seller->id);
 
-            if (Auth::user()->role_id == 1 && $companyId) {
-                $clientsQuery->whereHas('seller', fn($q) => $q->where('company_id', $companyId));
+            // ROLE SCOPING para AISLAMIENTO multi-empresa.
+            // Antes este método solo filtraba al cobrador (rol 5) y opcionalmente
+            // al Super-Admin (rol 1) si pasaba companyId. Los roles intermedios
+            // (Admin de empresa, Supervisor, Secretaria) veían cartera de TODAS
+            // las empresas — fuga de datos. Ahora:
+            //   1 Super-Admin: ve todo (puede filtrar por companyId opcional)
+            //   2 Admin empresa: solo sellers de su company_id
+            //   5 Cobrador: solo su seller (ya manejado arriba)
+            //   6 Supervisor / 7 Cobrador-abono / 11 Secretaria: solo sellers de su user_routes
+            $authUser = Auth::user();
+            switch ((int) $authUser->role_id) {
+                case 1: // Super-Admin
+                    if ($companyId) {
+                        $clientsQuery->whereHas('seller', fn($q) => $q->where('company_id', $companyId));
+                    }
+                    break;
+                case 2: // Admin de empresa
+                    $company = $authUser->company;
+                    if ($company) {
+                        $clientsQuery->whereHas('seller', fn($q) => $q->where('company_id', $company->id));
+                    } else {
+                        // Si por alguna razón no tiene company asociada,
+                        // no debe ver nada (en lugar de ver todo).
+                        $clientsQuery->whereRaw('0 = 1');
+                    }
+                    break;
+                case 6:
+                case 7:
+                case 11:
+                    $allowedSellerIds = \App\Models\UserRoute::where('user_id', $authUser->id)
+                        ->pluck('seller_id')->toArray();
+                    if (!empty($allowedSellerIds)) {
+                        $clientsQuery->whereIn('clients.seller_id', $allowedSellerIds);
+                    } else {
+                        $clientsQuery->whereRaw('0 = 1');
+                    }
+                    break;
             }
 
             $orderDirection = in_array(strtolower($orderDirection), ['asc', 'desc']) ? $orderDirection : 'desc';
             $clientsQuery->orderBy($orderBy, $orderDirection);
+
+            // Limit como safety: con 600+ clientes en Cartera Irrecuperable + eager loads (credits,
+            // payments, installments) la query puede tardar 30+ segundos y timeout. Este cap protege
+            // performance sin cambiar el shape de la respuesta. Si se necesitan mas, agregar paginacion.
+            $clientsQuery->limit(500);
 
             $clients = $clientsQuery->get();
 
@@ -1199,6 +1552,9 @@ class ClientService
                         $q->select('id', 'credit_id', 'quota_number', 'due_date', 'quota_amount', 'status');
                     },
                 ])
+                // Conteo de comentarios para el distintivo en el listado
+                // (mismo badge que la pantalla general de Clientes).
+                ->withCount('comments')
                 ->where('seller_id', $sellerId)
                 ->when(Auth::user()->role_id == 1 && $companyId, function ($q) use ($companyId) {
                     $q->whereHas('seller', fn($sq) => $sq->where('company_id', $companyId));
@@ -1675,7 +2031,7 @@ class ClientService
         try {
             $client = Client::with([
                 'credits' => function ($cq) {
-                    $cq->select('id', 'client_id', 'seller_id', 'credit_value', 'total_interest', 'number_installments', 'status', 'created_at', 'payment_frequency', 'renewal_blocked', 'first_quota_date', 'has_been_modified', 'modification_count', 'last_modified_at', 'micro_insurance_percentage', 'micro_insurance_amount')
+                    $cq->select('id', 'client_id', 'seller_id', 'credit_value', 'total_interest', 'number_installments', 'status', 'created_at', 'start_date', 'payment_frequency', 'renewal_blocked', 'first_quota_date', 'has_been_modified', 'modification_count', 'last_modified_at', 'micro_insurance_percentage', 'micro_insurance_amount')
                         ->with([
                             'payments' => function ($pq) {
                                 $pq->select('id', 'credit_id', 'amount', 'payment_date', 'created_at', 'payment_method', 'status', 'business_date', 'unapplied_amount');
@@ -1758,6 +2114,23 @@ class ClientService
             $seller = $user->seller;
             $timezone = $timezone ?: self::TIMEZONE;
 
+            // Supervisor (rol 6): restringir el listado de cobro al vendedor
+            // seleccionado (ruta activa resuelta por el middleware desde el header
+            // X-Active-Seller-Id). Sin selección, fallback a sus rutas vinculadas.
+            // Si no tiene rutas, fail-closed (no lista nada).
+            $supervisorSellerIds = null;
+            if ($user->role_id == 6) {
+                $activeSellerId = request()->attributes->get('active_seller_id');
+                if ($activeSellerId) {
+                    $supervisorSellerIds = [(int) $activeSellerId];
+                } else {
+                    $supervisorSellerIds = \App\Models\UserRoute::where('user_id', $user->id)
+                        ->pluck('seller_id')->map(fn($id) => (int) $id)->all();
+                    if (empty($supervisorSellerIds)) {
+                        $supervisorSellerIds = [-1];
+                    }
+                }
+            }
 
             $referenceDate = $date
                 ? Carbon::createFromFormat('Y-m-d', $date, $timezone)
@@ -1786,6 +2159,8 @@ class ClientService
             // OPTIMIZATION: Apply filters inside subquery to prevent full-scan
             if ($user->role_id == 5 && $seller) {
                 $paymentPrioritySubquery->where('clients.seller_id', $seller->id);
+            } elseif ($supervisorSellerIds !== null) {
+                $paymentPrioritySubquery->whereIn('clients.seller_id', $supervisorSellerIds);
             }
             if (!empty($search)) {
                 $paymentPrioritySubquery->where(function ($q) use ($search) {
@@ -1812,6 +2187,10 @@ class ClientService
                 })
                 // Eager load only required relationships and columns; payments constrained to the selected date
                 ->with([
+                    // Conteo de comentarios para el distintivo en la tarjeta de cobro.
+                    'client' => function ($q) {
+                        $q->withCount('comments');
+                    },
                     'client.guarantors',
                     'client.images',
                     'client.seller',
@@ -1885,6 +2264,10 @@ class ClientService
             if ($user->role_id == 5 && $seller) {
                 $creditsQuery->whereHas('client', function ($q) use ($seller) {
                     $q->where('seller_id', $seller->id);
+                });
+            } elseif ($supervisorSellerIds !== null) {
+                $creditsQuery->whereHas('client', function ($q) use ($supervisorSellerIds) {
+                    $q->whereIn('seller_id', $supervisorSellerIds);
                 });
             }
 
@@ -2018,7 +2401,53 @@ class ClientService
                 return $credit;
             });
 
-            return response()->json([
+            // Resumen de pagos del dia INDEPENDIENTE de la paginacion.
+            // La tarjeta "Pagos del dia" debe mostrar el total real del dia del vendedor,
+            // no depender de cuantas paginas de creditos se hayan cargado en memoria.
+            // Solo se popula para vendedores (role 5); admins caen al fallback del frontend.
+            $paymentsTodaySummary = null;
+
+            if ($user->role_id == 5 && $seller) {
+                $summaryRows = Payment::query()
+                    ->join('credits', 'payments.credit_id', '=', 'credits.id')
+                    ->join('clients', 'credits.client_id', '=', 'clients.id')
+                    ->whereNull('payments.deleted_at')
+                    ->whereNull('credits.deleted_at')
+                    ->whereNull('clients.deleted_at')
+                    ->where('payments.business_date', $todayLocal)
+                    ->where('credits.seller_id', $seller->id)
+                    ->orderBy('payments.created_at', 'asc')
+                    ->get([
+                        'payments.id',
+                        'payments.credit_id',
+                        'payments.amount',
+                        'payments.payment_method',
+                        'payments.status as payment_status',
+                        'clients.id as client_id',
+                        'clients.name as cliente',
+                    ]);
+
+                // Agrupar por credit_id para preservar el UX anterior (un registro por credito, monto sumado).
+                $itemsByCredit = $summaryRows->groupBy('credit_id')->map(function ($group) {
+                    $first = $group->first();
+                    return [
+                        'credit_id'      => $first->credit_id,
+                        'client_id'      => $first->client_id,
+                        'cliente'        => $first->cliente,
+                        'monto'          => (float) $group->sum('amount'),
+                        'payment_method' => $first->payment_method,
+                        'status'         => $first->payment_status,
+                    ];
+                })->values();
+
+                $paymentsTodaySummary = [
+                    'total_amount'  => (float) $summaryRows->sum('amount'),
+                    'clients_count' => $summaryRows->pluck('client_id')->unique()->count(),
+                    'items'         => $itemsByCredit,
+                ];
+            }
+
+            $response = [
                 'success' => true,
                 'message' => 'Creditos encontrados',
                 'data' => $transformedItems,
@@ -2027,7 +2456,13 @@ class ClientService
                 'total' => $creditsPaginator->total(),
                 'per_page' => $creditsPaginator->perPage(),
                 'clients_total' => $clientsTotal,
-            ]);
+            ];
+
+            if ($paymentsTodaySummary !== null) {
+                $response['payments_today_summary'] = $paymentsTodaySummary;
+            }
+
+            return response()->json($response);
         } catch (\Exception $e) {
             Log::error("Error en getForCollections: {$e->getMessage()} | " . $e->getTraceAsString());
             return response()->json([
@@ -2093,7 +2528,8 @@ class ClientService
                 },
                 'guarantors' => function ($query) {
                     $query->select('guarantors.id as id', 'guarantors.name', 'guarantors.dni', 'guarantors.phone');
-                }
+                },
+                'images'
             ])
                 ->where('seller_id', $sellerId)
                 ->get();
@@ -2120,8 +2556,15 @@ class ClientService
                 foreach ($debtorCredits as $credit) {
                     $clientEntries[] = [
                         'client_id' => $client->id,
+                        'client_uuid' => $client->uuid,
                         'client_name' => $client->name,
                         'client_code' => $client->id,
+                        'client_phone' => $client->phone,
+                        'client_dni' => $client->dni,
+                        'client_email' => $client->email,
+                        'client_address' => $client->address,
+                        'client_reference' => $client->reference,
+                        'client_images' => $client->images,
                         'seller_name' => $client->seller->user->name ?? 'Sin vendedor',
                         'credit_info' => $credit,
                         'delinquency' => [
@@ -2264,10 +2707,14 @@ class ClientService
         foreach ($client->credits as $credit) {
             $creditDelinquency = [
                 'credit_id' => $credit->id,
+                'credit_uuid' => $credit->uuid,
                 'credit_code' => $credit->code ?? '#00' . $credit->id,
                 'total_amount' => ($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value,
                 'balance' => $credit->remaining_amount ?? $credit->balance,
                 'number_installments' => $credit->number_installments,
+                'start_date' => $credit->start_date,
+                'end_date' => $credit->end_date,
+                'created_at' => $credit->created_at,
                 'installments' => []
             ];
 
@@ -3327,5 +3774,150 @@ class ClientService
         $client->capacity = $capacity;
         $client->save();
         return $client;
+    }
+
+    // === Bloqueo de creación de nuevos créditos =========================
+
+    /**
+     * Categorías predefinidas de motivo de bloqueo.
+     * Si llega 'otro' se requiere `notes` con detalle del motivo.
+     */
+    public const CREDIT_BLOCK_REASONS = [
+        'mora_historica',
+        'doble_identidad',
+        'decision_gerencial',
+        'comportamiento_pago',
+        'documentacion_incompleta',
+        'otro',
+    ];
+
+    /**
+     * Bloquea la creación de nuevos créditos para un cliente.
+     *
+     * Permisos:
+     *  - Super-Admin (rol 1): cualquier cliente del sistema.
+     *  - Admin (rol 2): solo clientes cuyo seller pertenece a su empresa.
+     *  - Otros roles: rechazado con 403.
+     *
+     * No toca créditos existentes. Solo levanta el flag; la validación
+     * efectiva ocurre en CreditService::create al intentar abrir uno nuevo.
+     */
+    public function blockCreditCreation($clientId, string $reason, ?string $notes = null)
+    {
+        try {
+            $authUser = Auth::user();
+            if (!$authUser) {
+                return $this->errorResponse('No autenticado.', 401);
+            }
+            $role = (int) $authUser->role_id;
+
+            if (!in_array($role, [1, 2], true)) {
+                return $this->errorResponse('No tiene permisos para bloquear créditos a clientes.', 403);
+            }
+
+            if (!in_array($reason, self::CREDIT_BLOCK_REASONS, true)) {
+                return $this->errorResponse('Motivo de bloqueo no válido.', 422);
+            }
+            if ($reason === 'otro' && empty(trim((string) $notes))) {
+                return $this->errorResponse('Cuando el motivo es "Otro" debe especificar las notas.', 422);
+            }
+
+            $client = Client::with('seller')->find($clientId);
+            if (!$client) {
+                return $this->errorResponse('Cliente no encontrado.', 404);
+            }
+
+            // Admin (rol 2) solo puede bloquear clientes de los vendedores
+            // de SU empresa. Sin esto, un Admin podría bloquear clientes
+            // de otra empresa pasando el ID por la URL.
+            if ($role === 2) {
+                $authCompanyId = $authUser->company?->id;
+                $clientCompanyId = $client->seller?->company_id;
+                if (!$authCompanyId || $authCompanyId !== $clientCompanyId) {
+                    return $this->errorResponse(
+                        'Solo puede bloquear clientes de los vendedores de su empresa.',
+                        403
+                    );
+                }
+            }
+
+            $client->credit_block_active = true;
+            $client->credit_block_reason = $reason;
+            $client->credit_block_notes = $notes ?: null;
+            $client->credit_blocked_at = now();
+            $client->credit_blocked_by = $authUser->id;
+            $client->save();
+
+            \Log::info('[client.credit-block] bloqueado', [
+                'client_id' => $client->id,
+                'by_user_id' => $authUser->id,
+                'reason' => $reason,
+            ]);
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Cliente bloqueado para nuevos créditos.',
+                'data' => $client->fresh(),
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('[client.credit-block] ' . $e->getMessage());
+            return $this->errorResponse('Error al bloquear el cliente.', 500);
+        }
+    }
+
+    /**
+     * Desbloquea la creación de nuevos créditos.
+     * Mismas reglas de permisos que el bloqueo.
+     */
+    public function unblockCreditCreation($clientId)
+    {
+        try {
+            $authUser = Auth::user();
+            if (!$authUser) {
+                return $this->errorResponse('No autenticado.', 401);
+            }
+            $role = (int) $authUser->role_id;
+
+            if (!in_array($role, [1, 2], true)) {
+                return $this->errorResponse('No tiene permisos para desbloquear créditos.', 403);
+            }
+
+            $client = Client::with('seller')->find($clientId);
+            if (!$client) {
+                return $this->errorResponse('Cliente no encontrado.', 404);
+            }
+
+            if ($role === 2) {
+                $authCompanyId = $authUser->company?->id;
+                $clientCompanyId = $client->seller?->company_id;
+                if (!$authCompanyId || $authCompanyId !== $clientCompanyId) {
+                    return $this->errorResponse(
+                        'Solo puede desbloquear clientes de los vendedores de su empresa.',
+                        403
+                    );
+                }
+            }
+
+            $client->credit_block_active = false;
+            $client->credit_block_reason = null;
+            $client->credit_block_notes = null;
+            $client->credit_blocked_at = null;
+            $client->credit_blocked_by = null;
+            $client->save();
+
+            \Log::info('[client.credit-block] desbloqueado', [
+                'client_id' => $client->id,
+                'by_user_id' => $authUser->id,
+            ]);
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Cliente desbloqueado.',
+                'data' => $client->fresh(),
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('[client.credit-unblock] ' . $e->getMessage());
+            return $this->errorResponse('Error al desbloquear el cliente.', 500);
+        }
     }
 }

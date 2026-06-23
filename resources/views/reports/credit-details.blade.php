@@ -124,7 +124,7 @@
                     @endphp
                     <tr>
                         <td>{{ $idx + 1 }}</td>
-                        <td>{{ $p['created_at'] ?? 'N/A' }}</td>
+                        <td>{{ $p['business_timestamp'] ?? $p['created_at'] ?? 'N/A' }}</td>
                         <td>$ {{ $quotaAmount  }}</td>
                         <td>$ {{ number_format($p['amount'] ?? 0, 2) }}</td>
                         <td>{{ $p['status'] ?? 'N/A' }}</td>
@@ -150,5 +150,55 @@
         <strong>Microseguro:</strong> $ {{ number_format($micro_insurance ?? 0, 2) }} &nbsp;&nbsp;
         <strong>Total Crédito:</strong> $ {{ number_format($total_credit_value ?? 0, 2) }}
     </div>
+
+    {{-- SECCIÓN APARTE: PAGOS ELIMINADOS (no cuentan en los totales de arriba) --}}
+    @if(!empty($deleted_payments_list) && count($deleted_payments_list) > 0)
+        <hr class="sep" />
+        <div class="section-title" style="font-weight:700; margin:10px 0 6px 0; color:#C10015;">
+            PAGOS ELIMINADOS
+        </div>
+        <div class="muted" style="margin-bottom:6px;">
+            Estos pagos fueron registrados y luego eliminados. No se suman al crédito; se muestran solo para trazabilidad.
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>N° Pago</th>
+                    <th>F. Pago</th>
+                    <th>Monto</th>
+                    <th>Estado</th>
+                    <th>Eliminado por</th>
+                    <th>Fecha de eliminación</th>
+                    <th>Ubicación de registro</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach($deleted_payments_list as $idx => $dp)
+                    <tr>
+                        <td>{{ $idx + 1 }}</td>
+                        <td>#{{ $dp['payment_id'] ?? 'N/A' }}</td>
+                        <td>{{ $dp['payment_date'] ?? 'N/A' }}</td>
+                        <td>$ {{ number_format($dp['amount'] ?? 0, 2) }}</td>
+                        <td>{{ $dp['status'] ?? 'N/A' }}</td>
+                        <td>{{ $dp['deleted_by'] ?? 'No registrado' }}</td>
+                        <td>{{ $dp['deleted_at'] ?? 'N/A' }}</td>
+                        <td class="small text-left">
+                            @if(!empty($dp['location']))
+                                @if(!empty($dp['maps_url']))
+                                    <a href="{{ $dp['maps_url'] }}" target="_blank">{{ $dp['location'] }}</a>
+                                    <div class="muted">(ver en Google Maps)</div>
+                                @else
+                                    {{ $dp['location'] }}
+                                @endif
+                            @else
+                                Sin ubicación
+                            @endif
+                        </td>
+                    </tr>
+                @endforeach
+            </tbody>
+        </table>
+    @endif
 </body>
 </html>
