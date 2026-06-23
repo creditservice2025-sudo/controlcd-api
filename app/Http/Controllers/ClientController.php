@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Client;
+use App\Models\Credit;
 use App\Models\Liquidation;
 use Illuminate\Http\Request;
 use App\Traits\ApiResponse;
@@ -720,12 +721,23 @@ class ClientController extends Controller
                 return $this->errorResponse('Vendedor destino no encontrado', 404);
             }
 
-            $oldSellerId        = $client->seller_id;
-            $client->seller_id  = $newSeller->id;
-            $client->transferred_at = now();
-            $client->save();
+            $oldSellerId = $client->seller_id;
 
-            \Log::info("Cliente #{$client->id} transferido de vendedor #{$oldSellerId} a #{$newSeller->id} por usuario #" . auth()->id());
+            // El crédito tiene su propio seller_id: la cartera, el recaudo y los
+            // contadores se atribuyen por credits.seller_id, NO por clients.seller_id.
+            // Si solo movemos el cliente, sus créditos quedan con el vendedor viejo y
+            // el dashboard descuadra (cliente en uno, plata en otro). Movemos ambos.
+            $creditsMoved = 0;
+            DB::transaction(function () use ($client, $newSeller, &$creditsMoved) {
+                $client->seller_id  = $newSeller->id;
+                $client->transferred_at = now();
+                $client->save();
+
+                $creditsMoved = Credit::where('client_id', $client->id)
+                    ->update(['seller_id' => $newSeller->id]);
+            });
+
+            \Log::info("Cliente #{$client->id} transferido de vendedor #{$oldSellerId} a #{$newSeller->id} ({$creditsMoved} créditos) por usuario #" . auth()->id());
 
             return $this->successResponse([
                 'success' => true,
@@ -765,6 +777,12 @@ class ClientController extends Controller
                         $client->seller_id = $newSeller->id;
                         $client->transferred_at = now();
                         $client->save();
+
+                        // Reasignar también los créditos del cliente para que la cartera
+                        // y el recaudo sigan al nuevo vendedor (ver transfer()).
+                        Credit::where('client_id', $client->id)
+                            ->update(['seller_id' => $newSeller->id]);
+
                         $transferred++;
                     }
                 }
