@@ -328,8 +328,10 @@ class LoginService
 
             // Rol Collection del usuario (admin, manager, analyst, collector)
             $collectionRole = 'collector';
+            $collectionPermissions = [];
             if (in_array((int) $user->role_id, [1, 2])) {
                 $collectionRole = 'admin';
+                $collectionPermissions = ['*'];
             } elseif ($hasCollectionAccess) {
                 $profile = \DB::connection('collection_pgsql')
                     ->table('collection_user_profiles')
@@ -337,6 +339,10 @@ class LoginService
                     ->first();
                 if ($profile) {
                     $collectionRole = $profile->role;
+                    // permissions es una columna json/array en pgsql; normalizar a array.
+                    $collectionPermissions = is_array($profile->permissions)
+                        ? $profile->permissions
+                        : (json_decode($profile->permissions ?? '[]', true) ?: []);
                 }
             }
 
@@ -349,6 +355,7 @@ class LoginService
                 'roles' => $roles,
                 'modules' => $availableModules,
                 'collection_role' => $collectionRole,
+                'collection_permissions' => $collectionPermissions,
                 'permissions' => $user->getAllPermissions()->pluck('name'),
                 'is_liquidated_today' => ($user->role_id === 5 && $user->seller)
                     ? \App\Models\Liquidation::where('seller_id', $user->seller->id)

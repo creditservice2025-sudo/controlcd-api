@@ -35,6 +35,18 @@ trait ResolvesCollectionCompany
         }
 
         $ownCompanyId = $user->company->id ?? $user->seller->company_id ?? null;
+
+        // Analistas / cobradores del módulo Collection no tienen empresa propia
+        // ni seller: su empresa (y su acceso al módulo) se derivan de su perfil
+        // de Collection. Usamos la EXISTENCIA del perfil, no el flag
+        // is_collection_user, que puede estar desincronizado en datos antiguos.
+        $collectionProfile = null;
+        if (!$ownCompanyId) {
+            $collectionProfile = \App\Models\Collection\CollectionUserProfile::where('user_id', $user->id)->first();
+            $ownCompanyId = $collectionProfile->company_id ?? null;
+        }
+        $isCollectionUser = (bool) $user->is_collection_user || $collectionProfile !== null;
+
         $isSuperAdmin = (int) $user->role_id === 1;
         $requested = $request->input('company_id');
 
@@ -63,7 +75,7 @@ trait ResolvesCollectionCompany
         }
 
         // Usuarios no-admin necesitan tener acceso explícito al módulo Collection.
-        if (!$isSuperAdmin && !in_array((int) $user->role_id, [1, 2]) && !$user->is_collection_user) {
+        if (!$isSuperAdmin && !in_array((int) $user->role_id, [1, 2]) && !$isCollectionUser) {
             return response()->json([
                 'message' => 'No tiene acceso al módulo Deuda & Abono'
             ], 403);

@@ -188,6 +188,17 @@ class CollectionDailyRecordService
             if ($type && in_array($type, CollectionDailyRecord::TYPES)) $q->where('type', $type);
 
             $dailyRecords = $q->orderBy('recorded_at', 'desc')->get();
+
+            // Adjuntar el nombre de quien creó cada movimiento para trazabilidad.
+            // Los usuarios viven en MySQL y los registros en PostgreSQL, por eso
+            // se resuelven en un query aparte (batch por user_id).
+            $userIds = $dailyRecords->pluck('user_id')->filter()->unique()->values()->all();
+            if (!empty($userIds)) {
+                $names = \App\Models\User::whereIn('id', $userIds)->pluck('name', 'id');
+                $dailyRecords->each(function ($r) use ($names) {
+                    $r->created_by_name = $names[$r->user_id] ?? null;
+                });
+            }
         }
 
         // Adiciones de capital como filas virtuales (type='capital_addition').
