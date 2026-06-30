@@ -2485,7 +2485,9 @@ class ClientService
                 $status === 'inactive' &&
                 $client->credits()->where('status', 'Vigente')->exists()
             ) {
-                return $this->errorResponse(['No se puede desactivar el cliente con créditos vigentes'], 401);
+                // 422 (validación de negocio), NO 401: un 401 hace que el
+                // frontend cierre la sesión por "no autenticado".
+                return $this->errorResponse(['No se puede desactivar el cliente con créditos vigentes'], 422);
             }
             $client->status = $status;
             $client->save();
