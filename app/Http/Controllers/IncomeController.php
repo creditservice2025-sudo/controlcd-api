@@ -46,16 +46,19 @@ class IncomeController extends Controller
 
     public function show($id)
     {
+        \App\Support\Tenant::assertIncomeInScope($id);
         return $this->incomeService->show($id);
     }
 
     public function update(Request $request, $id)
     {
+        \App\Support\Tenant::assertIncomeInScope($id);
         return $this->incomeService->update($request, $id);
     }
 
     public function destroy($id)
     {
+        \App\Support\Tenant::assertIncomeInScope($id);
         return $this->incomeService->delete($id);
     }
 
@@ -71,6 +74,7 @@ class IncomeController extends Controller
 
     public function getSellerIncomeByDate(Request $request, $sellerId)
     {
+        \App\Support\Tenant::assertSellerInScope($sellerId);
         $perPage = $request->input('perPage', 10);
         $companyId = $request->input('company_id');
         return $this->incomeService->getSellerIncomeByDate($sellerId, $request, $perPage, $companyId);

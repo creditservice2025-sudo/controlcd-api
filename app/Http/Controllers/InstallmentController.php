@@ -72,6 +72,7 @@ class InstallmentController extends Controller
      */
     public function deleteInstallment(Request $request, $installmentId)
     {
+        \App\Support\Tenant::assertInstallmentInScope($installmentId);
         try {
             $request->validate([
                 'password' => 'required|string'

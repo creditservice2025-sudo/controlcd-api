@@ -47,21 +47,25 @@ class ExpenseController extends Controller
 
     public function show($id)
     {
+        \App\Support\Tenant::assertExpenseInScope($id);
         return $this->expenseService->show($id);
     }
 
     public function update(Request $request, $id)
     {
+        \App\Support\Tenant::assertExpenseInScope($id);
         return $this->expenseService->update($request, $id);
     }
 
     public function destroy($id)
     {
+        \App\Support\Tenant::assertExpenseInScope($id);
         return $this->expenseService->delete($id);
     }
 
     public function changeStatus(Request $request, $expenseId, $status)
     {
+        \App\Support\Tenant::assertExpenseInScope($expenseId);
         $validStatuses = ['Aprobado', 'Rechazado'];
 
         if (!in_array($status, $validStatuses)) {
@@ -86,6 +90,7 @@ class ExpenseController extends Controller
 
     public function getSellerExpensesByDate(Request $request, int $sellerId)
     {
+        \App\Support\Tenant::assertSellerInScope($sellerId);
         try {
             $search = $request->get('search') ?? '';
             $perPage = $request->get('perPage') ?? 10;

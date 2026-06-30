@@ -147,6 +147,14 @@ class LoginService
                 ], 403);
             }
 
+            // El Cobrador/Vendedor (rol 5) SOLO puede operar desde el APK móvil,
+            // nunca desde el portal web (el web no envía X-Client-Type: mobile).
+            if ($clientType !== 'mobile' && (int) $user->role_id === 5) {
+                return $this->errorResponse([
+                    'El acceso de Cobrador está disponible únicamente desde la aplicación móvil. Por favor, ingrese desde su dispositivo móvil.'
+                ], 403);
+            }
+
             // ============================================================
             // EXCLUSIVIDAD COBRADOR (rol 5) ↔ SUPERVISOR (rol 6)
             // Si el cobrador intenta entrar mientras su Supervisor tiene

@@ -49,9 +49,21 @@ class ExpenseService
             $user = Auth::user();
             $isAdmin = in_array($user->role_id, [1, 2]);
 
-            $userId = $isAdmin && $request->has('user_id')
-                ? $validated['user_id']
-                : $user->id;
+            // Dueño del movimiento (a nombre de quién queda):
+            // - Supervisor (rol 6): SIEMPRE el vendedor activo de la sección
+            //   (validado por el middleware ResolveActiveSeller). El supervisor
+            //   NO se auto-registra movimientos: los registra al vendedor que
+            //   supervisa. La trazabilidad de quién lo hizo queda en created_by.
+            // - Admin (rol 1/2): el user_id que envíe (operar por un vendedor).
+            // - Cobrador y demás: su propio usuario.
+            $activeSellerId = $request->attributes->get('active_seller_id');
+            if ((int) $user->role_id === 6 && $activeSellerId) {
+                $userId = optional(Seller::find($activeSellerId))->user_id ?? $user->id;
+            } elseif ($isAdmin && $request->has('user_id')) {
+                $userId = $validated['user_id'];
+            } else {
+                $userId = $user->id;
+            }
 
             // Bloqueo atómico para evitar condiciones de carrera (clics múltiples ultra rápidos)
             $lockKey = "expense_create_lock_{$userId}";

@@ -64,7 +64,7 @@ Route::middleware('auth:api')->group(function () {
     Route::post('auth/session/logout/{sessionId}', [AuthController::class, 'logoutSession']);
 });
 
-Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.seller'])->group(function () {
+Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.seller', 'seller.apk.only'])->group(function () {
 
     //change password
     Route::post('auth/change-password', [AuthController::class, 'changePassword']);

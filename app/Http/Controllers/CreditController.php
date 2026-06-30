@@ -72,6 +72,7 @@ class CreditController extends Controller
 
     public function update(CreditRequest $request, $creditId)
     {
+        \App\Support\Tenant::assertCreditInScope($creditId);
         try {
             return $this->creditService->update($request, $creditId);
         } catch (Exception $e) {
@@ -81,6 +82,7 @@ class CreditController extends Controller
 
     public function updateSchedule(Request $request, $creditId)
     {
+        \App\Support\Tenant::assertCreditInScope($creditId);
         try {
             $newDate = $request->input('first_quota_date');
             $newStartDate = $request->input('new_start_date', null);
@@ -100,6 +102,7 @@ class CreditController extends Controller
 
     public function updateFrequency(Request $request, $creditId)
     {
+        \App\Support\Tenant::assertCreditInScope($creditId);
         try {
             $newFrequency = $request->input('frequency');
             $newFirstDate = $request->input('first_quota_date', null);
@@ -144,6 +147,7 @@ class CreditController extends Controller
 
     public function setRenewalBlocked(Request $request, $creditId)
     {
+        \App\Support\Tenant::assertCreditInScope($creditId);
         try {
             if (!$request->has('blocked')) {
                 return $this->errorResponse('El campo blocked es requerido', 400);
@@ -223,6 +227,7 @@ class CreditController extends Controller
 
     public function validateDeletion($id)
     {
+        \App\Support\Tenant::assertCreditInScope($id);
         try {
             return $this->creditService->validateDeletion($id);
         } catch (Exception $e) {
@@ -247,6 +252,7 @@ class CreditController extends Controller
 
     public function delete(Request $request, $id)
     {
+        \App\Support\Tenant::assertCreditInScope($id);
         try {
             \Log::info("Attempting to delete credit with ID: {$id}");
             $password = $request->input('password');
@@ -271,7 +277,10 @@ class CreditController extends Controller
     public function show($id)
     {
         try {
+            \App\Support\Tenant::assertCreditInScope($id);
             return $this->creditService->show($id);
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
+            throw $e; // dejar pasar 401/403/404 de autorización
         } catch (Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
@@ -288,6 +297,7 @@ class CreditController extends Controller
 
     public function toggleCreditStatus(Request $request, $creditId)
     {
+        \App\Support\Tenant::assertCreditInScope($creditId);
         try {
             $status = $request->input('status');
 
@@ -387,6 +397,10 @@ class CreditController extends Controller
 
     public function changeCreditClient(Request $request, $creditId)
     {
+        \App\Support\Tenant::assertCreditInScope($creditId);
+        if ($request->filled('new_client_id')) {
+            \App\Support\Tenant::assertClientInScope($request->input('new_client_id'));
+        }
         try {
             $newClientId = $request->input('new_client_id');
             if (!$newClientId) {

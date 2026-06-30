@@ -30,6 +30,7 @@ class GuarantorController extends Controller
 
     public function update(GuarantorRequest $request, $guarantorId)
     {
+        \App\Support\Tenant::assertGuarantorInScope($guarantorId);
         try{
             return $this->guarantorService->update($request, $guarantorId);
         } catch (Exception $e) {
@@ -39,6 +40,7 @@ class GuarantorController extends Controller
 
     public function delete($guarantorId)
     {
+        \App\Support\Tenant::assertGuarantorInScope($guarantorId);
         try{
             return $this->guarantorService->delete($guarantorId);
         } catch (Exception $e) {
@@ -75,6 +77,7 @@ class GuarantorController extends Controller
 
     public function show($guarantorId)
     {
+        \App\Support\Tenant::assertGuarantorInScope($guarantorId);
         try{
             return $this->guarantorService->show($guarantorId);
         } catch (Exception $e) {

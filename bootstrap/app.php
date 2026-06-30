@@ -39,6 +39,10 @@ return Application::configure(basePath: dirname(__DIR__))
             // un vendedor con caja cerrada. Debe ir después de active.seller
             // porque depende del atributo active_seller_id.
             'block.writes.cash.closed' => \App\Http\Middleware\BlockSupervisorWritesOnClosedCash::class,
+            // El Cobrador (rol 5) solo puede operar desde el APK móvil. Si
+            // llega desde el web (sin X-Client-Type: mobile) devuelve 401 para
+            // cerrar la sesión del navegador. Corre después de auth:api.
+            'seller.apk.only'    => \App\Http\Middleware\BlockSellerWebSession::class,
         ]);
 
         $middleware->validateCsrfTokens(except: [
