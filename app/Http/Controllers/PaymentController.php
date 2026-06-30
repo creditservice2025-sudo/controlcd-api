@@ -43,9 +43,12 @@ class PaymentController extends Controller
     public function index(Request $request, $creditId)
     {
         try {
+            \App\Support\Tenant::assertCreditInScope($creditId);
             $perPage = $request->get('perPage') ?? $request->get('rowsPerPage') ?? 100;
 
             return $this->paymentService->index($creditId, $request, $perPage);
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
+            throw $e; // dejar pasar 401/403/404 de autorización
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             return $this->errorResponse($e->getMessage(), 500);
@@ -246,6 +249,7 @@ class PaymentController extends Controller
 
     public function delete($paymentId, Request $request)
     {
+        \App\Support\Tenant::assertPaymentInScope($paymentId);
         try {
             return $this->paymentService->delete($paymentId, $request);
         } catch (\Exception $e) {
@@ -256,6 +260,7 @@ class PaymentController extends Controller
 
     public function deletePaymentInstallment($paymentInstallmentId, Request $request)
     {
+        \App\Support\Tenant::assertPaymentInstallmentInScope($paymentInstallmentId);
         try {
             return $this->paymentService->deletePaymentInstallment($paymentInstallmentId, $request);
         } catch (\Exception $e) {
@@ -564,6 +569,7 @@ class PaymentController extends Controller
     }
     public function reapply($creditId)
     {
+        \App\Support\Tenant::assertCreditInScope($creditId);
         try {
             return $this->paymentService->reapplyPayments($creditId);
         } catch (\Exception $e) {

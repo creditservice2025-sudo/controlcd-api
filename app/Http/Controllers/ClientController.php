@@ -48,6 +48,7 @@ class ClientController extends Controller
 
     public function update(ClientRequest $request, $clientId)
     {
+        \App\Support\Tenant::assertClientInScope($clientId);
         try {
             // Handle UUID if provided
             if (!is_numeric($clientId)) {
@@ -185,6 +186,7 @@ class ClientController extends Controller
 
     public function delete($clientId)
     {
+        \App\Support\Tenant::assertClientInScope($clientId);
         try {
             if (!is_numeric($clientId)) {
                 $client = Client::where('uuid', $clientId)->first();
@@ -411,7 +413,10 @@ class ClientController extends Controller
                 }
                 $clientId = $client->id;
             }
+            \App\Support\Tenant::assertClientInScope($clientId);
             return $this->clientService->show($clientId);
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
+            throw $e; // dejar pasar 401/403/404 de autorización
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
@@ -428,7 +433,10 @@ class ClientController extends Controller
                 $clientId = $client->id;
             }
             $companyId = $request->input('company_id');
+            \App\Support\Tenant::assertClientInScope($clientId);
             return $this->clientService->getClientDetails($clientId, $companyId);
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
+            throw $e; // dejar pasar 401/403/404 de autorización
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
@@ -606,6 +614,7 @@ class ClientController extends Controller
 
     public function toggleStatus(ToggleStatusRequest $request, $clientId)
     {
+        \App\Support\Tenant::assertClientInScope($clientId);
         try {
             if (!is_numeric($clientId)) {
                 $client = Client::where('uuid', $clientId)->first();
@@ -655,6 +664,7 @@ class ClientController extends Controller
 
     public function updateCapacity(Request $request, $id)
     {
+        \App\Support\Tenant::assertClientInScope($id);
         $request->validate([
             'capacity' => 'required|numeric|min:0'
         ]);
@@ -698,6 +708,10 @@ class ClientController extends Controller
 
     public function transfer(Request $request, $clientId)
     {
+        \App\Support\Tenant::assertClientInScope($clientId);
+        if ($request->filled('new_seller_id')) {
+            \App\Support\Tenant::assertSellerInScope((int) $request->input('new_seller_id'));
+        }
         try {
             $request->validate([
                 'new_seller_id' => 'required|exists:sellers,id',
@@ -754,6 +768,12 @@ class ClientController extends Controller
 
     public function transferMassive(Request $request)
     {
+        if ($request->filled('new_seller_id')) {
+            \App\Support\Tenant::assertSellerInScope((int) $request->input('new_seller_id'));
+        }
+        foreach ((array) $request->input('client_ids', []) as $cid) {
+            \App\Support\Tenant::assertClientInScope($cid);
+        }
         try {
             $request->validate([
                 'client_ids'   => 'required|array|min:1',

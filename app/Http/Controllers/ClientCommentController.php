@@ -76,7 +76,7 @@ class ClientCommentController extends Controller
         ]);
     }
 
-    public function destroy($clientId, $commentId)
+    public function destroy(Request $request, $clientId, $commentId)
     {
         $comment = ClientComment::where('client_id', $clientId)
             ->where('id', $commentId)
@@ -90,6 +90,21 @@ class ClientCommentController extends Controller
         $isAdmin = in_array((int) $user->role_id, [1, 2], true);
         if ((int) $comment->user_id !== (int) $user->id && !$isAdmin) {
             return $this->errorResponse('Solo el autor o un administrador puede eliminar el comentario.', 403);
+        }
+
+        // Solo se puede eliminar un comentario el MISMO DÍA en que se creó
+        // (zona horaria del usuario, enviada por el front; default America/Lima).
+        // Los administradores (rol 1 y 2) sí pueden moderar cualquier día.
+        if (!$isAdmin) {
+            $tz = $request->input('timezone') ?: 'America/Lima';
+            $createdDay = $comment->created_at->copy()->setTimezone($tz)->toDateString();
+            $today = now($tz)->toDateString();
+            if ($createdDay !== $today) {
+                return $this->errorResponse(
+                    'Solo puedes eliminar un comentario el mismo día en que se creó.',
+                    403
+                );
+            }
         }
 
         $comment->delete();

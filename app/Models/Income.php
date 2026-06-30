@@ -16,6 +16,7 @@ class Income extends Model
         'value',
         'description',
         'user_id',
+        'created_by',
         'created_at',
         'client_timezone',
         'business_timestamp',
@@ -34,6 +35,17 @@ class Income extends Model
     {
         return $this->belongsTo(User::class);
     }
+
+    /**
+     * Quién REGISTRÓ el ingreso (p. ej. un supervisor por un vendedor).
+     * Nombre del método != columna `created_by` para evitar colisión al
+     * serializar (se expone como `created_by_user`).
+     */
+    public function createdByUser(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'created_by');
+    }
+
     public function images(): HasMany
     {
         return $this->hasMany(IncomeImage::class);

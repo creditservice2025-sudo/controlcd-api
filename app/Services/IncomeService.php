@@ -38,9 +38,21 @@ class IncomeService
             $user = Auth::user();
             $isAdmin = in_array($user->role_id, [1, 2]);
 
-            $userId = $isAdmin && $request->has('user_id')
-                ? $validated['user_id']
-                : $user->id;
+            // Dueño del movimiento (a nombre de quién queda):
+            // - Supervisor (rol 6): SIEMPRE el vendedor activo de la sección
+            //   (validado por el middleware ResolveActiveSeller). El supervisor
+            //   NO se auto-registra movimientos: los registra al vendedor que
+            //   supervisa.
+            // - Admin (rol 1/2): el user_id que envíe (operar por un vendedor).
+            // - Cobrador y demás: su propio usuario.
+            $activeSellerId = $request->attributes->get('active_seller_id');
+            if ((int) $user->role_id === 6 && $activeSellerId) {
+                $userId = optional(Seller::find($activeSellerId))->user_id ?? $user->id;
+            } elseif ($isAdmin && $request->has('user_id')) {
+                $userId = $validated['user_id'];
+            } else {
+                $userId = $user->id;
+            }
 
             $seller = Seller::where('user_id', $userId)->first();
             
@@ -101,6 +113,14 @@ class IncomeService
                 'business_timestamp' => $businessTimestamp->format('Y-m-d H:i:s'),
                 'business_date' => $businessDate
             ];
+
+            // Trazabilidad: quién REGISTRÓ el ingreso (un supervisor/admin a
+            // nombre de un vendedor). El dueño sigue siendo user_id. Defensivo:
+            // solo si la columna existe (hasta correr la migración
+            // 2026_06_29_000001_add_created_by_to_incomes).
+            if (\Illuminate\Support\Facades\Schema::hasColumn('incomes', 'created_by')) {
+                $incomeData['created_by'] = $user->id;
+            }
 
             $income = Income::create($incomeData);
 
@@ -504,7 +524,7 @@ class IncomeService
             $user = Auth::user();
             $role = $user->role_id;
 
-            $incomeQuery = Income::with(['user', 'images'])
+            $incomeQuery = Income::with(['user', 'images', 'createdByUser:id,name,email'])
                 ->where(function ($query) use ($search) {
                     $query->where('description', 'like', "%{$search}%")
                         ->orWhereHas('user', function ($q) use ($search) {
@@ -743,7 +763,7 @@ class IncomeService
                         ->whereNull('deleted_at')
                         ->limit(1)
                 ])
-                ->with(['user', 'images'])
+                ->with(['user', 'images', 'createdByUser:id,name,email'])
                 ->where('incomes.user_id', $seller->user_id);
 
             $timezone = $request->input('timezone', 'America/Lima');

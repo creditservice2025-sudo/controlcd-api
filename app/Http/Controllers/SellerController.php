@@ -35,6 +35,7 @@ class SellerController extends Controller
 
     public function update(SellerRequest $request, $sellerId)
     {
+        \App\Support\Tenant::assertSellerInScope($sellerId);
         try {
             if (!is_numeric($sellerId)) {
                 $seller = \App\Models\Seller::where('uuid', $sellerId)->firstOrFail();
@@ -64,6 +65,7 @@ class SellerController extends Controller
 
     public function delete($routeId)
     {
+        \App\Support\Tenant::assertSellerInScope($routeId);
         try {
             if (!is_numeric($routeId)) {
                 $seller = \App\Models\Seller::where('uuid', $routeId)->firstOrFail();
@@ -101,6 +103,7 @@ class SellerController extends Controller
 
     public function toggleStatus(Request $request, $routeId)
     {
+        \App\Support\Tenant::assertSellerInScope($routeId);
         if (!is_numeric($routeId)) {
             $seller = \App\Models\Seller::where('uuid', $routeId)->firstOrFail();
             $routeId = $seller->id;
@@ -114,6 +117,7 @@ class SellerController extends Controller
      */
     public function getCashInfo(Request $request, $sellerId)
     {
+        \App\Support\Tenant::assertSellerInScope($sellerId);
         try {
             return $this->sellerService->getCashInfo($sellerId);
         } catch (\Exception $e) {
@@ -126,6 +130,7 @@ class SellerController extends Controller
      */
     public function getLiquidations(Request $request, $sellerId)
     {
+        \App\Support\Tenant::assertSellerInScope($sellerId);
         try {
             $limit = $request->get('limit', 10);
             return $this->sellerService->getLiquidations($sellerId, $limit);
@@ -140,6 +145,7 @@ class SellerController extends Controller
      */
     public function getPortfolioSummary(Request $request, $sellerId)
     {
+        \App\Support\Tenant::assertSellerInScope($sellerId);
         try {
             return $this->sellerService->getPortfolioSummary($sellerId);
         } catch (\Exception $e) {

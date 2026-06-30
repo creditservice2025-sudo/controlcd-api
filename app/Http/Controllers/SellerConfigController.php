@@ -16,12 +16,14 @@ class SellerConfigController extends Controller
 
     public function show($sellerId)
     {
+        \App\Support\Tenant::assertSellerInScope($sellerId);
         $config = $this->service->getBySeller($sellerId);
         return response()->json($config);
     }
 
     public function update(SellerConfigRequest $request, $sellerId)
     {
+        \App\Support\Tenant::assertSellerInScope($sellerId);
         $config = $this->service->createOrUpdate($sellerId, $request->validated());
         return response()->json($config);
     }
@@ -32,6 +34,7 @@ class SellerConfigController extends Controller
      */
     public function history(Request $request, $sellerId)
     {
+        \App\Support\Tenant::assertSellerInScope($sellerId);
         $perPage = (int) $request->query('per_page', 25);
         $perPage = max(1, min($perPage, 100));
         $audits = \App\Models\SellerConfigAudit::where('seller_id', $sellerId)
