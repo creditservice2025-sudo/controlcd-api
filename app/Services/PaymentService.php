@@ -965,7 +965,17 @@ class PaymentService
             $paymentsQuery->where('status', $request->status);
         }
 
-        $allPayments = $paymentsQuery->get();
+        $allPayments = $paymentsQuery->with(['createdByUser:id,name', 'deletedByUser:id,name'])->get();
+
+        // UX: exponer "creado por" SOLO cuando el pago lo cargó alguien distinto
+        // al vendedor (supervisor). Si lo cargó el propio vendedor, se oculta.
+        $sellerUserIdForPayments = (int) (Seller::where('id', $sellerId)->value('user_id') ?? 0);
+        $allPayments->each(function ($p) use ($sellerUserIdForPayments) {
+            if (!empty($p->created_by) && (int) $p->created_by === $sellerUserIdForPayments) {
+                $p->setRelation('createdByUser', null);
+            }
+        });
+
         $allPaymentIds = $allPayments->pluck('id');
 
         // 6. Traer detalles de cuotas para TODOS esos pagos en UNA sola consulta
@@ -1060,6 +1070,11 @@ class PaymentService
             $creditPayments->transform(function ($payment) use ($installmentsDetails) {
                 $payment->installments_details = $installmentsDetails->get($payment->id, collect())->values();
                 $payment->total_applied = $payment->installments_details->sum('paid_amount');
+                // Trazabilidad como escalar (garantiza que llegue al front aunque
+                // la relación anidada no se serialice). created_by_name ya viene
+                // nulo cuando lo cargó el propio vendedor (filtro previo).
+                $payment->created_by_name = optional($payment->createdByUser)->name;
+                $payment->deleted_by_name = optional($payment->deletedByUser)->name;
                 return $payment;
             });
 
