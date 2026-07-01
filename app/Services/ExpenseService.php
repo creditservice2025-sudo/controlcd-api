@@ -469,10 +469,15 @@ class ExpenseService
 
             // Restricción para vendedores: solo pueden eliminar gastos del mismo día
             // Ahora comparamos contra "HOY" en la zona horaria DEL GASTO (que debería ser la zona del usuario)
-            if ($user->role_id == 5) {
+            // Vendedor (rol 5) y Supervisor (rol 6): solo pueden eliminar
+            // gastos del DÍA ACTUAL (en la zona horaria del gasto). El
+            // supervisor opera sobre el vendedor que supervisa, con la misma
+            // restricción temporal que el propio vendedor.
+            if ($user->role_id == 5 || $user->role_id == 6) {
                 $todayInExpenseZone = Carbon::now($expenseTimezone)->format('Y-m-d');
                 if ($businessDate !== $todayInExpenseZone) {
-                    return $this->errorResponse('Los vendedores solo pueden eliminar gastos del día actual (' . $businessDate . '). Hoy es ' . $todayInExpenseZone . ' en su zona.', 422);
+                    $quien = $user->role_id == 6 ? 'Los supervisores' : 'Los vendedores';
+                    return $this->errorResponse($quien . ' solo pueden eliminar gastos del día actual (' . $businessDate . '). Hoy es ' . $todayInExpenseZone . ' en su zona.', 422);
                 }
             }
 
@@ -485,6 +490,15 @@ class ExpenseService
                     'success' => false,
                     'message' => 'No se puede eliminar el gasto porque ya existe una liquidación aprobada para esta fecha y no tiene permisos de ajuste.'
                 ], 422);
+            }
+
+            // Trazabilidad: registrar QUIÉN elimina el gasto (p. ej. el
+            // supervisor que borra un gasto del vendedor que supervisa).
+            // Defensivo: si la columna aún no existe en el entorno (migración
+            // pendiente), simplemente se omite sin romper la eliminación.
+            if (\Illuminate\Support\Facades\Schema::hasColumn('expenses', 'deleted_by')) {
+                $expense->deleted_by = Auth::id();
+                $expense->save();
             }
 
             $timezoneRequest = $request && $request->has('timezone') ? $request->get('timezone') : null;
@@ -809,7 +823,7 @@ class ExpenseService
                         ->whereNull('deleted_at')
                         ->limit(1)
                 ])
-                ->with(['user', 'category', 'images', 'createdByUser:id,name,email']);
+                ->with(['user', 'category', 'images', 'createdByUser:id,name,email', 'deletedByUser:id,name,email']);
 
             if ($request->has('include_deleted') && filter_var($request->include_deleted, FILTER_VALIDATE_BOOLEAN)) {
                 $expensesQuery->withTrashed();

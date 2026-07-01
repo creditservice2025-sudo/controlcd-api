@@ -37,6 +37,10 @@ class Client extends Model
         // Trazabilidad de creación: quién y con qué rol creó el cliente.
         'created_by',
         'created_by_role',
+        // Trazabilidad de última edición: quién y con qué rol editó el cliente
+        // (p. ej. el supervisor que edita el cliente del vendedor).
+        'updated_by',
+        'updated_by_role',
     ];
 
     protected $casts = [
@@ -129,6 +133,16 @@ class Client extends Model
     public function createdByUser(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+
+    /**
+     * Usuario que realizó la última edición del cliente (Auth::id()). Se expone
+     * como `updated_by_user`. Útil para saber si lo editó el vendedor o el
+     * supervisor.
+     */
+    public function updatedByUser(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'updated_by');
     }
 
 
