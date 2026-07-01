@@ -27,15 +27,37 @@ class VerificationController extends Controller
     public function sendOtp(Request $request)
     {
         $user = Auth::user();
-        $sellerName = $user->name ?? 'Vendedor';
         $clientName = $request->input('client_name', 'N/A');
+        $clientId = $request->input('client_id');
+
+        // Resolver el VENDEDOR dueño del cliente (contexto), independiente de
+        // quién hace la edición: cuando el supervisor edita el cliente de un
+        // vendedor, el mensaje debe mostrar al vendedor real Y marcar que la
+        // solicitud la hizo el supervisor.
+        $sellerName = null;
+        if ($clientId) {
+            $client = is_numeric($clientId)
+                ? \App\Models\Client::find($clientId)
+                : \App\Models\Client::where('uuid', $clientId)->first();
+            $sellerName = optional(optional($client?->seller)->user)->name;
+        }
+        // Fallback: si no se pudo resolver y el editor es el propio vendedor.
+        if (!$sellerName && (int) ($user->role_id ?? 0) === 5) {
+            $sellerName = $user->name;
+        }
 
         // Use user ID as part of the key to make it unique per session/user
         $key = "photo_change_" . $user->id;
-        
+
         $otp = $this->otpService->generate($key);
 
-        $sent = $this->telegramService->sendOtp($otp, $sellerName, $clientName);
+        // Detalle de cambios (campos antes→después y fotos) calculado en el
+        // frontend, para mostrarlo en el mensaje de verificación.
+        $changes = $request->input('changes', []);
+
+        // Pasar el editor (Auth::user) para que el mensaje indique si la edición
+        // la realiza el vendedor o el supervisor, y el detalle de cambios.
+        $sent = $this->telegramService->sendOtp($otp, $sellerName ?? 'N/D', $clientName, $user, $changes);
 
         if ($sent) {
             return $this->successResponse(['success' => true, 'message' => 'Código enviado correctamente via Telegram']);

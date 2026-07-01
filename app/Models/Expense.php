@@ -17,6 +17,7 @@ class Expense extends Model
         'description',
         'user_id',
         'created_by',
+        'deleted_by',
         'category_id',
         'status',
         'created_at',
@@ -49,6 +50,15 @@ class Expense extends Model
     public function createdByUser(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+
+    /**
+     * Usuario que ELIMINÓ el gasto (p. ej. un supervisor borrando un gasto
+     * del vendedor que supervisa). Se expone como `deleted_by_user`.
+     */
+    public function deletedByUser(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'deleted_by');
     }
 
     public function category(): BelongsTo

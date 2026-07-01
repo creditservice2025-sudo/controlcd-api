@@ -357,6 +357,16 @@ class PaymentService
 
                 DB::commit();
 
+                // Notificar por Telegram si el pago lo CARGA el supervisor
+                // (rol 6): deja constancia al administrador. No bloquea si falla.
+                try {
+                    if ($user && (int) $user->role_id === 6) {
+                        app(\App\Services\TelegramService::class)->notifyNewPayment($payment->fresh(), $user);
+                    }
+                } catch (\Throwable $e) {
+                    Log::warning('[telegram] notifyNewPayment falló: ' . $e->getMessage());
+                }
+
                 Log::info('Payment processed successfully (Unified Flow) for Credit ID: ' . $credit->id);
 
                 $response = $this->successResponse([
@@ -550,6 +560,7 @@ class PaymentService
                     'payment_images.path as image_path',
                     'payments.payment_date',
                     'payments.created_at',
+                    'payments.created_by',
 
                     'payments.amount as total_payment',
                     'payments.unapplied_amount', // Added this field
@@ -611,6 +622,7 @@ class PaymentService
                     'payments.status',
                     'payments.status',
                     'payments.created_at',
+                    'payments.created_by',
                     'payments.unapplied_amount',
                     'payments.business_timezone',
                     'payments.business_timestamp',
@@ -628,10 +640,95 @@ class PaymentService
 
             $payments = $paymentsQuery->paginate($perPage, ['*']);
 
+            // Trazabilidad: nombre de quién CARGÓ cada pago (created_by),
+            // resuelto en post-proceso para no meter otro JOIN en la consulta
+            // agrupada. UX: solo se expone el nombre cuando lo cargó alguien
+            // DISTINTO al vendedor (supervisor/admin); si el propio vendedor
+            // cargó su pago, no se muestra nada (evita ruido).
+            $sellerUserId = \App\Models\Seller::where('id', $credit->seller_id)->value('user_id');
+            $creatorIds = collect($payments->items())->pluck('created_by')->filter()->unique()->values();
+            $creators = $creatorIds->isNotEmpty()
+                ? \App\Models\User::whereIn('id', $creatorIds)->pluck('name', 'id')
+                : collect();
+            $payments->getCollection()->transform(function ($item) use ($creators, $sellerUserId) {
+                $isBySeller = !empty($sellerUserId) && (int) $item->created_by === (int) $sellerUserId;
+                $item->created_by_name = (!empty($item->created_by) && !$isBySeller && isset($creators[$item->created_by]))
+                    ? $creators[$item->created_by]
+                    : null;
+                return $item;
+            });
+
+            // PAGOS COMPLETOS eliminados (soft-deleted) de este crédito. El
+            // query principal usa el scope SoftDeletes (deleted_at IS NULL), por
+            // lo que NUNCA incluye un pago que el vendedor/usuario eliminó. Esto
+            // se devuelve aparte para listar esas eliminaciones (monto, fecha,
+            // quién y cuándo) además de las "cuotas eliminadas" por mantenimiento.
+            $deletedRaw = Payment::onlyTrashed()
+                ->leftJoin('users as du', 'payments.deleted_by', '=', 'du.id')
+                ->where('payments.credit_id', $creditId)
+                ->select(
+                    'payments.id',
+                    'payments.amount',
+                    'payments.payment_date',
+                    'payments.status',
+                    'payments.payment_method',
+                    'payments.payment_reference',
+                    'payments.business_timestamp',
+                    'payments.business_timezone',
+                    'payments.created_at',
+                    'payments.deleted_at',
+                    'payments.deleted_by',
+                    'du.name as deleted_by_name'
+                )
+                ->orderBy('payments.deleted_at', 'desc')
+                ->get();
+
+            // Cuotas (payment_installments, también soft-deleted) que tenía
+            // aplicado cada pago eliminado, para mostrar su distribución.
+            $deletedQuotas = collect();
+            if ($deletedRaw->isNotEmpty()) {
+                $deletedQuotas = PaymentInstallment::withTrashed()
+                    ->whereIn('payment_installments.payment_id', $deletedRaw->pluck('id'))
+                    ->leftJoin('installments', 'payment_installments.installment_id', '=', 'installments.id')
+                    ->select(
+                        'payment_installments.payment_id',
+                        'payment_installments.applied_amount',
+                        'installments.quota_number',
+                        'installments.quota_amount'
+                    )
+                    ->orderBy('installments.quota_number')
+                    ->get()
+                    ->groupBy('payment_id');
+            }
+
+            $deletedPayments = $deletedRaw->map(function ($p) use ($deletedQuotas) {
+                return [
+                    'id'                => $p->id,
+                    'amount'            => $p->amount,
+                    'payment_date'      => $p->payment_date,
+                    'status'            => $p->status,
+                    'payment_method'    => $p->payment_method,
+                    'payment_reference' => $p->payment_reference,
+                    'business_timestamp' => $p->business_timestamp,
+                    'business_timezone' => $p->business_timezone,
+                    'created_at'        => $p->created_at,
+                    'deleted_at'        => $p->deleted_at,
+                    'deleted_by'        => $p->deleted_by,
+                    'deleted_by_name'   => $p->deleted_by_name,
+                    'quotas'            => ($deletedQuotas[$p->id] ?? collect())
+                        ->map(fn($q) => [
+                            'quota_number'   => $q->quota_number,
+                            'applied_amount' => $q->applied_amount,
+                            'quota_amount'   => $q->quota_amount,
+                        ])->values(),
+                ];
+            });
+
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Pagos obtenidos correctamente',
-                'data' => $payments
+                'data' => $payments,
+                'deleted_payments' => $deletedPayments,
             ]);
 
             /*   return $this->successResponse([
@@ -1085,10 +1182,23 @@ class PaymentService
                     'installments',
                     'payments',
                 ]);
-            }
+            },
+            // Trazabilidad: quién cargó / quién eliminó el pago (p. ej. supervisor).
+            'createdByUser:id,name',
+            'deletedByUser:id,name',
         ]);
 
         $payments = $paymentsQuery->orderBy('created_at', 'desc')->get();
+
+        // UX: exponer "cargado por" SOLO cuando el pago lo cargó alguien
+        // distinto al vendedor (supervisor). Si lo cargó el propio vendedor,
+        // se oculta el creador para no ensuciar la vista.
+        $sellerUserId = (int) ($seller->user_id ?? 0);
+        $payments->each(function ($p) use ($sellerUserId) {
+            if (!empty($p->created_by) && (int) $p->created_by === $sellerUserId) {
+                $p->setRelation('createdByUser', null);
+            }
+        });
 
         if ($flatStructure) {
             $flatPayments = $payments->map(function ($payment) use ($includeDeleted) {
@@ -1123,6 +1233,11 @@ class PaymentService
                     'created_at' => $payment->created_at,
                     'deleted_at' => $payment->deleted_at,
                     'is_deleted' => $includeDeleted,
+                    // Trazabilidad de quién cargó / eliminó el pago.
+                    'created_by' => $payment->created_by,
+                    'created_by_user' => $payment->createdByUser,
+                    'deleted_by' => $payment->deleted_by,
+                    'deleted_by_user' => $payment->deletedByUser,
                 ];
             });
 
@@ -1331,6 +1446,16 @@ class PaymentService
             $liquidationService->recalculateNextLiquidations($sellerId, $businessDate);
 
             DB::commit();
+
+            // Notificar por Telegram si el pago lo ELIMINA el supervisor
+            // (rol 6): deja constancia al administrador. No bloquea si falla.
+            try {
+                if ($user && (int) $user->role_id === 6) {
+                    app(\App\Services\TelegramService::class)->notifyDeletedPayment($payment, $user);
+                }
+            } catch (\Throwable $e) {
+                Log::warning('[telegram] notifyDeletedPayment falló: ' . $e->getMessage());
+            }
 
             return $this->successResponse([
                 'success' => true,

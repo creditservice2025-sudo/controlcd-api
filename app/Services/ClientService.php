@@ -447,6 +447,18 @@ class ClientService
                 return $this->errorResponse("Error al actualizar el cliente: {$e->getMessage()}", 500);
             }
 
+            // Trazabilidad de edición: quién y con qué rol editó el cliente
+            // (p. ej. el supervisor que edita el cliente del vendedor). Defensivo
+            // por si la migración de updated_by aún no corrió en el entorno.
+            $authUser = Auth::user();
+            if ($authUser && \Illuminate\Support\Facades\Schema::hasColumn('clients', 'updated_by')) {
+                $client->updated_by = $authUser->id;
+                if (\Illuminate\Support\Facades\Schema::hasColumn('clients', 'updated_by_role')) {
+                    $client->updated_by_role = (int) $authUser->role_id;
+                }
+                $client->save();
+            }
+
             // Stage 2: Update images if provided
             if ($request->has('images')) {
                 $validation = $this->validateImages($request);
@@ -568,6 +580,21 @@ class ClientService
             }
 
             DB::commit();
+
+            // Trazabilidad por Telegram cuando edita un ADMINISTRADOR (rol 1/2):
+            // el admin NO pasa por el código de verificación, así que aquí queda
+            // constancia de que lo editó él, con el detalle de cambios. El
+            // vendedor/supervisor ya recibe ese detalle en el mensaje del código,
+            // por eso no se les vuelve a notificar aquí. No bloquea si falla.
+            try {
+                if ($authUser && in_array((int) $authUser->role_id, [1, 2], true)) {
+                    $changes = json_decode($request->input('changes_summary', '[]'), true) ?: [];
+                    app(TelegramService::class)->notifyUpdatedClient($client->fresh(), $authUser, $changes);
+                }
+            } catch (\Throwable $e) {
+                Log::warning('[telegram] notifyUpdatedClient falló: ' . $e->getMessage());
+            }
+
             return $this->successResponse(['success' => true, 'message' => 'Cliente actualizado con éxito', 'data' => $client->fresh()]);
         } catch (\Exception $e) {
             DB::rollBack();
@@ -2407,15 +2434,31 @@ class ClientService
             // Solo se popula para vendedores (role 5); admins caen al fallback del frontend.
             $paymentsTodaySummary = null;
 
+            // Vendedor (rol 5) sobre su propia ruta, o Supervisor (rol 6) sobre
+            // el vendedor ACTIVO seleccionado. Para admins, el frontend usa su
+            // propio fallback.
+            $summarySellerId = null;
             if ($user->role_id == 5 && $seller) {
+                $summarySellerId = $seller->id;
+            } elseif ($user->role_id == 6 && is_array($supervisorSellerIds)
+                && count($supervisorSellerIds) === 1 && $supervisorSellerIds[0] > 0) {
+                $summarySellerId = $supervisorSellerIds[0];
+            }
+
+            if ($summarySellerId) {
+                // user_id del vendedor dueño: para mostrar "cargado por" SOLO
+                // cuando el pago lo cargó alguien distinto (supervisor/admin).
+                $summarySellerUserId = \App\Models\Seller::where('id', $summarySellerId)->value('user_id');
+
                 $summaryRows = Payment::query()
                     ->join('credits', 'payments.credit_id', '=', 'credits.id')
                     ->join('clients', 'credits.client_id', '=', 'clients.id')
+                    ->leftJoin('users as pay_creator', 'payments.created_by', '=', 'pay_creator.id')
                     ->whereNull('payments.deleted_at')
                     ->whereNull('credits.deleted_at')
                     ->whereNull('clients.deleted_at')
                     ->where('payments.business_date', $todayLocal)
-                    ->where('credits.seller_id', $seller->id)
+                    ->where('credits.seller_id', $summarySellerId)
                     ->orderBy('payments.created_at', 'asc')
                     ->get([
                         'payments.id',
@@ -2423,20 +2466,28 @@ class ClientService
                         'payments.amount',
                         'payments.payment_method',
                         'payments.status as payment_status',
+                        'payments.created_by',
+                        'pay_creator.name as created_by_name',
                         'clients.id as client_id',
                         'clients.name as cliente',
                     ]);
 
                 // Agrupar por credit_id para preservar el UX anterior (un registro por credito, monto sumado).
-                $itemsByCredit = $summaryRows->groupBy('credit_id')->map(function ($group) {
+                $itemsByCredit = $summaryRows->groupBy('credit_id')->map(function ($group) use ($summarySellerUserId) {
                     $first = $group->first();
+                    // "cargado por" solo si algún pago del grupo lo cargó un NO-vendedor.
+                    $loadedByOther = $group->first(function ($p) use ($summarySellerUserId) {
+                        return !empty($p->created_by)
+                            && (int) $p->created_by !== (int) $summarySellerUserId;
+                    });
                     return [
-                        'credit_id'      => $first->credit_id,
-                        'client_id'      => $first->client_id,
-                        'cliente'        => $first->cliente,
-                        'monto'          => (float) $group->sum('amount'),
-                        'payment_method' => $first->payment_method,
-                        'status'         => $first->payment_status,
+                        'credit_id'       => $first->credit_id,
+                        'client_id'       => $first->client_id,
+                        'cliente'         => $first->cliente,
+                        'monto'           => (float) $group->sum('amount'),
+                        'payment_method'  => $first->payment_method,
+                        'status'          => $first->payment_status,
+                        'created_by_name' => $loadedByOther->created_by_name ?? null,
                     ];
                 })->values();
 

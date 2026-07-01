@@ -71,17 +71,78 @@ class TelegramService
     /**
      * Send a formatted OTP message
      */
-    public function sendOtp($otp, $sellerName = '', $clientName = '')
+    public function sendOtp($otp, $sellerName = '', $clientName = '', $editor = null, $changes = [])
     {
         $message = "🔐 *VERIFICACIÓN REQUERIDA*\n\n";
-        $message .= "📍 *Vendedor:* {$sellerName}\n";
-        $message .= "👥 *Cliente:* {$clientName}\n\n";
-        $message .= "Solicitud: *Cambio de fotos*\n";
+
+        // Indicar QUIÉN realiza la edición. Si es el Supervisor (rol 6), se
+        // marca como "Solicitud del supervisor" y se muestra aparte el vendedor
+        // dueño del cliente. Si lo hace un admin, se indica también. Si lo hace
+        // el propio vendedor (o no hay editor), se muestra solo el vendedor.
+        $editorRole = (int) ($editor->role_id ?? 0);
+        if ($editor && $editorRole === 6) {
+            $message .= "🛡️ *Solicitud del supervisor:* {$editor->name}\n";
+            if (!empty($sellerName)) {
+                $message .= "📍 *Vendedor:* {$sellerName}\n";
+            }
+        } elseif ($editor && in_array($editorRole, [1, 2], true)) {
+            $message .= "👤 *Editado por (admin):* {$editor->name}\n";
+            if (!empty($sellerName)) {
+                $message .= "📍 *Vendedor:* {$sellerName}\n";
+            }
+        } else {
+            $message .= "📍 *Vendedor:* " . ($sellerName ?: ($editor->name ?? 'N/D')) . "\n";
+        }
+
+        $message .= "👥 *Cliente:* {$clientName}\n";
+
+        // Detalle de QUÉ se cambia (campos antes→después y fotos).
+        $detail = $this->buildChangesDetail($changes);
+        if ($detail !== '') {
+            $message .= "\n📝 *Cambios solicitados:*\n{$detail}\n";
+        }
+
+        // Tipo de solicitud según lo que cambió.
+        $hasFields = !empty($changes['fields']);
+        $hasPhotos = !empty($changes['photos']);
+        $tipo = ($hasFields && $hasPhotos)
+            ? 'Cambio de datos y fotos'
+            : ($hasPhotos ? 'Cambio de fotos' : ($hasFields ? 'Cambio de datos' : 'Cambio de datos/fotos'));
+
+        $message .= "\nSolicitud: *{$tipo}*\n";
         $message .= "Código de aceptación:\n";
         $message .= "👉 `{$otp}`\n\n";
         $message .= "⚠️ Este código expira en 5 minutos.";
 
         return $this->sendMessage($message, 'otp');
+    }
+
+    /**
+     * Arma el detalle de cambios para el mensaje de verificación. Sanea los
+     * valores para no romper el Markdown de Telegram.
+     */
+    private function buildChangesDetail($changes): string
+    {
+        if (!is_array($changes)) {
+            return '';
+        }
+        $clean = fn($v) => str_replace(['*', '_', '`', '['], '', (string) $v);
+        $lines = [];
+
+        foreach (($changes['fields'] ?? []) as $f) {
+            if (!is_array($f)) {
+                continue;
+            }
+            $label = $clean($f['label'] ?? 'Campo');
+            $old   = $clean($f['old'] ?? '');
+            $new   = $clean($f['new'] ?? '');
+            $lines[] = "• {$label}: {$old} → {$new}";
+        }
+        foreach (($changes['photos'] ?? []) as $p) {
+            $lines[] = "• 📷 " . $clean($p);
+        }
+
+        return implode("\n", $lines);
     }
 
     /**
@@ -288,6 +349,62 @@ class TelegramService
         $message = $this->buildNewClientMessage($client, $seller, $company, $credit);
         $this->dispatchSend($company->id, $message, 'new_client');
         return true;
+    }
+
+    /**
+     * Notifica que un cliente EXISTENTE fue editado. Se usa especialmente para
+     * dejar constancia cuando el Supervisor (rol 6) edita el cliente del
+     * vendedor que supervisa: el mensaje lo marca como "Solicitud del
+     * supervisor". Reutiliza el toggle de notificación de clientes de la
+     * empresa (telegram_notify_new_client).
+     */
+    public function notifyUpdatedClient(\App\Models\Client $client, \App\Models\User $editor, $changes = []): bool
+    {
+        $seller  = $client->seller;
+        $company = $seller?->company;
+
+        if (!$company || !$company->telegram_notify_new_client) {
+            return false;
+        }
+
+        $message = $this->buildUpdatedClientMessage($client, $seller, $company, $editor, $changes);
+        $this->dispatchSend($company->id, $message, 'updated_client');
+        return true;
+    }
+
+    private function buildUpdatedClientMessage(\App\Models\Client $client, \App\Models\Seller $seller, \App\Models\Company $company, \App\Models\User $editor, $changes = []): string
+    {
+        $vendedor   = $seller->user->name ?? 'N/D';
+        $editorName = $editor->name ?? 'N/D';
+        $tz         = $seller->city->country->timezone ?? 'America/Lima';
+        $fecha      = \Carbon\Carbon::now($tz)->format('d/m/Y H:i');
+
+        $m  = "✏️ *Cliente actualizado*\n\n";
+        $m .= "🏢 Empresa: *{$company->name}*\n";
+        $m .= "🧑 Cliente: *{$client->name}*\n";
+        if (!empty($client->dni))   $m .= "🆔 Documento: `{$client->dni}`\n";
+        if (!empty($client->phone)) $m .= "📞 Teléfono: {$client->phone}\n";
+        $m .= "🛵 Vendedor: {$vendedor}\n";
+
+        // Quién realizó la edición.
+        $editorRole = (int) ($editor->role_id ?? 0);
+        if ($editorRole === 6) {
+            $m .= "🛡️ *Solicitud del supervisor: {$editorName}*\n";
+        } elseif (in_array($editorRole, [1, 2], true)) {
+            $m .= "👤 *Editado por (administrador): {$editorName}*\n";
+        } else {
+            $m .= "✍️ Editado por: {$editorName}\n";
+        }
+
+        // Detalle de qué cambió (campos antes→después y fotos).
+        $detail = $this->buildChangesDetail($changes);
+        if ($detail !== '') {
+            $m .= "\n📝 *Cambios:*\n{$detail}\n";
+        }
+
+        $m .= "\n🕒 Fecha: {$fecha}";
+
+        return $m;
     }
 
     /**
@@ -552,6 +669,64 @@ class TelegramService
         $message = $this->buildDeletedCreditMessage($credit, $seller, $company);
         $this->dispatchSend($company->id, $message, 'deleted_credit');
         return true;
+    }
+
+    /**
+     * Notifica que el SUPERVISOR registró un pago sobre el vendedor que
+     * supervisa. Deja constancia como "Solicitud del supervisor".
+     */
+    public function notifyNewPayment(\App\Models\Payment $payment, \App\Models\User $editor): bool
+    {
+        return $this->notifyPaymentAction($payment, $editor, 'registrado');
+    }
+
+    /**
+     * Notifica que el SUPERVISOR eliminó un pago del vendedor que supervisa.
+     */
+    public function notifyDeletedPayment(\App\Models\Payment $payment, \App\Models\User $editor): bool
+    {
+        return $this->notifyPaymentAction($payment, $editor, 'eliminado');
+    }
+
+    private function notifyPaymentAction(\App\Models\Payment $payment, \App\Models\User $editor, string $accion): bool
+    {
+        $credit  = $payment->credit;
+        $seller  = $credit?->seller;
+        $company = $seller?->company;
+
+        if (!$company) {
+            return false;
+        }
+
+        $message = $this->buildPaymentActionMessage($payment, $credit, $seller, $company, $editor, $accion);
+        $this->dispatchSend($company->id, $message, 'payment_' . $accion);
+        return true;
+    }
+
+    private function buildPaymentActionMessage($payment, $credit, $seller, $company, \App\Models\User $editor, string $accion): string
+    {
+        $vendedor   = $seller->user->name ?? 'N/D';
+        $editorName = $editor->name ?? 'N/D';
+        $cliente    = $credit?->client->name ?? 'N/D';
+        $currency   = $seller->city->country->currency ?? '';
+        $monto      = number_format((float) $payment->amount, 2);
+        $tz         = $seller->city->country->timezone ?? 'America/Lima';
+        $fecha      = \Carbon\Carbon::now($tz)->format('d/m/Y H:i');
+
+        $icon   = $accion === 'eliminado' ? '🗑️' : '💵';
+        $titulo = $accion === 'eliminado' ? 'Pago eliminado' : 'Pago registrado';
+        $creditNo = str_pad((string) ($credit->id ?? ''), 7, '0', STR_PAD_LEFT);
+
+        $m  = "{$icon} *{$titulo}*\n\n";
+        $m .= "🏢 Empresa: *{$company->name}*\n";
+        $m .= "👥 Cliente: *{$cliente}*\n";
+        $m .= "🧾 Crédito: #{$creditNo}\n";
+        $m .= "💰 Monto: {$currency}{$monto}\n";
+        $m .= "🛵 Vendedor: {$vendedor}\n";
+        $m .= "🛡️ *Solicitud del supervisor: {$editorName}*\n";
+        $m .= "🕒 Fecha: {$fecha}";
+
+        return $m;
     }
 
     private function buildNewExpenseMessage(\App\Models\Expense $expense, \App\Models\Seller $seller, \App\Models\Company $company): string
