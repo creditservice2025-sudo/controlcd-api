@@ -219,13 +219,19 @@ class LoginService
             }
 
             $seller = $user->seller;
+            // Día de negocio anclado a la zona del VENDEDOR. Antes el bloqueo
+            // usaba America/Lima hardcodeado mientras la auto-apertura usaba la
+            // zona del request/UTC: cerca de medianoche eran días distintos, y
+            // el día real del vendedor podía no abrirse nunca (día huérfano).
+            $sellerTz = $seller
+                ? \App\Helpers\TimezoneHelper::getSellerTimezone($seller)
+                : config('app.timezone');
+            $businessToday = \Carbon\Carbon::now($sellerTz)->toDateString();
+
             if ($seller && $user->role_id === 5) {
-                // Bloqueo estricto: Si existe CUALQUIER liquidaci├│n para hoy, el vendedor no entra.
-                // Se usa America/Lima como zona de referencia para consistencia con el resto del app.
-                $todayLima = \Carbon\Carbon::now('America/Lima')->toDateString();
-                
+                // Bloqueo estricto: Si existe CUALQUIER liquidación para hoy, el vendedor no entra.
                 $liquidation = Liquidation::where('seller_id', $seller->id)
-                    ->whereDate('date', $todayLima)
+                    ->whereDate('date', $businessToday)
                     ->first();
 
                 if ($liquidation && in_array($liquidation->status, ['approved', 'auto', 'pending'])) {
@@ -279,13 +285,23 @@ class LoginService
                 'user_agent' => request()->header('User-Agent'),
             ]);
 
-            // Auto-Apertura si es vendedor
+            // Auto-Apertura si es vendedor. Usa el MISMO día de negocio del
+            // vendedor que el bloqueo de arriba (no la zona del request/UTC),
+            // para que el día que se bloquea y el que se abre coincidan.
             if ($seller && ($user->role_id === 5 || $user->role_id === 3)) {
                 try {
                     $liquidationService = app(\App\Services\LiquidationService::class);
-                    $liquidationService->getOrCreateLiquidation($seller->id, $loginAt->toDateString(), $timezone);
-                } catch (\Exception $e) {
-                    \Log::error("Error en auto-apertura al login: " . $e->getMessage());
+                    $liquidationService->getOrCreateLiquidation($seller->id, $businessToday, $sellerTz);
+                } catch (\Throwable $e) {
+                    // No romper el login, pero NO tragarlo en silencio: log con
+                    // contexto suficiente para diagnosticar días sin liquidación.
+                    \Log::error('[liquidation.auto-apertura] fallo al abrir el día del vendedor', [
+                        'seller_id'     => $seller->id,
+                        'business_date' => $businessToday,
+                        'timezone'      => $sellerTz,
+                        'error'         => $e->getMessage(),
+                        'at'            => basename($e->getFile()) . ':' . $e->getLine(),
+                    ]);
                 }
             }
 
