@@ -100,11 +100,32 @@ class LiquidationController extends Controller
         try {
             $todayDate = Carbon::now($timezone)->toDateString();
 
+            // P0 · La fecha del cierre la decide el SERVIDOR, no el teléfono.
+            // Cobrador (5) y supervisor (6) siempre cierran el día de negocio de
+            // HOY (zona del vendedor); se ignora la fecha del dispositivo, así un
+            // reloj/zona mal en el teléfono no corre el día (causa raíz de los
+            // huecos/duplicados). Admin (1/2) puede corregir días pasados.
+            $effectiveDate = \App\Support\LiquidationDatePolicy::resolveClosingDate(
+                (int) $user->role_id,
+                (string) $request->date,
+                $todayDate
+            );
+            if ($effectiveDate !== $request->date) {
+                Log::info('Liquidation closing date set by server (device date ignored)', [
+                    'user_id' => $user->id,
+                    'seller_id' => $request->seller_id,
+                    'device_date' => $request->date,
+                    'business_today' => $todayDate,
+                    'timezone' => $timezone,
+                    'role_id' => $user->role_id,
+                ]);
+                $request->merge(['date' => $effectiveDate]);
+            }
+
             // Guardia anti-fecha-futura: una liquidación es de un día ya ocurrido
             // (o de hoy) en la zona del vendedor. Rechazar fechas futuras evita el
-            // bug de "saltar un día" cuando el front calculaba la fecha en UTC.
-            // Fechas pasadas se permiten (correcciones / aprobaciones tardías).
-            if ($request->date > $todayDate) {
+            // bug de "saltar un día". Fechas pasadas se permiten (correcciones).
+            if (\App\Support\LiquidationDatePolicy::isFuture((string) $request->date, $todayDate)) {
                 Log::warning('Liquidation blocked: future date', [
                     'seller_id' => $request->seller_id,
                     'date' => $request->date,
