@@ -55,34 +55,37 @@ class PaymentService
 
             $params = $request->validated();
 
-            // Obtener zona horaria del cliente (donde se realiza el pago)
+            // Zona reportada por el dispositivo. Se guarda solo para auditoría;
+            // NO decide el día de negocio del pago.
             $clientTimezone = $request->get('client_timezone', config('app.timezone'));
 
             // 1. TIMESTAMP TÉCNICO (auditoría del sistema)
             $serverNow = Carbon::now('UTC');
 
-
-            // 2. TIMESTAMP DE NEGOCIO (hora oficial del pago)
-            $businessNow = Carbon::now($clientTimezone);
-            // TRUCO: Creamos un Carbon en UTC con la hora LOCAL para que al guardarse quede "11:05" en DB
-            // y al leerse (con AppTimezone Caracas) se interprete como "11:05 Caracas".
-            $businessTimestampUtc = Carbon::createFromFormat('Y-m-d H:i:s', $businessNow->format('Y-m-d H:i:s'), 'UTC');
-            $businessDate = $businessNow->toDateString();
-
-            Log::info('Payment Create - Business Timestamps Generated', [
-                'client_timezone' => $clientTimezone,
-                'server_now_utc' => $serverNow->toDateTimeString(),
-                'business_now_local' => $businessNow->toDateTimeString(),
-                'business_timestamp_utc' => $businessTimestampUtc->toDateTimeString(),
-                'business_date' => $businessDate
-            ]);
-
-            $credit = Credit::find($request->credit_id);
+            $credit = Credit::with('seller.city.country')->find($request->credit_id);
             $user = Auth::user();
 
             if (!$credit) {
                 throw new \Exception('El crédito no existe.');
             }
+
+            // 2. TIMESTAMP DE NEGOCIO (hora oficial del pago).
+            // La zona la decide el VENDEDOR (BD: seller→city→country→timezone), no
+            // el teléfono: así un dispositivo con zona/hora mal —o un supervisor
+            // cargando el pago desde otro país— no corre el día. Reloj = servidor.
+            $businessTz = \App\Helpers\TimezoneHelper::getSellerTimezone($credit->seller);
+            $businessNow = Carbon::now($businessTz);
+            // TRUCO: Carbon en UTC con la hora LOCAL para que se guarde/lea cruda.
+            $businessTimestampUtc = Carbon::createFromFormat('Y-m-d H:i:s', $businessNow->format('Y-m-d H:i:s'), 'UTC');
+            $businessDate = $businessNow->toDateString();
+
+            Log::info('Payment Create - Business Timestamps Generated', [
+                'business_timezone' => $businessTz,
+                'device_reported_tz' => $clientTimezone,
+                'server_now_utc' => $serverNow->toDateTimeString(),
+                'business_now_local' => $businessNow->toDateTimeString(),
+                'business_date' => $businessDate,
+            ]);
 
             // ======= GUARD: caja del día ya cerrada =======
             // Defensa en profundidad: aun si el middleware liquidation.closed
@@ -172,7 +175,7 @@ class PaymentService
                         // TIMESTAMPS DE NEGOCIO (operaciones)
                         'business_timestamp' => $businessTimestampUtc,
                         'business_date' => $businessDate,
-                        'business_timezone' => $clientTimezone,
+                        'business_timezone' => $businessTz,
 
                         // COMPATIBILIDAD (mantener por ahora)
                         'payment_date' => $businessDate,
@@ -258,7 +261,7 @@ class PaymentService
                     // TIMESTAMPS DE NEGOCIO (operaciones)
                     'business_timestamp' => $businessTimestampUtc,
                     'business_date' => $businessDate,
-                    'business_timezone' => $clientTimezone,
+                    'business_timezone' => $businessTz,
 
                     // COMPATIBILIDAD (mantener por ahora)
                     'payment_date' => $businessDate,
