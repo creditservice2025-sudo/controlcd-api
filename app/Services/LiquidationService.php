@@ -746,7 +746,8 @@ class LiquidationService
         // Importante: autoCreate = false para evitar recursión infinita
         $dynamicData = $this->getLiquidationData($sellerId, $date, $userId, $tz, false);
 
-        return Liquidation::create([
+        try {
+            return Liquidation::create([
             'seller_id' => $sellerId,
             'date' => $date,
             'currency' => $currency, // ✅ AGREGADO
@@ -774,7 +775,22 @@ class LiquidationService
             'shortage' => 0,
             'surplus' => 0,
             'cash_delivered' => 0,
-        ]);
+            ]);
+        } catch (\Illuminate\Database\QueryException $e) {
+            // Carrera: otro proceso creó la misma (seller_id, date) entre el
+            // first() de arriba y este create(). El índice único
+            // `liquidations_seller_active_date_unique` lo rechaza (error 1062);
+            // devolvemos la fila ya existente en vez de duplicar.
+            if ((int) ($e->errorInfo[1] ?? 0) === 1062) {
+                $existing = Liquidation::where('seller_id', $sellerId)
+                    ->whereDate('date', $date)
+                    ->first();
+                if ($existing) {
+                    return $existing;
+                }
+            }
+            throw $e;
+        }
     }
 
     /**

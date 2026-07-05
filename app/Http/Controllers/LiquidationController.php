@@ -324,6 +324,23 @@ class LiquidationController extends Controller
             ]);
 
         } catch (\Exception $e) {
+            // Carrera de doble cierre: el índice único
+            // `liquidations_seller_active_date_unique` rechaza una segunda
+            // liquidación viva para el mismo (vendedor, día). Fallar suave (422),
+            // no 500: el primer cierre ya quedó guardado.
+            if ($e instanceof \Illuminate\Database\QueryException
+                && (int) ($e->errorInfo[1] ?? 0) === 1062) {
+                Log::warning('Liquidation duplicate blocked by unique index', [
+                    'user_id' => $user->id,
+                    'seller_id' => $request->seller_id,
+                    'date' => $request->date,
+                ]);
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Ya existe una liquidación para este vendedor en esta fecha. Recargá la pantalla e intentá de nuevo.',
+                ], 422);
+            }
+
             Log::error('Liquidation creation failed', [
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
