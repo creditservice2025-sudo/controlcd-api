@@ -213,6 +213,10 @@ class CreditService
             $createdAt = $params['created_at'] ?? $now;
             $updatedAt = $params['updated_at'] ?? $now;
 
+            // Día/hora de negocio anclados a la zona del VENDEDOR (no al navegador).
+            $sellerForStamp = \App\Models\Seller::with('city.country')->find($params['seller_id']);
+            $businessStamp = \App\Helpers\TimezoneHelper::businessStampForSeller($sellerForStamp);
+
             $creditData = [
                 'client_id' => $params['client_id'],
                 'phone' => $params['phone'],
@@ -235,6 +239,10 @@ class CreditService
                 // Trazabilidad: quién y con qué rol creó el crédito.
                 'created_by' => Auth::id(),
                 'created_by_role' => optional(Auth::user())->role_id,
+                // Día/hora de negocio congelados (zona del vendedor).
+                'business_timestamp' => $businessStamp['business_timestamp'],
+                'business_date' => $businessStamp['business_date'],
+                'business_timezone' => $businessStamp['business_timezone'],
             ];
 
             $credit = Credit::create($creditData);
@@ -538,6 +546,10 @@ class CreditService
             // Micro-insurance is NOT added to the total amount to pay
             $totalAmount = $request->new_credit_value + $totalInterestAmount + $pendingAmount;
 
+            // Día/hora de negocio anclados a la zona del VENDEDOR (renovación).
+            $sellerForStamp = \App\Models\Seller::with('city.country')->find($oldCredit->seller_id);
+            $businessStamp = \App\Helpers\TimezoneHelper::businessStampForSeller($sellerForStamp);
+
             $newCredit = Credit::create([
                 'client_id' => $oldCredit->client_id,
                 'phone' => $request->input('phone'),
@@ -560,6 +572,10 @@ class CreditService
                 // Trazabilidad: quién y con qué rol creó el crédito (renovación).
                 'created_by' => Auth::id(),
                 'created_by_role' => optional(Auth::user())->role_id,
+                // Día/hora de negocio congelados (zona del vendedor).
+                'business_timestamp' => $businessStamp['business_timestamp'],
+                'business_date' => $businessStamp['business_date'],
+                'business_timezone' => $businessStamp['business_timezone'],
             ]);
 
             $quotaAmount = $newCredit->total_amount / $newCredit->number_installments;
@@ -2597,6 +2613,10 @@ class CreditService
                 }
             }
 
+            // Día/hora de negocio anclados a la zona del VENDEDOR (unificación).
+            $sellerForStamp = \App\Models\Seller::with('city.country')->find($params['seller_id']);
+            $businessStamp = \App\Helpers\TimezoneHelper::businessStampForSeller($sellerForStamp);
+
             $newCredit = Credit::create([
                 'client_id' => $params['client_id'],
                 'seller_id' => $params['seller_id'],
@@ -2618,6 +2638,10 @@ class CreditService
                 // Trazabilidad: quién y con qué rol creó el crédito (unificación).
                 'created_by' => Auth::id(),
                 'created_by_role' => optional(Auth::user())->role_id,
+                // Día/hora de negocio congelados (zona del vendedor).
+                'business_timestamp' => $businessStamp['business_timestamp'],
+                'business_date' => $businessStamp['business_date'],
+                'business_timezone' => $businessStamp['business_timezone'],
             ]);
 
             // 3. Generar cuotas para el nuevo crédito
@@ -2839,6 +2863,11 @@ class CreditService
             $timezone = $request->input('timezone', 'America/Lima');
             $allRecords = filter_var($request->input('all_records'), FILTER_VALIDATE_BOOLEAN);
 
+            // Zona/moneda del vendedor (país). Se resuelve una sola vez y se
+            // reutiliza para el filtro por día de negocio y para el mapeo de salida.
+            $sellerForTz = \App\Models\Seller::with('city.country')->find($sellerId);
+            $sellerTz = \App\Helpers\TimezoneHelper::getSellerTimezone($sellerForTz);
+
             $search = $request->input('search');
 
             if ($search) {
@@ -2848,40 +2877,60 @@ class CreditService
                     })->orWhere('credits.id', 'like', "%{$search}%");
                 });
             } else if (!$allRecords) {
+                // Filtro por DÍA DE NEGOCIO (business_date): DATE congelado a la
+                // zona del vendedor al crear el crédito. No depende de la zona del
+                // navegador ni requiere conversión. Para filas antiguas sin
+                // business_date se conserva el fallback por created_at/imported_at
+                // (mismo comportamiento previo, en UTC según $timezone).
+                $fallback = function ($q, $start, $end) {
+                    $q->whereNull('credits.business_date')
+                      ->where(function ($g) use ($start, $end) {
+                          $g->whereBetween('credits.created_at', [$start, $end])
+                            ->orWhereBetween('credits.imported_at', [$start, $end]);
+                      });
+                };
+
                 if ($request->has('start_date') && $request->has('end_date')) {
                     $startDate = $request->get('start_date');
                     $endDate = $request->get('end_date');
 
                     $start = Carbon::parse($startDate, $timezone)->startOfDay()->timezone('UTC');
                     $end = Carbon::parse($endDate, $timezone)->endOfDay()->timezone('UTC');
-                    // Incluir créditos normales (created_at en rango) Y créditos importados (imported_at en rango)
-                    $creditsQuery->where(function ($q) use ($start, $end) {
-                        $q->whereBetween('credits.created_at', [$start, $end])
-                          ->orWhereBetween('credits.imported_at', [$start, $end]);
+
+                    $creditsQuery->where(function ($q) use ($startDate, $endDate, $start, $end, $fallback) {
+                        $q->whereBetween('credits.business_date', [$startDate, $endDate])
+                          ->orWhere(function ($f) use ($start, $end, $fallback) {
+                              $fallback($f, $start, $end);
+                          });
                     });
                 } elseif ($request->has('date')) {
                     $filterDate = $request->get('date');
                     $start = Carbon::parse($filterDate, $timezone)->startOfDay()->timezone('UTC');
                     $end = Carbon::parse($filterDate, $timezone)->endOfDay()->timezone('UTC');
-                    $creditsQuery->where(function ($q) use ($start, $end) {
-                        $q->whereBetween('credits.created_at', [$start, $end])
-                          ->orWhereBetween('credits.imported_at', [$start, $end]);
+
+                    $creditsQuery->where(function ($q) use ($filterDate, $start, $end, $fallback) {
+                        $q->whereDate('credits.business_date', $filterDate)
+                          ->orWhere(function ($f) use ($start, $end, $fallback) {
+                              $fallback($f, $start, $end);
+                          });
                     });
                 } else {
+                    // "Hoy" según el día de negocio del vendedor, no del servidor.
+                    $today = Carbon::now($sellerTz)->toDateString();
                     $todayStart = Carbon::now($timezone)->startOfDay()->timezone('UTC');
                     $todayEnd = Carbon::now($timezone)->endOfDay()->timezone('UTC');
-                    $creditsQuery->where(function ($q) use ($todayStart, $todayEnd) {
-                        $q->whereBetween('credits.created_at', [$todayStart, $todayEnd])
-                          ->orWhereBetween('credits.imported_at', [$todayStart, $todayEnd]);
+
+                    $creditsQuery->where(function ($q) use ($today, $todayStart, $todayEnd, $fallback) {
+                        $q->whereDate('credits.business_date', $today)
+                          ->orWhere(function ($f) use ($todayStart, $todayEnd, $fallback) {
+                              $fallback($f, $todayStart, $todayEnd);
+                          });
                     });
                 }
             }
 
             // Usar el parámetro $perPage pasado desde el controlador
             $credits = $creditsQuery->orderBy('created_at', 'desc')->paginate($perPage);
-
-            $sellerForTz = \App\Models\Seller::with('city.country')->find($sellerId);
-            $sellerTz = \App\Helpers\TimezoneHelper::getSellerTimezone($sellerForTz);
 
             // Moneda del país del vendedor (seller -> city -> country -> currency).
             // Permite que el frontend muestre los montos con el símbolo correcto
