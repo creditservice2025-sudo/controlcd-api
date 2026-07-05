@@ -205,6 +205,12 @@ class PaymentService
                     }
 
                     DB::commit();
+
+                    // Red de seguridad: garantizar la liquidación del día (por si
+                    // la auto-apertura del login falló). No rompe el pago si falla.
+                    app(\App\Services\LiquidationService::class)
+                        ->ensureDailyLiquidation($credit->seller_id, $businessDate);
+
                     return $this->successResponse([
                         'success' => true,
                         'message' => 'Registro de no pago realizado',
@@ -356,6 +362,11 @@ class PaymentService
                 }
 
                 DB::commit();
+
+                // Red de seguridad: garantizar la liquidación del día del cobro
+                // (por si la auto-apertura del login falló). No rompe el pago.
+                app(\App\Services\LiquidationService::class)
+                    ->ensureDailyLiquidation($credit->seller_id, $businessDate);
 
                 // Notificar por Telegram si el pago lo CARGA el supervisor
                 // (rol 6): deja constancia al administrador. No bloquea si falla.

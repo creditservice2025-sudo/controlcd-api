@@ -100,6 +100,23 @@ class LiquidationController extends Controller
         try {
             $todayDate = Carbon::now($timezone)->toDateString();
 
+            // Guardia anti-fecha-futura: una liquidación es de un día ya ocurrido
+            // (o de hoy) en la zona del vendedor. Rechazar fechas futuras evita el
+            // bug de "saltar un día" cuando el front calculaba la fecha en UTC.
+            // Fechas pasadas se permiten (correcciones / aprobaciones tardías).
+            if ($request->date > $todayDate) {
+                Log::warning('Liquidation blocked: future date', [
+                    'seller_id' => $request->seller_id,
+                    'date' => $request->date,
+                    'business_today' => $todayDate,
+                    'timezone' => $timezone,
+                ]);
+                return response()->json([
+                    'success' => false,
+                    'message' => "No se puede liquidar una fecha futura ({$request->date}). El día de negocio del vendedor es {$todayDate}.",
+                ], 422);
+            }
+
             // Verificar si ya existe liquidación para este día (cualquier estado)
             $existingLiquidation = Liquidation::where('seller_id', $request->seller_id)
                 ->whereDate('date', $request->date)
