@@ -323,6 +323,19 @@ class LiquidationController extends Controller
                 ];
             });
 
+            // P0 · UNA SOLA FÓRMULA DE CAJA. El cierre recalcula desde BD para
+            // guardar EXACTAMENTE lo mismo que produce cualquier recálculo /
+            // aprobación posterior (calculateLiquidationMetrics). Antes el cierre
+            // guardaba los montos calculados por el APK, que un recálculo luego
+            // sobreescribía → el valor confirmado difería del final. El recálculo
+            // PRESERVA los montos manuales (base_delivered, cash_delivered) y
+            // recomputa el resto (recaudo, gastos, créditos, real_to_deliver,
+            // faltante/sobrante) desde las operaciones reales del día.
+            $this->liquidationService->recalculateLiquidation($request->seller_id, $request->date);
+            $this->liquidationService->recalculateNextLiquidations($request->seller_id, $request->date);
+
+            $saved = \App\Models\Liquidation::find($liquidation['liquidation']->id);
+
             // (Invalidación de sesiones del cobrador la maneja el observer
             // `Liquidation::saved` en el modelo: se dispara automáticamente
             // ante cualquier transición a status pending/auto/approved,
@@ -330,9 +343,9 @@ class LiquidationController extends Controller
 
             // === NOTIFICACIONES (Fuera de transacción, async) ===
             $this->sendLiquidationNotifications(
-                $liquidation['liquidation'],
-                $liquidation['shortage'],
-                $liquidation['surplus'],
+                $saved,
+                (float) $saved->shortage,
+                (float) $saved->surplus,
                 $request->seller_id,
                 $request->date,
                 $user
@@ -340,7 +353,7 @@ class LiquidationController extends Controller
 
             return response()->json([
                 'success' => true,
-                'data' => $liquidation['liquidation'],
+                'data' => $saved,
                 'message' => 'Liquidación guardada correctamente'
             ]);
 
