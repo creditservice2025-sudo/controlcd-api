@@ -88,22 +88,11 @@ class ExpenseService
 
             $seller = Seller::where('user_id', $userId)->first();
             
-            // 1. Determinar el Timezone de la operación (Prioridad: Request > Seller Config > Default)
-            $defaultTz = \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
-            $businessTimezone = $request->input('timezone');
-
-            // Validar si el timezone del request es válido
-            if (!$businessTimezone) {
-                $businessTimezone = $defaultTz;
-            } else {
-                 try {
-                    Carbon::now($businessTimezone);
-                } catch (\Exception $e) {
-                    $businessTimezone = $defaultTz;
-                }
-            }
-
-            // Client Timezone (from request or default)
+            // 1. La zona de negocio la decide el VENDEDOR (BD:
+            // seller→city→country→timezone), NO el teléfono — igual que el pago.
+            // Un dispositivo con zona/hora mal ya no corre el día del gasto. La
+            // zona reportada por el request se guarda solo como client_timezone.
+            $businessTimezone = \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
             $clientTimezone = $validated['timezone'] ?? config('app.timezone');
             unset($validated['timezone']);
 

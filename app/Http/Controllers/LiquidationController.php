@@ -61,7 +61,11 @@ class LiquidationController extends Controller
         $sellerId = $request->seller_id;
         $date = $request->date;
 
-        $timezone = 'America/Lima';
+        // Zona del VENDEDOR (BD), no Lima hardcodeado: el preview de caja para
+        // vendedores fuera de Perú (Colombia, Bolivia, etc.) se parseaba en la
+        // zona equivocada.
+        $sellerForTz = Seller::with('city.country')->find($sellerId);
+        $timezone = \App\Helpers\TimezoneHelper::getSellerTimezone($sellerForTz);
         $dateLocal = Carbon::parse($date, $timezone)->format('Y-m-d');
 
         // Verificar permisos
