@@ -953,12 +953,16 @@ class LiquidationService
             $total_renewal_disbursed += $netDisbursement;
         }
 
+        // Corte del día por la zona del VENDEDOR (mismos límites UTC que
+        // new_credits/poliza), no whereDate(updated_at) que cortaba por fecha UTC
+        // y podía tirar el crédito irrecuperable al día equivocado cerca de
+        // medianoche.
         $irrecoverableCredits = DB::table('installments')
             ->join('credits', 'installments.credit_id', '=', 'credits.id')
             ->where('credits.seller_id', $sellerId)
             ->whereNull('credits.deleted_at')
             ->where('credits.status', 'Cartera Irrecuperable')
-            ->whereDate('credits.updated_at', $date)
+            ->whereBetween('credits.updated_at', [$startUTC, $endUTC])
             ->where('installments.status', 'Pendiente')
             ->sum('installments.quota_amount');
 
