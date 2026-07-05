@@ -68,4 +68,33 @@ class TimezoneHelper
         $timezone = self::getSellerTimezone($seller);
         return Carbon::now($timezone);
     }
+
+    /**
+     * Trio de campos de negocio ("business_*") para estampar en un crédito al
+     * momento de crearlo, anclado a la zona horaria del VENDEDOR (no a la del
+     * navegador de quien lo crea). Congela el "día de negocio" de forma que no
+     * dependa de quién crea ni de quién consulta después.
+     *
+     * Réplica del patrón ya usado en pagos (PaymentService): la hora local se
+     * guarda "cruda" (mismos dígitos que se muestran en pantalla) y business_date
+     * es el día calendario local. Ver formatBusinessDateTime en el frontend.
+     *
+     * @param Seller|null $seller
+     * @param Carbon|null $moment  Instante base (por defecto "ahora"); útil para
+     *                             importaciones que fijan el día de carga.
+     * @return array{business_timestamp: string, business_date: string, business_timezone: string}
+     */
+    public static function businessStampForSeller(?Seller $seller, ?Carbon $moment = null): array
+    {
+        $tz = self::getSellerTimezone($seller);
+        $local = $moment ? $moment->copy()->setTimezone($tz) : Carbon::now($tz);
+
+        return [
+            // Hora local del negocio, guardada tal cual (se muestra sin convertir).
+            'business_timestamp' => $local->format('Y-m-d H:i:s'),
+            // Día de negocio congelado: base estable para filtros y reportes.
+            'business_date' => $local->toDateString(),
+            'business_timezone' => $tz,
+        ];
+    }
 }
