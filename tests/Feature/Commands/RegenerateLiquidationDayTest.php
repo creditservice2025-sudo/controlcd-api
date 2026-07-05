@@ -117,4 +117,42 @@ class RegenerateLiquidationDayTest extends TestCase
         $this->artisan('liquidations:regenerate-day', ['seller' => 999999, 'date' => '2026-07-01'])
             ->assertExitCode(1);
     }
+
+    public function test_revert_dry_run_no_borra(): void
+    {
+        $seller = $this->seedSellerWithPaymentOnDay('2026-07-01', 90000);
+        $this->artisan('liquidations:regenerate-day', ['seller' => $seller->id, 'date' => '2026-07-01', '--apply' => true])->assertExitCode(0);
+
+        // --revert sin --apply: no debe borrar.
+        $this->artisan('liquidations:regenerate-day', ['seller' => $seller->id, 'date' => '2026-07-01', '--revert' => true])->assertExitCode(0);
+
+        $this->assertSame(1, Liquidation::where('seller_id', $seller->id)->whereDate('date', '2026-07-01')->count());
+    }
+
+    public function test_revert_aplica_borra_la_liquidacion(): void
+    {
+        $seller = $this->seedSellerWithPaymentOnDay('2026-07-01', 90000);
+        $this->artisan('liquidations:regenerate-day', ['seller' => $seller->id, 'date' => '2026-07-01', '--apply' => true])->assertExitCode(0);
+        $this->assertSame(1, Liquidation::where('seller_id', $seller->id)->whereDate('date', '2026-07-01')->count());
+
+        $this->artisan('liquidations:regenerate-day', ['seller' => $seller->id, 'date' => '2026-07-01', '--revert' => true, '--apply' => true])->assertExitCode(0);
+
+        // Queda soft-deleted (0 vivas, 1 con trashed).
+        $this->assertSame(0, Liquidation::where('seller_id', $seller->id)->whereDate('date', '2026-07-01')->count());
+        $this->assertSame(1, Liquidation::withTrashed()->where('seller_id', $seller->id)->whereDate('date', '2026-07-01')->count());
+    }
+
+    public function test_revert_rechaza_si_no_esta_en_curso(): void
+    {
+        $seller = $this->seedSellerWithPaymentOnDay('2026-07-01', 90000);
+        $this->artisan('liquidations:regenerate-day', ['seller' => $seller->id, 'date' => '2026-07-01', '--apply' => true])->assertExitCode(0);
+
+        // Simula que el día fue cerrado/aprobado después de regenerar.
+        Liquidation::where('seller_id', $seller->id)->whereDate('date', '2026-07-01')->update(['status' => 'approved']);
+
+        // El revert debe RECHAZAR (no tocar una liquidación ya cerrada).
+        $this->artisan('liquidations:regenerate-day', ['seller' => $seller->id, 'date' => '2026-07-01', '--revert' => true, '--apply' => true])->assertExitCode(1);
+
+        $this->assertSame(1, Liquidation::where('seller_id', $seller->id)->whereDate('date', '2026-07-01')->count());
+    }
 }

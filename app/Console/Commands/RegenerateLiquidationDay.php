@@ -21,31 +21,37 @@ use Illuminate\Support\Facades\DB;
  * en la tarde-noche local (ya día siguiente en UTC) saltaba un día.
  *
  * SEGURO PARA PRODUCCIÓN:
- *  - Dry-run por defecto: sin --apply proyecta el resultado (creando y haciendo
- *    ROLLBACK dentro de una transacción) sin escribir nada.
- *  - Transaccional e idempotente: si ya existe liquidación para esa fecha, no
- *    hace nada.
+ *  - Dry-run por defecto (regenerar y revertir): proyecta el resultado creando/
+ *    borrando dentro de una transacción que se hace ROLLBACK; no escribe nada.
+ *  - Transaccional e idempotente: si ya existe liquidación para esa fecha, no la
+ *    regenera. Revertir solo actúa si la liquidación sigue 'En curso'.
+ *  - Reversible: --revert deshace una regeneración (soft-delete + re-encadenar).
+ *  - Emite un REPORTE (cadena antes/después + detalle del día).
  *  - Usa las funciones nativas del servicio (getOrCreate + recalculate +
- *    recalculateNext), las mismas que el flujo normal de cierre.
+ *    recalculateNext), las mismas del flujo normal de cierre.
  *
  * Uso:
- *   php artisan liquidations:regenerate-day 202 2026-07-01           # dry-run
- *   php artisan liquidations:regenerate-day 202 2026-07-01 --apply   # aplica
+ *   php artisan liquidations:regenerate-day 202 2026-07-01                    # dry-run (preview)
+ *   php artisan liquidations:regenerate-day 202 2026-07-01 --apply            # aplica
+ *   php artisan liquidations:regenerate-day 202 2026-07-01 --revert           # dry-run del revert
+ *   php artisan liquidations:regenerate-day 202 2026-07-01 --revert --apply   # revierte
  */
 class RegenerateLiquidationDay extends Command
 {
     protected $signature = 'liquidations:regenerate-day
                             {seller : ID del vendedor}
                             {date : Fecha faltante (YYYY-MM-DD)}
-                            {--apply : Aplica los cambios (por defecto dry-run, no escribe)}';
+                            {--apply : Aplica los cambios (por defecto dry-run, no escribe)}
+                            {--revert : Revierte una regeneración previa (solo si la liquidación sigue En curso)}';
 
-    protected $description = 'Genera una liquidación diaria faltante con las operaciones del día y re-encadena las siguientes';
+    protected $description = 'Genera (o revierte) una liquidación diaria faltante con las operaciones del día y re-encadena las siguientes';
 
     public function handle(LiquidationService $svc): int
     {
         $sellerId = (int) $this->argument('seller');
         $date = (string) $this->argument('date');
         $apply = (bool) $this->option('apply');
+        $revert = (bool) $this->option('revert');
 
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
             $this->error("Fecha inválida: {$date}. Usa formato YYYY-MM-DD.");
@@ -58,6 +64,11 @@ class RegenerateLiquidationDay extends Command
             return self::FAILURE;
         }
         $tz = TimezoneHelper::getSellerTimezone($seller);
+        $this->line("Vendedor #{$sellerId} (" . ($seller->user->name ?? '—') . ") · zona {$tz} · fecha {$date}");
+
+        if ($revert) {
+            return $this->handleRevert($svc, $sellerId, $date, $apply);
+        }
 
         // Idempotencia: si ya hay liquidación viva para esa fecha, nada que hacer.
         if (Liquidation::where('seller_id', $sellerId)->whereDate('date', $date)->exists()) {
@@ -76,7 +87,6 @@ class RegenerateLiquidationDay extends Command
             $this->warn("Atención: {$date} es una fecha futura en la zona del vendedor ({$tz}).");
         }
 
-        $this->line("Vendedor #{$sellerId} (" . ($seller->user->name ?? '—') . ") · zona {$tz} · fecha {$date}");
         $this->renderChain($sellerId, $date, 'CADENA ACTUAL');
 
         $run = function () use ($svc, $sellerId, $date, $tz) {
@@ -103,6 +113,57 @@ class RegenerateLiquidationDay extends Command
         DB::transaction($run);
         $this->info("Liquidación de {$date} generada para el vendedor #{$sellerId}.");
         $this->renderDayDetail($sellerId, $date, 'LIQUIDACIÓN GENERADA');
+        $this->renderChain($sellerId, $date, 'CADENA RESULTANTE');
+
+        return self::SUCCESS;
+    }
+
+    /**
+     * Revierte una regeneración: soft-delete de la liquidación del día (solo si
+     * sigue 'En curso', es decir, no se cerró/aprobó después) + re-encadenar.
+     * Dry-run por defecto; --apply para aplicar. Reversible y con reporte.
+     */
+    private function handleRevert(LiquidationService $svc, int $sellerId, string $date, bool $apply): int
+    {
+        $liq = Liquidation::where('seller_id', $sellerId)->whereDate('date', $date)->first();
+
+        if (!$liq) {
+            $this->info("No existe liquidación para {$date}: nada que revertir.");
+            return self::SUCCESS;
+        }
+
+        // Seguridad: solo se revierte una liquidación regenerada que NO fue
+        // cerrada/aprobada después. Si ya está pending/auto/approved, no se toca.
+        if ($liq->status !== 'En curso') {
+            $this->error(
+                "La liquidación de {$date} está en estado '{$liq->status}', no 'En curso'. "
+                . "Por seguridad NO se revierte automáticamente (podría haberse cerrado/aprobado). "
+                . "Revisar manualmente."
+            );
+            return self::FAILURE;
+        }
+
+        $this->renderChain($sellerId, $date, 'CADENA ACTUAL');
+
+        $run = function () use ($liq, $svc, $sellerId, $date) {
+            $liq->delete(); // soft-delete (restaurable)
+            $svc->recalculateNextLiquidations($sellerId, $date);
+        };
+
+        if (!$apply) {
+            DB::beginTransaction();
+            try {
+                $run();
+                $this->renderChain($sellerId, $date, 'CADENA PROYECTADA (tras revertir)');
+            } finally {
+                DB::rollBack();
+            }
+            $this->info("DRY-RUN revert: no se escribió nada. Ejecuta con --revert --apply para revertir de verdad.");
+            return self::SUCCESS;
+        }
+
+        DB::transaction($run);
+        $this->info("Revertido: liquidación de {$date} (id {$liq->id}) soft-deleted + cadena re-encadenada.");
         $this->renderChain($sellerId, $date, 'CADENA RESULTANTE');
 
         return self::SUCCESS;
