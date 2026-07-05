@@ -311,6 +311,11 @@ class ClientService
         $interestRateFloat = (float) ($params['interest_rate'] ?? 0);
         $totalAmount = round($creditValueFloat + ($creditValueFloat * $interestRateFloat / 100), 2);
 
+        // Día/hora de negocio anclados a la zona del VENDEDOR (alta con cliente).
+        $sellerIdForStamp = $params['seller_id'] ?? $client->seller_id;
+        $sellerForStamp = \App\Models\Seller::with('city.country')->find($sellerIdForStamp);
+        $businessStamp = \App\Helpers\TimezoneHelper::businessStampForSeller($sellerForStamp);
+
         $credit = Credit::create([
             'client_id' => $client->id,
             'guarantor_id' => $guarantorId,
@@ -330,6 +335,10 @@ class ClientService
             // Trazabilidad: quién y con qué rol creó el crédito.
             'created_by' => Auth::id(),
             'created_by_role' => optional(Auth::user())->role_id,
+            // Día/hora de negocio congelados (zona del vendedor).
+            'business_timestamp' => $businessStamp['business_timestamp'],
+            'business_date' => $businessStamp['business_date'],
+            'business_timezone' => $businessStamp['business_timezone'],
         ]);
 
 

@@ -606,6 +606,10 @@ class ImportService
         $interestAmount = ($creditValue * $interestRate) / 100;
         $totalAmount = $creditValue + $interestAmount;
 
+        // Día/hora de negocio: para importados es el día de CARGA (hoy en la zona
+        // del vendedor), coherente con que el crédito "entra a caja" al importarse.
+        $businessStamp = \App\Helpers\TimezoneHelper::businessStampForSeller($seller);
+
         $credit = Credit::create([
             'client_id' => $client->id,
             'seller_id' => $sellerId,
@@ -622,6 +626,10 @@ class ImportService
             'excluded_days' => $excludeSundays ? json_encode(['Domingo']) : json_encode([]),
             'created_at' => $payoutDate . ' ' . Carbon::now()->format('H:i:s'), // Maintain time of import but date of payout
             'imported_at' => Carbon::now(), // Real import timestamp for liquidation totals
+            // Día/hora de negocio congelados: día de carga en la zona del vendedor.
+            'business_timestamp' => $businessStamp['business_timestamp'],
+            'business_date' => $businessStamp['business_date'],
+            'business_timezone' => $businessStamp['business_timezone'],
         ]);
 
         // 3. Generate Installments

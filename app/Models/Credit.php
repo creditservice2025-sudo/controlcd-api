@@ -58,6 +58,10 @@ class Credit extends Model
         // Trazabilidad de creación: quién y con qué rol creó el crédito.
         'created_by',
         'created_by_role',
+        // Día/hora de negocio congelados (anclados a la zona del vendedor).
+        'business_timestamp',
+        'business_date',
+        'business_timezone',
     ];
 
     public function client()
