@@ -2378,9 +2378,14 @@ class LiquidationService
             throw new ValidationException($validator);
         }
 
-        // Validar contraseña (hardcoded por ahora como SISTEMA2026, idealmente en .env)
-        $systemPassword = env('SYSTEM_ADJUST_PASSWORD', 'SISTEMA2026');
-        if ($data['password'] !== $systemPassword) {
+        // Validar contraseña de ajuste. SIN default hardcodeado: si no está
+        // configurada en el entorno (SYSTEM_ADJUST_PASSWORD), el ajuste queda
+        // DESHABILITADO (falla cerrado) en vez de aceptar una clave conocida.
+        $systemPassword = env('SYSTEM_ADJUST_PASSWORD');
+        if (empty($systemPassword)) {
+            throw new \Exception('El ajuste de caja no está habilitado (falta configurar SYSTEM_ADJUST_PASSWORD). Contactar al equipo técnico.');
+        }
+        if (!hash_equals((string) $systemPassword, (string) $data['password'])) {
             throw new \Exception('Contraseña de ajuste de caja incorrecta.');
         }
 
