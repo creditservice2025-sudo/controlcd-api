@@ -200,7 +200,13 @@ class LiquidationService
     }
 
     /**
-     * Realiza los cálculos financieros automáticos.
+     * Cálculo PROVISORIO de real_to_deliver/faltante/sobrante para el alta.
+     *
+     * NO es la fórmula autoritativa: createLiquidation y updateLiquidation llaman
+     * a recalculateLiquidation() inmediatamente después, que sobreescribe estos
+     * valores con los de calculateLiquidationMetrics() (la ÚNICA fuente de verdad
+     * de la caja). Se mantiene solo para dejar el registro inicial coherente
+     * antes del recálculo; no editar la fórmula acá sin tocar la canónica.
      *
      * @param array &$data
      */
