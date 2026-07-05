@@ -48,6 +48,44 @@ class PaymentService
         return is_string($tz) && $tz !== '' ? $tz : config('app.timezone');
     }
 
+    /**
+     * Rechaza un pago cuyo monto excede la deuda pendiente del crédito (más una
+     * tolerancia del 10% para redondeos/casos borde). La deuda se calcula desde
+     * installments (fuente de verdad: SUM(quota_amount - paid_amount)), NO desde
+     * credits.remaining_amount, que puede estar desincronizado.
+     *
+     * Si el crédito no tiene cuotas vivas, no se evalúa (no hay contra qué medir).
+     *
+     * @throws \Exception si el monto excede el límite.
+     */
+    public function assertAmountWithinDebt(Credit $credit, float $amount): void
+    {
+        if ($amount <= 0) {
+            return; // "No pago" / abono cero: nada que validar.
+        }
+
+        $installmentsQuery = $credit->installments()->whereNull('deleted_at');
+        if (!$installmentsQuery->exists()) {
+            return; // Sin cuotas: no evaluamos para no bloquear flujos atípicos.
+        }
+
+        $remaining = (float) $installmentsQuery
+            ->selectRaw('COALESCE(SUM(quota_amount - paid_amount), 0) as pending')
+            ->value('pending');
+
+        // Tolerancia: 10% de la deuda + 1 unidad (absorbe redondeos). Los typos
+        // reales observados exceden 60%–10000%, así que quedan atrapados.
+        $limit = max(0, $remaining) * 1.10 + 1;
+
+        if ($amount > $limit) {
+            throw new \Exception(
+                'El monto del pago ($' . number_format($amount, 2)
+                . ') excede la deuda pendiente del crédito ($' . number_format(max(0, $remaining), 2)
+                . '). Verifica el valor ingresado.'
+            );
+        }
+    }
+
     public function create(PaymentRequest $request)
     {
         try {
@@ -83,6 +121,12 @@ class PaymentService
             if (!$credit) {
                 throw new \Exception('El crédito no existe.');
             }
+
+            // ======= GUARD: monto del pago vs deuda pendiente =======
+            // Anti-typo: un pago no puede exceder la deuda pendiente del crédito
+            // (más una tolerancia). Previene datos corruptos como el histórico
+            // #5435 (pago 100x la deuda) o los sobrepagos por dígito de más.
+            $this->assertAmountWithinDebt($credit, (float) $request->amount);
 
             // ======= GUARD: caja del día ya cerrada =======
             // Defensa en profundidad: aun si el middleware liquidation.closed
