@@ -744,9 +744,23 @@ class LiquidationController extends Controller
         try {
             DB::beginTransaction();
 
+            $oldBase = (float) $liquidation->base_delivered;
+
             // Anula la base
             $liquidation->update([
                 'base_delivered' => 0,
+            ]);
+
+            // Auditoría: quién anuló la base y desde qué valor (antes no dejaba rastro).
+            \App\Models\LiquidationAudit::create([
+                'liquidation_id' => $liquidation->id,
+                'user_id' => Auth::id(),
+                'action' => 'updated',
+                'changes' => json_encode([
+                    'accion' => 'anular_base',
+                    'base_delivered' => ['de' => $oldBase, 'a' => 0],
+                ]),
+                'created_at' => now(),
             ]);
 
             // Recalcula todas las liquidaciones posteriores al día de esta liquidación

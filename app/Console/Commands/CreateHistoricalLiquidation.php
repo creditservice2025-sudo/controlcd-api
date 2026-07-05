@@ -52,12 +52,11 @@ class CreateHistoricalLiquidation extends Command
             while ($datePointer->toDateString() <= $endDate) {
                 $currentDate = $datePointer->toDateString();
 
-
-                if (Carbon::parse($currentDate, $timezone)->isSunday()) {
-                    $datePointer->addDay();
-                    continue;
-                }
-
+                // NO se saltan los domingos: varios vendedores operan (cobran /
+                // colocan) los domingos, y saltarlos dejaba ese día huérfano (sin
+                // liquidación) pese a tener movimientos. Si el día no tuvo
+                // actividad, igual se crea la liquidación en cero (coherente con
+                // el resto del histórico) y no rompe la cadena de caja.
 
                 // Verifica si ya existe liquidación para este día
                 $exists = Liquidation::where('seller_id', $seller->id)
