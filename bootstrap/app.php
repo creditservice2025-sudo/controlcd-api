@@ -54,10 +54,23 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withExceptions(function (Exceptions $exceptions) {
     })
     ->withSchedule(function (Schedule $schedule) {
-        $schedule->command('liquidation:auto-daily')->hourly();
+        // auto-daily solo actua en dos ventanas: 23:55+ (cierra hoy) y
+        // 00:00-00:29 (cierra ayer). Con ->hourly() el cron dispara a los :00,
+        // asi que la ventana 23:55 NUNCA se alcanzaba y el unico cierre util
+        // era el de las 00:00: si ese unico run fallaba, el dia quedaba SIN
+        // cerrar (huerfano). Con everyFiveMinutes ambas ventanas se disparan
+        // ~6 veces y hay reintentos. withoutOverlapping evita solapes (seguro
+        // ademas por el indice unico + getOrCreate atomico).
+        $schedule->command('liquidation:auto-daily')->everyFiveMinutes()->withoutOverlapping();
         $schedule->command('liquidation:historical')->dailyAt('23:55');
         $schedule->command('liquidation:notify-pending')->dailyAt('21:52');
         $schedule->command('credits:notify-renewal-pending')->dailyAt('21:00');
         $schedule->command('credits:notify-new-credit-amount-limit')->dailyAt('21:05');
         $schedule->command('credits:notify-new-credit-limit')->dailyAt('21:10');
+
+        // Collection (Deuda & Abono): recordatorios + auto-cierre.
+        // Corre cada 30 minutos para capturar las ventanas 18, 21, 23 y 23:59.
+        $schedule->command('collection:check-pending-closures')
+            ->everyThirtyMinutes()
+            ->withoutOverlapping();
     })->create();

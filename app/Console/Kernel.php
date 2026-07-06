@@ -15,15 +15,10 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule)
     {
-        $schedule->command('liquidation:auto-daily')->everyFiveMinutes()->withoutOverlapping();
-        $schedule->command('liquidation:historical')->dailyAt('23:55');
-        $schedule->command('liquidation:notify-pending')->dailyAt('21:52');
-
-        // Collection (Deuda & Abono): recordatorios + auto-cierre.
-        // Corre cada 30 minutos para capturar las ventanas 18, 21, 23 y 23:59.
-        $schedule->command('collection:check-pending-closures')
-            ->everyThirtyMinutes()
-            ->withoutOverlapping();
+        // OJO: en Laravel 11 este metodo NO se ejecuta. El schedule REAL vive
+        // en bootstrap/app.php (->withSchedule(...)). Se deja vacio para no
+        // confundir: cualquier cambio de tareas programadas va en
+        // bootstrap/app.php, no aca.
     }
 
     /**
