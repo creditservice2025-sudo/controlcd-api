@@ -1929,10 +1929,38 @@ class LiquidationService
 
         \Log::debug("Reopening route - Audits deleted:", ['deleted' => $deleted]);
 
-        // Eliminar el registro de liquidaci├│n para permitir acceso y re-cierre
-        if ($liquidation) {
-            $liquidation->delete();
-        }
+        // Reapertura SIN borrar la fila.
+        //
+        // Antes se hacia $liquidation->delete() (soft-delete) para "abrir" el
+        // dia. Efecto colateral: si el vendedor NO volvia a cerrar, la
+        // liquidacion quedaba soft-deleted y el dia DESAPARECIA del listado
+        // (dia huerfano / caso Nazaret).
+        //
+        // Ahora la revertimos a estado abierto ('En curso') conservando la
+        // fila:
+        //   - 'En curso' NO bloquea movimientos (assertSellerCashOpen solo
+        //     bloquea pending/auto/approved) => la caja queda operable igual.
+        //   - El dia SIGUE listado (deleted_at NULL) como "por cerrar".
+        //   - Al re-cerrar, getLiquidationData encuentra esta misma fila y el
+        //     front va por updateLiquidation (no crea otra) => compatible con
+        //     el indice unico (una sola fila activa por dia).
+        $liquidation->update([
+            'status'         => 'En curso',
+            'closed_at'      => null,
+            'closed_by'      => null,
+            'closed_by_role' => null,
+        ]);
+
+        \App\Models\LiquidationAudit::create([
+            'liquidation_id' => $liquidation->id,
+            'user_id'        => $userId,
+            'action'         => 'updated',
+            'changes'        => [
+                'accion' => 'reapertura',
+                'estado' => 'En curso',
+            ],
+            'created_at'     => now(),
+        ]);
 
         return [
             'message' => 'Ruta reabierta correctamente',
