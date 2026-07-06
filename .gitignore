@@ -113,3 +113,14 @@ auth.json
 diag_*.php
 dump_*.php
 test_*.php
+simulate_*.php
+verify_*.php
+tmp_test_*.php
+/scratch/
+# volcados de salida de tests/debug
+test_output*.txt
+tests_output.txt
+tests_failure.txt
+tests/phpunit_log.xml
+*.orig
+*.rej
