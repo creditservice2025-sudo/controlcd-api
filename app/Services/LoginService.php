@@ -381,9 +381,16 @@ class LoginService
                 'collection_role' => $collectionRole,
                 'collection_permissions' => $collectionPermissions,
                 'permissions' => $user->getAllPermissions()->pluck('name'),
-                'is_liquidated_today' => ($user->role_id === 5 && $user->seller)
-                    ? \App\Models\Liquidation::where('seller_id', $user->seller->id)
-                        ->whereDate('date', \Carbon\Carbon::now('America/Lima')->toDateString())
+                // 'is_liquidated_today' = la caja de HOY del vendedor está
+                // CERRADA. Usa la MISMA zona del vendedor ($businessToday) y los
+                // MISMOS estados cerrados que el bloqueo de más arriba. Antes usaba
+                // America/Lima hardcodeado + ->exists() (cualquier estado), que daba
+                // true con la caja apenas ABIERTA ('En curso') y trababa al vendedor
+                // sin motivo, con desfase de ~1h cerca de medianoche fuera de Perú.
+                'is_liquidated_today' => ($user->role_id === 5 && $seller)
+                    ? \App\Models\Liquidation::where('seller_id', $seller->id)
+                        ->whereDate('date', $businessToday)
+                        ->whereIn('status', ['pending', 'auto', 'approved'])
                         ->exists()
                     : false,
             ]);
