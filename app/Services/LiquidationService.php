@@ -1202,20 +1202,23 @@ class LiquidationService
                 }
             };
 
-            // Clave de orden temporal (créditos importados usan imported_at).
+            // Clave de orden = tiempo + id (desempate estable para lotes con la
+            // misma hora). Créditos importados usan imported_at como fecha real.
             $orderKey = function ($item) use ($tz) {
+                $ts = 0;
                 try {
                     $raw = $item['raw'] ?? null;
                     $eff = ($raw && isset($raw->imported_at) && $raw->imported_at)
                         ? $raw->imported_at
                         : ($item['created_at'] ?? null);
-                    return Carbon::parse($eff)->setTimezone($tz)->timestamp;
+                    $ts = $eff ? Carbon::parse($eff)->setTimezone($tz)->timestamp : 0;
                 } catch (\Throwable $e) {
-                    return 0;
+                    $ts = 0;
                 }
+                return sprintf('%011d%011d', max(0, $ts), (int) ($item['id'] ?? 0));
             };
 
-            // Ascendente: acumular el saldo desde la caja anterior.
+            // Ascendente (tiempo+id): acumular el saldo desde la caja anterior.
             $running = $saldoInicial;
             $asc = $all->sortBy($orderKey)->values()->map(function ($item) use (&$running, $effectOf) {
                 $ef = $effectOf($item);
@@ -1226,8 +1229,10 @@ class LiquidationService
             });
             $saldoFinal = round($running, 2);
 
-            // Descendente para mostrar (más reciente primero); el saldo ya viene calculado.
-            $sorted = $asc->sortByDesc($orderKey)->values();
+            // Descendente para mostrar: el ÚLTIMO movimiento ingresado va primero
+            // (como el core bancario). reverse() del ascendente garantiza que el
+            // saldo lea correcto de arriba (más reciente) hacia abajo.
+            $sorted = $asc->reverse()->values();
 
             $cuadra = $rtdGuardado !== null ? (abs($saldoFinal - $rtdGuardado) < 0.01) : null;
 
