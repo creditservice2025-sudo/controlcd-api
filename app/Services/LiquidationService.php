@@ -1169,29 +1169,77 @@ class LiquidationService
                     ];
                 });
 
-            // Combinar todas las colecciones y ordenar descendente por created_at
             $all = $payments->concat($expenses)->concat($incomes)->concat($credits);
 
-            $sorted = $all->sortByDesc(function ($item) use ($tz) {
-                // Para créditos importados: usar imported_at (si existe en raw) como clave de orden
+            // ── Saldo corriente (extracto tipo banco) ─────────────────────
+            // Cada movimiento lleva su EFECTO en la caja (con signo) y el SALDO
+            // resultante, arrancando de la caja anterior (initial_cash).
+            // Invariante de conciliación: initial_cash + Σefectos == rtd.
+            $liqRow = Liquidation::where('seller_id', $sellerId)
+                ->whereDate('date', $dateLocal)->first();
+            $saldoInicial = $liqRow ? (float) $liqRow->initial_cash : 0.0;
+            $rtdGuardado = $liqRow ? (float) $liqRow->real_to_deliver : null;
+
+            // Efecto en la caja con la MISMA convención que
+            // calculateLiquidationMetrics: cobro/ingreso suman; gasto resta;
+            // crédito resta el efectivo que realmente sale (credit_value menos
+            // la póliza retenida).
+            $effectOf = function (array $item): float {
+                $amt = (float) ($item['amount'] ?? 0);
+                switch ($item['type'] ?? '') {
+                    case 'payment':
+                    case 'income':
+                        return $amt;
+                    case 'expense':
+                        return -$amt;
+                    case 'credit':
+                        $raw = $item['raw'] ?? null;
+                        $pct = $raw ? (float) ($raw->micro_insurance_percentage ?? 0) : 0.0;
+                        $poliza = $pct * $amt / 100;
+                        return -($amt - $poliza);
+                    default:
+                        return 0.0;
+                }
+            };
+
+            // Clave de orden temporal (créditos importados usan imported_at).
+            $orderKey = function ($item) use ($tz) {
                 try {
                     $raw = $item['raw'] ?? null;
-                    $effectiveDate = null;
-                    if ($raw && isset($raw->imported_at) && $raw->imported_at) {
-                        $effectiveDate = $raw->imported_at;
-                    } else {
-                        $effectiveDate = $item['created_at'] ?? null;
-                    }
-                    return Carbon::parse($effectiveDate)->setTimezone($tz)->timestamp;
+                    $eff = ($raw && isset($raw->imported_at) && $raw->imported_at)
+                        ? $raw->imported_at
+                        : ($item['created_at'] ?? null);
+                    return Carbon::parse($eff)->setTimezone($tz)->timestamp;
                 } catch (\Throwable $e) {
                     return 0;
                 }
-            })->values();
+            };
+
+            // Ascendente: acumular el saldo desde la caja anterior.
+            $running = $saldoInicial;
+            $asc = $all->sortBy($orderKey)->values()->map(function ($item) use (&$running, $effectOf) {
+                $ef = $effectOf($item);
+                $running += $ef;
+                $item['efecto'] = round($ef, 2);
+                $item['saldo_despues'] = round($running, 2);
+                return $item;
+            });
+            $saldoFinal = round($running, 2);
+
+            // Descendente para mostrar (más reciente primero); el saldo ya viene calculado.
+            $sorted = $asc->sortByDesc($orderKey)->values();
+
+            $cuadra = $rtdGuardado !== null ? (abs($saldoFinal - $rtdGuardado) < 0.01) : null;
 
             return [
                 'success' => true,
                 'date' => $dateLocal,
                 'timezone' => $tz,
+                'saldo_inicial' => round($saldoInicial, 2),
+                'saldo_final' => $saldoFinal,
+                'rtd_guardado' => $rtdGuardado !== null ? round($rtdGuardado, 2) : null,
+                'diferencia' => $rtdGuardado !== null ? round($saldoFinal - $rtdGuardado, 2) : null,
+                'cuadra' => $cuadra,
                 'count' => $sorted->count(),
                 'data' => $sorted,
             ];

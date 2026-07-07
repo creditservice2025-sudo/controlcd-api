@@ -1361,7 +1361,13 @@ class LiquidationController extends Controller
                 'data' => $result['data'] ?? $result,
                 'date' => $result['date'] ?? $date,
                 'timezone' => $result['timezone'] ?? $timezone,
-                'count' => $result['count'] ?? (is_array($result['data'] ?? null) ? count($result['data']) : null)
+                'count' => $result['count'] ?? (is_array($result['data'] ?? null) ? count($result['data']) : null),
+                // Extracto tipo banco: caja anterior, saldo final y conciliación
+                'saldo_inicial' => $result['saldo_inicial'] ?? null,
+                'saldo_final'   => $result['saldo_final'] ?? null,
+                'rtd_guardado'  => $result['rtd_guardado'] ?? null,
+                'diferencia'    => $result['diferencia'] ?? null,
+                'cuadra'        => $result['cuadra'] ?? null,
             ]);
         } catch (\Exception $e) {
             Log::error("Error en getDailyMovements controlador: " . $e->getMessage());
