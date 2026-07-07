@@ -840,6 +840,17 @@ class LiquidationService
             return;
         }
 
+        // FREEZE de lo firmado: una liquidación 'approved' es INMUTABLE. No se
+        // recalcula —ni por cascada ni por cambios de fórmula—; su
+        // real_to_deliver queda como ANCLA de la cadena de caja. Antes el motor
+        // reescribía días aprobados en cada recálculo (p.ej. sumaba de vuelta el
+        // irrecuperable con la fórmula nueva), moviendo cajas firmadas sin
+        // control. Para modificar una aprobada hay que REABRIRLA explícitamente
+        // (pasa a 'En curso' y ahí sí vuelve a recalcular).
+        if ($liquidation->status === 'approved') {
+            return;
+        }
+
         // Obtener métricas calculadas (con autocorrección de initial_cash si es necesario)
         $metrics = $this->calculateLiquidationMetrics($sellerId, $date, null, $timezone);
 
