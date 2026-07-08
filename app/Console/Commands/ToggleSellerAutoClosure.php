@@ -17,11 +17,12 @@ use App\Models\Seller;
  *   php artisan sellers:auto-closure --on --seller=135,37        (dry-run)
  *   php artisan sellers:auto-closure --on --seller=135,37 --apply
  *   php artisan sellers:auto-closure --on --all --apply          (todos)
+ *   php artisan sellers:auto-closure --on --role=Cobrador --apply (solo cobradores)
  *   php artisan sellers:auto-closure --off --all --apply         (revertir)
  */
 class ToggleSellerAutoClosure extends Command
 {
-    protected $signature = 'sellers:auto-closure {--on} {--off} {--seller=} {--all} {--apply}';
+    protected $signature = 'sellers:auto-closure {--on} {--off} {--seller=} {--role=} {--all} {--apply}';
     protected $description = 'Prende/apaga el auto-cierre por vendedor (auto_closures_collectors). Dry-run por defecto.';
 
     public function handle()
@@ -35,9 +36,10 @@ class ToggleSellerAutoClosure extends Command
         $value = $on ? 1 : 0;
 
         $sellerOpt = $this->option('seller');
+        $roleOpt = $this->option('role');
         $all = (bool) $this->option('all');
-        if (!$sellerOpt && !$all) {
-            $this->error('Especificá el alcance: --seller=1,2,3 o --all.');
+        if (!$sellerOpt && !$roleOpt && !$all) {
+            $this->error('Especificá el alcance: --seller=1,2,3, --role=Cobrador o --all.');
             return self::FAILURE;
         }
 
@@ -49,6 +51,13 @@ class ToggleSellerAutoClosure extends Command
         if ($sellerOpt) {
             $ids = array_filter(array_map('intval', explode(',', $sellerOpt)));
             $query->whereIn('id', $ids);
+        }
+        if ($roleOpt) {
+            // Filtro por nombre de rol via la relacion, agnostico al guard
+            // (Cobrador vive en guard 'api', el scope role() de Spatie asume 'web').
+            $query->whereHas('user.roles', function ($q) use ($roleOpt) {
+                $q->where('name', $roleOpt);
+            });
         }
         $sellers = $query->orderBy('id')->get();
 
