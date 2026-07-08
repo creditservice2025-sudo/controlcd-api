@@ -31,13 +31,17 @@ use Carbon\Carbon;
  */
 class NormalizeIrrecoverable extends Command
 {
-    protected $signature = 'liquidations:normalize-irrecoverable {--apply} {--force} {--json=}';
+    protected $signature = 'liquidations:normalize-irrecoverable {--apply} {--force} {--revert} {--json=}';
     protected $description = 'Reversa (via ingreso documentado) el irrecuperable restado indebidamente en liquidaciones viejas. Dry-run por defecto.';
 
     private const TAG = 'AJUSTE-NORM-IRREC';
 
     public function handle()
     {
+        if ($this->option('revert')) {
+            return $this->handleRevert();
+        }
+
         $apply = (bool) $this->option('apply');
         $this->info('== Normalización del irrecuperable — ' . ($apply ? 'APLICAR' : 'DRY-RUN (solo lectura)') . ' ==');
         $this->newLine();
@@ -223,6 +227,72 @@ class NormalizeIrrecoverable extends Command
         $this->newLine();
         $this->info("APLICADO: $created ingresos creados, $skipped ya existían (idempotente), $sellersTouched vendedores.");
         $this->line("Se pueden identificar/borrar buscando la etiqueta '" . self::TAG . "' en Ingresos (están en el día abierto).");
+        return self::SUCCESS;
+    }
+
+    /**
+     * Deshace la normalización: borra (soft-delete) los ingresos de ajuste
+     * [AJUSTE-NORM-IRREC] y recalcula los días afectados para que la caja
+     * vuelva a como estaba. Dry-run por defecto; --apply (--force) para borrar.
+     */
+    private function handleRevert()
+    {
+        $apply = (bool) $this->option('apply');
+        $this->info('== Normalización del irrecuperable — REVERTIR ' . ($apply ? '(APLICAR)' : '(DRY-RUN)') . ' ==');
+        $this->newLine();
+
+        $liqSvc = app(LiquidationService::class);
+        $incomes = Income::where('description', 'like', '%' . self::TAG . '%')->get();
+
+        if ($incomes->isEmpty()) {
+            $this->info('No hay ingresos de ajuste (' . self::TAG . ') para revertir.');
+            return self::SUCCESS;
+        }
+
+        $total = 0.0;
+        foreach ($incomes->groupBy('user_id') as $userId => $items) {
+            $sum = (float) $items->sum('value');
+            $total += $sum;
+            $name = optional(optional(Seller::where('user_id', $userId)->first())->user)->name ?? "user $userId";
+            $this->line("  " . str_pad($name, 18) . $items->count() . " ingresos   \$" . number_format($sum, 2));
+        }
+        $this->newLine();
+        $this->line("<fg=yellow>TOTAL a revertir: {$incomes->count()} ingresos, \$" . number_format($total, 2) . "</>");
+        $this->newLine();
+
+        if (!$apply) {
+            $this->comment('Dry-run: no se borró nada. Agregá --apply para revertir.');
+            return self::SUCCESS;
+        }
+        if (!$this->option('force')
+            && !$this->confirm("Vas a BORRAR {$incomes->count()} ingresos de ajuste (\$" . number_format($total, 2) . "). ¿Continuar?")) {
+            $this->warn('Cancelado.');
+            return self::SUCCESS;
+        }
+
+        $deleted = 0;
+        $recalcs = [];
+        DB::transaction(function () use ($incomes, &$deleted, &$recalcs) {
+            foreach ($incomes as $inc) {
+                $seller = Seller::where('user_id', $inc->user_id)->first();
+                if ($seller) {
+                    $tz = TimezoneHelper::getSellerTimezone($seller);
+                    $bd = $inc->business_date instanceof \Carbon\Carbon
+                        ? $inc->business_date->format('Y-m-d')
+                        : substr((string) $inc->business_date, 0, 10);
+                    $recalcs[$seller->id . '|' . $bd] = ['sid' => $seller->id, 'date' => $bd, 'tz' => $tz];
+                }
+                $inc->delete(); // soft-delete (reversible)
+                $deleted++;
+            }
+        });
+
+        foreach ($recalcs as $rc) {
+            $liqSvc->recalculateLiquidation($rc['sid'], $rc['date'], $rc['tz']);
+        }
+
+        $this->newLine();
+        $this->info("REVERTIDO: $deleted ingresos borrados (soft-delete), " . count($recalcs) . " días recalculados.");
         return self::SUCCESS;
     }
 }
