@@ -28,15 +28,17 @@ class AutoLiquidateSellers extends Command
                 
                 // Determinamos la fecha de cierre objetivo.
                 $targetDate = $dateParam;
-                
+
+                // Cierre SOLO del día en curso (hoy), en la ventana 23:55-23:59 de
+                // la zona horaria del país del vendedor. Se quitó la ventana
+                // 00:00-00:29 que cerraba AYER: el cierre es del mismo día, nunca
+                // retroactivo al día siguiente.
                 if (!$targetDate) {
                     if ($now->hour == 23 && $now->minute >= 55) {
                         $targetDate = $now->toDateString();
-                    } elseif ($now->hour == 0 && $now->minute < 30) {
-                        $targetDate = $now->copy()->subDay()->toDateString();
                     }
                 }
-                
+
                 // Si no estamos en ventana de cierre y no se pasó fecha manual, saltamos
                 if (!$targetDate) {
                     continue;
