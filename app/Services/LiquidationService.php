@@ -747,7 +747,20 @@ class LiquidationService
         $seller = Seller::with('city.country')->find($sellerId);
         $userId = $seller ? $seller->user_id : null;
         $country = $seller?->city?->country ?? null;
-        $currency = $country?->currency ?? 'PEN'; // Fallback a PEN si no hay país
+        // La moneda sale del país del vendedor. Antes caía a 'PEN' EN SILENCIO
+        // si el país no tenía moneda cargada — eso etiquetó mal ~1.217
+        // liquidaciones de 5 países (COP/BOB/ARS/USD/VES quedaron como PEN).
+        // Ahora, si falta la moneda del país, se LOGUEA (fail-loud) para que se
+        // detecte y se cargue, en vez de ensuciar los reportes en silencio.
+        $currency = $country?->currency;
+        if (empty($currency)) {
+            \Log::warning('[liquidation.currency] pais sin moneda cargada — cae a PEN por defecto', [
+                'seller_id'  => $sellerId,
+                'country_id' => $country?->id,
+                'country'    => $country?->name,
+            ]);
+            $currency = 'PEN';
+        }
 
         // Importante: autoCreate = false para evitar recursión infinita
         $dynamicData = $this->getLiquidationData($sellerId, $date, $userId, $tz, false);
