@@ -54,14 +54,26 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withExceptions(function (Exceptions $exceptions) {
     })
     ->withSchedule(function (Schedule $schedule) {
-        // auto-daily solo actua en dos ventanas: 23:55+ (cierra hoy) y
-        // 00:00-00:29 (cierra ayer). Con ->hourly() el cron dispara a los :00,
-        // asi que la ventana 23:55 NUNCA se alcanzaba y el unico cierre util
-        // era el de las 00:00: si ese unico run fallaba, el dia quedaba SIN
-        // cerrar (huerfano). Con everyFiveMinutes ambas ventanas se disparan
-        // ~6 veces y hay reintentos. withoutOverlapping evita solapes (seguro
-        // ademas por el indice unico + getOrCreate atomico).
-        $schedule->command('liquidation:auto-daily')->everyFiveMinutes()->withoutOverlapping();
+        // auto-daily cierra SOLO el dia en curso (hoy), en la ventana 23:55-23:59
+        // de la zona horaria del pais de cada vendedor. Se quito la ventana
+        // 00:00-00:29 que cerraba AYER: el cierre es del mismo dia, nunca
+        // retroactivo al dia siguiente. everyMinute -> la ventana 23:55-23:59 se
+        // dispara 5 veces (reintentos same-day) sin cruzar medianoche.
+        // withoutOverlapping evita solapes (seguro ademas por el indice unico +
+        // getOrCreate atomico).
+        $schedule->command('liquidation:auto-daily')
+            ->everyMinute()
+            ->withoutOverlapping()
+            // (A) Si el comando revienta (excepcion / exit != 0), avisa por correo.
+            ->emailOutputOnFailure('creditservice2025@gmail.com');
+
+        // (B) Red de seguridad: un rato despues de la medianoche de todos los
+        // paises (07:00 UTC cubre hasta UTC-6), verifica que el auto-cierre haya
+        // cerrado los dias de los cobradores y NOTIFICA por correo los que
+        // quedaron 'En curso'. No cierra nada, solo avisa.
+        $schedule->command('liquidation:check-auto-closures')
+            ->timezone('UTC')->dailyAt('07:00')->withoutOverlapping();
+
         $schedule->command('liquidation:historical')->dailyAt('23:55');
         $schedule->command('liquidation:notify-pending')->dailyAt('21:52');
         $schedule->command('credits:notify-renewal-pending')->dailyAt('21:00');
