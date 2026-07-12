@@ -44,6 +44,13 @@ class AutoLiquidateSellers extends Command
                     continue;
                 }
 
+                // Día no laborable de la ruta (descanso semanal / feriado): NO se
+                // genera ni cierra liquidación. Evita liquidaciones 'auto' espurias
+                // los domingos/feriados para rutas que no operan ese día.
+                if (\App\Services\BusinessCalendar::isNonWorkingDate($seller, $targetDate)) {
+                    continue;
+                }
+
                 // Verifica si ya existe liquidación para esa fecha objetivo
                 $existingLiquidation = Liquidation::where('seller_id', $seller->id)
                     ->whereDate('date', $targetDate)

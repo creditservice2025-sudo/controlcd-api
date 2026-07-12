@@ -22,6 +22,7 @@ class SellerConfig extends Model
         'auto_base_next_day',
         'require_address_phone',
         'auto_closures_collectors',
+        'works_sundays',
         'require_approval_new_sales',
         'notify_renewal_quota_alt',
         'notify_discount_cancel_alt',

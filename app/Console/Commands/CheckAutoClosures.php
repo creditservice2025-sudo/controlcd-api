@@ -65,6 +65,12 @@ class CheckAutoClosures extends Command
             // Dia que YA debio cerrarse: ayer en la zona del vendedor (o el forzado).
             $day = $forcedDate ?: $nowLocal->copy()->subDay()->toDateString();
 
+            // Si ese día la ruta NO opera (descanso semanal / feriado), el
+            // auto-cierre lo saltea a propósito: no es una falla, no alertar.
+            if (\App\Services\BusinessCalendar::isNonWorkingDate($seller, $day)) {
+                continue;
+            }
+
             $liq = Liquidation::where('seller_id', $seller->id)
                 ->whereDate('date', $day)
                 ->first();

@@ -43,6 +43,10 @@ return Application::configure(basePath: dirname(__DIR__))
             // llega desde el web (sin X-Client-Type: mobile) devuelve 401 para
             // cerrar la sesión del navegador. Corre después de auth:api.
             'seller.apk.only'    => \App\Http\Middleware\BlockSellerWebSession::class,
+            // Restringe el ingreso del Cobrador (rol 5) en días no laborables de
+            // su ruta (hoy: domingo, según seller_configs.works_sundays). Expulsa
+            // también sesiones abiertas de un día anterior. Corre después de auth:api.
+            'seller.workingday'  => \App\Http\Middleware\CheckSellerWorkingDay::class,
         ]);
 
         $middleware->validateCsrfTokens(except: [
