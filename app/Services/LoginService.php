@@ -237,6 +237,14 @@ class LoginService
                 if ($liquidation && in_array($liquidation->status, ['approved', 'auto', 'pending'])) {
                     return $this->errorResponse(['Ya cerro la liquidación del día. Si desea reabrir la caja debe contactar al administrador'], 401);
                 }
+
+                // Bloqueo por día no laborable de la ruta (descanso semanal /
+                // feriado), según BusinessCalendar. Anclado al mismo día de
+                // negocio del vendedor ($businessToday). El middleware
+                // seller.workingday cubre las sesiones ya abiertas.
+                if (\App\Services\BusinessCalendar::isNonWorkingDate($seller, $businessToday)) {
+                    return $this->errorResponse(['Hoy tu ruta no opera (día de descanso o feriado). Si necesitas ingresar, contacta al administrador.'], 401);
+                }
             }
 
             $token = $user->createToken('USER_AUTH_TOKEN')->accessToken;

@@ -40,6 +40,19 @@ class Tenant
     }
 
     /**
+     * Empresa del usuario autenticado (null para Super-Admin, que no está atado a
+     * una sola empresa). Deriva SIEMPRE de auth()->user(), nunca del input.
+     */
+    public static function currentCompanyId(): ?int
+    {
+        $user = Auth::user();
+        if (!$user) {
+            abort(401, 'No autenticado.');
+        }
+        return optional($user->company)->id ? (int) $user->company->id : null;
+    }
+
+    /**
      * Lanza 403 si el seller no está en el alcance del usuario autenticado.
      */
     public static function assertSellerInScope($sellerId): void

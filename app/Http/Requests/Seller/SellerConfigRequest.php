@@ -28,6 +28,7 @@ class SellerConfigRequest extends FormRequest
             'auto_base_next_day' => 'nullable|boolean',
             'require_address_phone' => 'nullable|boolean',
             'auto_closures_collectors' => 'nullable|boolean',
+            'works_sundays' => 'nullable|boolean',
             'require_approval_new_sales' => 'nullable|boolean',
             'notify_renewal_quota_alt' => 'nullable|integer|min:1',
             'notify_discount_cancel_alt' => 'nullable|boolean',

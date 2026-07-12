@@ -61,7 +61,7 @@ Route::middleware('auth:api')->group(function () {
     Route::post('auth/session/logout/{sessionId}', [AuthController::class, 'logoutSession']);
 });
 
-Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.seller', 'seller.apk.only'])->group(function () {
+Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.seller', 'seller.apk.only', 'seller.workingday'])->group(function () {
 
     //change password
     Route::post('auth/change-password', [AuthController::class, 'changePassword']);
@@ -273,6 +273,18 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
     Route::middleware('role:Super-Admin|Admin')->group(function () {
         Route::post('clients/{clientId}/mark-uncollectible', [CreditController::class, 'markClientAsUncollectible']);
         Route::post('clients/{clientId}/restore-from-uncollectible', [CreditController::class, 'restoreClientFromUncollectible']);
+
+        // Feriados / días no laborables (calendario de negocio, modelo híbrido).
+        Route::get('holidays', [\App\Http\Controllers\HolidayController::class, 'index']);
+        Route::post('holidays/import', [\App\Http\Controllers\HolidayController::class, 'import']);
+        Route::post('holidays', [\App\Http\Controllers\HolidayController::class, 'store']);
+        Route::put('holidays/{id}', [\App\Http\Controllers\HolidayController::class, 'update']);
+        Route::delete('holidays/{id}', [\App\Http\Controllers\HolidayController::class, 'destroy']);
+
+        // "Trabaja domingos" por empresa/país. Super-Admin ve todas; Admin solo
+        // la suya (scope en el controlador). Edición individual + masiva.
+        Route::get('admin/sunday-schedule', [\App\Http\Controllers\SundayScheduleController::class, 'index']);
+        Route::post('admin/sunday-schedule/bulk', [\App\Http\Controllers\SundayScheduleController::class, 'bulkUpdate']);
         // Bloqueo de apertura de nuevos créditos. La validación adicional
         // (Admin solo su empresa) se hace en el service usando company_id
         // del seller del cliente.
