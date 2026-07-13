@@ -2,9 +2,11 @@
 
 namespace App\Http\Middleware;
 
+use App\Services\SupervisorLockService;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Para el rol Supervisor (6) que tiene varios cobradores asignados, este
@@ -51,6 +53,23 @@ class ResolveActiveSeller
         }
 
         $request->attributes->set('active_seller_id', $sellerId);
+
+        // Exclusividad por RUTA ACTIVA: bloquear SOLO al cobrador de la ruta
+        // que el supervisor está viendo (y liberar la anterior si cambió).
+        // Antes esto se hacía a TODOS los cobradores en el login; ahora sigue
+        // a la ruta activa, así los demás vendedores del supervisor siguen
+        // operando. FAIL-OPEN: el lock es operativo, no crítico — si falla, no
+        // bloqueamos (peor caso: el cobrador supervisado opera unos segundos).
+        try {
+            app(SupervisorLockService::class)->syncActiveRoute((int) $user->id, $sellerId);
+        } catch (\Throwable $e) {
+            Log::warning('[supervisor.lock] no se pudo sincronizar lock de ruta activa', [
+                'supervisor_id' => $user->id,
+                'seller_id'     => $sellerId,
+                'error'         => $e->getMessage(),
+            ]);
+        }
+
         return $next($request);
     }
 }

@@ -57,58 +57,6 @@ class LoginService
         return "liquidation_closed:cobrador:{$cobradorUserId}";
     }
 
-    /**
-     * Devuelve la clave de cache que marca a un cobrador como bloqueado por
-     * un supervisor activo. Si la clave existe, ese cobrador NO puede entrar
-     * (ni web ni APK) y, si tenía sesión abierta, ya le fueron revocados
-     * los tokens en el momento de bloquearlo.
-     */
-    private function lockKey(int $cobradorUserId): string
-    {
-        return "supervisor_lock:cobrador:{$cobradorUserId}";
-    }
-
-    /**
-     * Clave que guarda el SET exacto de cobradores que un supervisor bloqueó
-     * al iniciar sesión. Se usa en el logout para liberar justo a esos
-     * cobradores, aunque sus user_routes hayan cambiado durante la sesión
-     * (reasignación de rutas) y `cobradorIdsSupervisedBy` ya devuelva otros.
-     */
-    private function lockedSetKey(int $supervisorUserId): string
-    {
-        return "supervisor_lock_set:supervisor:{$supervisorUserId}";
-    }
-
-    /**
-     * IDs de los cobradores (User.id) supervisados por este Supervisor,
-     * según la tabla user_routes. Se usa al loguear/cerrar sesión del rol 6
-     * para saber a qué cobradores afectar.
-     *
-     * Relaciones reales en BD:
-     *   user_routes(user_id, seller_id) ← supervisor → seller asignado
-     *   sellers(id, user_id)            ← seller → user del cobrador
-     *
-     * Por eso resolvemos: supervisor → seller_ids → user_ids vía
-     * sellers.user_id (NO users.seller_id, que no existe).
-     */
-    private function cobradorIdsSupervisedBy(int $supervisorUserId): array
-    {
-        $sellerIds = \DB::table('user_routes')
-            ->where('user_id', $supervisorUserId)
-            ->pluck('seller_id')
-            ->all();
-
-        if (empty($sellerIds)) return [];
-
-        return \DB::table('sellers')
-            ->whereIn('id', $sellerIds)
-            ->whereNull('deleted_at')
-            ->pluck('user_id')
-            ->filter()
-            ->values()
-            ->all();
-    }
-
     public function login($credentials)
     {
         try {
@@ -164,7 +112,7 @@ class LoginService
             // ============================================================
             if ((int) $user->role_id === 5) {
                 try {
-                    if (Cache::has($this->lockKey($user->id))) {
+                    if (Cache::has(\App\Services\SupervisorLockService::cobradorLockKey((int) $user->id))) {
                         return $this->errorResponse([
                             'Su supervisor se encuentra realizando una revisión operativa de la cartera asignada. Por motivos de control y seguridad, su sesión permanecerá inhabilitada mientras dure este proceso. Para continuar con su operación, comuníquese con su supervisor inmediato o reintente el ingreso más tarde.'
                         ], 403);
@@ -177,46 +125,12 @@ class LoginService
                 }
             }
 
-            // ============================================================
-            // SUPERVISOR (rol 6) entrando: revocar sesiones de cobradores
-            // asignados (user_routes) y marcarlos como bloqueados durante
-            // ~90 minutos (vida del token Passport). El logout explícito
-            // del supervisor también libera el bloqueo.
-            // ============================================================
-            if ((int) $user->role_id === 6) {
-                $cobradorIds = $this->cobradorIdsSupervisedBy($user->id);
-                if (!empty($cobradorIds)) {
-                    // Cache lock por 90 minutos (igual a token TTL Passport).
-                    // El middleware CheckSupervisorLock verifica esta clave
-                    // en cada request del cobrador y devuelve 401 con código
-                    // SESSION_REVOKED_BY_SUPERVISOR para que el frontend
-                    // muestre el modal "Sesión finalizada por supervisión".
-                    //
-                    // FAIL-OPEN: si la cache no responde no bloqueamos el
-                    // login del supervisor (puede entrar igual). El peor
-                    // caso es que sus cobradores no queden bloqueados esta
-                    // vez — preferible a impedir que el supervisor opere.
-                    try {
-                        foreach ($cobradorIds as $cid) {
-                            Cache::put($this->lockKey($cid), $user->id, now()->addMinutes(90));
-                        }
-                        // Guardar el set exacto bloqueado para liberarlo en el
-                        // logout aunque las rutas del supervisor cambien durante
-                        // la sesión.
-                        Cache::put($this->lockedSetKey($user->id), $cobradorIds, now()->addMinutes(90));
-                        \Log::info('Supervisor inició sesión y bloqueó cobradores', [
-                            'supervisor_id' => $user->id,
-                            'cobrador_ids' => $cobradorIds,
-                        ]);
-                    } catch (\Throwable $e) {
-                        \Log::warning('[supervisor.lock] no se pudo aplicar lock a cobradores', [
-                            'supervisor_id' => $user->id,
-                            'cobrador_ids' => $cobradorIds,
-                            'error' => $e->getMessage(),
-                        ]);
-                    }
-                }
-            }
+            // NOTA: el Supervisor (rol 6) YA NO bloquea a sus cobradores al
+            // iniciar sesión. El bloqueo pasó a ser por RUTA ACTIVA: se aplica
+            // solo al cobrador de la ruta que el supervisor está viendo, y se
+            // sincroniza en el middleware ResolveActiveSeller vía
+            // SupervisorLockService::syncActiveRoute. Así los demás cobradores
+            // vinculados al supervisor pueden seguir operando normalmente.
 
             $seller = $user->seller;
             // Día de negocio anclado a la zona del VENDEDOR. Antes el bloqueo
@@ -353,24 +267,14 @@ class LoginService
             // logout sigue su flujo (en el peor caso el lock expira a los 90 min).
             if ((int) $user->role_id === 6) {
                 try {
-                    // Preferir el set EXACTO bloqueado al login; si no existe
-                    // (cache expirada o sesión previa a este cambio) caer a las
-                    // rutas actuales. Así se libera al cobrador correcto aunque
-                    // las rutas se hayan reasignado durante la sesión.
-                    $cobradorIds = Cache::get($this->lockedSetKey($user->id));
-                    if (!is_array($cobradorIds) || empty($cobradorIds)) {
-                        $cobradorIds = $this->cobradorIdsSupervisedBy($user->id);
-                    }
-                    foreach ($cobradorIds as $cid) {
-                        Cache::forget($this->lockKey($cid));
-                    }
-                    Cache::forget($this->lockedSetKey($user->id));
-                    if (!empty($cobradorIds)) {
-                        \Log::info('Supervisor cerró sesión y liberó cobradores', [
-                            'supervisor_id' => $user->id,
-                            'cobrador_ids' => $cobradorIds,
-                        ]);
-                    }
+                    // Libera al cobrador de la ruta activa (y cualquier lock
+                    // residual). SupervisorLockService es la fuente única de la
+                    // lógica y las claves; el fallback interno cubre el caso de
+                    // cache expirada liberando todos los cobradores asignados.
+                    app(\App\Services\SupervisorLockService::class)->releaseAll((int) $user->id);
+                    \Log::info('Supervisor cerró sesión y liberó su bloqueo de ruta', [
+                        'supervisor_id' => $user->id,
+                    ]);
                 } catch (\Throwable $e) {
                     \Log::warning('[supervisor.lock] no se pudo liberar lock en logout', [
                         'supervisor_id' => $user->id,
