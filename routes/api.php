@@ -102,6 +102,8 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
 
     // Supervisor (rol 6) — selección de ruta a supervisar desde el APK
     Route::get('supervisor/active-sellers', [\App\Http\Controllers\SupervisorController::class, 'activeSellers']);
+    // Historial de supervisión por ruta (para expandir la fila en Rutas Activas).
+    Route::get('supervisor/logs/seller/{sellerId}', [\App\Http\Controllers\SupervisorController::class, 'supervisionLogs']);
 
     // Planes y suscripciones (módulo SaaS).
     // Catálogo de planes: lectura abierta a admins, mutaciones solo Super-Admin.

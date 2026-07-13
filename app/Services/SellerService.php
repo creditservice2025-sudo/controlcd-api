@@ -365,8 +365,10 @@ class SellerService
             // ─── PRE-LOAD BATCH DATA (elimina queries N+1) ───────────────
             $routeIds = $routesList->pluck('id');
 
-            // 1. Liquidaciones de hoy para todos los vendedores (1 query)
-            $liquidationsToday = Liquidation::whereIn('seller_id', $routeIds)
+            // 1. Liquidaciones de hoy para todos los vendedores (1 query).
+            //    Se carga closedByUser para mostrar QUIÉN cerró (vendedor/supervisor/admin).
+            $liquidationsToday = Liquidation::with('closedByUser:id,name')
+                ->whereIn('seller_id', $routeIds)
                 ->whereDate('date', $targetDay)
                 ->get()
                 ->keyBy('seller_id');
@@ -401,9 +403,39 @@ class SellerService
                 ->groupBy(function ($payment) {
                     return $payment->credit->seller_id;
                 });
+            // 6. Locks de supervisor activos: un cobrador NO puede ingresar
+            //    mientras su supervisor está supervisando SU ruta. Se lee la
+            //    misma clave de cache que administra SupervisorLockService
+            //    (fuente única de verdad), en un solo lote (Cache::many).
+            $cobradorUserIds = $routesList->pluck('user_id')->filter()->unique()->values();
+            $lockKeys = $cobradorUserIds
+                ->map(fn ($uid) => \App\Services\SupervisorLockService::cobradorLockKey((int) $uid))
+                ->all();
+            $lockValues = !empty($lockKeys) ? \Illuminate\Support\Facades\Cache::many($lockKeys) : [];
+            $locksByCobrador = [];
+            foreach ($cobradorUserIds as $uid) {
+                $sup = $lockValues[\App\Services\SupervisorLockService::cobradorLockKey((int) $uid)] ?? null;
+                if ($sup) {
+                    $locksByCobrador[$uid] = (int) $sup;
+                }
+            }
+            $supervisorNames = !empty($locksByCobrador)
+                ? \App\Models\User::whereIn('id', array_values(array_unique($locksByCobrador)))->pluck('name', 'id')
+                : collect();
+
+            // 7. Última supervisión del día por ruta (bitácora supervision_logs):
+            //    referencia en la fila de quién supervisó, desde/hasta cuándo,
+            //    incluso cuando ya NO está en línea. Un lote: se traen los tramos
+            //    del día ordenados y se toma el más reciente por seller.
+            $supervisionByseller = \App\Models\SupervisionLog::with('supervisor:id,name')
+                ->whereIn('seller_id', $routeIds)
+                ->whereDate('started_at', $targetDay)
+                ->orderByDesc('started_at')
+                ->get()
+                ->groupBy('seller_id');
             // ─────────────────────────────────────────────────────────────────
 
-            $data = $routesList->map(function ($route) use ($targetDay, $targetStartUTC, $targetEndUTC, $liquidationsToday, $auditsToday, $previousPendingSellerIds, $allPaymentsToday) {
+            $data = $routesList->map(function ($route) use ($targetDay, $targetStartUTC, $targetEndUTC, $liquidationsToday, $auditsToday, $previousPendingSellerIds, $allPaymentsToday, $locksByCobrador, $supervisorNames, $supervisionByseller) {
                 $liquidationToday = $liquidationsToday->get($route->id);
 
 
@@ -505,7 +537,38 @@ class SellerService
                     'closed_today' => $isClosed,
                     'closed_by_admin' => $closedByAdmin,
                     'closing_role_id' => $closingRoleId,
+                    // Trazabilidad REAL del cierre (columnas de liquidations, desde 2026-06-17).
+                    // closed_by_role: 5=vendedor, 6=supervisor, 2=admin, 1=super-admin.
+                    'closed_by_role' => $liquidationToday?->closed_by_role,
+                    'closed_by_name' => optional($liquidationToday?->closedByUser)->name,
+                    'closed_at' => $liquidationToday?->closed_at
+                        ? \Carbon\Carbon::parse($liquidationToday->closed_at)->format('Y-m-d H:i:s')
+                        : null,
+                    // Hora real en que el vendedor ingresó (primer login del día).
+                    'seller_login_at' => ($firstLog && $firstLog->login_at)
+                        ? \Carbon\Carbon::parse($firstLog->login_at)->format('Y-m-d H:i:s')
+                        : null,
                     'has_previous_pending' => $hasPreviousPending,
+                    // Bloqueo por supervisión en curso: el cobrador no puede
+                    // ingresar mientras su supervisor está en línea.
+                    'supervisor_lock' => isset($locksByCobrador[$route->user_id]),
+                    'supervisor_name' => isset($locksByCobrador[$route->user_id])
+                        ? ($supervisorNames[$locksByCobrador[$route->user_id]] ?? 'Supervisor')
+                        : null,
+                    // Última supervisión del día (aunque ya no esté en línea):
+                    // quién, desde/hasta cuándo. in_progress = sigue supervisando.
+                    'last_supervision' => (function () use ($supervisionByseller, $route) {
+                        $log = optional($supervisionByseller->get($route->id))->first();
+                        if (!$log) {
+                            return null;
+                        }
+                        return [
+                            'supervisor_name' => optional($log->supervisor)->name,
+                            'started_at' => optional($log->started_at)->format('Y-m-d H:i:s'),
+                            'ended_at'   => $log->ended_at ? $log->ended_at->format('Y-m-d H:i:s') : null,
+                            'in_progress' => $log->ended_at === null,
+                        ];
+                    })(),
                     'liquidation_open' => $liquidationToday?->date ? \Carbon\Carbon::parse($liquidationToday->date)->format('Y-m-d') : null,
                     'liquidation_closed' => $liquidationClosed,
                     'liquidation_audit_id' => $liquidationAuditId,

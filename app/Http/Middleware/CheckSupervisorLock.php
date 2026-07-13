@@ -3,6 +3,7 @@
 namespace App\Http\Middleware;
 
 use App\Services\LoginService;
+use App\Services\SupervisorLockService;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -44,7 +45,7 @@ class CheckSupervisorLock
         // funcionalidad de revisión esos segundos antes que dejar a 140+
         // cobradores sin poder operar por una falla de infraestructura.
         try {
-            $lockKey = "supervisor_lock:cobrador:{$user->id}";
+            $lockKey = SupervisorLockService::cobradorLockKey((int) $user->id);
             if (Cache::has($lockKey)) {
                 return response()->json([
                     'success' => false,

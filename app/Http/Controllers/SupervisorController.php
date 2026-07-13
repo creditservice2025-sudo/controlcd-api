@@ -78,6 +78,15 @@ class SupervisorController extends Controller
             ->orderBy('u.name')
             ->get();
 
+        // Modelos Seller (con config + ciudad/país) para consultar el
+        // calendario de negocio: BusinessCalendar es la fuente ÚNICA de verdad
+        // sobre si una ruta opera hoy (descanso semanal / feriado). Se cargan
+        // una sola vez, keyed por id, para no repetir queries en el map.
+        $sellersById = \App\Models\Seller::with(['config', 'city.country'])
+            ->whereIn('id', $sellerIds)
+            ->get()
+            ->keyBy('id');
+
         // Para que el APK pueda mostrar un badge "Caja cerrada" en el modal
         // de selección de ruta (y mostrar el alerta correspondiente al
         // elegirla), añadimos por cada cobrador el estado de su liquidación
@@ -85,7 +94,7 @@ class SupervisorController extends Controller
         //
         // Estados considerados "caja cerrada": pending, auto, approved.
         // (En curso = caja abierta, operando normalmente.)
-        $rows = $rows->map(function ($row) {
+        $rows = $rows->map(function ($row) use ($sellersById) {
             $tz = $row->country_timezone ?: 'America/Lima';
             $today = Carbon::now($tz)->toDateString();
 
@@ -100,12 +109,88 @@ class SupervisorController extends Controller
                 ? in_array($liq->status, ['pending', 'auto', 'approved'], true)
                 : false;
 
+            // ¿La ruta descansa hoy (domingo sin works_sundays o feriado)? El
+            // APK usa este flag para deshabilitar la ruta en el selector; si
+            // aun así intenta entrar, seller.workingday la bloquea con 403.
+            // FAIL-OPEN: ante cualquier falla asumimos que opera (no la ocultamos).
+            $seller = $sellersById->get($row->seller_id);
+            try {
+                $row->non_working_today = $seller
+                    ? \App\Services\BusinessCalendar::isNonWorkingDate($seller, $today)
+                    : false;
+            } catch (\Throwable $e) {
+                $row->non_working_today = false;
+            }
+
             return $row;
         });
 
         return $this->successResponse([
             'success' => true,
             'data' => $rows,
+        ]);
+    }
+
+    /**
+     * Historial de supervisión de una ruta (seller): tramos de quién la
+     * supervisó y desde/hasta cuándo. Alimenta el detalle al expandir la fila
+     * en "Rutas Activas". Ordenado del más reciente al más antiguo.
+     *
+     * El tramo en curso viene con ended_at = null (in_progress = true).
+     */
+    public function supervisionLogs($sellerId)
+    {
+        $user = Auth::user();
+        // Solo roles administrativos consultan el historial (no cobrador/supervisor).
+        if (!$user || !in_array((int) $user->role_id, [1, 2, 3, 4], true)) {
+            return $this->errorResponse('No autorizado para ver el historial de supervisión.', 403);
+        }
+
+        $limit = (int) request()->query('limit', 50);
+        $limit = max(1, min($limit, 200));
+
+        // Zona de la ruta: los timestamps están guardados en hora local del
+        // vendedor. "Ahora" para tramos en curso se calcula en esa misma zona,
+        // y la duración se mide sobre el reloj de pared (naive) para no mezclar
+        // husos. Fallback a la zona del servidor si no se resuelve la ruta.
+        $seller = \App\Models\Seller::find((int) $sellerId);
+        $tz = $seller
+            ? \App\Helpers\TimezoneHelper::getSellerTimezone($seller)
+            : config('app.timezone');
+
+        $logs = \App\Models\SupervisionLog::with('supervisor:id,name')
+            ->where('seller_id', (int) $sellerId)
+            ->orderByDesc('started_at')
+            ->limit($limit)
+            ->get()
+            ->map(function ($log) use ($tz) {
+                $startStr = optional($log->started_at)->format('Y-m-d H:i:s');
+                $endStr = $log->ended_at
+                    ? $log->ended_at->format('Y-m-d H:i:s')
+                    : null;
+
+                // Reloj de pared para la duración: fin real o "ahora" en la zona
+                // de la ruta si el tramo sigue abierto.
+                $endForDuration = $endStr ?? now($tz)->format('Y-m-d H:i:s');
+                $duration = $startStr
+                    ? \Carbon\Carbon::parse($startStr)->diffInMinutes(\Carbon\Carbon::parse($endForDuration))
+                    : null;
+
+                return [
+                    'id'               => $log->id,
+                    'supervisor_id'    => $log->supervisor_user_id,
+                    'supervisor_name'  => optional($log->supervisor)->name,
+                    'started_at'       => $startStr,
+                    'ended_at'         => $endStr,
+                    'end_reason'       => $log->end_reason,
+                    'in_progress'      => $endStr === null,
+                    'duration_minutes' => $duration,
+                ];
+            });
+
+        return $this->successResponse([
+            'success' => true,
+            'data' => $logs,
         ]);
     }
 }
