@@ -42,7 +42,9 @@ return [
 
     'allowed_headers' => ['*'],
 
-    'exposed_headers' => [],
+    // Content-Disposition: para que el frontend pueda leer el nombre de archivo
+    // que el backend define en descargas (ej: PDF de créditos morosos).
+    'exposed_headers' => ['Content-Disposition'],
 
     'max_age' => 0,
 

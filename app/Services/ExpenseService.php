@@ -117,14 +117,19 @@ class ExpenseService
             
             $businessDate = $businessTimestamp->toDateString();
 
-            // Guard de defensa en profundidad: rechaza el gasto si la
-            // liquidación del día del vendedor ya está cerrada.
-            //
-            // El admin/superadmin (rol 1 y 2) SÍ puede registrar movimientos
-            // sobre una caja cerrada: es justamente quien "reabre/ajusta" la
-            // caja. El bloqueo solo aplica al vendedor y demás roles operativos.
-            if ($seller && !$isAdmin) {
-                $this->assertSellerCashOpen($seller->id, $businessDate);
+            // Guards de negocio (defensa en profundidad):
+            if ($seller) {
+                // 1) Día NO laborable de la ruta (domingo sin works_sundays o
+                //    feriado): nadie —ni el admin— registra egresos ese día.
+                $this->assertSellerWorksOnDate($seller, $businessDate);
+
+                // 2) Caja cerrada. Si el admin ya APROBÓ la liquidación, queda
+                //    sellada y NADIE (incl. admin) puede cargar egresos. Si está
+                //    pending/auto, el admin aún puede ajustar; el vendedor no.
+                //    (Al pasar la medianoche el egreso ya cae en la liquidación
+                //    del día siguiente porque businessDate se calcula en la zona
+                //    del vendedor.)
+                $this->assertExpenseCashOpen($seller->id, $businessDate, $isAdmin);
             }
 
             $expenseData = [
@@ -687,6 +692,80 @@ class ExpenseService
             Log::error($e->getMessage());
             return $this->errorResponse('Error al obtener los gastos', 500);
         }
+    }
+
+    /**
+     * Genera el PDF (dompdf) del reporte de Gastos POR RUTA (vendedor).
+     * Reutiliza index() —mismo scoping por empresa/rol y mismos filtros
+     * (rango de fechas)— trayendo todos los gastos del vendedor sin paginar.
+     * Requiere seller_id (user_id del vendedor) para acotar el reporte.
+     */
+    public function downloadExpenseReport(Request $request)
+    {
+        $sellerUserId = $request->input('seller_id');
+        if (!$sellerUserId) {
+            return $this->errorResponse('Selecciona un vendedor para generar el reporte por ruta.', 422);
+        }
+
+        // Reutiliza el listado (mismo scoping y filtros) sin paginar.
+        $resp = $this->index($request, '', 100000, 'created_at', 'desc', $request->input('company_id'));
+        $payload = json_decode($resp->getContent(), true) ?: [];
+        $items = $payload['data']['data'] ?? [];
+
+        $sellerUser = \App\Models\User::find($sellerUserId);
+        $sellerName = $sellerUser->name ?? 'Vendedor';
+
+        // Fecha/hora del reporte en la zona del vendedor (no del servidor UTC).
+        $seller = Seller::with('city.country')->where('user_id', $sellerUserId)->first();
+        $tz = $seller
+            ? \App\Helpers\TimezoneHelper::getSellerTimezone($seller)
+            : config('app.timezone');
+        $nowTz = now($tz);
+
+        $start = $request->input('start_date');
+        $end = $request->input('end_date');
+        $rangeLabel = ($start && $end) ? ($start . ' a ' . $end) : 'Todas las fechas';
+
+        $money = fn ($v) => number_format((float) $v, 2, ',', '.');
+
+        $rows = [];
+        $total = 0.0;
+        foreach ($items as $e) {
+            $total += (float) ($e['value'] ?? 0);
+            // business_timestamp está en hora local del vendedor (etiquetada
+            // UTC): se muestra tal cual, sin convertir zona.
+            $ts = $e['business_timestamp'] ?? $e['created_at'] ?? null;
+            $fecha = $ts ? \Carbon\Carbon::parse($ts)->format('d-m-Y H:i') : '';
+            $rows[] = [
+                'fecha'         => $fecha,
+                'realizado_por' => $e['created_by_user']['name'] ?? ($e['user']['name'] ?? '—'),
+                'categoria'     => $e['category']['name'] ?? 'Sin categoría',
+                'descripcion'   => $e['description'] ?? '',
+                'estado'        => $e['status'] ?? '',
+                'valor_fmt'     => $money($e['value'] ?? 0),
+            ];
+        }
+
+        $viewData = [
+            'sellerName' => $sellerName,
+            'rangeLabel' => $rangeLabel,
+            'reportDate' => $nowTz->format('d/m/Y H:i:s'),
+            'rows'       => $rows,
+            'totalCount' => count($rows),
+            'totalFmt'   => $money($total),
+        ];
+
+        $pdf = app('dompdf.wrapper');
+        $pdf->loadView('reports.expenses-report', $viewData);
+        $pdf->setPaper('a4', 'landscape');
+
+        $safe = fn ($s) => preg_replace('/[^A-Za-z0-9_\-]/', '_', trim((string) $s));
+        $fileName = 'gastos_' . $safe($sellerName) . '_' . $nowTz->format('Y-m-d') . '.pdf';
+
+        return response()->make($pdf->output(), 200, [
+            'Content-Type'        => 'application/pdf',
+            'Content-Disposition' => 'attachment; filename="' . $fileName . '"',
+        ]);
     }
 
     public function show($expenseId)

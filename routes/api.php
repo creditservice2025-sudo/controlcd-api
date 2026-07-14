@@ -173,6 +173,7 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
     Route::prefix('clients')->group(function () {
         // Listado principal
         Route::get('/', [ClientController::class, 'index']);
+        Route::get('/report/pdf', [ClientController::class, 'downloadClientsReport']);
         Route::get('/total', [ClientController::class, 'totalClients']);
         Route::get('/with-credits', [ClientController::class, 'indexWithCredits']);
         Route::get('/select', [ClientController::class, 'getClientsSelect']);
@@ -193,6 +194,7 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         Route::get('/{sellerId}/clients-for-map', [ClientController::class, 'getSellerClientsForMap']);
 
         Route::get('/seller/{sellerId}/debtor', [ClientController::class, 'getDebtorClientsBySeller']);
+        Route::get('/seller/{sellerId}/debtor/pdf', [ClientController::class, 'downloadDebtorReport']);
         Route::get('/liquidation-with-clients/{sellerId}/{date}/{userId}', [ClientController::class, 'getLiquidationWithAllClients']);
 
         // Colecciones
@@ -303,6 +305,7 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
     Route::post('expense/{id}/simulate-delete', [ExpenseController::class, 'simulateDelete']);
     Route::get('expenses/summary', [ExpenseController::class, 'summary']);
     Route::get('expenses/report/monthly', [ExpenseController::class, 'monthlyReport']);
+    Route::get('expenses/report/pdf', [ExpenseController::class, 'downloadReport']);
     Route::get('expenses/user/{userId}', [ExpenseController::class, 'getExpensesByUser']);
     Route::put('/expenses/{expense}/{status}', [ExpenseController::class, 'changeStatus'])
         ->where('status', 'Aprobado|Rechazado');

@@ -1341,6 +1341,139 @@ class ClientService
         }
     }
 
+    /**
+     * Genera el PDF (dompdf) del reporte de Clientes de la VISTA PRINCIPAL,
+     * respetando TODOS los filtros activos (pestaña/status, vendedor/ruta,
+     * país, ciudad, búsqueda, rango de creación). Reutiliza index() sin
+     * paginar (mismo scoping por empresa/rol). Recomendado usar con un filtro
+     * (ej. vendedor) para acotar el volumen.
+     */
+    public function downloadClientsReport(Request $request)
+    {
+        // Acotar el reporte a UNA ruta (vendedor). Sin este filtro intentaría
+        // cargar decenas de miles de clientes (con créditos/cuotas/pagos) y
+        // agota la memoria. "Reporte por ruta" => vendedor obligatorio.
+        if (!$request->input('seller_id')) {
+            return $this->errorResponse(
+                'Selecciona un vendedor (ruta) para generar el reporte de clientes.',
+                422
+            );
+        }
+
+        // Aun por ruta, una ruta con cientos de clientes supera los 128M por
+        // defecto: se sube el límite para renderizar el PDF.
+        @ini_set('memory_limit', '1024M');
+        @set_time_limit(120);
+
+        $status = $request->input('status');
+
+        $resp = $this->index(
+            (string) $request->input('search', ''),
+            $request->input('orderBy', 'created_at'),
+            $request->input('orderDirection', 'desc'),
+            $request->input('country_id'),
+            $request->input('city_id'),
+            $request->input('seller_id'),
+            $status,
+            $request->input('company_id'),
+            $request->input('created_from'),
+            $request->input('created_to'),
+            100000, // sin paginar
+            1,
+            $request->input('recurrent_mode')
+        );
+
+        $payload = json_decode($resp->getContent(), true) ?: [];
+        $clients = $payload['data'] ?? [];
+
+        $money = fn ($v) => number_format((float) $v, 2, ',', '.');
+
+        $rows = [];
+        $totValor = 0.0;
+        $totRecaudado = 0.0;
+        $totPorCobrar = 0.0;
+
+        foreach ($clients as $c) {
+            $valorTotal = 0.0;
+            $recaudado = 0.0;
+            $codes = [];
+            foreach (($c['credits'] ?? []) as $cr) {
+                if (!in_array($cr['status'] ?? '', ['Activo', 'Vigente'], true)) {
+                    continue;
+                }
+                // Valor total = capital + interés; recaudado = suma de pagos
+                // (payments_sum_amount del withSum). Por cobrar = total - pagado.
+                $valorTotal += (float) $cr['credit_value'] * (1 + (float) ($cr['total_interest'] ?? 0) / 100);
+                $recaudado += (float) ($cr['payments_sum_amount'] ?? 0);
+                // Código del crédito: index() no trae `code`, se arma como el
+                // front (#00 + id). Se agrega por cada crédito VIGENTE, así un
+                // cliente con crédito nunca aparece "Sin créditos".
+                $codes[] = !empty($cr['code']) ? $cr['code'] : ('#00' . ($cr['id'] ?? ''));
+            }
+            $porCobrar = max(0, $valorTotal - $recaudado);
+            $totValor += $valorTotal;
+            $totRecaudado += $recaudado;
+            $totPorCobrar += $porCobrar;
+
+            $country = $c['seller']['city']['country']['name'] ?? '';
+            $city = $c['seller']['city']['name'] ?? '';
+            $ruta = trim($country . ($country && $city ? ', ' : '') . $city);
+
+            $rows[] = [
+                'fecha'           => !empty($c['created_at']) ? \Carbon\Carbon::parse($c['created_at'])->format('d-m-Y') : '',
+                'cliente'         => $c['name'] ?? '',
+                'vendedor'        => $c['seller']['user']['name'] ?? 'Sin asignar',
+                'ruta'            => $ruta,
+                'empresa'         => $c['company_name'] ?? '',
+                'creditos'        => count($codes) ? implode(', ', $codes) : 'Sin créditos',
+                'valor_total_fmt' => $money($valorTotal),
+                'recaudado_fmt'   => $money($recaudado),
+                'por_cobrar_fmt'  => $money($porCobrar),
+            ];
+        }
+
+        $tabMap = [
+            'Activo'        => 'Todos los clientes',
+            'clientes'      => 'Todos los clientes',
+            'con_creditos'  => 'Con créditos activos',
+            'sin_creditos'  => 'Existentes sin crédito',
+            'nuevos'        => 'Clientes nuevos',
+            'recurrentes'   => 'Clientes recurrentes',
+        ];
+        $tabLabel = $tabMap[$status] ?? ($status ?: 'Todos los clientes');
+
+        $sellerName = null;
+        $locationLabel = null;
+        if ($request->input('seller_id') && !empty($rows)) {
+            $sellerName = $rows[0]['vendedor'];
+            $locationLabel = $rows[0]['ruta'];
+        }
+
+        $nowTz = now(config('app.timezone'));
+        $viewData = [
+            'tabLabel'         => $tabLabel,
+            'sellerName'       => $sellerName,
+            'locationLabel'    => $locationLabel,
+            'reportDate'       => $nowTz->format('d/m/Y H:i:s'),
+            'rows'             => $rows,
+            'totalCount'       => count($rows),
+            'totValorFmt'      => $money($totValor),
+            'totRecaudadoFmt'  => $money($totRecaudado),
+            'totPorCobrarFmt'  => $money($totPorCobrar),
+        ];
+
+        $pdf = app('dompdf.wrapper');
+        $pdf->loadView('reports.clients-report', $viewData);
+        $pdf->setPaper('a4', 'landscape');
+
+        $fileName = 'clientes_' . $nowTz->format('Y-m-d_His') . '.pdf';
+
+        return response()->make($pdf->output(), 200, [
+            'Content-Type'        => 'application/pdf',
+            'Content-Disposition' => 'attachment; filename="' . $fileName . '"',
+        ]);
+    }
+
     public function indexWithCredits(
         $search = '',
         $orderBy = 'created_at',
@@ -2605,10 +2738,15 @@ class ClientService
                 ];
             }
 
-            $debtorClients = $clients->map(function ($client) {
-                $delinquencyInfo = $this->calculateDelinquencyDetails($client);
+            // Zona horaria del vendedor (todos los clientes son del mismo
+            // seller): el "hoy" para los días de mora se ancla a esta zona,
+            // no al servidor (UTC), para que el corte del día sea correcto.
+            $sellerTz = \App\Helpers\TimezoneHelper::getSellerTimezone(
+                \App\Models\Seller::with('city.country')->find($sellerId)
+            );
 
-                $debtorCredits = $this->getDebtorCredits($client);
+            $debtorClients = $clients->map(function ($client) use ($sellerTz) {
+                $debtorCredits = $this->getDebtorCredits($client, $sellerTz);
 
                 if (empty($debtorCredits)) {
                     return null;
@@ -2630,9 +2768,18 @@ class ClientService
                         'seller_name' => $client->seller->user->name ?? 'Sin vendedor',
                         'credit_info' => $credit,
                         'delinquency' => [
+                            // Días de mora: el máximo entre las cuotas vencidas.
                             'credit_days_delayed' => max(array_column($credit['installments'], 'days_delayed')),
-                            'credit_amount_due' => array_sum(array_column($credit['installments'], 'amount')),
-                            'installments_count' => count($credit['installments'])
+                            // Adeudado = saldo pendiente REAL del crédito
+                            // (suma quota - paid de TODAS las cuotas), no solo lo
+                            // vencido, y descontando abonos. Cuadra con Pagado.
+                            'credit_amount_due' => $credit['amount_due'],
+                            // Pagado REAL (abonos aplicados) y conteos reales de
+                            // cuotas, tomados de la BD (no estimados).
+                            'paid_amount' => $credit['paid_amount'],
+                            'installments_count' => $credit['pending_installments_count'],
+                            'paid_installments_count' => $credit['paid_installments_count'],
+                            'overdue_installments_count' => count($credit['installments']),
                         ]
                     ];
                 }
@@ -2690,6 +2837,126 @@ class ClientService
 
         return $totals;
     }
+
+    /**
+     * Nivel de morosidad según días de mora (mismos rangos que la leyenda del
+     * frontend: Leve 1-15, Moderada 16-30, Grave 31-60, Muy Grave 61-90,
+     * Crítica 91+).
+     */
+    private function delinquencyLevelLabel(int $days): array
+    {
+        if ($days >= 91) return ['Crítica', 'critica'];
+        if ($days >= 61) return ['Muy Grave', 'muygrave'];
+        if ($days >= 31) return ['Grave', 'grave'];
+        if ($days >= 16) return ['Moderada', 'moderada'];
+        return ['Leve', 'leve'];
+    }
+
+    /**
+     * Genera el PDF (dompdf) del reporte de Créditos Morosos de un vendedor.
+     * Reutiliza getDebtorClientsBySeller() para no duplicar la lógica de datos;
+     * incluye TODOS los créditos morosos, encabezado (vendedor + fecha) y la
+     * fila de totales (adeudado y pagado). Formato bancario con 2 decimales.
+     */
+    public function downloadDebtorReport($sellerId)
+    {
+        // Reutiliza el ensamblado de datos del endpoint JSON. El método puede
+        // devolver un Response (éxito) o un array plano (sin clientes).
+        $result = $this->getDebtorClientsBySeller($sellerId);
+        if ($result instanceof \Symfony\Component\HttpFoundation\Response) {
+            $payload = json_decode($result->getContent(), true) ?: [];
+        } else {
+            $payload = is_array($result) ? $result : [];
+        }
+        $data = $payload['data'] ?? [];
+        $debtorCredits = $data['debtor_credits'] ?? [];
+        $totals = $data['totals'] ?? ['total_amount_due' => 0];
+
+        $seller = \App\Models\Seller::with('user', 'city')->find($sellerId);
+        $sellerName = optional(optional($seller)->user)->name ?? 'Vendedor';
+        // "Ruta" = ciudad del vendedor (los sellers no tienen nombre propio).
+        $routeName = optional(optional($seller)->city)->name ?? 'Ruta';
+
+        // Fecha/hora del reporte anclada a la ZONA DEL VENDEDOR (no del servidor,
+        // que puede estar en UTC). Igual criterio que el resto de timestamps.
+        $tz = $seller
+            ? \App\Helpers\TimezoneHelper::getSellerTimezone($seller)
+            : config('app.timezone');
+        $nowTz = now($tz);
+
+        $money = fn ($v) => number_format((float) $v, 2, ',', '.');
+
+        $rows = [];
+        $totalPaid = 0.0;
+        $totalNeto = 0.0;
+        $totalInteres = 0.0;
+        foreach ($debtorCredits as $c) {
+            $totalAmount = (float) ($c['credit_info']['total_amount'] ?? 0);
+            // Desglose: neto (capital), tasa (%), interés ($).
+            $neto = (float) ($c['credit_info']['credit_value'] ?? 0);
+            $tasa = (float) ($c['credit_info']['total_interest'] ?? 0);
+            $interes = (float) ($c['credit_info']['interest_amount'] ?? ($totalAmount - $neto));
+            $totalNeto += $neto;
+            $totalInteres += $interes;
+            // Adeudado y pagado REALES (desde installments), no estimados.
+            $amountDue = (float) ($c['delinquency']['credit_amount_due'] ?? 0);
+            $paid      = (float) ($c['delinquency']['paid_amount'] ?? 0);
+            $totalPaid += $paid;
+            $days = (int) ($c['delinquency']['credit_days_delayed'] ?? 0);
+            [$levelLabel, $levelClass] = $this->delinquencyLevelLabel($days);
+
+            $rows[] = [
+                'client_name'    => $c['client_name'] ?? '',
+                'client_code'    => $c['client_code'] ?? '',
+                'credit_code'    => $c['credit_info']['credit_code'] ?? '',
+                'pending'        => $c['delinquency']['installments_count'] ?? 0,
+                'neto_fmt'       => $money($neto),
+                'tasa_fmt'       => rtrim(rtrim(number_format($tasa, 2, ',', '.'), '0'), ',') . '%',
+                'interes_fmt'    => $money($interes),
+                'total_amount_fmt' => $money($totalAmount),
+                'amount_due_fmt' => $money($amountDue),
+                'paid_fmt'       => $money($paid),
+                'days'           => $days,
+                'level'          => $levelLabel,
+                'level_class'    => $levelClass,
+            ];
+        }
+        // Total Crédito+Interés (suma de total_amount) para validar el pie:
+        // debe cuadrar con Adeudado + Pagado.
+        $totalCreditInterest = array_sum(array_map(
+            fn ($c) => (float) ($c['credit_info']['total_amount'] ?? 0),
+            is_array($debtorCredits) ? $debtorCredits : $debtorCredits->all()
+        ));
+
+        $viewData = [
+            'sellerName'             => $sellerName,
+            'reportDate'             => $nowTz->format('d/m/Y H:i:s'),
+            'rows'                   => $rows,
+            'totalCredits'           => count($rows),
+            'totalNetoFmt'           => $money($totalNeto),
+            'totalInteresFmt'        => $money($totalInteres),
+            'totalCreditInterestFmt' => $money($totalCreditInterest),
+            'totalAmountDueFmt'      => $money($totals['total_amount_due'] ?? 0),
+            'totalPaidFmt'           => $money($totalPaid),
+        ];
+
+        $pdf = app('dompdf.wrapper');
+        $pdf->loadView('reports.debtor-report', $viewData);
+        $pdf->setPaper('a4', 'landscape');
+
+        // Nombre del archivo: Ruta_Vendedor_Fecha (fecha en zona del vendedor).
+        $safe = fn ($s) => preg_replace('/[^A-Za-z0-9_\-]/', '_', trim((string) $s));
+        $fileName = $safe($routeName) . '_' . $safe($sellerName) . '_' . $nowTz->format('Y-m-d') . '.pdf';
+
+        // output() devuelve el binario PDF crudo. (NO usar stream(), que en esta
+        // versión del wrapper devuelve un Response y al enviarlo antepone
+        // headers HTTP dentro del archivo, corrompiendo el PDF.)
+        return response()->make($pdf->output(), 200, [
+            'Content-Type'        => 'application/pdf',
+            'Content-Disposition' => 'attachment; filename="' . $fileName . '"',
+        ]);
+    }
+
     private function calculateDelinquencyDetails($client)
     {
         $totalDaysDelayed = 0;
@@ -2762,15 +3029,26 @@ class ClientService
         ];
     }
 
-    private function getDebtorCredits($client)
+    private function getDebtorCredits($client, $tz = null)
     {
         $debtorCredits = [];
+
+        // "Hoy" al inicio del día en la zona del vendedor. Los días de mora se
+        // cuentan como DÍAS CALENDARIO ENTEROS (floor): hoy - vencimiento, sin
+        // fracción. Antes usaba now() (UTC) con fracción y el front redondeaba,
+        // lo que inflaba el conteo (ej. 486,85 -> 487).
+        $today = now($tz ?: config('app.timezone'))->startOfDay();
 
         foreach ($client->credits as $credit) {
             $creditDelinquency = [
                 'credit_id' => $credit->id,
                 'credit_uuid' => $credit->uuid,
                 'credit_code' => $credit->code ?? '#00' . $credit->id,
+                // Desglose del crédito: neto (capital), tasa (%), interés ($) y
+                // total (neto + interés).
+                'credit_value' => (float) $credit->credit_value,
+                'total_interest' => (float) $credit->total_interest,
+                'interest_amount' => (float) $credit->credit_value * (float) $credit->total_interest / 100,
                 'total_amount' => ($credit->credit_value * $credit->total_interest / 100) + $credit->credit_value,
                 'balance' => $credit->remaining_amount ?? $credit->balance,
                 'number_installments' => $credit->number_installments,
@@ -2782,18 +3060,46 @@ class ClientService
 
             $hasDelinquentInstallments = false;
 
+            // Agregados REALES del crédito (desde installments, no estimados):
+            //   paid_amount    = suma de abonos aplicados (installments.paid_amount)
+            //   amount_due     = saldo pendiente = suma(quota_amount - paid_amount)
+            //   paid_count     = cuotas totalmente pagadas (status = 'Pagado')
+            //   pending_count  = cuotas no pagadas del todo
+            $paidAmount = 0.0;
+            $amountDue = 0.0;
+            $paidCount = 0;
+            $pendingCount = 0;
+
             if ($credit->installments) {
                 foreach ($credit->installments as $installment) {
+                    $quota = (float) $installment->quota_amount;
+                    $paid = (float) $installment->paid_amount;
+
+                    $paidAmount += $paid;
+                    $amountDue += max(0, $quota - $paid);
+
+                    if ($installment->status === 'Pagado') {
+                        $paidCount++;
+                    } else {
+                        $pendingCount++;
+                    }
+
+                    // Detección de morosidad: cuota NO pagada y vencida > 1 día.
                     if ($installment->status !== 'Pagado' && $installment->due_date) {
-                        $dueDate = \Carbon\Carbon::parse($installment->due_date);
-                        $daysDelayed = now()->diffInDays($dueDate, false) * -1;
+                        // Días de mora = días calendario enteros entre el
+                        // vencimiento (inicio del día) y hoy (inicio del día).
+                        $dueDate = \Carbon\Carbon::parse($installment->due_date)->startOfDay();
+                        $daysDelayed = (int) $dueDate->diffInDays($today, false);
 
                         if ($daysDelayed > 1) {
                             $hasDelinquentInstallments = true;
                             $creditDelinquency['installments'][] = [
                                 'installment_number' => $installment->number,
                                 'due_date' => $installment->due_date,
-                                'amount' => $installment->quota_amount,
+                                // Detalle por cuota: nominal, abonado y saldo.
+                                'quota_amount' => round($quota, 2),
+                                'paid_amount' => round($paid, 2),
+                                'amount' => round(max(0, $quota - $paid), 2), // saldo
                                 'days_delayed' => $daysDelayed,
                                 'status' => $installment->status,
                                 'created_at' => $installment->created_at,
@@ -2804,6 +3110,11 @@ class ClientService
                 }
 
                 if ($hasDelinquentInstallments && !empty($creditDelinquency['installments'])) {
+                    // Adjuntar los agregados reales para que el reporte NO estime.
+                    $creditDelinquency['paid_amount'] = round($paidAmount, 2);
+                    $creditDelinquency['amount_due'] = round($amountDue, 2);
+                    $creditDelinquency['paid_installments_count'] = $paidCount;
+                    $creditDelinquency['pending_installments_count'] = $pendingCount;
                     $debtorCredits[] = $creditDelinquency;
                 }
             }
