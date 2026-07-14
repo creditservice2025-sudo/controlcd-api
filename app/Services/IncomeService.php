@@ -80,13 +80,19 @@ class IncomeService
             
             $businessDate = $businessTimestamp->toDateString();
 
+            // Día NO laborable de la ruta (domingo sin works_sundays o feriado):
+            // nadie —ni el admin— registra ingresos ese día.
+            if ($seller) {
+                $this->assertSellerWorksOnDate($seller, $businessDate);
+            }
+
             // Guard de defensa en profundidad: rechaza el ingreso si la
             // liquidación del día del vendedor ya está cerrada.
             //
-            // El admin/superadmin (rol 1 y 2) SÍ puede registrar movimientos
-            // sobre una caja cerrada: es justamente quien "reabre/ajusta" la
-            // caja (ver mensaje del guard). El bloqueo solo aplica al vendedor
-            // y demás roles operativos.
+            // El admin/superadmin (rol 1 y 2) SÍ puede registrar ingresos sobre
+            // una caja cerrada: es justamente quien "reabre/ajusta" la caja. El
+            // bloqueo solo aplica al vendedor y demás roles operativos.
+            // (El bloqueo de caja APROBADA para todos es solo para EGRESOS.)
             if ($seller && !$isAdmin) {
                 $this->assertSellerCashOpen($seller->id, $businessDate);
             }

@@ -88,6 +88,15 @@ class ExpenseController extends Controller
         return $this->expenseService->getMonthlyExpenseReport();
     }
 
+    /**
+     * Descarga en PDF el reporte de Gastos por ruta (vendedor). Respeta el
+     * scoping por empresa/rol del listado y el filtro de rango de fechas.
+     */
+    public function downloadReport(Request $request)
+    {
+        return $this->expenseService->downloadExpenseReport($request);
+    }
+
     public function getSellerExpensesByDate(Request $request, int $sellerId)
     {
         \App\Support\Tenant::assertSellerInScope($sellerId);

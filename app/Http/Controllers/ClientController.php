@@ -241,6 +241,20 @@ class ClientController extends Controller
         }
     }
 
+    /**
+     * Descarga en PDF el reporte de Clientes (vista principal) respetando los
+     * filtros activos (pestaña/status, vendedor, país, ciudad, búsqueda, rango).
+     */
+    public function downloadClientsReport(Request $request)
+    {
+        try {
+            return $this->clientService->downloadClientsReport($request);
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->errorResponse('Error al generar el PDF de clientes', 500);
+        }
+    }
+
     public function indexWithCredits(ClientRequest $request)
     {
         try {
@@ -468,6 +482,36 @@ class ClientController extends Controller
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             return $this->errorResponse('Error al obtener los clientes morosos', 500);
+        }
+    }
+
+    /**
+     * Descarga en PDF el reporte de Créditos Morosos del vendedor. Mismos
+     * chequeos de aislamiento por empresa/rol que getDebtorClientsBySeller.
+     */
+    public function downloadDebtorReport($sellerId)
+    {
+        try {
+            $seller = Seller::find($sellerId);
+            if (!$seller) {
+                return $this->errorResponse('Vendedor no encontrado', 404);
+            }
+
+            $user = \Illuminate\Support\Facades\Auth::user();
+            if ($user->role_id === 2 && $user->company && $seller->company_id !== $user->company->id) {
+                return $this->errorResponse('No tiene acceso a este vendedor', 403);
+            }
+            if ($user->role_id === 5) {
+                $ownSeller = Seller::where('user_id', $user->id)->first();
+                if (!$ownSeller || $ownSeller->id !== (int) $sellerId) {
+                    return $this->errorResponse('No tiene acceso a este vendedor', 403);
+                }
+            }
+
+            return $this->clientService->downloadDebtorReport($sellerId);
+        } catch (\Exception $e) {
+            \Log::error($e->getMessage());
+            return $this->errorResponse('Error al generar el PDF de créditos morosos', 500);
         }
     }
 
