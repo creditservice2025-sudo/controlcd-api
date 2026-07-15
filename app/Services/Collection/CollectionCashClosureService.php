@@ -7,6 +7,7 @@ use App\Models\Collection\CollectionCashClosure;
 use App\Models\Collection\CollectionDailyRecord;
 use App\Models\Collection\CollectionExpense;
 use App\Models\Collection\CollectionPayment;
+use App\Models\Company;
 use App\Models\User;
 use App\Traits\ApiResponse;
 use Carbon\Carbon;
@@ -38,7 +39,9 @@ class CollectionCashClosureService
      */
     public function getDaySummary(int $companyId, string $date, ?string $tz = null, ?string $countryCode = null)
     {
-        $tz = $tz ?: 'America/Bogota';
+        // Siempre en zona horaria de la EMPRESA (companies.timezone), para que el
+        // "Corte del día" coincida con el listado de movimientos y el auto-cierre.
+        $tz = Company::find($companyId)?->timezone ?: 'America/Bogota';
         $dayStart = Carbon::parse($date . ' 00:00:00', $tz)->utc();
         $dayEnd = Carbon::parse($date . ' 23:59:59', $tz)->utc();
         $serverToday = Carbon::now($tz)->toDateString();
@@ -227,10 +230,11 @@ class CollectionCashClosureService
     }
 
     /**
-     * Auto-cierre del dia (sin conteo fisico). Lo invoca el cron cuando
-     * cierra el dia y el admin no cerro manualmente. Crea un registro con
-     * status=auto_pending y SOLO el esperado calculado; deja los campos
-     * de conteo fisico en null para que el admin los capture al validar.
+     * Corte de caja automatico (total) del dia. Lo invoca el cron a las
+     * 23:59:59 hora local de la empresa. Ya NO existe cierre manual: el dia
+     * queda CERRADO (status=closed) directamente, con los totales calculados.
+     * Sin conteo fisico: se declara el efectivo igual al esperado, por lo que
+     * no hay faltante/sobrante que reconciliar.
      */
     public function autoCloseDay(int $companyId, string $date, string $tz, ?string $countryCode = null, ?int $systemUserId = null)
     {
@@ -264,14 +268,38 @@ class CollectionCashClosureService
             'total_egresos_manuales' => $totals['total_egresos_manuales'],
             'total_transferencias' => $totals['total_transferencias'],
             'esperado' => $totals['esperado'],
-            'efectivo_contado' => 0,
+            // Corte total automático: sin conteo físico. Se declara igual al
+            // esperado, de modo que no queda faltante/sobrante por reconciliar.
+            'efectivo_contado' => $totals['esperado'],
             'transferencias_recibidas' => 0,
-            'total_declarado' => 0,
+            'total_declarado' => $totals['esperado'],
             'faltante_sobrante' => 0,
-            'notas' => '[Auto-cierre del sistema] Pendiente de validación por administrador.',
-            'status' => CollectionCashClosure::STATUS_AUTO_PENDING,
+            'notas' => '[Cierre automático del sistema] Corte del día a las 23:59:59.',
+            'status' => CollectionCashClosure::STATUS_CLOSED,
             'closed_at' => Carbon::now(),
         ]);
+    }
+
+    /**
+     * Red de seguridad: cierra (corte total) los días ANTERIORES a hoy que
+     * tienen movimientos y aún no tienen cierre. Cubre el caso de que el cron
+     * no corriera a las 23:59 de algún día (servidor caído, deploy), para que
+     * ningún día quede abierto indefinidamente al haberse quitado el cierre
+     * manual.
+     *
+     * @return string[] fechas cerradas
+     */
+    public function autoCloseMissedDays(int $companyId, string $tz, ?string $countryCode = null): array
+    {
+        $today = Carbon::now($tz)->toDateString();
+        $pending = $this->findPendingPreviousDays($companyId, $today, $tz, $countryCode);
+        $closed = [];
+        foreach ($pending as $date) {
+            if ($this->autoCloseDay($companyId, $date, $tz, $countryCode)) {
+                $closed[] = $date;
+            }
+        }
+        return $closed;
     }
 
     /**

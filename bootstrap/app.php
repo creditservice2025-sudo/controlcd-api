@@ -84,9 +84,11 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->command('credits:notify-new-credit-amount-limit')->dailyAt('21:05');
         $schedule->command('credits:notify-new-credit-limit')->dailyAt('21:10');
 
-        // Collection (Deuda & Abono): recordatorios + auto-cierre.
-        // Corre cada 30 minutos para capturar las ventanas 18, 21, 23 y 23:59.
+        // Collection (Deuda & Abono): corte de caja automático. everyMinute para
+        // clavar las 23:59 en la zona horaria local de CADA empresa (los países
+        // difieren) y para recuperar días previos que se quedaron sin cierre.
         $schedule->command('collection:check-pending-closures')
-            ->everyThirtyMinutes()
-            ->withoutOverlapping();
+            ->everyMinute()
+            ->withoutOverlapping()
+            ->emailOutputOnFailure('creditservice2025@gmail.com');
     })->create();

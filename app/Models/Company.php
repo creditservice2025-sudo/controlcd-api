@@ -34,6 +34,10 @@ class Company extends Model
         'telegram_notify_deleted_credit',
         'is_financing_enabled',
         'is_collection_enabled',
+        // Zona horaria IANA de la empresa (ej. "America/Lima"). Usada por el
+        // corte de caja automático de Collection para cerrar a las 23:59:59
+        // hora local de la empresa.
+        'timezone',
     ];
 
     protected $casts = [

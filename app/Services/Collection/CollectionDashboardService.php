@@ -3,6 +3,7 @@
 namespace App\Services\Collection;
 
 use App\Models\Collection\CollectionCapitalAddition;
+use App\Models\Collection\CollectionLedger;
 use App\Models\Collection\CollectionCredit;
 use App\Models\Collection\CollectionInstallment;
 use App\Models\Collection\CollectionPayment;
@@ -192,6 +193,18 @@ class CollectionDashboardService
 
         // ── WALLETS + AUTH ──
         $wallets = $isAdmin ? app(CollectionWalletService::class)->getBalances($companyId) : [];
+        // El balance del dashboard refleja: inyecciones de capital (entra caja),
+        // créditos entregados (loan_issue, sale caja) y pagos recibidos (payment,
+        // entra caja). Se recalcula desde el ledger con esos action_types; NO
+        // altera el saldo real de la wallet (que sí incluye transferencias/gastos).
+        // Las transferencias siguen SIN afectar el balance del dashboard.
+        foreach ($wallets as $w) {
+            $w->balance = (float) CollectionLedger::where('company_id', $companyId)
+                ->where('wallet_id', $w->id)
+                ->whereIn('action_type', ['payment', 'loan_issue', 'capital_injection'])
+                ->selectRaw("COALESCE(SUM(CASE WHEN type = 'credit' THEN amount ELSE -amount END), 0) as bal")
+                ->value('bal');
+        }
         $pendingAuths = $isAdmin
             ? \App\Models\Collection\CollectionAuthCode::where('company_id', $companyId)
                 ->where('status', 'pending')->where('expires_at', '>', Carbon::now())->get()
@@ -345,11 +358,14 @@ class CollectionDashboardService
         ]);
     }
 
-    private function resolveCompanyId($requestedId)
+    private function resolveCompanyId($requestedId): int
     {
         if ($requestedId) return (int) $requestedId;
         $user = Auth::user();
-        if (!$user) return null;
-        return $user->company->id ?? $user->seller->company_id ?? null;
+        $companyId = $user ? ($user->company->id ?? $user->seller->company_id ?? null) : null;
+        // Fail-closed: sin empresa resoluble cortamos con 422 (no null), para
+        // que Collection nunca consulte con WHERE company_id IS NULL.
+        abort_if($companyId === null, 422, 'No se pudo resolver la empresa para la operación de Collection.');
+        return (int) $companyId;
     }
 }

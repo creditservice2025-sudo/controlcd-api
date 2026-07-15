@@ -9,6 +9,7 @@ use App\Models\Collection\CollectionDailyRecord;
 use App\Models\Collection\CollectionExpense;
 use App\Models\Collection\CollectionLedger;
 use App\Models\Collection\CollectionPayment;
+use App\Models\Company;
 use App\Models\User;
 use App\Traits\ApiResponse;
 use Carbon\Carbon;
@@ -30,6 +31,17 @@ class CollectionDailyRecordService
     }
 
     /**
+     * Zona horaria (IANA) de la empresa. Deuda & Abono opera SIEMPRE en la hora
+     * local de la empresa (companies.timezone), NO en la del navegador: así el
+     * día del movimiento y el listado son consistentes (y coinciden con el
+     * corte de caja automático). Fallback: America/Bogota.
+     */
+    private function companyTz(int $companyId): string
+    {
+        return Company::find($companyId)?->timezone ?: 'America/Bogota';
+    }
+
+    /**
      * Tendencia de movimientos día por día en un rango. Devuelve por cada
      * día: cobros, ingresos manuales, gastos aprobados, egresos manuales,
      * transferencias salientes, adiciones de capital y balance neto.
@@ -38,6 +50,8 @@ class CollectionDailyRecordService
      */
     public function getTrend(int $companyId, string $from, string $to, string $tz, ?string $countryCode = null)
     {
+        // Siempre en zona horaria de la empresa (ignora el tz recibido).
+        $tz = $this->companyTz($companyId);
         $startUtc = Carbon::parse($from . ' 00:00:00', $tz)->utc();
         $endUtc = Carbon::parse($to . ' 23:59:59', $tz)->utc();
 
@@ -169,7 +183,7 @@ class CollectionDailyRecordService
         $companyId = $this->resolveCompanyId($request->company_id);
         if (!$companyId) return $this->errorResponse('Empresa no identificada', 422);
 
-        $tz = $request->query('timezone') ?: 'America/Bogota';
+        $tz = $this->companyTz($companyId);
         $date = $request->query('date', Carbon::now($tz)->toDateString());
         $countryCode = $request->query('country_code');
         $type = $request->query('type');
@@ -343,10 +357,13 @@ class CollectionDailyRecordService
         ]);
 
         // Bloquear si el día del registro tiene cierre de caja activo.
-        $tz = $request->input('timezone', 'America/Bogota');
-        $recordDate = !empty($validated['recorded_at'])
-            ? Carbon::parse($validated['recorded_at'])->setTimezone($tz)->toDateString()
-            : Carbon::now($tz)->toDateString();
+        // La fecha/hora elegida se interpreta en la zona horaria de la EMPRESA
+        // (no la del navegador): el recorded_at llega como reloj de pared local.
+        $tz = $this->companyTz($companyId);
+        $recordedAt = !empty($validated['recorded_at'])
+            ? Carbon::parse($validated['recorded_at'], $tz)
+            : Carbon::now($tz);
+        $recordDate = $recordedAt->copy()->setTimezone($tz)->toDateString();
         if ($this->closureSvc->isDayClosed($companyId, $recordDate)) {
             return $this->errorResponse(
                 'No se pueden registrar movimientos: la caja del día ' . $recordDate . ' está cerrada. Reabre el cierre primero.',
@@ -380,7 +397,7 @@ class CollectionDailyRecordService
             if (!empty($validated['transfer_to'])) $metadata['transfer_to'] = $validated['transfer_to'];
         }
 
-        return DB::connection('collection_pgsql')->transaction(function () use ($validated, $companyId, $metadata) {
+        return DB::connection('collection_pgsql')->transaction(function () use ($validated, $companyId, $metadata, $recordedAt) {
             $currency = strtoupper($validated['currency']);
             $countryCode = isset($validated['country_code']) ? strtoupper($validated['country_code']) : null;
 
@@ -393,7 +410,10 @@ class CollectionDailyRecordService
                 'currency' => $currency,
                 'country_code' => $countryCode,
                 'description' => $validated['description'] ?? null,
-                'recorded_at' => $validated['recorded_at'] ?? Carbon::now(),
+                // Se guarda en UTC (convención del módulo, igual que pagos): el
+                // reloj de pared se parseó en zona de la empresa y aquí se
+                // convierte al instante UTC correspondiente.
+                'recorded_at' => $recordedAt->copy()->utc(),
                 'latitude' => $validated['latitude'] ?? null,
                 'longitude' => $validated['longitude'] ?? null,
                 'metadata' => $metadata,
@@ -438,7 +458,7 @@ class CollectionDailyRecordService
         if (!$record) return $this->errorResponse('Registro no encontrado', 404);
 
         // Bloquear si el día del registro está cerrado.
-        $tz = $request->input('timezone', 'America/Bogota');
+        $tz = $this->companyTz($companyId);
         $recordDate = optional($record->recorded_at)->setTimezone($tz)->toDateString();
         if ($recordDate && $this->closureSvc->isDayClosed($companyId, $recordDate)) {
             return $this->errorResponse(
@@ -471,11 +491,14 @@ class CollectionDailyRecordService
         });
     }
 
-    private function resolveCompanyId($requestedId)
+    private function resolveCompanyId($requestedId): int
     {
         if ($requestedId) return (int) $requestedId;
         $user = Auth::user();
-        if (!$user) return null;
-        return $user->company->id ?? $user->seller->company_id ?? null;
+        $companyId = $user ? ($user->company->id ?? $user->seller->company_id ?? null) : null;
+        // Fail-closed: sin empresa resoluble cortamos con 422 (no null), para
+        // que Collection nunca consulte con WHERE company_id IS NULL.
+        abort_if($companyId === null, 422, 'No se pudo resolver la empresa para la operación de Collection.');
+        return (int) $companyId;
     }
 }

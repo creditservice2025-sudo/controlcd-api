@@ -463,12 +463,12 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         Route::delete('daily-records/{id}', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'destroy']);
         Route::get('daily-records/trend', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'trend']);
 
-        // Cierre de caja diario
+        // Cierre de caja diario. El corte es AUTOMÁTICO (23:59:59 hora local de
+        // la empresa, vía comando collection:check-pending-closures). Ya no hay
+        // cierre manual ni reapertura: solo consulta del resumen/historial.
         Route::get('cash-closures', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'show']);
         Route::get('cash-closures/history', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'index']);
         Route::get('cash-closures/pending-validation', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'pendingValidation']);
-        Route::post('cash-closures', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'store']);
-        Route::post('cash-closures/{closureId}/reopen', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'reopen']);
         Route::post('cash-closures/{closureId}/validate', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'validateClosure']);
 
         // Configuración Telegram por empresa

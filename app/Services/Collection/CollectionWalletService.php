@@ -130,7 +130,12 @@ class CollectionWalletService
     public function getLedgerMovements(int $companyId, array $filters = [])
     {
         $query = CollectionLedger::with('wallet')
-            ->where('company_id', $companyId);
+            ->where('company_id', $companyId)
+            // El dashboard refleja créditos entregados (loan_issue), pagos
+            // recibidos (payment) e inyecciones de capital (capital_injection),
+            // para que la lista cuadre con el balance. Transferencias, gastos y
+            // adiciones quedan fuera de la lista de movimientos.
+            ->whereIn('action_type', ['loan_issue', 'payment', 'capital_injection']);
 
         if (!empty($filters['action_type'])) {
             $query->where('action_type', $filters['action_type']);

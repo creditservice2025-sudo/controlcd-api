@@ -492,26 +492,28 @@ class CollectionClientService
         });
     }
 
-    private function resolveCompanyId($requestedCompanyId): ?int
+    private function resolveCompanyId($requestedCompanyId): int
     {
         if (!empty($requestedCompanyId)) {
             return (int) $requestedCompanyId;
         }
 
         $user = Auth::user();
-        if (!$user) {
-            return null;
+        $companyId = null;
+        if ($user && $user->company && !empty($user->company->id)) {
+            $companyId = (int) $user->company->id;
+        } elseif ($user && $user->seller && !empty($user->seller->company_id)) {
+            $companyId = (int) $user->seller->company_id;
         }
 
-        if ($user->company && !empty($user->company->id)) {
-            return (int) $user->company->id;
-        }
+        // Fail-closed: Collection es multi-tenant estricto por empresa. Si no hay
+        // empresa resoluble, cortamos con 422 en lugar de devolver null (que
+        // degradaría a WHERE company_id IS NULL y podría filtrar datos si un
+        // caller futuro olvidara validar). El caso normal nunca llega aquí: el
+        // trait ResolvesCollectionCompany ya inyectó un company_id válido.
+        abort_if($companyId === null, 422, 'No se pudo resolver la empresa para la operación de Collection.');
 
-        if ($user->seller && !empty($user->seller->company_id)) {
-            return (int) $user->seller->company_id;
-        }
-
-        return null;
+        return $companyId;
     }
 
     private function audit(int $companyId, int $clientId, string $action, array $changes = []): void

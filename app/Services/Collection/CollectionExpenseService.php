@@ -131,11 +131,14 @@ class CollectionExpenseService
      * el company_id correcto en el request. Usamos ese valor si existe;
      * si no (invocación directa), lo derivamos del usuario autenticado.
      */
-    private function resolveCompanyId($requestedId)
+    private function resolveCompanyId($requestedId): int
     {
         if ($requestedId) return (int) $requestedId;
         $user = Auth::user();
-        if (!$user) return null;
-        return $user->company->id ?? $user->seller->company_id ?? null;
+        $companyId = $user ? ($user->company->id ?? $user->seller->company_id ?? null) : null;
+        // Fail-closed: sin empresa resoluble cortamos con 422 (no null), para
+        // que Collection nunca consulte con WHERE company_id IS NULL.
+        abort_if($companyId === null, 422, 'No se pudo resolver la empresa para la operación de Collection.');
+        return (int) $companyId;
     }
 }

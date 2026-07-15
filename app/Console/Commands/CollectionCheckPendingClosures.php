@@ -13,27 +13,23 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Verifica cierres de caja pendientes para cada empresa con módulo Collection
- * habilitado. Envía recordatorios escalonados durante el día y, al final del
- * día (23:59 hora local de la empresa), genera un auto-cierre que el admin
- * deberá validar al día siguiente.
+ * Corte de caja AUTOMÁTICO del módulo Collection. Ya no existe cierre manual:
+ * para cada empresa con el módulo habilitado, a las 23:59:59 de SU hora local
+ * cierra el día (corte total). Además, como red de seguridad, cierra cualquier
+ * día anterior con movimientos que se haya quedado sin cierre (ej. el cron no
+ * corrió a las 23:59 ese día).
  *
- * Programado para correr cada hora vía Laravel Scheduler.
+ * Debe agendarse cada minuto (bootstrap/app.php) para clavar las 23:59 en cada
+ * zona horaria. Requiere `schedule:run` vivo en el servidor.
  */
 class CollectionCheckPendingClosures extends Command
 {
     protected $signature = 'collection:check-pending-closures
         {--company= : Procesar solo una empresa específica}
-        {--force : Ignorar las ventanas horarias y procesar todo}';
+        {--force : Ignorar la ventana horaria y cortar el día ya}';
 
-    protected $description = 'Recordatorios + auto-cierre de caja para módulo Collection';
+    protected $description = 'Corte de caja automático (23:59:59 hora local) para módulo Collection';
 
-    // Ventanas horarias (hora local empresa) y mensajes asociados.
-    private const REMINDER_WINDOWS = [
-        18 => ['level' => 'soft', 'title' => 'Recuerda cerrar la caja del día'],
-        21 => ['level' => 'medium', 'title' => 'Cierre del día pendiente'],
-        23 => ['level' => 'urgent', 'title' => 'Última llamada — auto-cierre en 30 min'],
-    ];
     private const AUTO_CLOSE_HOUR = 23;     // hora local
     private const AUTO_CLOSE_MINUTE = 59;   // minuto local
 
@@ -73,15 +69,25 @@ class CollectionCheckPendingClosures extends Command
 
     private function processCompany(Company $company, bool $force): void
     {
-        // Asume timezone por país (simplificación). En el futuro se puede leer
-        // de companies.timezone si se agrega esa columna.
         $tz = $this->guessTimezone($company);
         $now = Carbon::now($tz);
         $today = $now->toDateString();
         $hour = (int) $now->format('H');
         $minute = (int) $now->format('i');
 
-        // ¿Existe cierre activo o auto_pending para HOY? Si sí, nada que hacer.
+        // Red de seguridad: cerrar cualquier día ANTERIOR con movimientos que se
+        // haya quedado sin cierre (ej. el cron no corrió a las 23:59 ese día).
+        foreach ($this->closureSvc->autoCloseMissedDays($company->id, $tz) as $missedDate) {
+            $this->info("[{$company->id}] Corte automático recuperado del {$missedDate}");
+        }
+
+        // Corte del día actual: solo a partir de las 23:59 hora local.
+        $isAutoCloseTime = $hour === self::AUTO_CLOSE_HOUR && $minute >= self::AUTO_CLOSE_MINUTE;
+        if (!$isAutoCloseTime && !$force) {
+            return;
+        }
+
+        // ¿Ya tiene cierre HOY? Nada que hacer.
         $existing = CollectionCashClosure::where('company_id', $company->id)
             ->where('closure_date', $today)
             ->whereIn('status', [
@@ -89,43 +95,22 @@ class CollectionCheckPendingClosures extends Command
                 CollectionCashClosure::STATUS_AUTO_PENDING,
             ])
             ->exists();
-
         if ($existing) {
             $this->line("[{$company->id}] {$today} ya tiene cierre. Skip.");
             return;
         }
 
-        // Auto-cierre: si pasamos las 23:59 y todavía no hay cierre.
-        $isAutoCloseTime = $hour === self::AUTO_CLOSE_HOUR && $minute >= self::AUTO_CLOSE_MINUTE;
-        if ($isAutoCloseTime || $force) {
-            $closure = $this->closureSvc->autoCloseDay($company->id, $today, $tz);
-            if ($closure) {
-                $this->info("[{$company->id}] Auto-cierre creado para {$today}");
-                $this->notifyAdmins(
-                    $company,
-                    'Auto-cierre generado',
-                    "Se generó un cierre automático para el {$today} porque no se realizó manualmente. " .
-                    "Esperado en caja: {$closure->esperado}. Validalo desde la sección 'Cierres por validar'.",
-                    "/collection/cierres-pendientes",
-                    'auto_close',
-                );
-            }
-            return;
-        }
-
-        // Recordatorios: si la hora coincide con una ventana, envía.
-        if (isset(self::REMINDER_WINDOWS[$hour]) && $minute < 60) {
-            $window = self::REMINDER_WINDOWS[$hour];
-            $msg = "{$window['title']}. La caja del {$today} no ha sido cerrada. " .
-                   ($hour >= 23 ? "En 30 min se generará un cierre automático." : "Ciérrala desde el módulo Deuda & Abono.");
+        $closure = $this->closureSvc->autoCloseDay($company->id, $today, $tz);
+        if ($closure) {
+            $this->info("[{$company->id}] Corte automático del día {$today}");
             $this->notifyAdmins(
                 $company,
-                $window['title'],
-                $msg,
+                'Caja cerrada automáticamente',
+                "La caja del {$today} se cerró automáticamente a las 23:59:59. " .
+                "Esperado en caja: {$closure->esperado}.",
                 "/collection/daily-records",
-                "reminder_{$window['level']}",
+                'auto_close',
             );
-            $this->line("[{$company->id}] Recordatorio {$window['level']} enviado.");
         }
     }
 
@@ -135,9 +120,12 @@ class CollectionCheckPendingClosures extends Command
      */
     private function notifyAdmins(Company $company, string $title, string $message, ?string $url, string $type): void
     {
-        $admins = User::where('company_id', $company->id)
-            ->whereIn('role_id', [1, 2])
-            ->get();
+        // El admin de la empresa es su usuario dueño (companies.user_id). Los
+        // usuarios NO tienen company_id; la relación va por Company::user.
+        $owner = $company->user;
+        $admins = ($owner && in_array((int) $owner->role_id, [1, 2], true))
+            ? collect([$owner])
+            : collect();
 
         // In-app a cada admin
         foreach ($admins as $admin) {
@@ -154,11 +142,11 @@ class CollectionCheckPendingClosures extends Command
     }
 
     /**
-     * Adivina timezone razonable por país (default Bogotá).
+     * Zona horaria (IANA) de la empresa. Se lee de companies.timezone; si la
+     * empresa no la tiene configurada, cae a America/Lima como valor seguro.
      */
     private function guessTimezone(Company $company): string
     {
-        // En el futuro: leer de companies.timezone. Por ahora: Bogotá.
-        return 'America/Bogota';
+        return $company->timezone ?: 'America/Lima';
     }
 }

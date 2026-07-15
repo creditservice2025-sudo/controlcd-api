@@ -372,6 +372,7 @@ class CompanyService
                 'logo_path' => $logoPath,
                 'is_financing_enabled' => $params['is_financing_enabled'] ?? true,
                 'is_collection_enabled' => $params['is_collection_enabled'] ?? false,
+                'timezone' => $params['company_timezone'] ?? null,
                 'created_at' => $params['created_at'] ?? null,
                 'updated_at' => $params['updated_at'] ?? null
             ]);
@@ -456,6 +457,7 @@ class CompanyService
                 'logo_path' => $params['logo_path'] ?? $company->logo_path,
                 'is_financing_enabled' => $params['is_financing_enabled'] ?? $company->is_financing_enabled,
                 'is_collection_enabled' => $params['is_collection_enabled'] ?? $company->is_collection_enabled,
+                'timezone' => $params['company_timezone'] ?? $company->timezone,
                 'updated_at' => $params['updated_at'] ?? null
             ]);
 
