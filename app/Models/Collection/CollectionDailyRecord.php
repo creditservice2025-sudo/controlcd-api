@@ -37,6 +37,8 @@ class CollectionDailyRecord extends Model
         'country_code',
         'description',
         'recorded_at',
+        'business_date',
+        'deleted_by',
         'latitude',
         'longitude',
         'metadata',
@@ -45,6 +47,7 @@ class CollectionDailyRecord extends Model
     protected $casts = [
         'amount' => 'decimal:2',
         'recorded_at' => 'datetime',
+        'business_date' => 'date:Y-m-d',
         'metadata' => 'json',
         'latitude' => 'float',
         'longitude' => 'float',

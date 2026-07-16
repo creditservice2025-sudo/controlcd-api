@@ -8,6 +8,7 @@ use App\Models\Collection\CollectionCredit;
 use App\Models\Collection\CollectionInstallment;
 use App\Models\Collection\CollectionPayment;
 use App\Models\Collection\CollectionExpense;
+use App\Models\Company;
 use App\Traits\ApiResponse;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
@@ -22,7 +23,10 @@ class CollectionDashboardService
         $companyId = $this->resolveCompanyId($request->company_id);
         if (!$companyId) return $this->errorResponse('Empresa no identificada', 422);
 
-        $today = Carbon::now()->toDateString();
+        // "Hoy" en la zona de la empresa (no la de la app). Con companies.timezone
+        // sin poblar cae a America/Bogota, idéntico al comportamiento previo.
+        $companyTz = Company::find($companyId)?->timezone ?: 'America/Bogota';
+        $today = Carbon::now($companyTz)->toDateString();
         $user = Auth::user();
         $isAdmin = in_array($user->role_id, [1, 2]);
         $countryCode = $request->input('country_code');
@@ -44,7 +48,7 @@ class CollectionDashboardService
         $paymentsCount = $paymentsQ->count();
 
         $expensesQ = CollectionExpense::where('company_id', $companyId)
-            ->whereNull('deleted_at')->whereDate('recorded_at', $today)->where('status', 'approved');
+            ->whereNull('deleted_at')->where('business_date', $today)->where('status', 'approved');
         if (!$isAdmin) $expensesQ->where('user_id', $user->id);
         $expensesToday = (float) $expensesQ->sum('amount');
 

@@ -69,6 +69,16 @@ class CollectionCashClosureService
      * Saldo de apertura para $date = total_declarado del último cierre
      * activo con closure_date < $date. Si no hay cierres anteriores, 0.
      */
+    /**
+     * Saldo de apertura (arrastre) para una fecha: total declarado del último
+     * cierre activo anterior. Público para que otros servicios (ej. el resumen
+     * por período con acumulado) siembren el saldo inicial.
+     */
+    public function getOpeningBalance(int $companyId, string $date, ?string $countryCode = null): float
+    {
+        return $this->findOpeningBalance($companyId, $date, $countryCode);
+    }
+
     private function findOpeningBalance(int $companyId, string $date, ?string $countryCode): float
     {
         $q = CollectionCashClosure::where('company_id', $companyId)
@@ -90,19 +100,21 @@ class CollectionCashClosureService
      */
     private function findModuleStartDate(int $companyId, string $tz): ?string
     {
+        // Cobros: recorded_at es timestamptz → se convierte a la zona de la
+        // empresa. Gastos/registros/adiciones: business_date ya es fecha contable.
         $minPayment = CollectionPayment::where('company_id', $companyId)
             ->whereNull('deleted_at')->min('recorded_at');
         $minExpense = CollectionExpense::where('company_id', $companyId)
-            ->whereNull('deleted_at')->min('recorded_at');
+            ->whereNull('deleted_at')->min('business_date');
         $minDr = CollectionDailyRecord::where('company_id', $companyId)
-            ->whereNull('deleted_at')->min('recorded_at');
+            ->whereNull('deleted_at')->min('business_date');
         $minAdic = CollectionCapitalAddition::where('company_id', $companyId)
             ->min('business_date');
 
         $candidates = [];
         if ($minPayment) $candidates[] = Carbon::parse($minPayment)->setTimezone($tz)->toDateString();
-        if ($minExpense) $candidates[] = Carbon::parse($minExpense)->setTimezone($tz)->toDateString();
-        if ($minDr) $candidates[] = Carbon::parse($minDr)->setTimezone($tz)->toDateString();
+        if ($minExpense) $candidates[] = $minExpense instanceof Carbon ? $minExpense->toDateString() : (string) $minExpense;
+        if ($minDr) $candidates[] = $minDr instanceof Carbon ? $minDr->toDateString() : (string) $minDr;
         if ($minAdic) {
             $candidates[] = $minAdic instanceof Carbon
                 ? $minAdic->toDateString()
@@ -424,17 +436,17 @@ class CollectionCashClosureService
         }
         $totalAdiciones = (float) $adicQ->sum('amount');
 
-        // Gastos aprobados del dia
+        // Gastos aprobados del dia (por fecha contable business_date).
         $gastosQ = CollectionExpense::where('company_id', $companyId)
             ->whereNull('deleted_at')
             ->where('status', 'approved')
-            ->whereBetween('recorded_at', [$dayStart, $dayEnd]);
+            ->where('business_date', $date);
         $totalGastos = (float) $gastosQ->sum('amount');
 
-        // Registros manuales del dia
+        // Registros manuales del dia (por fecha contable business_date).
         $drQ = CollectionDailyRecord::where('company_id', $companyId)
             ->whereNull('deleted_at')
-            ->whereBetween('recorded_at', [$dayStart, $dayEnd]);
+            ->where('business_date', $date);
         if ($countryCode) $drQ->where('country_code', strtoupper($countryCode));
         $drRows = $drQ->get(['type', 'amount']);
 
@@ -501,16 +513,16 @@ class CollectionCashClosureService
 
         $expenses = CollectionExpense::where('company_id', $companyId)
             ->whereNull('deleted_at')->where('status', 'approved')
-            ->whereBetween('recorded_at', [$startUtc, $endUtc])
-            ->selectRaw("DISTINCT to_char(recorded_at AT TIME ZONE ?, 'YYYY-MM-DD') as d", [$tz])
+            ->whereBetween('business_date', [$startDate, $endDate])
+            ->selectRaw("DISTINCT to_char(business_date, 'YYYY-MM-DD') as d")
             ->pluck('d');
         $dates = $dates->merge($expenses);
 
         $drQ = CollectionDailyRecord::where('company_id', $companyId)
             ->whereNull('deleted_at')
-            ->whereBetween('recorded_at', [$startUtc, $endUtc]);
+            ->whereBetween('business_date', [$startDate, $endDate]);
         if ($countryCode) $drQ->where('country_code', strtoupper($countryCode));
-        $drs = $drQ->selectRaw("DISTINCT to_char(recorded_at AT TIME ZONE ?, 'YYYY-MM-DD') as d", [$tz])
+        $drs = $drQ->selectRaw("DISTINCT to_char(business_date, 'YYYY-MM-DD') as d")
             ->pluck('d');
         $dates = $dates->merge($drs);
 

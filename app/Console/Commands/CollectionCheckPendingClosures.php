@@ -64,6 +64,16 @@ class CollectionCheckPendingClosures extends Command
             }
         }
 
+        // Heartbeat para el healthcheck: deja constancia de que el scheduler
+        // corrió. Si este latido se enfría, `collection:healthcheck` alerta.
+        // Se usa el store 'file' para no depender del driver de cache por defecto.
+        try {
+            \Illuminate\Support\Facades\Cache::store('file')
+                ->forever('collection:autoclose:last_run', Carbon::now()->toIso8601String());
+        } catch (\Throwable $e) {
+            Log::warning('No se pudo escribir el heartbeat de auto-cierre: ' . $e->getMessage());
+        }
+
         return self::SUCCESS;
     }
 

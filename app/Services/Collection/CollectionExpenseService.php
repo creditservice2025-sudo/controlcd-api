@@ -4,6 +4,7 @@ namespace App\Services\Collection;
 
 use App\Models\Collection\CollectionExpense;
 use App\Models\Collection\CollectionPayment;
+use App\Models\Company;
 use App\Traits\ApiResponse;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
@@ -66,8 +67,11 @@ class CollectionExpenseService
         $companyId = $this->resolveCompanyId($request->company_id);
         if (!$companyId) return $this->errorResponse('Empresa no identificada', 422);
 
-        // Bloquear si hoy ya tiene cierre de caja activo.
-        $tz = $request->input('timezone', 'America/Bogota');
+        // Fecha contable del gasto: anclada a la zona de la EMPRESA (los gastos
+        // no tienen país). Server-authoritative: no se confía en la zona del
+        // navegador. Si companies.timezone está sin poblar, cae a America/Bogota
+        // (idéntico al default anterior, sin cambio de comportamiento).
+        $tz = Company::find($companyId)?->timezone ?: 'America/Bogota';
         $today = Carbon::now($tz)->toDateString();
         if ($this->closureSvc->isDayClosed($companyId, $today)) {
             return $this->errorResponse(
@@ -101,6 +105,8 @@ class CollectionExpenseService
             'category' => $validated['category'],
             'status' => 'approved',
             'recorded_at' => Carbon::now(),
+            // Día contable congelado (zona de la empresa). Base de cortes/reportes.
+            'business_date' => $today,
             'latitude' => $validated['latitude'] ?? null,
             'longitude' => $validated['longitude'] ?? null,
             'metadata' => $metadata,

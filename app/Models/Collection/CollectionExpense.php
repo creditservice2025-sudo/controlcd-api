@@ -21,6 +21,7 @@ class CollectionExpense extends Model
         'category',
         'status', // pending, approved, rejected
         'recorded_at',
+        'business_date',
         'latitude',
         'longitude',
         'metadata', // JSON for photos, etc.
@@ -29,6 +30,7 @@ class CollectionExpense extends Model
     protected $casts = [
         'amount' => 'decimal:2',
         'recorded_at' => 'datetime',
+        'business_date' => 'date:Y-m-d',
         'metadata' => 'json',
         'latitude' => 'float',
         'longitude' => 'float',

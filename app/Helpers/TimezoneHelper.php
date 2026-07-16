@@ -27,6 +27,39 @@ class TimezoneHelper
     ];
 
     /**
+     * Mapa de zonas horarias por código de país ISO 3166-1 alpha-2.
+     * Usado por el módulo Collection, que ancla la fecha contable
+     * (business_date) a la zona del país del movimiento (guardado como
+     * country_code, ej. "CO", "VE"). Collection vive en una BD aislada y no
+     * puede hacer join a la tabla countries del núcleo, por eso el mapa es
+     * explícito. Ver timezoneForCountryCode().
+     */
+    const COUNTRY_CODE_TIMEZONES = [
+        'CO' => 'America/Bogota',
+        'PE' => 'America/Lima',
+        'VE' => 'America/Caracas',
+        'EC' => 'America/Guayaquil',
+        'BO' => 'America/La_Paz',
+        'CL' => 'America/Santiago',
+        'AR' => 'America/Argentina/Buenos_Aires',
+        'MX' => 'America/Mexico_City',
+        'ES' => 'Europe/Madrid',
+    ];
+
+    /**
+     * Resuelve la zona horaria IANA para un código de país ISO alpha-2.
+     * Devuelve null si el código es desconocido, para que el llamador decida
+     * el fallback (típicamente la zona de la empresa).
+     */
+    public static function timezoneForCountryCode(?string $code): ?string
+    {
+        if (!$code) {
+            return null;
+        }
+        return self::COUNTRY_CODE_TIMEZONES[strtoupper(trim($code))] ?? null;
+    }
+
+    /**
      * Resuelve la zona horaria de negocio para un vendedor.
      * 
      * @param Seller|null $seller

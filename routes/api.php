@@ -462,6 +462,17 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         Route::post('daily-records', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'store']);
         Route::delete('daily-records/{id}', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'destroy']);
         Route::get('daily-records/trend', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'trend']);
+        Route::get('daily-records/period-summary', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'periodSummary']);
+        Route::get('daily-records/period-summary/pdf', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'periodSummaryPdf']);
+        Route::get('daily-records/range', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'rangeDetail']);
+        Route::get('daily-records/expenses-by-category', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'expensesByCategory']);
+        Route::get('daily-records/search', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'search']);
+        Route::get('daily-records/comparison', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'periodComparison']);
+        // Presupuestos por categoría
+        Route::get('daily-records/budgets', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'listBudgets']);
+        Route::get('daily-records/budgets/status', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'budgetStatus']);
+        Route::post('daily-records/budgets', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'upsertBudget']);
+        Route::delete('daily-records/budgets/{id}', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'deleteBudget']);
 
         // Cierre de caja diario. El corte es AUTOMÁTICO (23:59:59 hora local de
         // la empresa, vía comando collection:check-pending-closures). Ya no hay
