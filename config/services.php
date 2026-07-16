@@ -56,4 +56,14 @@ return [
         'webhook_secret' => env('TELEGRAM_WEBHOOK_SECRET'),
     ],
 
+    // Bot DEDICADO al módulo Collection (Deuda & Abono): el cobrador vincula su
+    // Telegram y carga gastos por una plantilla guiada. Es un bot aparte del de
+    // notificaciones (se crea con @BotFather). Su webhook se protege con un
+    // secreto propio (header X-Telegram-Bot-Api-Secret-Token).
+    'telegram_collection' => [
+        'bot_token' => env('TELEGRAM_COLLECTION_BOT_TOKEN'),
+        'bot_username' => env('TELEGRAM_COLLECTION_BOT_USERNAME'),
+        'webhook_secret' => env('TELEGRAM_COLLECTION_WEBHOOK_SECRET'),
+    ],
+
 ];

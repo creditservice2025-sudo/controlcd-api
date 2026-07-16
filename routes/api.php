@@ -50,6 +50,12 @@ Route::post('telegram/webhook', [TelegramWebhookController::class, 'handle'])
     ->middleware('throttle:60,1')
     ->name('telegram.webhook');
 
+// Webhook del bot DEDICADO de Collection (cobrador carga gastos por Telegram).
+// Público (Telegram no manda Bearer); se valida con el secreto en el controller.
+Route::post('collection/telegram/webhook', [\App\Http\Controllers\Collection\CollectionTelegramBotController::class, 'webhook'])
+    ->middleware('throttle:120,1')
+    ->name('collection.telegram.webhook');
+
 
 // Logout y cierre de sesiones: SOLO requieren auth:api. NO deben pasar por
 // supervisor.lock / liquidation.closed / active.seller. Si alguno de esos
@@ -485,6 +491,11 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         // Configuración Telegram por empresa
         Route::get('telegram-config', [\App\Http\Controllers\Collection\CollectionTelegramConfigController::class, 'show']);
         Route::put('telegram-config', [\App\Http\Controllers\Collection\CollectionTelegramConfigController::class, 'update']);
+
+        // Vinculación del bot de gastos por Telegram (enlace de un solo uso)
+        Route::get('telegram/link-status', [\App\Http\Controllers\Collection\CollectionTelegramLinkController::class, 'status']);
+        Route::post('telegram/link-token', [\App\Http\Controllers\Collection\CollectionTelegramLinkController::class, 'token']);
+        Route::delete('telegram/link', [\App\Http\Controllers\Collection\CollectionTelegramLinkController::class, 'unlink']);
 
         Route::get('dashboard/summary', [\App\Http\Controllers\Collection\CollectionDashboardController::class, 'index']);
         Route::get('dashboard/portfolio-breakdown', [\App\Http\Controllers\Collection\CollectionDashboardController::class, 'portfolioBreakdown']);
