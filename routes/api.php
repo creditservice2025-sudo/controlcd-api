@@ -173,7 +173,8 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
     Route::prefix('clients')->group(function () {
         // Listado principal
         Route::get('/', [ClientController::class, 'index']);
-        Route::get('/report/pdf', [ClientController::class, 'downloadClientsReport']);
+        Route::get('/report/pdf', [ClientController::class, 'downloadClientsReport'])
+            ->middleware('role:Super-Admin|Admin');
         Route::get('/total', [ClientController::class, 'totalClients']);
         Route::get('/with-credits', [ClientController::class, 'indexWithCredits']);
         Route::get('/select', [ClientController::class, 'getClientsSelect']);
