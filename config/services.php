@@ -54,6 +54,12 @@ return [
         // vienen realmente de Telegram (header X-Telegram-Bot-Api-Secret-Token).
         // Se genera random la primera vez y se pega al hacer setWebhook.
         'webhook_secret' => env('TELEGRAM_WEBHOOK_SECRET'),
+
+        // Bot TEMPORAL de diagnostico (incompatibilidad de telefono). Recibe la
+        // telemetria del APK y la reenvia a un chat que mira el desarrollador.
+        // Es desechable: quitar el bloque y las env cuando termine la prueba.
+        'diag_bot_token' => env('TELEGRAM_DIAG_BOT_TOKEN'),
+        'diag_chat_id' => env('TELEGRAM_DIAG_CHAT_ID'),
     ],
 
     // Bot DEDICADO al módulo Collection (Deuda & Abono): el cobrador vincula su
