@@ -26,12 +26,18 @@ use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\ReportExportController;
 
 use App\Http\Controllers\FrontendErrorController;
+use App\Http\Controllers\DiagnosticsController;
 use App\Http\Controllers\VerificationController;
 use App\Http\Controllers\TelegramWebhookController;
 
 // Auth routes
 Route::post('login', [AuthController::class, 'login'])->middleware('throttle:6,1');
 Route::post('frontend-errors', [FrontendErrorController::class, 'store']); // Public for login errors? Or auth? Let's make it public but optional auth.
+
+// TEMPORAL: telemetria de diagnostico del APK (incompatibilidad de telefono).
+// Publico porque el evento de "WebView muerto" puede llegar en frio (sin token).
+// Quitar esta ruta al cerrar la prueba.
+Route::post('diagnostics', [DiagnosticsController::class, 'store'])->middleware('throttle:60,1');
 
 Route::post('forgot-password', [AuthController::class, 'forgotPassword'])->middleware('throttle:3,1');
 Route::post('reset-password', [AuthController::class, 'resetPassword'])->middleware('throttle:3,1');
