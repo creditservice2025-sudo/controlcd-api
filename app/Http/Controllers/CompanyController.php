@@ -69,16 +69,31 @@ class CompanyController extends Controller
   public function index(Request $request)
 {
     try {
-        $search = $request->input('search', '');
-        $perPage = $request->input('per_page', 10);
-        $orderBy = $request->input('orderBy', 'created_at');
-        $orderDirection = $request->input('orderDirection', 'desc');
+        $search = (string) $request->input('search', '');
+        $perPage = (int) $request->input('per_page', 10);
+        $orderBy = (string) $request->input('orderBy', 'created_at');
+        $orderDirection = (string) $request->input('orderDirection', 'desc');
+        // 'active' (default) | 'deleted' -> listar empresas eliminadas (soft-delete).
+        $trashed = (string) $request->input('trashed', 'active');
 
-        return $this->companyService->index($search, $perPage, $orderBy, $orderDirection);
+        return $this->companyService->index($search, $perPage, $orderBy, $orderDirection, $trashed);
     } catch (\Exception $e) {
         return $this->errorResponse($e->getMessage(), 500);
     }
 }
+
+    public function deletedCount()
+    {
+        try {
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Conteo de empresas eliminadas',
+                'data' => ['count' => Company::onlyTrashed()->count()],
+            ]);
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
+    }
 
     public function show($companyId)
     {

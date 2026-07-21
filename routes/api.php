@@ -383,6 +383,9 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         Route::get('/', [CompanyController::class, 'index']);
         Route::post('/', [CompanyController::class, 'create']);
         Route::get('/select', [CompanyController::class, 'getCompaniesSelect']);
+        // Conteo de empresas eliminadas (soft-delete) para el badge del listado.
+        // DEBE ir antes de /{companyId} para no ser capturada como parámetro.
+        Route::get('/deleted-count', [CompanyController::class, 'deletedCount']);
         // Empresa del usuario autenticado (útil para rol 2 que solo tiene una).
         Route::get('/my-company', [CompanyController::class, 'getMyCompany']);
         Route::get('/{companyId}', [CompanyController::class, 'show']);

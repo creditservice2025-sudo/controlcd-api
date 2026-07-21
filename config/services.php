@@ -60,6 +60,10 @@ return [
         // Es desechable: quitar el bloque y las env cuando termine la prueba.
         'diag_bot_token' => env('TELEGRAM_DIAG_BOT_TOKEN'),
         'diag_chat_id' => env('TELEGRAM_DIAG_CHAT_ID'),
+        // Kill switch: si es false, el endpoint /diagnostics descarta todo
+        // (no reenvia a Telegram ni loguea). Permite apagar el ruido sin
+        // recompilar el APK, y re-encender solo para medir el fix en campo.
+        'diag_enabled' => env('TELEGRAM_DIAG_ENABLED', false),
     ],
 
     // Bot DEDICADO al módulo Collection (Deuda & Abono): el cobrador vincula su
