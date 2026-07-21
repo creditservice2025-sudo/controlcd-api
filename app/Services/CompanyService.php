@@ -21,12 +21,17 @@ class CompanyService
     use ApiResponse;
 
     public function index(
-        string $search = '',
+        ?string $search = '',
         int $perPage = 10,
         string $orderBy = 'created_at',
-        string $orderDirection = 'desc'
+        string $orderDirection = 'desc',
+        ?string $trashed = 'active'
     ) {
         try {
+            // Null-safe: tolerar null desde cualquier llamador (query sin
+            // 'search'/'trashed'). Evita TypeError "string, null given".
+            $search = $search ?? '';
+            $trashed = $trashed ?: 'active';
             // Cache 60s del response completo. El cálculo del breakdown
             // por ruta + totales recorre TODOS los créditos de las
             // empresas de la página y puede tardar 4-5 segundos en BDs
@@ -36,11 +41,12 @@ class CompanyService
             // un plan / cambie suscripción / cree una empresa, en el
             // peor caso ve la data 60s después.
             $cacheKey = sprintf(
-                'companies_index:%s:%d:%s:%s',
+                'companies_index:%s:%d:%s:%s:%s',
                 md5($search),
                 $perPage,
                 $orderBy,
-                $orderDirection
+                $orderDirection,
+                $trashed
             );
 
             try {
@@ -89,6 +95,10 @@ class CompanyService
             // solo carga lo barato (sellers_count, credits_count).
             $companies = Company::with(['user'])
                 ->withCount(['sellers', 'credits'])
+                // 'deleted' -> solo empresas eliminadas (soft-delete).
+                ->when($trashed === 'deleted', function ($query) {
+                    return $query->onlyTrashed();
+                })
                 ->when($search, function ($query, $search) {
                     return $query->where('name', 'like', "%{$search}%")
                         ->orWhere('code', 'like', "%{$search}%")

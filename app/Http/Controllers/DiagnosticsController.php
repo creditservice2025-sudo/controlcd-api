@@ -21,6 +21,12 @@ class DiagnosticsController extends Controller
 {
     public function store(Request $request)
     {
+        // Kill switch: si el diagnostico esta apagado, descartar en silencio
+        // (el APK sigue enviando, pero no reenviamos a Telegram ni logueamos).
+        if (!config('services.telegram.diag_enabled')) {
+            return response()->json(['success' => true, 'skipped' => true]);
+        }
+
         try {
             $user = $request->user();
 
