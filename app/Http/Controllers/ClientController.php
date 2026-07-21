@@ -247,6 +247,14 @@ class ClientController extends Controller
      */
     public function downloadClientsReport(Request $request)
     {
+        // El reporte PDF de clientes NO esta disponible para Cobrador (rol 5)
+        // ni Supervisor (rol 6). Espejo del gate de UI (canDownloadClientsPdf):
+        // evita que se descargue llamando al endpoint directamente.
+        $user = $request->user();
+        if ($user && in_array((int) $user->role_id, [5, 6], true)) {
+            return $this->errorResponse('No tiene acceso a este reporte', 403);
+        }
+
         try {
             return $this->clientService->downloadClientsReport($request);
         } catch (\Exception $e) {
@@ -498,14 +506,14 @@ class ClientController extends Controller
             }
 
             $user = \Illuminate\Support\Facades\Auth::user();
+            // Reporte PDF de morosidad NO disponible para Cobrador (5) ni
+            // Supervisor (6). Espejo del gate de UI (canDownloadDebtorPdf):
+            // evita descargarlo llamando al endpoint directamente.
+            if ($user && in_array((int) $user->role_id, [5, 6], true)) {
+                return $this->errorResponse('No tiene acceso a este reporte', 403);
+            }
             if ($user->role_id === 2 && $user->company && $seller->company_id !== $user->company->id) {
                 return $this->errorResponse('No tiene acceso a este vendedor', 403);
-            }
-            if ($user->role_id === 5) {
-                $ownSeller = Seller::where('user_id', $user->id)->first();
-                if (!$ownSeller || $ownSeller->id !== (int) $sellerId) {
-                    return $this->errorResponse('No tiene acceso a este vendedor', 403);
-                }
             }
 
             return $this->clientService->downloadDebtorReport($sellerId);
