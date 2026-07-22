@@ -839,33 +839,6 @@ class LiquidationService
         }
     }
 
-    /**
-     * Red de seguridad: asegura que exista la liquidación del día de negocio del
-     * vendedor, SIN romper el flujo que la invoca (p. ej. registrar un pago).
-     * Es la garantía de que un día de puro cobro nunca quede huérfano si la
-     * auto-apertura del login falló. Idempotente: si ya existe, la devuelve.
-     *
-     * @return Liquidation|null  null si no se pudo (error logueado, no lanzado).
-     */
-    public function ensureDailyLiquidation($sellerId, $date, $timezone = null): ?Liquidation
-    {
-        try {
-            if (!$timezone) {
-                $seller = Seller::with('city.country')->find($sellerId);
-                $timezone = \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
-            }
-            return $this->getOrCreateLiquidation($sellerId, $date, $timezone);
-        } catch (\Throwable $e) {
-            \Log::error('[liquidation.ensure] no se pudo asegurar la liquidación del día', [
-                'seller_id' => $sellerId,
-                'date' => $date,
-                'timezone' => $timezone,
-                'error' => $e->getMessage(),
-            ]);
-            return null;
-        }
-    }
-
     public function recalculateLiquidation($sellerId, $date, $timezone = null)
     {
         if (!$timezone) {
