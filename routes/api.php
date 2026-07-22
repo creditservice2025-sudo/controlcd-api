@@ -31,7 +31,7 @@ use App\Http\Controllers\VerificationController;
 use App\Http\Controllers\TelegramWebhookController;
 
 // Auth routes
-Route::post('login', [AuthController::class, 'login'])->middleware('throttle:6,1');
+Route::post('login', [AuthController::class, 'login'])->middleware('throttle:login');
 Route::post('frontend-errors', [FrontendErrorController::class, 'store']); // Public for login errors? Or auth? Let's make it public but optional auth.
 
 // TEMPORAL: telemetria de diagnostico del APK (incompatibilidad de telefono).

@@ -51,6 +51,22 @@ class AppServiceProvider extends ServiceProvider
             return Limit::perSecond(20);
         });
 
+        // Límite de intentos de login: 10 por minuto por (usuario + IP).
+        // Antes era throttle:6,1 (solo por IP), que en redes compartidas
+        // (oficina / NAT) hacía que un usuario bloqueara a TODOS los que
+        // salen por la misma IP, y 6 era muy justo para tipeos. Keyear por
+        // usuario+IP es la práctica correcta: mantiene la protección
+        // anti-fuerza-bruta por cuenta sin castigar a terceros.
+        RateLimiter::for('login', function (\Illuminate\Http\Request $request) {
+            $identifier = strtolower(trim((string) (
+                $request->input('email')
+                    ?: $request->input('username')
+                    ?: $request->input('dni')
+                    ?: ''
+            )));
+            return Limit::perMinute(10)->by($identifier . '|' . $request->ip());
+        });
+
         Gate::before(function ($user, $ability) {
             if (!$user) return null;
             // Preferir role_id (numerico) porque es mas rapido y robusto
