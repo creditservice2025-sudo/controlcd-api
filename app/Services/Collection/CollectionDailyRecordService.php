@@ -1137,9 +1137,15 @@ class CollectionDailyRecordService
         $newAmount = round((float) $newAmount, 2);
 
         // Solo el día en curso y con la caja abierta (el corte es definitivo).
+        // El día contable REAL del movimiento es su business_date (anclado a la
+        // zona del PAÍS). Comparar recorded_at reinterpretado en la zona de la
+        // EMPRESA fallaba cuando país≠empresa (el movimiento caía en otro día).
         $tz = $this->companyTz($companyId);
-        $recordDate = optional($record->recorded_at)->setTimezone($tz)->toDateString();
-        $today = Carbon::now($tz)->toDateString();
+        $rtz = TimezoneHelper::timezoneForCountryCode($record->country_code) ?: $tz;
+        $recordDate = $record->business_date
+            ? Carbon::parse($record->business_date)->toDateString()
+            : optional($record->recorded_at)->setTimezone($rtz)->toDateString();
+        $today = Carbon::now($rtz)->toDateString();
         if ($recordDate !== $today) {
             return $this->errorResponse('Solo se pueden editar los movimientos del día en curso.', 409);
         }
