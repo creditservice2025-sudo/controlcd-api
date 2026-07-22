@@ -452,7 +452,8 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         Route::get('clients/{clientId}', [CollectionClientController::class, 'show']);
         Route::post('clients', [CollectionClientController::class, 'store']);
         Route::match(['post', 'put'], 'clients/{clientId}', [CollectionClientController::class, 'update']);
-        Route::delete('clients/{clientId}', [CollectionClientController::class, 'destroy']);
+        Route::delete('clients/{clientId}', [CollectionClientController::class, 'destroy'])
+            ->middleware('collection.permission:clients.delete');
         Route::post('credits', [CollectionCreditController::class, 'store']);
         Route::post('credits/{creditId}/settle', [CollectionCreditController::class, 'settle']);
         Route::post('credits/{creditId}/add-capital', [CollectionCreditController::class, 'addCapital']);
@@ -479,6 +480,9 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         Route::get('daily-records/budgets/status', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'budgetStatus']);
         Route::post('daily-records/budgets', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'upsertBudget']);
         Route::delete('daily-records/budgets/{id}', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'deleteBudget']);
+        // Edición con observación obligatoria + auditoría (correcciones del día).
+        Route::put('daily-records/{id}', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'update']);
+        Route::get('daily-records/{id}/audits', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'auditHistory']);
 
         // Cierre de caja diario. El corte es AUTOMÁTICO (23:59:59 hora local de
         // la empresa, vía comando collection:check-pending-closures). Ya no hay
@@ -506,7 +510,8 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
 
         // Centralized Wallet & Ledger Flow
         Route::get('wallets/balances', [\App\Http\Controllers\Collection\CollectionWalletController::class, 'getBalances']);
-        Route::post('wallets/inject', [\App\Http\Controllers\Collection\CollectionWalletController::class, 'inject']);
+        Route::post('wallets/inject', [\App\Http\Controllers\Collection\CollectionWalletController::class, 'inject'])
+            ->middleware('collection.permission:wallet.inject');
         Route::get('wallets/ledger', [\App\Http\Controllers\Collection\CollectionWalletController::class, 'indexLedger']);
 
         // Company Config (currencies, settings)

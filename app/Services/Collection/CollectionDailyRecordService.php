@@ -943,7 +943,7 @@ class CollectionDailyRecordService
         $businessDate = $recordedAt->copy()->toDateString();
         if ($this->closureSvc->isDayClosed($companyId, $businessDate)) {
             return $this->errorResponse(
-                'No se pueden registrar movimientos: la caja del día ' . $businessDate . ' está cerrada. Reabre el cierre primero.',
+                'No se pueden registrar movimientos: la caja del día ' . $businessDate . ' está cerrada. El corte del día ya es definitivo.',
                 409
             );
         }
@@ -1040,7 +1040,7 @@ class CollectionDailyRecordService
         $recordDate = optional($record->recorded_at)->setTimezone($tz)->toDateString();
         if ($recordDate && $this->closureSvc->isDayClosed($companyId, $recordDate)) {
             return $this->errorResponse(
-                'No se puede eliminar: el día ' . $recordDate . ' tiene la caja cerrada. Reabre el cierre primero.',
+                'No se puede eliminar: el día ' . $recordDate . ' tiene la caja cerrada. El corte del día ya es definitivo.',
                 409
             );
         }
@@ -1070,6 +1070,139 @@ class CollectionDailyRecordService
             $record->delete();
             return $this->successResponse(['success' => true, 'message' => 'Registro eliminado']);
         });
+    }
+
+    /**
+     * Edita un movimiento del día por equivocación, con OBSERVACIÓN OBLIGATORIA
+     * y trazabilidad (monto anterior→actual, delta = impacto en caja, quién).
+     * Fase 1: solo ingreso/gasto (no tocan wallet; la caja se recalcula sola).
+     * Reglas: solo el día en curso y con la caja ABIERTA.
+     */
+    public function update($request, int $id)
+    {
+        $companyId = $this->resolveCompanyId($request->company_id);
+        if (!$companyId) return $this->errorResponse('Empresa no identificada', 422);
+
+        $record = CollectionDailyRecord::where('company_id', $companyId)
+            ->whereNull('deleted_at')
+            ->find($id);
+        if (!$record) return $this->errorResponse('Registro no encontrado', 404);
+
+        // Fase 1: solo ingreso/gasto. La transferencia mueve el saldo persistido
+        // de la wallet (con estado) → se corregirá en una fase posterior con
+        // ajuste de ledger; por ahora se corrige eliminando y recreando.
+        if (!in_array($record->type, ['ingreso', 'gasto'], true)) {
+            return $this->errorResponse(
+                'Por ahora solo se pueden editar movimientos de tipo ingreso o gasto. Las transferencias se corrigen eliminando y recreando.',
+                422
+            );
+        }
+
+        // Observación OBLIGATORIA (motivo del ajuste).
+        $observation = trim((string) $request->input('observation', ''));
+        if (mb_strlen($observation) < 3) {
+            return $this->errorResponse('Debes indicar el motivo del ajuste (mínimo 3 caracteres).', 422);
+        }
+
+        // Monto nuevo válido.
+        $newAmount = $request->input('amount', $record->amount);
+        if (!is_numeric($newAmount) || (float) $newAmount <= 0) {
+            return $this->errorResponse('El monto debe ser un número mayor a 0.', 422);
+        }
+        $newAmount = round((float) $newAmount, 2);
+
+        // Solo el día en curso y con la caja abierta (el corte es definitivo).
+        $tz = $this->companyTz($companyId);
+        $recordDate = optional($record->recorded_at)->setTimezone($tz)->toDateString();
+        $today = Carbon::now($tz)->toDateString();
+        if ($recordDate !== $today) {
+            return $this->errorResponse('Solo se pueden editar los movimientos del día en curso.', 409);
+        }
+        if ($recordDate && $this->closureSvc->isDayClosed($companyId, $recordDate)) {
+            return $this->errorResponse(
+                'No se puede editar: la caja del día ' . $recordDate . ' está cerrada. El corte del día ya es definitivo.',
+                409
+            );
+        }
+
+        // Categoría/descripción: si no vienen en el request, se conservan.
+        $newCategory = $request->has('category') ? ($request->input('category') ?: null) : $record->category;
+        $newDescription = $request->has('description') ? ($request->input('description') ?: null) : $record->description;
+
+        $old = [
+            'amount' => (float) $record->amount,
+            'category' => $record->category,
+            'description' => $record->description,
+        ];
+
+        return DB::connection('collection_pgsql')->transaction(function () use ($record, $newAmount, $newCategory, $newDescription, $old, $observation, $request) {
+            $record->amount = $newAmount;
+            $record->category = $newCategory;
+            $record->description = $newDescription;
+            $record->save();
+
+            \App\Models\Collection\CollectionDailyRecordAudit::create([
+                'company_id' => $record->company_id,
+                'daily_record_id' => $record->id,
+                'user_id' => Auth::id(),
+                'action' => 'update',
+                'old_amount' => $old['amount'],
+                'new_amount' => $newAmount,
+                'delta' => round($newAmount - $old['amount'], 2),
+                'old_category' => $old['category'],
+                'new_category' => $newCategory,
+                'old_description' => $old['description'],
+                'new_description' => $newDescription,
+                'observation' => $observation,
+                'ip' => $request->ip(),
+                'created_at' => Carbon::now(),
+            ]);
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Movimiento actualizado y auditado',
+                'data' => $record->fresh(),
+            ]);
+        });
+    }
+
+    /**
+     * Historial de ajustes (trazabilidad) de un registro diario.
+     */
+    public function auditHistory($request, int $id)
+    {
+        $companyId = $this->resolveCompanyId($request->company_id);
+
+        $audits = \App\Models\Collection\CollectionDailyRecordAudit::where('company_id', $companyId)
+            ->where('daily_record_id', $id)
+            ->orderByDesc('created_at')
+            ->get();
+
+        // Los nombres de usuario viven en MySQL (core), no en collection_pgsql.
+        $userIds = $audits->pluck('user_id')->filter()->unique()->all();
+        $names = empty($userIds)
+            ? collect()
+            : \App\Models\User::whereIn('id', $userIds)->pluck('name', 'id');
+
+        $data = $audits->map(function ($a) use ($names) {
+            return [
+                'id' => $a->id,
+                'action' => $a->action,
+                'old_amount' => (float) $a->old_amount,
+                'new_amount' => (float) $a->new_amount,
+                'delta' => (float) $a->delta,
+                'old_category' => $a->old_category,
+                'new_category' => $a->new_category,
+                'old_description' => $a->old_description,
+                'new_description' => $a->new_description,
+                'observation' => $a->observation,
+                'user_id' => $a->user_id,
+                'user_name' => $names[$a->user_id] ?? null,
+                'created_at' => optional($a->created_at)->toISOString(),
+            ];
+        });
+
+        return $this->successResponse(['success' => true, 'data' => $data]);
     }
 
     private function resolveCompanyId($requestedId): int

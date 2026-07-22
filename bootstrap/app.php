@@ -47,6 +47,10 @@ return Application::configure(basePath: dirname(__DIR__))
             // su ruta (hoy: domingo, según seller_configs.works_sundays). Expulsa
             // también sesiones abiertas de un día anterior. Corre después de auth:api.
             'seller.workingday'  => \App\Http\Middleware\CheckSellerWorkingDay::class,
+            // Permisos granulares del módulo Collection (Deuda & Abono), leídos
+            // de collection_user_profiles.permissions. Fail-safe: admin pasa,
+            // sin perfil permite, solo deniega a perfiles que carecen del permiso.
+            'collection.permission' => \App\Http\Middleware\EnsureCollectionPermission::class,
         ]);
 
         $middleware->validateCsrfTokens(except: [

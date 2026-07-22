@@ -125,121 +125,13 @@ class CollectionCashClosureService
         return $candidates[0];
     }
 
-    /**
-     * Cierra la caja del dia. Requiere que no exista un cierre activo para
-     * esa fecha. Guarda snapshot de los totales calculados y las diferencias
-     * contra lo declarado.
-     */
-    public function closeDay(int $companyId, array $payload)
-    {
-        $user = Auth::user();
-        if (!$user) return $this->errorResponse('No autenticado', 401);
-
-        $date = $payload['closure_date'] ?? Carbon::now()->toDateString();
-        $tz = $payload['timezone'] ?? 'America/Bogota';
-        $countryCode = $payload['country_code'] ?? null;
-
-        // No permitir doble cierre activo para la misma fecha/empresa/pais.
-        $existing = $this->findActiveClosure($companyId, $date, $countryCode);
-        if ($existing) {
-            return $this->errorResponse(
-                'El día ' . $date . ' ya tiene un cierre de caja activo.',
-                409
-            );
-        }
-
-        // No permitir cerrar si hay dias anteriores con movimientos sin cierre.
-        $pending = $this->findPendingPreviousDays($companyId, $date, $tz, $countryCode);
-        if (!empty($pending)) {
-            return response()->json([
-                'message' => 'No puedes cerrar este día. Tienes días anteriores sin cerrar: ' . implode(', ', $pending),
-                'pending_previous_days' => $pending,
-            ], 409);
-        }
-
-        $dayStart = Carbon::parse($date . ' 00:00:00', $tz)->utc();
-        $dayEnd = Carbon::parse($date . ' 23:59:59', $tz)->utc();
-        $totals = $this->computeTotals($companyId, $date, $dayStart, $dayEnd, $countryCode);
-
-        $efectivo = (float) ($payload['efectivo_contado'] ?? 0);
-        $transfer = (float) ($payload['transferencias_recibidas'] ?? 0);
-        $totalDeclarado = round($efectivo + $transfer, 2);
-        $diferencia = round($totalDeclarado - (float) $totals['esperado'], 2);
-
-        // Asegurar particion para esta empresa antes de insertar.
-        $this->partitionService->ensurePartitions($companyId);
-
-        $closure = CollectionCashClosure::create([
-            'company_id' => $companyId,
-            'closure_date' => $date,
-            'country_code' => $countryCode,
-            'currency' => $payload['currency'] ?? null,
-            'user_id' => $user->id,
-            'total_cobros' => $totals['total_cobros'],
-            'total_adiciones' => $totals['total_adiciones'],
-            'total_ingresos_manuales' => $totals['total_ingresos_manuales'],
-            'total_gastos' => $totals['total_gastos'],
-            'total_egresos_manuales' => $totals['total_egresos_manuales'],
-            'total_transferencias' => $totals['total_transferencias'],
-            'esperado' => $totals['esperado'],
-            'efectivo_contado' => $efectivo,
-            'transferencias_recibidas' => $transfer,
-            'total_declarado' => $totalDeclarado,
-            'faltante_sobrante' => $diferencia,
-            'notas' => $payload['notas'] ?? null,
-            'status' => CollectionCashClosure::STATUS_CLOSED,
-            'closed_at' => Carbon::now(),
-        ]);
-
-        return $this->successCreatedResponse([
-            'success' => true,
-            'message' => 'Cierre de caja registrado correctamente',
-            'data' => $this->hydrateClosure($closure->fresh()),
-        ]);
-    }
-
-    /**
-     * Reabre un cierre activo (solo admin) — y SOLO si fue del dia actual.
-     * Cierres de dias anteriores quedan inmutables para preservar auditoria.
-     */
-    public function reopen(int $companyId, int $closureId, ?string $reason = null, ?string $tz = null)
-    {
-        $user = Auth::user();
-        if (!$user) return $this->errorResponse('No autenticado', 401);
-
-        $closure = CollectionCashClosure::where('company_id', $companyId)
-            ->where('id', $closureId)
-            ->first();
-        if (!$closure) return $this->errorResponse('Cierre no encontrado', 404);
-        if ($closure->status !== CollectionCashClosure::STATUS_CLOSED) {
-            return $this->errorResponse('El cierre ya está reabierto', 409);
-        }
-
-        // Solo se permite reabrir cierres del dia actual (en la zona horaria del cliente).
-        $tz = $tz ?: 'America/Bogota';
-        $today = Carbon::now($tz)->toDateString();
-        $closureDate = optional($closure->closure_date)->toDateString();
-        if ($closureDate !== $today) {
-            return $this->errorResponse(
-                'Solo se pueden reabrir cierres del día actual. El cierre del ' . $closureDate . ' es inmutable.',
-                403
-            );
-        }
-
-        $closure->status = CollectionCashClosure::STATUS_REOPENED;
-        $closure->reopened_at = Carbon::now();
-        $closure->reopened_by = $user->id;
-        if ($reason) {
-            $closure->notas = trim(($closure->notas ?? '') . "\n[Reabierto] " . $reason);
-        }
-        $closure->save();
-
-        return $this->successResponse([
-            'success' => true,
-            'message' => 'Cierre reabierto',
-            'data' => $this->hydrateClosure($closure->fresh()),
-        ]);
-    }
+    // NOTA (limpieza): closeDay() (cierre manual) y reopen() (reapertura) se
+    // ELIMINARON. El corte de caja es 100% automático (autoCloseDay vía cron a
+    // las 23:59:59 hora de la empresa) y NO hay rutas que expongan cierre ni
+    // reapertura manual. Ambos métodos eran código muerto (sin llamadores ni
+    // rutas), y sus mensajes ("reabre el cierre primero") eran engañosos.
+    // El display histórico de cierres reabiertos se conserva en hydrateClosure
+    // (lee reopened_at/reopened_by), por si existieran registros antiguos.
 
     /**
      * Corte de caja automatico (total) del dia. Lo invoca el cron a las

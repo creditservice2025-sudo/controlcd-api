@@ -50,7 +50,7 @@ class CollectionPaymentService
         $paymentDate = $payload['payment_date'] ?? Carbon::now($tz)->toDateString();
         if ($this->closureSvc->isDayClosed($companyId, $paymentDate)) {
             return $this->errorResponse(
-                'No se pueden registrar pagos: la caja del día ' . $paymentDate . ' está cerrada. Reabre el cierre primero.',
+                'No se pueden registrar pagos: la caja del día ' . $paymentDate . ' está cerrada. El corte del día ya es definitivo.',
                 409
             );
         }

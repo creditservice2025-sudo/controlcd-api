@@ -37,10 +37,31 @@ class CollectionSecurityService
             'created_at' => Carbon::now(),
         ]);
 
+        // Entregar el código DE VERDAD: enviarlo al Telegram de la empresa
+        // (donde lo ve el admin/gerente), en vez del teléfono de prueba
+        // hardcodeado que había antes. Fail-safe: si la empresa no tiene
+        // Telegram o falla el envío, no rompe la solicitud (el admin igual
+        // puede verlo en el panel de códigos pendientes).
+        $collectorName = Auth::user()->name ?? 'Un cobrador';
+        $installmentId = $payload['installment_id'] ?? null;
+        $msg = "🔐 *Autorización requerida*\n\n"
+            . "{$collectorName} solicita ELIMINAR un pago"
+            . ($installmentId ? " (cuota #{$installmentId})" : '') . ".\n"
+            . "Código: *{$code}*\n"
+            . "Solicitud: {$requestId}\n"
+            . "Vence en 15 min. Entregá el código solo si autorizás la eliminación.";
+        $delivered = false;
+        try {
+            $delivered = (new CollectionTelegramNotifier())
+                ->sendToCompany($companyId, $msg, 'deletion_auth_code');
+        } catch (\Throwable $e) {
+            \Log::warning('[collection.security] no se pudo enviar el código por Telegram: ' . $e->getMessage());
+        }
+
         return $this->successResponse([
             'request_id' => $auth->request_id,
             'expires_in' => 15, // minutes
-            'manager_phone' => '584142204895', // User's requested test phone
+            'delivered_via_telegram' => $delivered,
         ]);
     }
 

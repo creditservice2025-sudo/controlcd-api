@@ -75,7 +75,7 @@ class CollectionExpenseService
         $today = Carbon::now($tz)->toDateString();
         if ($this->closureSvc->isDayClosed($companyId, $today)) {
             return $this->errorResponse(
-                'No se pueden registrar gastos: la caja del día ' . $today . ' está cerrada. Reabre el cierre primero.',
+                'No se pueden registrar gastos: la caja del día ' . $today . ' está cerrada. El corte del día ya es definitivo.',
                 409
             );
         }

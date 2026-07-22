@@ -166,7 +166,7 @@ class CollectionCreditService
         $businessDate = $payload['business_date'] ?? Carbon::now()->toDateString();
         if ($this->closureSvc->isDayClosed($companyId, $businessDate)) {
             return $this->errorResponse(
-                'No se puede agregar capital: la caja del día ' . $businessDate . ' está cerrada. Reabre el cierre primero.',
+                'No se puede agregar capital: la caja del día ' . $businessDate . ' está cerrada. El corte del día ya es definitivo.',
                 409
             );
         }
@@ -457,7 +457,7 @@ class CollectionCreditService
         $settleDate = $payload['payment_date'] ?? Carbon::now($tzCheck)->toDateString();
         if ($this->closureSvc->isDayClosed($companyId, $settleDate)) {
             return $this->errorResponse(
-                'No se puede liquidar: la caja del día ' . $settleDate . ' está cerrada. Reabre el cierre primero.',
+                'No se puede liquidar: la caja del día ' . $settleDate . ' está cerrada. El corte del día ya es definitivo.',
                 409
             );
         }

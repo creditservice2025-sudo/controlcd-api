@@ -43,6 +43,29 @@ class CollectionDailyRecordController extends Controller
     }
 
     /**
+     * Editar un movimiento por equivocación (con observación obligatoria y
+     * auditoría del monto anterior→actual). Solo ingreso/gasto del día abierto.
+     */
+    public function update(Request $request, int $id)
+    {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
+        return $this->service->update($request, $id);
+    }
+
+    /**
+     * Historial de ajustes (trazabilidad) de un movimiento.
+     */
+    public function auditHistory(Request $request, int $id)
+    {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
+        return $this->service->auditHistory($request, $id);
+    }
+
+    /**
      * Tendencia de movimientos día por día en un rango (para reporte Excel).
      */
     public function trend(Request $request)
