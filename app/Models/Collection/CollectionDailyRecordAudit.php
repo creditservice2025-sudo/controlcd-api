@@ -29,6 +29,8 @@ class CollectionDailyRecordAudit extends Model
         'new_category',
         'old_description',
         'new_description',
+        'old_evidence',
+        'new_evidence',
         'observation',
         'ip',
         'created_at',
@@ -38,6 +40,8 @@ class CollectionDailyRecordAudit extends Model
         'old_amount' => 'decimal:2',
         'new_amount' => 'decimal:2',
         'delta' => 'decimal:2',
+        'old_evidence' => 'array',
+        'new_evidence' => 'array',
         'created_at' => 'datetime',
     ];
 }

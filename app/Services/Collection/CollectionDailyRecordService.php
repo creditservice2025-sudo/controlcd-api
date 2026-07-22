@@ -752,6 +752,35 @@ class CollectionDailyRecordService
                     $r->created_by_name = $names[$r->user_id] ?? null;
                 });
             }
+
+            // Distintivo "editado" (estilo core bancario): conteo de ajustes y
+            // datos del último (quién/cuándo), leídos de la auditoría en batch.
+            $recordIds = $dailyRecords->pluck('id')->filter()->values()->all();
+            if (!empty($recordIds)) {
+                $audits = \App\Models\Collection\CollectionDailyRecordAudit::whereIn('daily_record_id', $recordIds)
+                    ->orderByDesc('created_at')
+                    ->get(['daily_record_id', 'user_id', 'created_at']);
+                $byRecord = $audits->groupBy(fn($a) => (int) $a->daily_record_id);
+                $editorIds = $audits->pluck('user_id')->filter()->unique()->values()->all();
+                $editorNames = !empty($editorIds)
+                    ? \App\Models\User::whereIn('id', $editorIds)->pluck('name', 'id')
+                    : collect();
+                $dailyRecords->each(function ($r) use ($byRecord, $editorNames, $tz) {
+                    $list = $byRecord->get((int) $r->id);
+                    $r->edit_count = $list ? $list->count() : 0;
+                    if ($list && $list->count()) {
+                        $last = $list->first(); // ya ordenado desc por created_at
+                        $rtz = TimezoneHelper::timezoneForCountryCode($r->country_code) ?: $tz;
+                        $r->last_edited_at_label = $last->created_at
+                            ? Carbon::parse($last->created_at)->setTimezone($rtz)->format('d/m/Y H:i:s')
+                            : null;
+                        $r->last_edited_by_name = $editorNames[$last->user_id] ?? null;
+                    } else {
+                        $r->last_edited_at_label = null;
+                        $r->last_edited_by_name = null;
+                    }
+                });
+            }
         }
 
         // Adiciones de capital como filas virtuales (type='capital_addition').
@@ -1135,10 +1164,38 @@ class CollectionDailyRecordService
             'description' => $record->description,
         ];
 
-        return DB::connection('collection_pgsql')->transaction(function () use ($record, $newAmount, $newCategory, $newDescription, $old, $observation, $request) {
+        // Evidencia: REEMPLAZO CON RETENCIÓN. La imagen anterior NUNCA se borra
+        // del disco; solo queda referenciada en la auditoría (old_evidence). Si
+        // suben fotos nuevas, reemplazan el set actual del movimiento. El file IO
+        // va FUERA de la transacción.
+        $meta = is_array($record->metadata) ? $record->metadata : [];
+        $oldEvidence = $meta['evidence_paths']
+            ?? (isset($meta['evidence_path']) ? [$meta['evidence_path']] : []);
+        $oldEvidence = is_array($oldEvidence) ? array_values($oldEvidence) : [];
+        $newEvidence = $oldEvidence;
+        $evidenceChanged = false;
+        if ($request->hasFile('evidence')) {
+            $files = $request->file('evidence');
+            if (!is_array($files)) $files = [$files];
+            $stored = [];
+            foreach (array_slice($files, 0, 3) as $file) {
+                $stored[] = $file->store("collection/daily-records/evidence/{$companyId}", 'public');
+            }
+            if (!empty($stored)) {
+                $newEvidence = $stored;   // reemplaza el set actual del movimiento
+                $evidenceChanged = true;  // (las anteriores NO se borran)
+            }
+        }
+
+        return DB::connection('collection_pgsql')->transaction(function () use ($record, $newAmount, $newCategory, $newDescription, $old, $observation, $request, $meta, $oldEvidence, $newEvidence, $evidenceChanged) {
             $record->amount = $newAmount;
             $record->category = $newCategory;
             $record->description = $newDescription;
+            if ($evidenceChanged) {
+                $meta['evidence_paths'] = $newEvidence;
+                unset($meta['evidence_path']); // normaliza al formato array
+                $record->metadata = $meta;
+            }
             $record->save();
 
             \App\Models\Collection\CollectionDailyRecordAudit::create([
@@ -1153,6 +1210,8 @@ class CollectionDailyRecordService
                 'new_category' => $newCategory,
                 'old_description' => $old['description'],
                 'new_description' => $newDescription,
+                'old_evidence' => $oldEvidence,
+                'new_evidence' => $newEvidence,
                 'observation' => $observation,
                 'ip' => $request->ip(),
                 'created_at' => Carbon::now(),
@@ -1195,6 +1254,8 @@ class CollectionDailyRecordService
                 'new_category' => $a->new_category,
                 'old_description' => $a->old_description,
                 'new_description' => $a->new_description,
+                'old_evidence' => $a->old_evidence ?: [],
+                'new_evidence' => $a->new_evidence ?: [],
                 'observation' => $a->observation,
                 'user_id' => $a->user_id,
                 'user_name' => $names[$a->user_id] ?? null,
