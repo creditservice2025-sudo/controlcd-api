@@ -1117,14 +1117,10 @@ class CollectionDailyRecordService
             ->find($id);
         if (!$record) return $this->errorResponse('Registro no encontrado', 404);
 
-        // Fase 1: solo ingreso/gasto. La transferencia mueve el saldo persistido
-        // de la wallet (con estado) → se corregirá en una fase posterior con
-        // ajuste de ledger; por ahora se corrige eliminando y recreando.
-        if (!in_array($record->type, ['ingreso', 'gasto'], true)) {
-            return $this->errorResponse(
-                'Por ahora solo se pueden editar movimientos de tipo ingreso o gasto. Las transferencias se corrigen eliminando y recreando.',
-                422
-            );
+        // Editables: ingreso, gasto y transferencia. Para transferencia, al
+        // cambiar el monto se ajusta la wallet por el delta (ver más abajo).
+        if (!in_array($record->type, ['ingreso', 'gasto', 'transferencia'], true)) {
+            return $this->errorResponse('Este tipo de movimiento no se puede editar.', 422);
         }
 
         // Observación OBLIGATORIA (motivo del ajuste).
@@ -1187,16 +1183,80 @@ class CollectionDailyRecordService
             }
         }
 
-        return DB::connection('collection_pgsql')->transaction(function () use ($record, $newAmount, $newCategory, $newDescription, $old, $observation, $request, $meta, $oldEvidence, $newEvidence, $evidenceChanged) {
+        // Fecha/hora (recorded_at): opcional. La fecha NO puede moverse a otro
+        // día (rompería una caja cerrada): el nuevo business_date debe ser HOY y
+        // con la caja abierta. Solo se corrige la hora del día en curso.
+        $oldRecordedAt = optional($record->recorded_at)->toISOString();
+        $newRecordedAtUtc = null;
+        $newBusinessDate = null;
+        $recordedAtChanged = false;
+        if ($request->filled('recorded_at')) {
+            $rtz = TimezoneHelper::timezoneForCountryCode($record->country_code) ?: $tz;
+            $parsed = Carbon::parse($request->input('recorded_at'), $rtz);
+            $nbDate = $parsed->copy()->toDateString();
+            if ($nbDate !== Carbon::now($rtz)->toDateString()) {
+                return $this->errorResponse('No podés mover el movimiento a otro día; solo se corrige la hora del día en curso.', 409);
+            }
+            if ($this->closureSvc->isDayClosed($companyId, $nbDate)) {
+                return $this->errorResponse('La caja del día ' . $nbDate . ' está cerrada. El corte del día ya es definitivo.', 409);
+            }
+            $newRecordedAtUtc = $parsed->copy()->utc();
+            $newBusinessDate = $nbDate;
+            $recordedAtChanged = $newRecordedAtUtc->toISOString() !== $oldRecordedAt;
+        }
+
+        // Destino (transfer_to): opcional, solo para transferencia.
+        $oldTransferTo = $meta['transfer_to'] ?? null;
+        $newTransferTo = $oldTransferTo;
+        $transferToChanged = false;
+        if ($record->type === 'transferencia' && $request->has('transfer_to')) {
+            $newTransferTo = $request->input('transfer_to') ?: null;
+            $transferToChanged = ($newTransferTo !== $oldTransferTo);
+        }
+
+        return DB::connection('collection_pgsql')->transaction(function () use ($record, $newAmount, $newCategory, $newDescription, $old, $observation, $request, $meta, $oldEvidence, $newEvidence, $evidenceChanged, $newRecordedAtUtc, $newBusinessDate, $recordedAtChanged, $oldRecordedAt, $oldTransferTo, $newTransferTo, $transferToChanged) {
             $record->amount = $newAmount;
             $record->category = $newCategory;
             $record->description = $newDescription;
+            if ($recordedAtChanged && $newRecordedAtUtc) {
+                $record->recorded_at = $newRecordedAtUtc;
+                $record->business_date = $newBusinessDate;
+            }
+            // Metadata (evidencia + destino): una sola asignación.
+            $metaDirty = false;
             if ($evidenceChanged) {
                 $meta['evidence_paths'] = $newEvidence;
                 unset($meta['evidence_path']); // normaliza al formato array
-                $record->metadata = $meta;
+                $metaDirty = true;
             }
+            if ($transferToChanged) {
+                $meta['transfer_to'] = $newTransferTo;
+                $metaDirty = true;
+            }
+            if ($metaDirty) $record->metadata = $meta;
             $record->save();
+
+            // Transferencia: la wallet tiene saldo persistido, así que al cambiar
+            // el monto hay que ajustarla por el delta (append-only en el ledger).
+            //   delta > 0  → salió MÁS de la wallet  → débito adicional
+            //   delta < 0  → salió MENOS             → reintegro (crédito)
+            if ($record->type === 'transferencia') {
+                $delta = round($newAmount - $old['amount'], 2);
+                if (abs($delta) >= 0.01) {
+                    $this->walletSvc->recordMovement([
+                        'company_id' => $record->company_id,
+                        'currency' => strtoupper($record->currency ?: 'COP'),
+                        'country_code' => strtoupper($record->country_code ?: 'CO'),
+                        'amount' => abs($delta),
+                        'type' => $delta > 0 ? 'debit' : 'credit',
+                        'action_type' => 'transfer_out_adjustment',
+                        'reference_type' => 'daily_record',
+                        'reference_id' => $record->id,
+                        'description' => 'Ajuste por edición de transferencia: '
+                            . number_format($old['amount'], 2) . ' → ' . number_format($newAmount, 2),
+                    ]);
+                }
+            }
 
             \App\Models\Collection\CollectionDailyRecordAudit::create([
                 'company_id' => $record->company_id,
@@ -1212,6 +1272,7 @@ class CollectionDailyRecordService
                 'new_description' => $newDescription,
                 'old_evidence' => $oldEvidence,
                 'new_evidence' => $newEvidence,
+                'extra' => $this->buildAuditExtra($recordedAtChanged, $oldRecordedAt, $newRecordedAtUtc, $transferToChanged, $oldTransferTo, $newTransferTo),
                 'observation' => $observation,
                 'ip' => $request->ip(),
                 'created_at' => Carbon::now(),
@@ -1256,6 +1317,7 @@ class CollectionDailyRecordService
                 'new_description' => $a->new_description,
                 'old_evidence' => $a->old_evidence ?: [],
                 'new_evidence' => $a->new_evidence ?: [],
+                'extra' => $a->extra ?: null,
                 'observation' => $a->observation,
                 'user_id' => $a->user_id,
                 'user_name' => $names[$a->user_id] ?? null,
@@ -1264,6 +1326,26 @@ class CollectionDailyRecordService
         });
 
         return $this->successResponse(['success' => true, 'data' => $data]);
+    }
+
+    // Arma el campo `extra` de la auditoría con los cambios de fecha/hora y
+    // destino (solo los que efectivamente cambiaron). Null si no hubo ninguno.
+    private function buildAuditExtra(
+        bool $recordedAtChanged,
+        ?string $oldRecordedAt,
+        $newRecordedAtUtc,
+        bool $transferToChanged,
+        $oldTransferTo,
+        $newTransferTo
+    ): ?array {
+        $extra = [];
+        if ($recordedAtChanged) {
+            $extra['recorded_at'] = ['old' => $oldRecordedAt, 'new' => optional($newRecordedAtUtc)->toISOString()];
+        }
+        if ($transferToChanged) {
+            $extra['transfer_to'] = ['old' => $oldTransferTo, 'new' => $newTransferTo];
+        }
+        return !empty($extra) ? $extra : null;
     }
 
     private function resolveCompanyId($requestedId): int
