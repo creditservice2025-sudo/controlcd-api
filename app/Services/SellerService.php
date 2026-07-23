@@ -283,6 +283,8 @@ class SellerService
 
             $routes = Seller::with([
                 'user:id,name',
+                // Solo para el distintivo de empresa en Rutas Activas (Super-Admin).
+                'company:id,name',
                 // FILTRO ORIGINAL: Solo sesiones activas (sin logout)
                 // 'user.sessionLogs' => function ($q) use ($today) {
                 //     $q->whereDate('login_at', $today)
@@ -533,6 +535,8 @@ class SellerService
                     'country' => $route->city->country->name ?? null,
                     'city' => $route->city->name ?? null,
                     'seller_name' => $route->user->name ?? null,
+                    // Empresa del vendedor (se muestra solo a Super-Admin en el front).
+                    'company_name' => $route->company->name ?? null,
                     'status' => $route->status,
                     'closed_today' => $isClosed,
                     'closed_by_admin' => $closedByAdmin,
