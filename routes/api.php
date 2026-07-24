@@ -472,6 +472,12 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         Route::get('expenses', [\App\Http\Controllers\Collection\CollectionExpenseController::class, 'index']);
         Route::post('expenses', [\App\Http\Controllers\Collection\CollectionExpenseController::class, 'store']);
 
+        // Cajas (multi-caja): contenedores de la bit\u00e1cora, cada uno con su saldo.
+        Route::get('cashboxes', [\App\Http\Controllers\Collection\CollectionCashboxController::class, 'index']);
+        Route::post('cashboxes', [\App\Http\Controllers\Collection\CollectionCashboxController::class, 'store']);
+        Route::put('cashboxes/{id}', [\App\Http\Controllers\Collection\CollectionCashboxController::class, 'update']);
+        Route::delete('cashboxes/{id}', [\App\Http\Controllers\Collection\CollectionCashboxController::class, 'destroy']);
+
         // Registros diarios (bit\u00e1cora manual: ingreso | gasto | transferencia | ajuste)
         // Independiente de wallet/ledger.
         Route::get('daily-records', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'index']);

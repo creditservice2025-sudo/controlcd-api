@@ -29,6 +29,8 @@ class CollectionDailyRecord extends Model
 
     protected $fillable = [
         'company_id',
+        'cashbox_id',
+        'cashbox_to_id',
         'user_id',
         'type',
         'category',
@@ -56,5 +58,15 @@ class CollectionDailyRecord extends Model
     public function user()
     {
         return $this->belongsTo(\App\Models\User::class, 'user_id');
+    }
+
+    public function cashbox()
+    {
+        return $this->belongsTo(CollectionCashbox::class, 'cashbox_id');
+    }
+
+    public function cashboxTo()
+    {
+        return $this->belongsTo(CollectionCashbox::class, 'cashbox_to_id');
     }
 }

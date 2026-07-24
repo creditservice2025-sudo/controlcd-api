@@ -43,16 +43,84 @@ class CollectionDailyRecordService
     }
 
     /**
+     * ¿La caja dada es la caja principal (default) de la empresa? Se usa para
+     * decidir dónde mostrar filas que no pertenecen a una caja concreta
+     * (ej. adiciones de capital del flujo de créditos).
+     */
+    private function isDefaultCashbox(int $companyId, int $cashboxId): bool
+    {
+        return \App\Models\Collection\CollectionCashbox::where('company_id', $companyId)
+            ->where('id', $cashboxId)
+            ->where('is_default', true)
+            ->exists();
+    }
+
+    /**
+     * Saldo de apertura (arrastre) de una caja ANTES de una fecha: saldo inicial
+     * de la caja (si fue creada antes de `from`) + neto de sus movimientos con
+     * día contable anterior a `from`. Es la semilla del "saldo acumulado" del
+     * resumen por período cuando se ve una caja secundaria.
+     */
+    private function cashboxOpeningSeed(int $companyId, int $cashboxId, string $from, string $tz): float
+    {
+        $cb = \App\Models\Collection\CollectionCashbox::where('company_id', $companyId)->find($cashboxId);
+        if (!$cb) return 0.0;
+
+        $seed = 0.0;
+        // El saldo inicial cuenta como arrastre solo si la caja se creó antes del rango.
+        if ((float) $cb->opening_balance != 0.0 && $cb->created_at) {
+            $cbTz = TimezoneHelper::timezoneForCountryCode($cb->country_code) ?: $tz;
+            $ap = Carbon::parse($cb->created_at)->setTimezone($cbTz)->toDateString();
+            if ($ap < $from) $seed += (float) $cb->opening_balance;
+        }
+
+        // Neto de los movimientos de la caja anteriores al rango.
+        $net = CollectionDailyRecord::where('company_id', $companyId)
+            ->where('cashbox_id', $cashboxId)
+            ->whereNull('deleted_at')
+            ->where('business_date', '<', $from)
+            ->selectRaw("SUM(CASE WHEN type = 'ingreso' THEN amount WHEN type IN ('gasto','transferencia') THEN -amount ELSE 0 END) as net")
+            ->value('net');
+
+        return round($seed + (float) $net, 2);
+    }
+
+    /**
+     * Resuelve la caja a la que pertenece un movimiento. Si el id enviado no
+     * es válido para la empresa (o no se envía), cae a la caja principal
+     * (default). Devuelve null si la empresa no tiene ninguna caja.
+     */
+    private function resolveCashboxId(int $companyId, $requested): ?int
+    {
+        $requested = ($requested !== null && $requested !== '') ? (int) $requested : null;
+
+        if ($requested) {
+            $valid = \App\Models\Collection\CollectionCashbox::where('company_id', $companyId)
+                ->where('id', $requested)
+                ->where('active', true)
+                ->value('id');
+            if ($valid) return (int) $valid;
+        }
+
+        $default = \App\Models\Collection\CollectionCashbox::where('company_id', $companyId)
+            ->orderByDesc('is_default')
+            ->orderBy('id')
+            ->value('id');
+
+        return $default ? (int) $default : null;
+    }
+
+    /**
      * Tendencia de movimientos día por día en un rango. Devuelve por cada
      * día: cobros, ingresos manuales, gastos aprobados, egresos manuales,
      * transferencias salientes, adiciones de capital y balance neto.
      *
      * Usado por el reporte Excel "tendencia mensual".
      */
-    public function getTrend(int $companyId, string $from, string $to, string $tz, ?string $countryCode = null)
+    public function getTrend(int $companyId, string $from, string $to, string $tz, ?string $countryCode = null, ?int $cashboxId = null)
     {
         $tz = $this->companyTz($companyId);
-        $bucket = $this->dailyBuckets($companyId, $from, $to, $tz, $countryCode);
+        $bucket = $this->dailyBuckets($companyId, $from, $to, $tz, $countryCode, $cashboxId);
 
         $totals = [
             'cobros' => 0.0, 'ingresos' => 0.0, 'gastos' => 0.0,
@@ -83,22 +151,33 @@ class CollectionDailyRecordService
      * donde neto = cobros + ingresos − gastos − egresos − transferencias − adiciones
      * (el flujo de caja del día: lo que entra menos lo que sale de la caja).
      */
-    private function dailyBuckets(int $companyId, string $from, string $to, string $tz, ?string $countryCode): array
+    private function dailyBuckets(int $companyId, string $from, string $to, string $tz, ?string $countryCode, ?int $cashboxId = null): array
     {
         $startUtc = Carbon::parse($from . ' 00:00:00', $tz)->utc();
         $endUtc = Carbon::parse($to . ' 23:59:59', $tz)->utc();
+
+        // Al ver una caja concreta, los cobros de créditos, gastos aprobados y
+        // adiciones de capital (que son company-wide, del lado de préstamos) solo
+        // se incluyen si es la caja principal. Una caja secundaria solo agrega su
+        // propia bitácora (ingreso/gasto/transferencia).
+        $includeCompanyWide = !$cashboxId || $this->isDefaultCashbox($companyId, $cashboxId);
 
         // 1) Registros manuales por día contable y tipo.
         $drQ = CollectionDailyRecord::where('company_id', $companyId)
             ->whereNull('deleted_at')
             ->whereBetween('business_date', [$from, $to]);
         if ($countryCode) $drQ->where('country_code', strtoupper($countryCode));
+        if ($cashboxId) $drQ->where('cashbox_id', $cashboxId);
         $drRows = $drQ
             ->selectRaw("to_char(business_date, 'YYYY-MM-DD') as d, type, SUM(amount) as total")
             ->groupBy('d', 'type')
             ->get();
 
         // 2) Cobros (payments) — recorded_at es timestamptz, se convierte a tz.
+        $payRows = collect();
+        $expRows = collect();
+        $adicRows = collect();
+        if ($includeCompanyWide) {
         $payQ = CollectionPayment::where('company_id', $companyId)
             ->whereNull('deleted_at')
             ->whereBetween('recorded_at', [$startUtc, $endUtc]);
@@ -139,6 +218,7 @@ class CollectionDailyRecordService
             ->groupBy('d')
             ->get()
             ->keyBy('d');
+        } // fin includeCompanyWide
 
         $bucket = [];
         $ensure = function (string $d) use (&$bucket) {
@@ -164,6 +244,22 @@ class CollectionDailyRecordService
         foreach ($expRows as $d => $r) { $ensure($d); $bucket[$d]['gastos'] = (float) $r->total; }
         foreach ($adicRows as $d => $r) { $ensure($d); $bucket[$d]['adiciones'] = (float) $r->total; }
 
+        // Apertura de la caja: si su fecha de creación cae dentro del rango, se
+        // suma como ingreso en ese día (igual que en la vista diaria). Si es
+        // anterior al rango, no entra aquí: va en el saldo de apertura del
+        // resumen por período (ver buildPeriodSummary).
+        if ($cashboxId) {
+            $cb = \App\Models\Collection\CollectionCashbox::where('company_id', $companyId)->find($cashboxId);
+            if ($cb && (float) $cb->opening_balance != 0.0 && $cb->created_at) {
+                $cbTz = TimezoneHelper::timezoneForCountryCode($cb->country_code) ?: $tz;
+                $ap = Carbon::parse($cb->created_at)->setTimezone($cbTz)->toDateString();
+                if ($ap >= $from && $ap <= $to) {
+                    $ensure($ap);
+                    $bucket[$ap]['ingresos'] += (float) $cb->opening_balance;
+                }
+            }
+        }
+
         foreach ($bucket as $d => &$row) {
             $row['neto'] = round(
                 $row['cobros'] + $row['ingresos']
@@ -186,10 +282,10 @@ class CollectionDailyRecordService
      * El acumulado se siembra con el saldo de apertura (arrastre = cierre del
      * día anterior a `from`) y luego suma el neto de caja de cada período.
      */
-    public function periodSummary(int $companyId, string $granularity, string $from, string $to, ?string $countryCode = null)
+    public function periodSummary(int $companyId, string $granularity, string $from, string $to, ?string $countryCode = null, ?int $cashboxId = null)
     {
         return $this->successResponse(
-            $this->buildPeriodSummary($companyId, $granularity, $from, $to, $countryCode)
+            $this->buildPeriodSummary($companyId, $granularity, $from, $to, $countryCode, $cashboxId)
         );
     }
 
@@ -197,16 +293,22 @@ class CollectionDailyRecordService
      * Construye el resumen por período (misma data que expone periodSummary).
      * Separado para reutilizarlo en el export PDF sin re-consultar la API.
      */
-    public function buildPeriodSummary(int $companyId, string $granularity, string $from, string $to, ?string $countryCode = null): array
+    public function buildPeriodSummary(int $companyId, string $granularity, string $from, string $to, ?string $countryCode = null, ?int $cashboxId = null): array
     {
         $tz = $this->companyTz($companyId);
         $allowed = ['daily', 'weekly', 'biweekly', 'monthly', 'yearly'];
         $granularity = in_array($granularity, $allowed, true) ? $granularity : 'daily';
 
-        $daily = $this->dailyBuckets($companyId, $from, $to, $tz, $countryCode);
+        $daily = $this->dailyBuckets($companyId, $from, $to, $tz, $countryCode, $cashboxId);
 
-        // Saldo de apertura (arrastre) antes del rango.
-        $opening = $this->closureSvc->getOpeningBalance($companyId, $from, $countryCode);
+        // Saldo de apertura (arrastre) antes del rango. Para una caja secundaria
+        // es su propio arrastre (saldo inicial + neto previo de esa caja); para
+        // la vista general / caja principal, el arrastre company-wide del cierre.
+        if ($cashboxId && !$this->isDefaultCashbox($companyId, $cashboxId)) {
+            $opening = $this->cashboxOpeningSeed($companyId, $cashboxId, $from, $tz);
+        } else {
+            $opening = $this->closureSvc->getOpeningBalance($companyId, $from, $countryCode);
+        }
 
         // Roll-up de días → períodos.
         $periods = [];
@@ -315,7 +417,7 @@ class CollectionDailyRecordService
      * ingresos, gastos y neto, con delta y % de variación. Compara "a la fecha"
      * (MTD/YTD) contra el mismo tramo del período anterior, para que sea justo.
      */
-    public function periodComparison(int $companyId, string $granularity, ?string $countryCode = null)
+    public function periodComparison(int $companyId, string $granularity, ?string $countryCode = null, ?int $cashboxId = null)
     {
         $tz = $this->companyTz($companyId);
         $now = Carbon::now($tz);
@@ -335,8 +437,8 @@ class CollectionDailyRecordService
             $prevTo = $prevRef->toDateString();
         }
 
-        $curr = $this->rangeTotals($companyId, $currFrom, $currTo, $tz, $countryCode);
-        $prev = $this->rangeTotals($companyId, $prevFrom, $prevTo, $tz, $countryCode);
+        $curr = $this->rangeTotals($companyId, $currFrom, $currTo, $tz, $countryCode, $cashboxId);
+        $prev = $this->rangeTotals($companyId, $prevFrom, $prevTo, $tz, $countryCode, $cashboxId);
 
         $metrics = [];
         foreach (['ingresos', 'gastos', 'neto'] as $k) {
@@ -365,9 +467,9 @@ class CollectionDailyRecordService
      * Totales de flujo de caja de un rango (ingresos, gastos, neto), sumando los
      * buckets diarios. Reutilizado por el comparativo.
      */
-    private function rangeTotals(int $companyId, string $from, string $to, string $tz, ?string $countryCode): array
+    private function rangeTotals(int $companyId, string $from, string $to, string $tz, ?string $countryCode, ?int $cashboxId = null): array
     {
-        $buckets = $this->dailyBuckets($companyId, $from, $to, $tz, $countryCode);
+        $buckets = $this->dailyBuckets($companyId, $from, $to, $tz, $countryCode, $cashboxId);
         $sum = ['cobros' => 0.0, 'ingresos' => 0.0, 'gastos' => 0.0, 'egresos' => 0.0, 'transferencias' => 0.0, 'adiciones' => 0.0, 'neto' => 0.0];
         foreach ($buckets as $b) {
             foreach ($sum as $k => $_) $sum[$k] += $b[$k];
@@ -398,11 +500,14 @@ class CollectionDailyRecordService
         $minAmount = $request->query('min_amount');
         $maxAmount = $request->query('max_amount');
         $countryCode = $request->query('country_code');
+        $cashboxId = $request->query('cashbox_id');
+        $cashboxId = ($cashboxId !== null && $cashboxId !== '') ? (int) $cashboxId : null;
 
         $query = CollectionDailyRecord::where('company_id', $companyId)
             ->whereNull('deleted_at')
             ->whereBetween('business_date', [$from, $to]);
         if ($countryCode) $query->where('country_code', strtoupper($countryCode));
+        if ($cashboxId) $query->where('cashbox_id', $cashboxId);
         if ($type && in_array($type, CollectionDailyRecord::TYPES)) $query->where('type', $type);
         if ($category !== '') $query->where('category', 'ilike', '%' . $category . '%');
         if ($q !== '') {
@@ -428,6 +533,16 @@ class CollectionDailyRecordService
             });
         }
 
+        // Nombre de la caja de cada resultado (el buscador puede abarcar varias).
+        $cbIds = $records->pluck('cashbox_id')->filter()->unique()->values()->all();
+        if (!empty($cbIds)) {
+            $cbNames = \App\Models\Collection\CollectionCashbox::whereIn('id', $cbIds)
+                ->pluck('name', 'id');
+            $records->each(function ($r) use ($cbNames) {
+                $r->cashbox_name = $r->cashbox_id ? ($cbNames[$r->cashbox_id] ?? null) : null;
+            });
+        }
+
         return $this->successResponse([
             'from' => $from,
             'to' => $to,
@@ -444,9 +559,9 @@ class CollectionDailyRecordService
      * aprobados (expenses), ambos por fecha contable. Devuelve total, conteo y
      * porcentaje por categoría, ordenado de mayor a menor.
      */
-    public function expensesByCategory(int $companyId, string $from, string $to, ?string $countryCode = null)
+    public function expensesByCategory(int $companyId, string $from, string $to, ?string $countryCode = null, ?int $cashboxId = null)
     {
-        $map = $this->spentByCategoryMap($companyId, $from, $to, $countryCode);
+        $map = $this->spentByCategoryMap($companyId, $from, $to, $countryCode, $cashboxId);
         $total = array_sum(array_column($map, 'total'));
         $cats = array_values($map);
         usort($cats, fn ($a, $b) => $b['total'] <=> $a['total']);
@@ -470,27 +585,34 @@ class CollectionDailyRecordService
      * Combina egresos manuales (daily_records gasto) y gastos aprobados
      * (expenses), unificando los códigos de expenses a etiquetas en español.
      */
-    private function spentByCategoryMap(int $companyId, string $from, string $to, ?string $countryCode): array
+    private function spentByCategoryMap(int $companyId, string $from, string $to, ?string $countryCode, ?int $cashboxId = null): array
     {
         $expLabels = [
             'fuel' => 'Combustible', 'food' => 'Alimentación', 'toll' => 'Peaje',
             'maintenance' => 'Mantenimiento', 'other' => 'Otro',
         ];
+        // Los gastos aprobados (expenses) son company-wide: solo se incluyen en la
+        // vista general / caja principal, no en una caja secundaria.
+        $includeCompanyWide = !$cashboxId || $this->isDefaultCashbox($companyId, $cashboxId);
 
         $drQ = CollectionDailyRecord::where('company_id', $companyId)
             ->whereNull('deleted_at')
             ->where('type', 'gasto')
             ->whereBetween('business_date', [$from, $to]);
         if ($countryCode) $drQ->where('country_code', strtoupper($countryCode));
+        if ($cashboxId) $drQ->where('cashbox_id', $cashboxId);
         $drRows = $drQ
             ->selectRaw("COALESCE(NULLIF(category, ''), 'Sin categoría') as cat, SUM(amount) as total, COUNT(*) as cnt")
             ->groupBy('cat')->get();
 
-        $expRows = CollectionExpense::where('company_id', $companyId)
-            ->whereNull('deleted_at')->where('status', 'approved')
-            ->whereBetween('business_date', [$from, $to])
-            ->selectRaw("COALESCE(NULLIF(category, ''), 'Sin categoría') as cat, SUM(amount) as total, COUNT(*) as cnt")
-            ->groupBy('cat')->get();
+        $expRows = collect();
+        if ($includeCompanyWide) {
+            $expRows = CollectionExpense::where('company_id', $companyId)
+                ->whereNull('deleted_at')->where('status', 'approved')
+                ->whereBetween('business_date', [$from, $to])
+                ->selectRaw("COALESCE(NULLIF(category, ''), 'Sin categoría') as cat, SUM(amount) as total, COUNT(*) as cnt")
+                ->groupBy('cat')->get();
+        }
 
         $map = [];
         $add = function ($cat, $total, $cnt) use (&$map) {
@@ -585,9 +707,9 @@ class CollectionDailyRecordService
     /**
      * Genera el PDF del resumen por período con saldo acumulado (DomPDF).
      */
-    public function downloadPeriodSummaryPdf(int $companyId, string $granularity, string $from, string $to, ?string $countryCode, ?string $currency)
+    public function downloadPeriodSummaryPdf(int $companyId, string $granularity, string $from, string $to, ?string $countryCode, ?string $currency, ?int $cashboxId = null)
     {
-        $data = $this->buildPeriodSummary($companyId, $granularity, $from, $to, $countryCode);
+        $data = $this->buildPeriodSummary($companyId, $granularity, $from, $to, $countryCode, $cashboxId);
         $company = Company::find($companyId);
         $tz = $data['timezone'];
 
@@ -604,6 +726,7 @@ class CollectionDailyRecordService
             ->whereNull('deleted_at')
             ->whereBetween('business_date', [$from, $to]);
         if ($countryCode) $movsQ->where('country_code', strtoupper($countryCode));
+        if ($cashboxId) $movsQ->where('cashbox_id', $cashboxId);
         $movs = $movsQ->orderBy('business_date', 'desc')->orderBy('recorded_at', 'desc')->get();
 
         $mUids = $movs->pluck('user_id')->filter()->unique()->values()->all();
@@ -694,11 +817,14 @@ class CollectionDailyRecordService
 
         $countryCode = $request->query('country_code');
         $type = $request->query('type');
+        $cashboxId = $request->query('cashbox_id');
+        $cashboxId = ($cashboxId !== null && $cashboxId !== '') ? (int) $cashboxId : null;
 
         $q = CollectionDailyRecord::where('company_id', $companyId)
             ->whereNull('deleted_at')
             ->whereBetween('business_date', [$from, $to]);
         if ($countryCode) $q->where('country_code', strtoupper($countryCode));
+        if ($cashboxId) $q->where('cashbox_id', $cashboxId);
         if ($type && in_array($type, CollectionDailyRecord::TYPES)) $q->where('type', $type);
 
         $records = $q->orderBy('business_date', 'desc')->orderBy('recorded_at', 'desc')->get();
@@ -729,6 +855,9 @@ class CollectionDailyRecordService
         $date = $request->query('date', Carbon::now($tz)->toDateString());
         $countryCode = $request->query('country_code');
         $type = $request->query('type');
+        // Multi-caja: si se pide una caja específica, se acota la bitácora a ella.
+        $cashboxId = $request->query('cashbox_id');
+        $cashboxId = ($cashboxId !== null && $cashboxId !== '') ? (int) $cashboxId : null;
 
         // Si el tipo filtrado es 'capital_addition', no cargamos daily records.
         $dailyRecords = collect();
@@ -739,6 +868,7 @@ class CollectionDailyRecordService
 
             if ($countryCode) $q->where('country_code', strtoupper($countryCode));
             if ($type && in_array($type, CollectionDailyRecord::TYPES)) $q->where('type', $type);
+            if ($cashboxId) $q->where('cashbox_id', $cashboxId);
 
             $dailyRecords = $q->orderBy('recorded_at', 'desc')->get();
 
@@ -784,13 +914,51 @@ class CollectionDailyRecordService
         }
 
         // Adiciones de capital como filas virtuales (type='capital_addition').
+        // Pertenecen al flujo de créditos (no a una caja concreta): solo se
+        // muestran en la vista general o en la caja principal.
         $capitalVirtual = collect();
-        if (!$type || $type === 'capital_addition') {
+        $showCapital = !$cashboxId || $this->isDefaultCashbox($companyId, $cashboxId);
+        if ((!$type || $type === 'capital_addition') && $showCapital) {
             $capitalVirtual = $this->buildVirtualCapitalAdditions($companyId, $date, $countryCode);
         }
 
+        // Apertura de caja: al ver una caja concreta, si su fecha de creación
+        // (día contable en su zona) cae en el día visto, se muestra el saldo
+        // inicial como un movimiento virtual "apertura" que suma al balance del
+        // día (igual que el saldo inicial de un extracto bancario). Solo el día
+        // de creación; en días posteriores la apertura ya no aparece.
+        $aperturaVirtual = collect();
+        $aperturaAmount = 0.0;
+        if ($cashboxId && !$type) {
+            $cb = \App\Models\Collection\CollectionCashbox::where('company_id', $companyId)
+                ->find($cashboxId);
+            if ($cb && (float) $cb->opening_balance != 0.0 && $cb->created_at) {
+                $cbTz = TimezoneHelper::timezoneForCountryCode($cb->country_code) ?: $tz;
+                $aperturaDate = Carbon::parse($cb->created_at)->setTimezone($cbTz)->toDateString();
+                if ($aperturaDate === $date) {
+                    $aperturaAmount = (float) $cb->opening_balance;
+                    $aperturaVirtual->push([
+                        'id' => 'apertura-' . $cb->id,
+                        'company_id' => $companyId,
+                        'cashbox_id' => $cb->id,
+                        'user_id' => null,
+                        'type' => 'apertura',
+                        'category' => 'Apertura de caja',
+                        'amount' => $aperturaAmount,
+                        'currency' => $cb->currency,
+                        'country_code' => $cb->country_code,
+                        'description' => 'Saldo inicial de la caja',
+                        'recorded_at' => Carbon::parse($cb->created_at)->utc()->toIso8601String(),
+                        'business_date' => $aperturaDate,
+                        'metadata' => ['virtual' => true],
+                        'created_by_name' => null,
+                    ]);
+                }
+            }
+        }
+
         // Combinar y ordenar por timestamp descendente.
-        $all = $dailyRecords->concat($capitalVirtual)->sortByDesc(function ($r) {
+        $all = $dailyRecords->concat($capitalVirtual)->concat($aperturaVirtual)->sortByDesc(function ($r) {
             return is_object($r) && isset($r->recorded_at)
                 ? Carbon::parse($r->recorded_at)->timestamp
                 : (is_array($r) ? strtotime($r['recorded_at'] ?? 'now') : 0);
@@ -801,11 +969,14 @@ class CollectionDailyRecordService
             'gasto' => (float) $dailyRecords->where('type', 'gasto')->sum('amount'),
             'transferencia' => (float) $dailyRecords->where('type', 'transferencia')->sum('amount'),
             'capital_addition' => (float) $capitalVirtual->sum(fn($r) => (float) ($r['amount'] ?? 0)),
+            'apertura' => $aperturaAmount,
         ];
-        // Balance del día = ingresos − (gastos + transferencias salientes + adiciones de capital).
-        // Las transferencias salen de la wallet (action=transfer_out) y las adiciones
-        // también son salidas hacia el cliente, por eso restan al balance del día.
-        $totals['net'] = $totals['ingreso']
+        // Balance del día = apertura + ingresos − (gastos + transferencias
+        // salientes + adiciones de capital). Las transferencias salen de la
+        // wallet (action=transfer_out) y las adiciones también son salidas hacia
+        // el cliente, por eso restan al balance del día.
+        $totals['net'] = $totals['apertura']
+            + $totals['ingreso']
             - $totals['gasto']
             - $totals['transferencia']
             - $totals['capital_addition'];
@@ -821,6 +992,7 @@ class CollectionDailyRecordService
                 ->where('business_date', $date);
             if ($countryCode) $dq->where('country_code', strtoupper($countryCode));
             if ($type && in_array($type, CollectionDailyRecord::TYPES)) $dq->where('type', $type);
+            if ($cashboxId) $dq->where('cashbox_id', $cashboxId);
             $deleted = $dq->orderByDesc('deleted_at')->get();
 
             // Nombres de creador y de quien eliminó (usuarios viven en MySQL).
@@ -957,7 +1129,16 @@ class CollectionDailyRecordService
             'recorded_at' => 'nullable|date',
             'transfer_from' => 'nullable|string|max:100',
             'transfer_to' => 'nullable|string|max:100',
+            // Multi-caja: a qué caja pertenece el movimiento (fallback: la default).
+            'cashbox_id' => 'nullable|integer',
         ]);
+
+        // Resolver la caja destino del movimiento. Si no se envía, o no es
+        // válida para la empresa, cae a la caja principal (default).
+        $cashboxId = $this->resolveCashboxId($companyId, $validated['cashbox_id'] ?? null);
+        if (!$cashboxId) {
+            return $this->errorResponse('La empresa no tiene una caja configurada.', 422);
+        }
 
         // Fecha contable (business_date): anclada a la zona del PAÍS del
         // movimiento (country_code → IANA); si no hay país conocido, cae a la
@@ -1003,11 +1184,12 @@ class CollectionDailyRecordService
             if (!empty($validated['transfer_to'])) $metadata['transfer_to'] = $validated['transfer_to'];
         }
 
-        return DB::connection('collection_pgsql')->transaction(function () use ($validated, $companyId, $metadata, $recordedAt, $businessDate, $countryCode) {
+        return DB::connection('collection_pgsql')->transaction(function () use ($validated, $companyId, $metadata, $recordedAt, $businessDate, $countryCode, $cashboxId) {
             $currency = strtoupper($validated['currency']);
 
             $record = CollectionDailyRecord::create([
                 'company_id' => $companyId,
+                'cashbox_id' => $cashboxId,
                 'user_id' => Auth::id(),
                 'type' => $validated['type'],
                 'category' => $validated['category'] ?? null,

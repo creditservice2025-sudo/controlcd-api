@@ -18,6 +18,15 @@ class CollectionDailyRecordController extends Controller
         $this->service = $service;
     }
 
+    /**
+     * Lee el cashbox_id opcional del request (para reportes por caja).
+     */
+    private function cashboxIdFrom(Request $request): ?int
+    {
+        $v = $request->query('cashbox_id');
+        return ($v !== null && $v !== '') ? (int) $v : null;
+    }
+
     public function index(Request $request)
     {
         $companyId = $this->resolveOwnCompanyId($request);
@@ -78,8 +87,9 @@ class CollectionDailyRecordController extends Controller
         $from = $request->query('from', \Carbon\Carbon::now($tz)->startOfMonth()->toDateString());
         $to = $request->query('to', $today);
         $countryCode = $request->query('country_code');
+        $cashboxId = $this->cashboxIdFrom($request);
 
-        return $this->service->getTrend($companyId, $from, $to, $tz, $countryCode);
+        return $this->service->getTrend($companyId, $from, $to, $tz, $countryCode, $cashboxId);
     }
 
     /**
@@ -98,8 +108,9 @@ class CollectionDailyRecordController extends Controller
         $from = $request->query('from', \Carbon\Carbon::now($tz)->startOfYear()->toDateString());
         $to = $request->query('to', $today);
         $countryCode = $request->query('country_code');
+        $cashboxId = $this->cashboxIdFrom($request);
 
-        return $this->service->periodSummary($companyId, $granularity, $from, $to, $countryCode);
+        return $this->service->periodSummary($companyId, $granularity, $from, $to, $countryCode, $cashboxId);
     }
 
     /**
@@ -112,8 +123,9 @@ class CollectionDailyRecordController extends Controller
 
         $granularity = $request->query('granularity', 'monthly');
         $countryCode = $request->query('country_code');
+        $cashboxId = $this->cashboxIdFrom($request);
 
-        return $this->service->periodComparison($companyId, $granularity, $countryCode);
+        return $this->service->periodComparison($companyId, $granularity, $countryCode, $cashboxId);
     }
 
     /**
@@ -196,8 +208,9 @@ class CollectionDailyRecordController extends Controller
         $from = $request->query('from', \Carbon\Carbon::now($tz)->startOfMonth()->toDateString());
         $to = $request->query('to', $today);
         $countryCode = $request->query('country_code');
+        $cashboxId = $this->cashboxIdFrom($request);
 
-        return $this->service->expensesByCategory($companyId, $from, $to, $countryCode);
+        return $this->service->expensesByCategory($companyId, $from, $to, $countryCode, $cashboxId);
     }
 
     /**
@@ -215,8 +228,9 @@ class CollectionDailyRecordController extends Controller
         $to = $request->query('to', $today);
         $countryCode = $request->query('country_code');
         $currency = $request->query('currency');
+        $cashboxId = $this->cashboxIdFrom($request);
 
-        return $this->service->downloadPeriodSummaryPdf($companyId, $granularity, $from, $to, $countryCode, $currency);
+        return $this->service->downloadPeriodSummaryPdf($companyId, $granularity, $from, $to, $countryCode, $currency, $cashboxId);
     }
 
     /**
