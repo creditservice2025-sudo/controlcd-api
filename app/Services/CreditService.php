@@ -469,6 +469,10 @@ class CreditService
                 'phone' => 'required|string|min:7',
                 'micro_insurance_percentage' => 'required|numeric',
                 'images' => 'required|array|min:1',
+                // La ubicación real de la foto es obligatoria también al renovar:
+                // cada captura debe registrar dónde se tomó (no se hereda).
+                'images.0.latitude' => 'required|numeric',
+                'images.0.longitude' => 'required|numeric',
             ], [
                 'phone.required' => 'El teléfono es obligatorio',
                 'phone.min' => 'El teléfono debe tener al menos 7 caracteres',
@@ -476,6 +480,8 @@ class CreditService
                 'micro_insurance_percentage.numeric' => 'El porcentaje de microseguro debe ser un número',
                 'images.required' => 'La foto es obligatoria para la renovación',
                 'images.min' => 'Debe subir al menos una foto para renovar',
+                'images.0.latitude.required' => 'La ubicación (GPS) de la foto es obligatoria. Activá el GPS y usá "Reintentar".',
+                'images.0.longitude.required' => 'La ubicación (GPS) de la foto es obligatoria. Activá el GPS y usá "Reintentar".',
             ]);
 
             // Validar tope ANTES de abrir la transacción para no dejarla
