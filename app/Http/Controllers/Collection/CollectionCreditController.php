@@ -26,6 +26,12 @@ class CollectionCreditController extends Controller
             'client_id' => 'required|integer|min:1',
             'credit_value' => 'required|numeric|min:0.01',
             'interest_rate' => 'nullable|numeric|min:0',
+            // Fecha contable del crédito (desembolso). Se valida no-futura en el
+            // servicio según la zona horaria del país del crédito.
+            'credit_date' => 'nullable|date',
+            // Nombre de la ruta y descripción: obligatorios para todo crédito nuevo.
+            'route_name' => 'required|string|max:150',
+            'description' => 'required|string|max:1000',
             // Credito abierto: N no aplica; se genera 1 cuota y las siguientes al pagar.
             // Se deja nullable para soportar el unico modo actual (monthly_interest_open).
             'number_installments' => 'nullable|integer|min:1|max:1000',
@@ -39,6 +45,11 @@ class CollectionCreditController extends Controller
             'images' => 'nullable|array',
             'images.*.file' => 'nullable|file|image|max:4096',
             'images.*.type' => 'nullable|string|max:80',
+        ], [
+            'route_name.required' => 'El nombre de la ruta es obligatorio.',
+            'route_name.max' => 'El nombre de la ruta no puede superar los 150 caracteres.',
+            'description.required' => 'La descripción es obligatoria.',
+            'description.max' => 'La descripción no puede superar los 1000 caracteres.',
         ]);
 
         if ($request->hasFile('images.0.file')) {

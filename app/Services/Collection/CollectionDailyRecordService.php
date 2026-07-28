@@ -173,47 +173,19 @@ class CollectionDailyRecordService
             ->groupBy('d', 'type')
             ->get();
 
-        // 2) Cobros (payments) — recorded_at es timestamptz, se convierte a tz.
+        // Cobros (payments) y adiciones de capital son del lado de CRÉDITO y NO
+        // se reflejan en Registros Diarios (sección solo operativa). Se dejan como
+        // colecciones vacías para que el corte no los cuente. El crédito se ve en
+        // el Dashboard/wallet, que no se toca. Ver memoria
+        // project_collection_registros_operativos.
         $payRows = collect();
         $expRows = collect();
         $adicRows = collect();
         if ($includeCompanyWide) {
-        $payQ = CollectionPayment::where('company_id', $companyId)
-            ->whereNull('deleted_at')
-            ->whereBetween('recorded_at', [$startUtc, $endUtc]);
-        if ($countryCode) {
-            $payQ->whereIn('credit_id', function ($sub) use ($companyId, $countryCode) {
-                $sub->select('id')->from('collection_credits')
-                    ->where('company_id', $companyId)
-                    ->where('country_code', strtoupper($countryCode));
-            });
-        }
-        $payRows = $payQ
-            ->selectRaw("to_char(recorded_at AT TIME ZONE ?, 'YYYY-MM-DD') as d, SUM(amount_paid) as total", [$tz])
-            ->groupBy('d')
-            ->get()
-            ->keyBy('d');
-
-        // 3) Gastos aprobados (expenses) por día contable.
+        // Gastos aprobados (expenses) por día contable — operativo, se incluye.
         $expRows = CollectionExpense::where('company_id', $companyId)
             ->whereNull('deleted_at')->where('status', 'approved')
             ->whereBetween('business_date', [$from, $to])
-            ->selectRaw("to_char(business_date, 'YYYY-MM-DD') as d, SUM(amount) as total")
-            ->groupBy('d')
-            ->get()
-            ->keyBy('d');
-
-        // 4) Adiciones de capital por día contable.
-        $adicQ = CollectionCapitalAddition::where('company_id', $companyId)
-            ->whereBetween('business_date', [$from, $to]);
-        if ($countryCode) {
-            $adicQ->whereIn('credit_id', function ($sub) use ($companyId, $countryCode) {
-                $sub->select('id')->from('collection_credits')
-                    ->where('company_id', $companyId)
-                    ->where('country_code', strtoupper($countryCode));
-            });
-        }
-        $adicRows = $adicQ
             ->selectRaw("to_char(business_date, 'YYYY-MM-DD') as d, SUM(amount) as total")
             ->groupBy('d')
             ->get()
@@ -913,14 +885,11 @@ class CollectionDailyRecordService
             }
         }
 
-        // Adiciones de capital como filas virtuales (type='capital_addition').
-        // Pertenecen al flujo de créditos (no a una caja concreta): solo se
-        // muestran en la vista general o en la caja principal.
+        // Adiciones de capital: pertenecen al flujo de CRÉDITO y ya NO se muestran
+        // en Registros Diarios (sección solo operativa). Se dejan vacías. Se ven en
+        // el Dashboard/wallet. Ver memoria project_collection_registros_operativos.
+        // (buildVirtualCapitalAdditions se conserva por compatibilidad, sin usarse aquí.)
         $capitalVirtual = collect();
-        $showCapital = !$cashboxId || $this->isDefaultCashbox($companyId, $cashboxId);
-        if ((!$type || $type === 'capital_addition') && $showCapital) {
-            $capitalVirtual = $this->buildVirtualCapitalAdditions($companyId, $date, $countryCode);
-        }
 
         // Apertura de caja: al ver una caja concreta, si su fecha de creación
         // (día contable en su zona) cae en el día visto, se muestra el saldo

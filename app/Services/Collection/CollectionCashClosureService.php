@@ -303,30 +303,12 @@ class CollectionCashClosureService
 
     private function computeTotals(int $companyId, string $date, Carbon $dayStart, Carbon $dayEnd, ?string $countryCode): array
     {
-        // Cobros del dia
-        $cobrosQ = CollectionPayment::where('company_id', $companyId)
-            ->whereNull('deleted_at')
-            ->whereBetween('recorded_at', [$dayStart, $dayEnd]);
-        if ($countryCode) {
-            $cobrosQ->whereIn('credit_id', function ($sub) use ($companyId, $countryCode) {
-                $sub->select('id')->from('collection_credits')
-                    ->where('company_id', $companyId)
-                    ->where('country_code', strtoupper($countryCode));
-            });
-        }
-        $totalCobros = (float) $cobrosQ->sum('amount_paid');
-
-        // Adiciones de capital (salen de caja)
-        $adicQ = CollectionCapitalAddition::where('company_id', $companyId)
-            ->where('business_date', $date);
-        if ($countryCode) {
-            $adicQ->whereIn('credit_id', function ($sub) use ($companyId, $countryCode) {
-                $sub->select('id')->from('collection_credits')
-                    ->where('company_id', $companyId)
-                    ->where('country_code', strtoupper($countryCode));
-            });
-        }
-        $totalAdiciones = (float) $adicQ->sum('amount');
+        // Cobros y adiciones de capital son del lado de CRÉDITO y NO cuentan en el
+        // cierre de caja operativo (Registros Diarios). Se dejan en 0 para que no
+        // afecten el efectivo esperado ni el auto-cierre. El crédito se refleja en
+        // el Dashboard/wallet. Ver memoria project_collection_registros_operativos.
+        $totalCobros = 0.0;
+        $totalAdiciones = 0.0;
 
         // Gastos aprobados del dia (por fecha contable business_date).
         $gastosQ = CollectionExpense::where('company_id', $companyId)

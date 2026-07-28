@@ -55,15 +55,90 @@ class CollectionClientService
         $paginator = $query->paginate($perPage);
 
         $hasCountryCode = $this->hasClientCountryCodeColumn();
-        $rows = $paginator->getCollection()->map(function (CollectionClient $client) use ($companyId, $hasCountryCode) {
-            $meta = $this->hasClientMetadataColumn() ? ($client->metadata ?? []) : [];
-            $latestCredit = CollectionCredit::query()
-                ->where('client_id', $client->id)
-                ->when($this->hasCreditCompanyColumn(), function ($creditQuery) use ($companyId) {
+        $hasCreditCompany = $this->hasCreditCompanyColumn();
+        $pageClients = $paginator->getCollection();
+        $clientIds = $pageClients->pluck('id')->filter()->values()->all();
+
+        // === Carga por LOTE para evitar N+1 en el listado paginado ===
+        // 1) Todos los créditos de los clientes de la página.
+        $allCredits = collect();
+        $creditsByClient = [];
+        $latestByClient = [];
+        if (!empty($clientIds)) {
+            $allCredits = CollectionCredit::query()
+                ->whereIn('client_id', $clientIds)
+                ->when($hasCreditCompany, function ($creditQuery) use ($companyId) {
                     $creditQuery->where('company_id', $companyId);
                 })
                 ->orderByDesc('id')
-                ->first();
+                ->get();
+            foreach ($allCredits as $c) {
+                $creditsByClient[$c->client_id][] = $c;
+                if (!isset($latestByClient[$c->client_id])) {
+                    $latestByClient[$c->client_id] = $c; // el primero = mayor id (orderByDesc)
+                }
+            }
+        }
+
+        // 2) Agregados de cuotas por crédito (SIEMPRE desde installments, nunca
+        //    desde remaining_amount). Un solo query agrupado por credit_id.
+        $instByCredit = [];
+        $creditIds = $allCredits->pluck('id')->all();
+        if (!empty($creditIds)) {
+            $aggRows = CollectionInstallment::query()
+                ->whereIn('credit_id', $creditIds)
+                ->where('company_id', $companyId)
+                ->whereNull('deleted_at')
+                ->selectRaw('
+                    credit_id,
+                    SUM(COALESCE(principal_paid, 0)) as principal_paid,
+                    SUM(GREATEST(COALESCE(interest_amount, 0) - COALESCE(interest_paid, 0), 0)) as pending_interest,
+                    SUM(COALESCE(paid_amount, 0)) as total_paid
+                ')
+                ->groupBy('credit_id')
+                ->get();
+            foreach ($aggRows as $r) {
+                $instByCredit[$r->credit_id] = $r;
+            }
+        }
+
+        $activeStatuses = ['active', 'activo', 'vigente'];
+
+        $rows = $pageClients->map(function (CollectionClient $client) use ($hasCountryCode, $creditsByClient, $latestByClient, $instByCredit, $activeStatuses) {
+            $meta = $this->hasClientMetadataColumn() ? ($client->metadata ?? []) : [];
+            $latestCredit = $latestByClient[$client->id] ?? null;
+
+            // Agregados de la CARTERA ACTIVA del cliente (suma de todos sus créditos
+            // activos). Monto total = capital + interés del período; Por pagar =
+            // capital pendiente + interés pendiente; Abonado = pagos reales.
+            $totalAmount = 0.0;
+            $totalInterest = 0.0;
+            $totalCapital = 0.0;
+            $totalPaid = 0.0;
+            $totalPending = 0.0;
+            $activeCount = 0;
+            $aggCurrency = $latestCredit?->currency ?? 'COP';
+            foreach (($creditsByClient[$client->id] ?? []) as $c) {
+                if (!in_array(strtolower((string) $c->status), $activeStatuses, true)) {
+                    continue;
+                }
+                $activeCount++;
+                $amount = (float) $c->amount;
+                $rate = (float) $c->interest_rate;
+                $interest = $amount * $rate / 100;
+                $ag = $instByCredit[$c->id] ?? null;
+                $principalPaid = (float) ($ag->principal_paid ?? 0);
+                $pendingInterest = max(0, (float) ($ag->pending_interest ?? 0));
+                $paid = (float) ($ag->total_paid ?? 0);
+                $balance = max(0, $amount - $principalPaid) + $pendingInterest;
+
+                $totalCapital += $amount;
+                $totalInterest += $interest;
+                $totalAmount += $amount + $interest;
+                $totalPaid += $paid;
+                $totalPending += $balance;
+                $aggCurrency = $c->currency ?? $aggCurrency;
+            }
 
             $creditMeta = is_array($latestCredit?->metadata) ? $latestCredit->metadata : [];
 
@@ -83,12 +158,21 @@ class CollectionClientService
                 'document_photo' => $meta['document_photo'] ?? null,
                 'credit_id' => $latestCredit?->id,
                 'credit_amount' => $latestCredit?->amount,
-                'credit_currency' => $latestCredit?->currency ?? 'COP',
+                'credit_currency' => $aggCurrency,
                 'credit_interest_rate' => $latestCredit?->interest_rate,
+                // Agregados de la cartera activa del cliente.
+                'total_amount' => round($totalAmount, 2),
+                'total_capital' => round($totalCapital, 2),
+                'total_interest' => round($totalInterest, 2),
+                'total_paid' => round($totalPaid, 2),
+                'total_pending' => round($totalPending, 2),
+                'credits_count' => $activeCount,
                 'credit_total_installments' => $latestCredit?->total_installments,
                 'credit_payment_frequency' => $latestCredit?->payment_frequency,
                 'credit_first_installment_date' => $latestCredit?->first_installment_date?->toDateString(),
                 'credit_status' => $latestCredit?->status,
+                'credit_route_name' => $latestCredit?->route_name ?? null,
+                'credit_description' => $latestCredit?->description ?? null,
                 'transfer_voucher_photo' => $creditMeta['transfer_voucher_photo'] ?? null,
                 'transfer_support_photo' => $creditMeta['transfer_support_photo'] ?? null,
                 'transfer_bank_name' => $creditMeta['transfer_bank_name'] ?? null,
@@ -343,6 +427,9 @@ class CollectionClientService
                 'created_at' => optional($credit->created_at)->toISOString(),
                 'transfer_bank_name' => $meta['transfer_bank_name'] ?? null,
                 'transfer_reference_number' => $meta['transfer_reference_number'] ?? null,
+                'route_name' => $credit->route_name ?? null,
+                'description' => $credit->description ?? null,
+                'business_date' => $credit->business_date?->toDateString(),
             ];
         });
 

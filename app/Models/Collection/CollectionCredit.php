@@ -23,6 +23,8 @@ class CollectionCredit extends Model
         'metadata',
         'currency',
         'country_code',
+        'route_name',
+        'description',
     ];
 
     protected $casts = [

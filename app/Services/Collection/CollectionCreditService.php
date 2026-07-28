@@ -9,6 +9,7 @@ use App\Traits\ApiResponse;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class CollectionCreditService
 {
@@ -75,6 +76,19 @@ class CollectionCreditService
             $currency = $payload['currency'] ?? 'COP';
             $countryCode = $payload['country_code'] ?? 'CO';
 
+            // Fecha contable del crédito (desembolso): usa la fecha seleccionada
+            // por el usuario (credit_date) o hoy por defecto. Se ancla al día
+            // calendario en la zona horaria del país del crédito y se rechaza si
+            // es futura (defensa server-side; la UI ya lo impide).
+            $creditTz = \App\Helpers\TimezoneHelper::timezoneForCountryCode($countryCode) ?: 'America/Bogota';
+            $todayInTz = Carbon::now($creditTz)->toDateString();
+            $businessDate = !empty($payload['credit_date'])
+                ? Carbon::parse($payload['credit_date'])->toDateString()
+                : $todayInTz;
+            if ($businessDate > $todayInTz) {
+                return $this->errorResponse('La fecha de crédito no puede ser futura', 422);
+            }
+
             // Validar contra la configuración de la empresa
             $config = \App\Models\Collection\CollectionCompanyConfig::where('company_id', $companyId)->first();
             if ($config) {
@@ -86,7 +100,7 @@ class CollectionCreditService
                 return $this->errorResponse("Esta empresa no tiene configuradas monedas adicionales.", 422);
             }
 
-            $credit = CollectionCredit::query()->create([
+            $createData = [
                 'company_id' => $companyId,
                 'client_id' => $clientId,
                 'amount' => $creditValue,
@@ -95,11 +109,23 @@ class CollectionCreditService
                 'payment_frequency' => $frequency,
                 'first_installment_date' => $firstInstallmentDate,
                 'status' => 'active',
-                'business_date' => Carbon::now()->toDateString(),
+                'business_date' => $businessDate,
                 'metadata' => $metadata,
                 'currency' => $currency,
                 'country_code' => $countryCode,
-            ]);
+            ];
+
+            // Nombre de la ruta y descripción: se escriben solo si la columna ya
+            // existe (la migración puede correr en una ventana separada). Antes de
+            // migrar, degradan a no-op sin romper la creación del crédito.
+            if ($this->hasCreditColumn('route_name')) {
+                $createData['route_name'] = trim((string) ($payload['route_name'] ?? '')) ?: null;
+            }
+            if ($this->hasCreditColumn('description')) {
+                $createData['description'] = trim((string) ($payload['description'] ?? '')) ?: null;
+            }
+
+            $credit = CollectionCredit::query()->create($createData);
 
             // Sync with Centralized Wallet (Outflow: Issuing a loan)
             app(\App\Services\Collection\CollectionWalletService::class)->recordMovement([
@@ -283,6 +309,11 @@ class CollectionCreditService
                 'total_amount' => (float) $rows->sum('amount'),
             ],
         ]);
+    }
+
+    private function hasCreditColumn(string $column): bool
+    {
+        return Schema::connection(self::CONNECTION)->hasColumn('collection_credits', $column);
     }
 
     private function resolveCompanyId($requestedCompanyId): int
