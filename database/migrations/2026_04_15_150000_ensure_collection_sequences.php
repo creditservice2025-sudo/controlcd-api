@@ -26,6 +26,7 @@ return new class extends Migration
         'collection_auth_codes',
         'collection_expenses',
         'collection_client_audits',
+        'collection_credit_audits',
     ];
 
     public function up(): void

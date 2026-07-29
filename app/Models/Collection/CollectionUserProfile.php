@@ -38,7 +38,9 @@ class CollectionUserProfile extends Model
                 'dashboard.view',
                 'wallet.view', 'wallet.inject',
                 'clients.view', 'clients.create', 'clients.edit', 'clients.delete',
-                'credits.view', 'credits.create',
+                // credits.delete = anular un crédito del día (no borra: marca y
+                // reintegra caja). Va con el gerente, como clients.delete.
+                'credits.view', 'credits.create', 'credits.delete',
                 'payments.view', 'payments.create',
                 'expenses.view', 'expenses.create',
                 'users.view',

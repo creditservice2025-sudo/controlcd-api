@@ -458,15 +458,29 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
     // Isolated Collection module (Deuda & Abono)
     Route::prefix('collection/v1')->group(function () {
         Route::get('clients', [CollectionClientController::class, 'index']);
+        // Antes de clients/{clientId} no hay conflicto (rutas distintas), pero se
+        // declara junto para que la traza del cliente quede a la vista.
+        Route::get('clients/{clientId}/history', [CollectionClientController::class, 'history']);
         Route::get('clients/{clientId}', [CollectionClientController::class, 'show']);
         Route::post('clients', [CollectionClientController::class, 'store']);
         Route::match(['post', 'put'], 'clients/{clientId}', [CollectionClientController::class, 'update']);
         Route::delete('clients/{clientId}', [CollectionClientController::class, 'destroy'])
             ->middleware('collection.permission:clients.delete');
         Route::post('credits', [CollectionCreditController::class, 'store']);
+        // Edición del mismo día (el servicio corta si la ventana ya se cerró).
+        Route::match(['post', 'put'], 'credits/{creditId}', [CollectionCreditController::class, 'update']);
+        // Anulación del mismo día: marca el crédito, reintegra caja y audita.
+        Route::delete('credits/{creditId}', [CollectionCreditController::class, 'destroy'])
+            ->middleware('collection.permission:credits.delete');
         Route::post('credits/{creditId}/settle', [CollectionCreditController::class, 'settle']);
         Route::post('credits/{creditId}/add-capital', [CollectionCreditController::class, 'addCapital']);
         Route::get('credits/{creditId}/capital-additions', [CollectionCreditController::class, 'listCapitalAdditions']);
+        Route::get('credits/{creditId}/history', [CollectionCreditController::class, 'history']);
+        // Cartón digital: datos para la pantalla/imagen, y el mismo cartón en PDF.
+        Route::get('credits/{creditId}/cardboard', [CollectionCreditController::class, 'cardboard']);
+        Route::get('credits/{creditId}/cardboard-pdf', [CollectionCreditController::class, 'cardboardPdf']);
+        // Corrección de una adición dentro de la ventana del mismo día.
+        Route::match(['post', 'put'], 'capital-additions/{additionId}', [CollectionCreditController::class, 'updateCapitalAddition']);
         Route::delete('installments/{id}', [CollectionCreditController::class, 'destroyInstallment']);
         Route::post('payments', [CollectionPaymentController::class, 'store']);
         Route::get('expenses', [\App\Http\Controllers\Collection\CollectionExpenseController::class, 'index']);

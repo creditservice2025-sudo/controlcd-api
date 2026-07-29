@@ -2,6 +2,7 @@
 
 namespace App\Services\Collection;
 
+use App\Models\Collection\CollectionCapitalAddition;
 use App\Models\Collection\CollectionClient;
 use App\Models\Collection\CollectionClientAudit;
 use App\Models\Collection\CollectionCredit;
@@ -306,6 +307,7 @@ class CollectionClientService
 
         return DB::connection(self::CONNECTION)->transaction(function () use ($client, $payload, $incomingDni, $companyId) {
             $hasMetadataColumn = $this->hasClientMetadataColumn();
+            $hasCountryColumn = $this->hasClientCountryCodeColumn();
             $oldSnapshot = [
                 'name' => $client->name,
                 'dni' => $client->dni,
@@ -313,6 +315,9 @@ class CollectionClientService
                 'address' => $client->address,
                 'metadata' => $hasMetadataColumn ? ($client->metadata ?? []) : [],
             ];
+            if ($hasCountryColumn) {
+                $oldSnapshot['country_code'] = $client->country_code;
+            }
 
             $metadata = [];
             if ($hasMetadataColumn) {
@@ -332,8 +337,13 @@ class CollectionClientService
                 'address' => trim((string) ($payload['address'] ?? $client->address)),
             ];
 
-            if ($this->hasClientCountryCodeColumn()) {
-                $updateData['country_code'] = $payload['country_code'] ?? $client->country_code;
+            if ($hasCountryColumn) {
+                // Un país vacío no debe borrar el actual: el cliente quedaría
+                // fuera del listado filtrado por territorio.
+                $incomingCountry = trim((string) ($payload['country_code'] ?? ''));
+                $updateData['country_code'] = $incomingCountry !== ''
+                    ? $incomingCountry
+                    : $client->country_code;
             }
 
             if ($hasMetadataColumn) {
@@ -343,15 +353,20 @@ class CollectionClientService
             $client->fill($updateData);
             $client->save();
 
+            $newSnapshot = [
+                'name' => $client->name,
+                'dni' => $client->dni,
+                'phone' => $client->phone,
+                'address' => $client->address,
+                'metadata' => $hasMetadataColumn ? $metadata : [],
+            ];
+            if ($hasCountryColumn) {
+                $newSnapshot['country_code'] = $client->country_code;
+            }
+
             $this->audit($companyId, $client->id, 'updated', [
                 'old' => $oldSnapshot,
-                'new' => [
-                    'name' => $client->name,
-                    'dni' => $client->dni,
-                    'phone' => $client->phone,
-                    'address' => $client->address,
-                    'metadata' => $hasMetadataColumn ? $metadata : [],
-                ],
+                'new' => $newSnapshot,
             ]);
 
             return $this->successResponse([
@@ -412,6 +427,45 @@ class CollectionClientService
             $pendingInterest = max(0, (float)($stats->pending_interest ?? 0));
             $realBalance = $remainingPrincipal + $pendingInterest;
 
+            // Permisos de edición. Son TRES cosas distintas y mezclarlas en un
+            // solo booleano escondía el botón de editar en créditos que el
+            // backend sí dejaba corregir:
+            //
+            //   can_edit         → la ventana del día está abierta. Habilita los
+            //                      campos no financieros (ruta, descripción,
+            //                      banco, comprobantes), que no mueven plata.
+            //   can_edit_amounts → además, el crédito está intacto (sin abonos ni
+            //                      adiciones), así que se pueden tocar monto,
+            //                      tasa y fechas.
+            //   can_cancel       → se puede anular: ventana abierta y sin abonos.
+            //                      Las adiciones no lo impiden: la reversa
+            //                      devuelve el capital completo.
+            $registeredDate = $this->creditService->creditRegistrationDate($credit);
+            [$canEdit, $editReason] = $this->creditService->creditEditability($credit);
+
+            $hasPayments = (float) ($stats->total_paid_all ?? 0) > 0;
+            $hasAdditions = CollectionCapitalAddition::query()
+                ->where('company_id', $companyId)
+                ->where('credit_id', $credit->id)
+                ->exists();
+
+            $canEditAmounts = $canEdit;
+            $amountsReason = $editReason;
+            if ($canEditAmounts) {
+                if ($hasPayments) {
+                    $canEditAmounts = false;
+                    $amountsReason = 'El crédito ya tiene abonos registrados.';
+                } elseif ($hasAdditions) {
+                    $canEditAmounts = false;
+                    $amountsReason = 'El crédito ya tiene adiciones de capital.';
+                }
+            }
+
+            $canCancel = $canEdit && !$hasPayments;
+            $cancelReason = $canCancel
+                ? null
+                : ($hasPayments ? 'El crédito ya tiene abonos registrados.' : $editReason);
+
             return [
                 'id' => $credit->id,
                 'amount' => (float) $credit->amount,
@@ -427,9 +481,22 @@ class CollectionClientService
                 'created_at' => optional($credit->created_at)->toISOString(),
                 'transfer_bank_name' => $meta['transfer_bank_name'] ?? null,
                 'transfer_reference_number' => $meta['transfer_reference_number'] ?? null,
+                'transfer_voucher_photo' => $meta['transfer_voucher_photo'] ?? null,
+                'transfer_support_photo' => $meta['transfer_support_photo'] ?? null,
                 'route_name' => $credit->route_name ?? null,
                 'description' => $credit->description ?? null,
                 'business_date' => $credit->business_date?->toDateString(),
+                // Día real de carga. Coincide con business_date salvo que se
+                // haya retrofechado el desembolso; la UI señala ese caso.
+                'registered_date' => $registeredDate,
+                'is_backdated' => $registeredDate !== null
+                    && $credit->business_date?->toDateString() !== $registeredDate,
+                'can_edit' => $canEdit,
+                'edit_blocked_reason' => $editReason,
+                'can_edit_amounts' => $canEditAmounts,
+                'amounts_blocked_reason' => $amountsReason,
+                'can_cancel' => $canCancel,
+                'cancel_blocked_reason' => $cancelReason,
             ];
         });
 
@@ -601,6 +668,161 @@ class CollectionClientService
         abort_if($companyId === null, 422, 'No se pudo resolver la empresa para la operación de Collection.');
 
         return $companyId;
+    }
+
+    /**
+     * Etiquetas legibles de los campos auditados del cliente. La clave es el
+     * nombre plano del campo: las de `metadata` se aplanan al mismo nivel que
+     * las columnas, porque para el usuario "Correo" es un dato del cliente y no
+     * le importa dónde lo guardamos.
+     */
+    private const AUDIT_FIELD_LABELS = [
+        'name' => 'Nombre completo',
+        'dni' => 'Documento',
+        'phone' => 'Teléfono',
+        'address' => 'Dirección',
+        'country_code' => 'País',
+        'email' => 'Correo',
+        'reference' => 'Punto de referencia',
+        'company_name' => 'Empresa o referencia comercial',
+        'profile_photo' => 'Foto de perfil',
+        'document_photo' => 'Foto del documento',
+        'status' => 'Estado',
+    ];
+
+    /**
+     * Cómo debe renderizarse cada campo en el historial. 'image' guarda una
+     * ruta de archivo (el front arma la miniatura), 'country' un código ISO
+     * (el front lo traduce a bandera + nombre). El resto es texto plano.
+     */
+    private const AUDIT_FIELD_TYPES = [
+        'profile_photo' => 'image',
+        'document_photo' => 'image',
+        'country_code' => 'country',
+    ];
+
+    /**
+     * Historial de cambios de un cliente (trazabilidad).
+     *
+     * Lee `collection_client_audits` —que ya se escribía en create/update/delete—
+     * y devuelve, por cada evento, SOLO los campos que efectivamente cambiaron,
+     * con su valor anterior y el nuevo. Los nombres de usuario viven en MySQL
+     * (core), no en collection_pgsql, así que se resuelven aparte.
+     */
+    public function history(int $clientId, ?int $requestedCompanyId = null, int $limit = 200)
+    {
+        $companyId = $this->resolveCompanyId($requestedCompanyId);
+        if (!$companyId) {
+            return $this->errorResponse('No se pudo determinar la compañía para Collection', 422);
+        }
+
+        // Validar pertenencia antes de exponer el historial: sin esto, cualquier
+        // usuario autenticado podría leer la traza de clientes de otra empresa.
+        $client = CollectionClient::query()->where('id', $clientId)->first();
+        if ($client && $this->hasClientCompanyColumn() && (int) $client->company_id !== $companyId) {
+            $client = null;
+        }
+        if (!$client) {
+            return $this->errorNotFoundResponse('Cliente Collection no encontrado');
+        }
+
+        $audits = CollectionClientAudit::query()
+            ->where('company_id', $companyId)
+            ->where('client_id', $clientId)
+            ->orderByDesc('id')
+            ->limit($limit)
+            ->get();
+
+        $userIds = $audits->pluck('user_id')->filter()->unique()->all();
+        $names = empty($userIds)
+            ? collect()
+            : \App\Models\User::whereIn('id', $userIds)->pluck('name', 'id');
+
+        $data = $audits->map(function ($audit) use ($names) {
+            return [
+                'id' => $audit->id,
+                'action' => $audit->action,
+                'user_id' => $audit->user_id,
+                'user_name' => $names[$audit->user_id] ?? null,
+                'ip_address' => $audit->ip_address,
+                'created_at' => optional($audit->created_at)->toISOString(),
+                'fields' => $this->describeAuditChanges(
+                    (string) $audit->action,
+                    is_array($audit->changes) ? $audit->changes : []
+                ),
+            ];
+        })->values();
+
+        return $this->successResponse([
+            'success' => true,
+            'data' => $data,
+        ]);
+    }
+
+    /**
+     * Convierte el JSON crudo {old:{...}, new:{...}} en una lista de campos
+     * modificados. Devuelve [] cuando el evento no trae comparación (por
+     * ejemplo 'created', que solo guarda el estado inicial).
+     */
+    private function describeAuditChanges(string $action, array $changes): array
+    {
+        if ($action !== 'updated') {
+            return [];
+        }
+
+        $old = $this->flattenAuditSnapshot($changes['old'] ?? []);
+        $new = $this->flattenAuditSnapshot($changes['new'] ?? []);
+
+        $fields = [];
+        foreach (array_keys(self::AUDIT_FIELD_LABELS) as $field) {
+            // Un campo ausente en ambos lados nunca formó parte del snapshot
+            // (p. ej. country_code en auditorías viejas): no se reporta.
+            if (!array_key_exists($field, $old) && !array_key_exists($field, $new)) {
+                continue;
+            }
+
+            $oldValue = $this->normalizeAuditValue($old[$field] ?? null);
+            $newValue = $this->normalizeAuditValue($new[$field] ?? null);
+
+            if ($oldValue === $newValue) {
+                continue;
+            }
+
+            $fields[] = [
+                'field' => $field,
+                'label' => self::AUDIT_FIELD_LABELS[$field],
+                'type' => self::AUDIT_FIELD_TYPES[$field] ?? 'text',
+                'old' => $oldValue,
+                'new' => $newValue,
+            ];
+        }
+
+        return $fields;
+    }
+
+    /** Sube las claves de `metadata` al nivel raíz del snapshot. */
+    private function flattenAuditSnapshot($snapshot): array
+    {
+        if (!is_array($snapshot)) {
+            return [];
+        }
+
+        $metadata = is_array($snapshot['metadata'] ?? null) ? $snapshot['metadata'] : [];
+        unset($snapshot['metadata']);
+
+        return array_merge($snapshot, $metadata);
+    }
+
+    /** Normaliza a string|null para que "" y null no cuenten como cambio. */
+    private function normalizeAuditValue($value): ?string
+    {
+        if ($value === null || is_array($value)) {
+            return $value === null ? null : json_encode($value);
+        }
+
+        $normalized = trim((string) $value);
+
+        return $normalized === '' ? null : $normalized;
     }
 
     private function audit(int $companyId, int $clientId, string $action, array $changes = []): void

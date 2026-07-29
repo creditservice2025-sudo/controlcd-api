@@ -48,6 +48,22 @@ class CollectionClientController extends Controller
         }
     }
 
+    /**
+     * Historial de cambios del cliente: qué campo se modificó, con qué valor
+     * quedó, quién lo hizo y cuándo.
+     */
+    public function history(Request $request, int $clientId)
+    {
+        try {
+            $companyId = $this->resolveOwnCompanyId($request);
+            if (!is_int($companyId)) return $companyId;
+
+            return $this->collectionClientService->history($clientId, $companyId);
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error en el servidor: ' . $e->getMessage(), 500);
+        }
+    }
+
     public function store(Request $request)
     {
         $companyId = $this->resolveOwnCompanyId($request);
@@ -61,6 +77,10 @@ class CollectionClientController extends Controller
             'address' => 'required|string|max:1000',
             'reference' => 'nullable|string|max:500',
             'company_name' => 'nullable|string|max:255',
+            // Sin esta regla, validate() descartaba el país que envía el front y
+            // el servicio caía al fallback 'CO': todos los clientes terminaban
+            // en Colombia sin importar el territorio elegido.
+            'country_code' => 'nullable|string|max:5',
             'profile_photo' => 'nullable|file|image|max:4096',
             'document_photo' => 'nullable|file|image|max:4096',
         ]);
@@ -90,6 +110,9 @@ class CollectionClientController extends Controller
             'address' => 'required|string|max:1000',
             'reference' => 'nullable|string|max:500',
             'company_name' => 'nullable|string|max:255',
+            // Idem store(): sin la regla el país nunca llegaba al servicio y el
+            // selector del modal de edición no hacía nada.
+            'country_code' => 'nullable|string|max:5',
             'profile_photo' => 'nullable|file|image|max:4096',
             'document_photo' => 'nullable|file|image|max:4096',
         ]);

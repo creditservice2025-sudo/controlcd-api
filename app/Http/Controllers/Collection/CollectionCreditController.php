@@ -65,6 +65,134 @@ class CollectionCreditController extends Controller
         return $this->collectionCreditService->create($validated);
     }
 
+    /**
+     * Corrección de un crédito dentro de la ventana del mismo día.
+     * Las reglas duras (día contable, cierre de caja, abonos, adiciones) las
+     * aplica el servicio: acá solo se valida la forma de los datos.
+     */
+    public function update(Request $request, int $creditId)
+    {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
+        $validated = $request->validate([
+            'credit_value' => 'nullable|numeric|min:0.01',
+            'interest_rate' => 'nullable|numeric|min:0',
+            'first_installment_date' => 'nullable|date',
+            // Fecha contable del desembolso. El servicio valida que no sea
+            // futura ni caiga en un día con la caja cerrada.
+            'credit_date' => 'nullable|date',
+            'route_name' => 'nullable|string|max:150',
+            'description' => 'nullable|string|max:1000',
+            'transfer_bank_name' => 'nullable|string|max:150',
+            'transfer_reference_number' => 'nullable|string|max:120',
+            'transfer_voucher_photo' => 'nullable|file|image|max:4096',
+            'transfer_support_photo' => 'nullable|file|image|max:4096',
+        ]);
+        $validated['company_id'] = $companyId;
+
+        // Las imágenes anteriores no se borran: la auditoría guarda su ruta y
+        // el historial las sigue mostrando.
+        if ($request->hasFile('transfer_voucher_photo')) {
+            $validated['transfer_voucher_photo'] = $request->file('transfer_voucher_photo')
+                ->store('collection/credits/voucher', 'public');
+        }
+
+        if ($request->hasFile('transfer_support_photo')) {
+            $validated['transfer_support_photo'] = $request->file('transfer_support_photo')
+                ->store('collection/credits/support', 'public');
+        }
+
+        return $this->collectionCreditService->update($creditId, $validated);
+    }
+
+    /**
+     * Historial de cambios del crédito y de sus adiciones de capital.
+     */
+    public function history(Request $request, int $creditId)
+    {
+        try {
+            $companyId = $this->resolveOwnCompanyId($request);
+            if (!is_int($companyId)) return $companyId;
+
+            return $this->collectionCreditService->history($creditId, $companyId);
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error en el servidor: ' . $e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Anula un crédito dentro de la ventana del mismo día. No borra la fila:
+     * la marca como anulada, reintegra la caja y deja traza.
+     */
+    public function destroy(Request $request, int $creditId)
+    {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
+        $validated = $request->validate([
+            'reason' => 'required|string|max:500',
+        ], [
+            'reason.required' => 'Indicá el motivo de la anulación.',
+        ]);
+        $validated['company_id'] = $companyId;
+
+        return $this->collectionCreditService->destroy($creditId, $validated);
+    }
+
+    /** Datos del cartón digital del crédito (pantalla e imagen). */
+    public function cardboard(Request $request, int $creditId)
+    {
+        try {
+            $companyId = $this->resolveOwnCompanyId($request);
+            if (!is_int($companyId)) return $companyId;
+
+            return $this->collectionCreditService->cardboard($creditId, $companyId);
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error en el servidor: ' . $e->getMessage(), 500);
+        }
+    }
+
+    /** El mismo cartón, en PDF. */
+    public function cardboardPdf(Request $request, int $creditId)
+    {
+        try {
+            $companyId = $this->resolveOwnCompanyId($request);
+            if (!is_int($companyId)) return $companyId;
+
+            return $this->collectionCreditService->cardboardPdf($creditId, $companyId);
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error en el servidor: ' . $e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Corrección de una adición de capital dentro de la ventana del mismo día.
+     */
+    public function updateCapitalAddition(Request $request, int $additionId)
+    {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
+        $validated = $request->validate([
+            'amount' => 'nullable|numeric|min:0.01',
+            'business_date' => 'nullable|date',
+            'payment_method' => 'nullable|string|max:60',
+            'reference_number' => 'nullable|string|max:120',
+            'bank_name' => 'nullable|string|max:150',
+            'notes' => 'nullable|string|max:1000',
+            'voucher_photo' => 'nullable|file|image|max:4096',
+        ]);
+        $validated['company_id'] = $companyId;
+
+        if ($request->hasFile('voucher_photo')) {
+            $validated['voucher_photo'] = $request->file('voucher_photo')
+                ->store('collection/credits/capital-additions', 'public');
+        }
+
+        return $this->collectionCreditService->updateCapitalAddition($additionId, $validated);
+    }
+
     public function destroyInstallment(Request $request, int $id)
     {
         $companyId = $this->resolveOwnCompanyId($request);
