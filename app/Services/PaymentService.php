@@ -31,12 +31,16 @@ class PaymentService
     private GeolocationHistoryService $geolocationHistoryService;
     private MetricsCacheService $metricsCacheService;
 
+    private ReverseGeocodeService $reverseGeocode;
+
     public function __construct(
         GeolocationHistoryService $geolocationHistoryService,
-        MetricsCacheService $metricsCacheService
+        MetricsCacheService $metricsCacheService,
+        ReverseGeocodeService $reverseGeocode
     ) {
         $this->geolocationHistoryService = $geolocationHistoryService;
         $this->metricsCacheService = $metricsCacheService;
+        $this->reverseGeocode = $reverseGeocode;
     }
 
     private function resolveBusinessTimezone(?string $paymentClientTimezone, Request $request): string
@@ -210,6 +214,10 @@ class PaymentService
                         'payment_reference' => $params['payment_reference'] ?? 'No pagó',
                         'latitude' => $params['latitude'] ?? null,
                         'longitude' => $params['longitude'] ?? null,
+                        // Ver nota en el flujo de pago: precisión y origen del
+                        // punto, imprescindibles para que la ubicación sirva.
+                        'gps_accuracy' => $params['gps_accuracy'] ?? null,
+                        'gps_source' => $params['gps_source'] ?? null,
                         'address' => $params['address'] ?? null,
 
                         // TIMESTAMPS TÉCNICOS (auditoría)
@@ -252,6 +260,62 @@ class PaymentService
                     }
 
                     DB::commit();
+
+                    // Ubicación y gestión del "No pagó". Este flujo tiene su
+                    // propio return y no pasaba por el bloque de geolocalización
+                    // de más abajo: el cobrador tocaba "No pagó", el registro
+                    // quedaba guardado, pero al administrador le aparecía "Sin
+                    // visita" — justo la gestión que hay que poder auditar.
+                    // Motivo del no pago. Es obligatorio (ver PaymentRequest):
+                    // el administrador necesita saber POR QUÉ no entró dinero,
+                    // no solo que no entró.
+                    $noPayComment = null;
+                    if (!empty($params['comment'])) {
+                        $noPayComment = \App\Models\ClientComment::create([
+                            'client_id' => $credit->client_id,
+                            'user_id' => $user->id,
+                            'comment_category_id' => $params['comment_category_id'] ?? null,
+                            'body' => trim($params['comment']),
+                        ]);
+                    }
+
+                    if (isset($params['latitude']) && isset($params['longitude'])) {
+                        $this->geolocationHistoryService->record(
+                            $credit->client_id,
+                            $params['latitude'],
+                            $params['longitude'],
+                            'payment_created',
+                            'Registro de no pago',
+                            $payment->id,
+                            $params['address'] ?? null,
+                            $params['gps_accuracy'] ?? null
+                        );
+
+                        // El comentario comparte la ubicación del registro: se
+                        // escribió en el mismo momento y lugar.
+                        if ($noPayComment) {
+                            $this->geolocationHistoryService->record(
+                                $credit->client_id,
+                                $params['latitude'],
+                                $params['longitude'],
+                                'comment_created',
+                                'Motivo del no pago',
+                                $noPayComment->id,
+                                $params['address'] ?? null,
+                                $params['gps_accuracy'] ?? null
+                            );
+                        }
+
+                        try {
+                            $client = \App\Models\Client::find($credit->client_id);
+                            if ($client) {
+                                app(\App\Services\ClientVisitService::class)
+                                    ->registerFromPayment($payment, $client, $noPayComment?->id);
+                            }
+                        } catch (\Throwable $e) {
+                            Log::warning('No se pudo derivar la gestión del no pago ' . $payment->id . ': ' . $e->getMessage());
+                        }
+                    }
 
                     // Red de seguridad: garantizar la liquidación del día (por si
                     // la auto-apertura del login falló). No rompe el pago si falla.
@@ -296,6 +360,12 @@ class PaymentService
                     'payment_reference' => $params['payment_reference'] ?? '',
                     'latitude' => $params['latitude'] ?? null,
                     'longitude' => $params['longitude'] ?? null,
+                    // Precisión y origen del punto: sin esto no hay forma de
+                    // distinguir una lectura satelital de una de torre celular
+                    // (que puede errar kilómetros) y toda métrica de presencia
+                    // construida encima sería ruido.
+                    'gps_accuracy' => $params['gps_accuracy'] ?? null,
+                    'gps_source' => $params['gps_source'] ?? null,
                     'address' => $params['address'] ?? null,
 
                     // TIMESTAMPS TÉCNICOS (auditoría)
@@ -442,9 +512,23 @@ class PaymentService
                         'payment_created',
                         'Abono/Pago a crédito',
                         $payment->id,
-                        null, // Address might not be in params, check if needed
-                        null  // Accuracy might not be in params
+                        $params['address'] ?? null,
+                        $params['gps_accuracy'] ?? null
                     );
+
+                    // Gestión automática: el pago ya prueba que alguien estuvo
+                    // con el cliente, así que la visita se deriva sola y el
+                    // cobrador no tiene que registrar nada aparte. Va envuelto
+                    // porque un fallo acá NUNCA puede tumbar un pago.
+                    try {
+                        $client = \App\Models\Client::find($credit->client_id);
+                        if ($client) {
+                            app(\App\Services\ClientVisitService::class)
+                                ->registerFromPayment($payment, $client);
+                        }
+                    } catch (\Throwable $e) {
+                        Log::warning('No se pudo derivar la gestión desde el pago ' . $payment->id . ': ' . $e->getMessage());
+                    }
                 }
 
                 // Invalidate Liquidation Cache
@@ -1025,13 +1109,15 @@ class PaymentService
 
         $allPayments = $paymentsQuery->with(['createdByUser:id,name', 'deletedByUser:id,name'])->get();
 
-        // UX: exponer "creado por" SOLO cuando el pago lo cargó alguien distinto
-        // al vendedor (supervisor). Si lo cargó el propio vendedor, se oculta.
+        // Quién registró cada pago. Antes se ocultaba el nombre cuando lo había
+        // cargado el propio cobrador de la ruta, y la columna quedaba vacía en
+        // la mayoría de los casos. Ahora el nombre va SIEMPRE y se marca aparte
+        // si lo cargó alguien distinto (supervisor/admin), que es la señal que
+        // realmente importa revisar.
         $sellerUserIdForPayments = (int) (Seller::where('id', $sellerId)->value('user_id') ?? 0);
         $allPayments->each(function ($p) use ($sellerUserIdForPayments) {
-            if (!empty($p->created_by) && (int) $p->created_by === $sellerUserIdForPayments) {
-                $p->setRelation('createdByUser', null);
-            }
+            $p->created_by_is_seller = !empty($p->created_by)
+                && (int) $p->created_by === $sellerUserIdForPayments;
         });
 
         $allPaymentIds = $allPayments->pluck('id');
@@ -1121,6 +1207,31 @@ class PaymentService
         // ESTRUCTURA AGRUPADA (comportamiento original)
         $groupedPayments = collect();
 
+        // Comentarios dejados por el cobrador/supervisor en el MISMO rango de
+        // fechas que se está consultando, con la ubicación desde donde se
+        // escribieron. Le dan contexto al administrador sobre qué pasó en esa
+        // jornada: por qué se abonó de menos, por qué no se cobró, etc.
+        $commentsByClient = $this->commentsForPaymentsView(
+            $credits->pluck('client.id')->filter()->unique()->values()->all(),
+            $request,
+            $timezone
+        );
+
+        // Dirección de cada pago. El pago guarda lat/long, pero el texto de la
+        // dirección vive en el historial de geolocalización (action_type =
+        // 'payment_created'), que es la única fuente de verdad de ubicaciones.
+        // Una sola consulta para toda la página.
+        // Avance de cada crédito (cuotas pagadas y saldo), calculado sobre las
+        // cuatro tablas y excluyendo cuotas y pagos eliminados.
+        $creditProgress = $this->creditProgress($pageCreditIds);
+
+        $paymentLocations = $allPaymentIds->isNotEmpty()
+            ? \App\Models\ClientGeolocationHistory::where('action_type', 'payment_created')
+                ->whereIn('action_id', $allPaymentIds)
+                ->get(['action_id', 'latitude', 'longitude', 'accuracy', 'address'])
+                ->keyBy('action_id')
+            : collect();
+
         foreach ($credits as $credit) {
             $creditPayments = $paymentsByCredit->get($credit->id, collect());
 
@@ -1138,6 +1249,51 @@ class PaymentService
 
             $total_paid = $creditPayments->sum('amount');
 
+            // Cuota afectada por el pago más reciente: su fecha de vencimiento
+            // y su valor. Es lo que el administrador compara contra lo abonado
+            // para saber si el cliente cubrió la cuota o quedó debiendo.
+            $lastInstallment = $creditPayments
+                ->flatMap(fn($p) => collect($p->installments_details ?? []))
+                ->sortByDesc('due_date')
+                ->first();
+
+            // Dónde se registró el pago más reciente del crédito. Es la prueba
+            // de en qué punto estaba el cobrador al cobrar; se muestra junto a
+            // la fecha para poder contrastarla con la del comentario.
+            $lastPayment = $creditPayments->first();
+            $paymentLocation = null;
+
+            if ($lastPayment && $lastPayment->latitude && $lastPayment->longitude) {
+                $geo = $paymentLocations->get($lastPayment->id);
+
+                // Si el historial todavía no tiene el nombre de la calle, se
+                // busca en la caché de geocodificación: es memoria, no red, así
+                // que no agrega latencia. En una ruta que se repite a diario,
+                // la mayoría de los puntos ya fueron traducidos antes.
+                $cachedAddress = empty($geo?->address)
+                    ? $this->reverseGeocode->fromCache((float) $lastPayment->latitude, (float) $lastPayment->longitude)
+                    : null;
+
+                $paymentLocation = [
+                    'latitude' => (float) $lastPayment->latitude,
+                    'longitude' => (float) $lastPayment->longitude,
+                    // Nunca vacío: si el nombre de la calle todavía no se
+                    // resolvió van las coordenadas, y el front las pide aparte
+                    // sin bloquear la carga de la tabla.
+                    'address' => (!empty($geo?->address) ? $geo->address : $cachedAddress)
+                        ?? sprintf('Ubicación %.5f, %.5f', (float) $lastPayment->latitude, (float) $lastPayment->longitude),
+                    // true = lo mostrado son coordenadas, falta el nombre de
+                    // la calle. El front usa esto para pedirla en segundo plano.
+                    'address_pending' => empty($geo?->address) && empty($cachedAddress),
+                    'accuracy' => $lastPayment->gps_accuracy !== null
+                        ? (float) $lastPayment->gps_accuracy
+                        : ($geo && $geo->accuracy !== null ? (float) $geo->accuracy : null),
+                    // 'network' = ubicación por antena: sirve de referencia,
+                    // no como evidencia de dónde estuvo el cobrador.
+                    'gps_source' => $lastPayment->gps_source,
+                ];
+            }
+
             $groupedPayments->push([
                 'client_id' => $credit->client->id,
                 'client_name' => $credit->client->name,
@@ -1145,6 +1301,33 @@ class PaymentService
                 'credit_id' => $credit->id,
                 'credit_value' => $credit->credit_value,
                 'status' => $credit->status,
+                // Cuota del pago: vencimiento, valor y lo aplicado.
+                'installment_due_date' => $lastInstallment->due_date ?? null,
+                'installment_amount' => isset($lastInstallment->installment_amount)
+                    ? (float) $lastInstallment->installment_amount
+                    : null,
+                'installment_paid_amount' => isset($lastInstallment->paid_amount)
+                    ? (float) $lastInstallment->paid_amount
+                    : null,
+                'installment_quota_number' => $lastInstallment->quota_number ?? null,
+                // Dónde se registró el pago más reciente.
+                'payment_location' => $paymentLocation,
+                // Necesario para que, al traducir la coordenada a dirección, el
+                // backend pueda guardarla y no volver a consultarla nunca más.
+                'last_payment_id' => $lastPayment?->id,
+                // Quién registró el último pago del crédito. La columna de la
+                // tabla vive a nivel de crédito, así que necesita el dato acá
+                // (dentro de payments[] ya estaba, pero la fila no lo leía).
+                'created_by_name' => optional($lastPayment?->createdByUser)->name,
+                'created_by_is_seller' => (bool) ($lastPayment->created_by_is_seller ?? false),
+                // Avance del crédito: cuotas pagadas y saldo pendiente.
+                'progress' => $creditProgress[$credit->id] ?? null,
+                // El último registro del día fue un "No pagó" (monto 0).
+                'is_no_payment' => $lastPayment
+                    && (float) $lastPayment->amount == 0.0
+                    && str_contains(strtolower((string) $lastPayment->status), 'no pagado'),
+                // Comentarios del cliente en el rango consultado, con ubicación.
+                'comments' => $commentsByClient[$credit->client->id] ?? [],
                 // Estado vigente A LA FECHA filtrada (solo display). Igual a
                 // `status` salvo cuando un crédito Liquidado aún no lo estaba
                 // en esa fecha → 'Activo'. El front pinta este campo.
@@ -1172,6 +1355,156 @@ class PaymentService
                 'total_payments_amount' => $totalPaymentsAmount
             ]
         ]);
+    }
+
+    /**
+     * Avance real de cada crédito: cuántas cuotas están pagadas y cuánto falta.
+     *
+     * Se calcula cruzando installments + payment_installments + payments, y
+     * NUNCA desde credits.remaining_amount (que puede estar desincronizado) ni
+     * desde installments.paid_amount por sí solo. Lo pagado se reconstruye
+     * sumando lo efectivamente aplicado en payment_installments, que es el
+     * único registro que refleja a qué cuota fue cada peso.
+     *
+     * Se excluyen SIEMPRE los registros eliminados (soft delete) en las tres
+     * tablas: una cuota borrada no cuenta para el total, y un pago anulado no
+     * puede seguir sumando como pagado.
+     *
+     * @param  \Illuminate\Support\Collection  $creditIds
+     * @return array<int, array>
+     */
+    private function creditProgress($creditIds): array
+    {
+        if ($creditIds->isEmpty()) {
+            return [];
+        }
+
+        // 1) Cuotas VIVAS de esos créditos.
+        $installments = DB::table('installments')
+            ->whereNull('deleted_at')
+            ->whereIn('credit_id', $creditIds)
+            ->get(['id', 'credit_id', 'quota_amount']);
+
+        if ($installments->isEmpty()) {
+            return [];
+        }
+
+        // 2) Lo aplicado a cada cuota, solo desde pagos vivos. Acotado a las
+        //    cuotas ya seleccionadas para no recorrer toda la tabla.
+        $applied = DB::table('payment_installments')
+            ->join('payments', 'payments.id', '=', 'payment_installments.payment_id')
+            ->whereNull('payment_installments.deleted_at')
+            ->whereNull('payments.deleted_at')
+            ->whereIn('payment_installments.installment_id', $installments->pluck('id'))
+            ->groupBy('payment_installments.installment_id')
+            ->selectRaw('payment_installments.installment_id, COALESCE(SUM(payment_installments.applied_amount), 0) as total')
+            ->pluck('total', 'installment_id');
+
+        $result = [];
+
+        foreach ($installments->groupBy('credit_id') as $creditId => $group) {
+            $amountTotal = 0.0;
+            $amountPaid = 0.0;
+            $paidCount = 0;
+
+            foreach ($group as $installment) {
+                $quota = (float) $installment->quota_amount;
+                $paid = (float) ($applied[$installment->id] ?? 0);
+
+                $amountTotal += $quota;
+                // Lo aplicado nunca puede superar el valor de la cuota para el
+                // cálculo del avance (un excedente pertenece a otra cuota).
+                $amountPaid += min($paid, $quota);
+
+                if ($paid >= $quota - 0.01) {
+                    $paidCount++;
+                }
+            }
+
+            $result[(int) $creditId] = [
+                'installments_total' => $group->count(),
+                'installments_paid' => $paidCount,
+                'amount_total' => round($amountTotal, 2),
+                'amount_paid' => round($amountPaid, 2),
+                'amount_pending' => round(max($amountTotal - $amountPaid, 0), 2),
+                'percent' => $amountTotal > 0
+                    ? min(100, (int) round($amountPaid * 100 / $amountTotal))
+                    : 0,
+            ];
+        }
+
+        return $result;
+    }
+
+    /**
+     * Comentarios de los clientes dentro del rango de fechas consultado, con la
+     * ubicación desde donde se escribieron.
+     *
+     * La ubicación no vive en `client_comments` sino en el historial
+     * `client_geolocation_histories` (action_type = 'comment_created'), que es
+     * la única fuente de verdad de ubicaciones del sistema. Se resuelve todo en
+     * dos consultas para no generar N+1 sobre una tabla que crece rápido.
+     *
+     * created_at es UTC, así que el rango de días locales se traduce a UTC
+     * antes de filtrar; comparar la fecha cruda dejaría fuera los comentarios
+     * de las primeras y últimas horas del día.
+     *
+     * @param  array<int>  $clientIds
+     * @return array<int, array>
+     */
+    private function commentsForPaymentsView(array $clientIds, Request $request, string $timezone): array
+    {
+        if (empty($clientIds)) {
+            return [];
+        }
+
+        if ($request->has('start_date') && $request->has('end_date')) {
+            $from = Carbon::parse($request->get('start_date'), $timezone)->startOfDay();
+            $to = Carbon::parse($request->get('end_date'), $timezone)->endOfDay();
+        } elseif ($request->has('date')) {
+            $from = Carbon::parse($request->get('date'), $timezone)->startOfDay();
+            $to = $from->copy()->endOfDay();
+        } else {
+            $from = Carbon::now($timezone)->startOfDay();
+            $to = $from->copy()->endOfDay();
+        }
+
+        $comments = \App\Models\ClientComment::with(['user:id,name,role_id', 'category:id,name'])
+            ->whereIn('client_id', $clientIds)
+            ->whereBetween('created_at', [$from->copy()->utc(), $to->copy()->utc()])
+            ->orderBy('created_at', 'desc')
+            ->get(['id', 'client_id', 'user_id', 'comment_category_id', 'body', 'created_at']);
+
+        if ($comments->isEmpty()) {
+            return [];
+        }
+
+        $locations = \App\Models\ClientGeolocationHistory::where('action_type', 'comment_created')
+            ->whereIn('action_id', $comments->pluck('id'))
+            ->get(['action_id', 'latitude', 'longitude', 'accuracy', 'address'])
+            ->keyBy('action_id');
+
+        $result = [];
+        foreach ($comments as $comment) {
+            $location = $locations->get($comment->id);
+
+            $result[(int) $comment->client_id][] = [
+                'id' => $comment->id,
+                'body' => $comment->body,
+                'author' => $comment->user->name ?? null,
+                'author_role_id' => $comment->user->role_id ?? null,
+                'category' => $comment->category->name ?? null,
+                'created_at' => $comment->created_at->copy()->timezone($timezone)->format('Y-m-d H:i:s'),
+                // Nunca vacío cuando hay ubicación: si la dirección aún no se
+                // resolvió van las coordenadas (ver displayAddress).
+                'address' => $location?->displayAddress(),
+                'latitude' => $location ? (float) $location->latitude : null,
+                'longitude' => $location ? (float) $location->longitude : null,
+                'accuracy' => $location && $location->accuracy !== null ? (float) $location->accuracy : null,
+            ];
+        }
+
+        return $result;
     }
 
     public function getAllPaymentsBySeller($sellerId, Request $request)

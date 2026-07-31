@@ -78,6 +78,15 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->command('liquidation:check-auto-closures')
             ->timezone('UTC')->dailyAt('07:00')->withoutOverlapping();
 
+        // Completa las direcciones de geolocalizacion que no se pudieron
+        // resolver al momento de guardarlas (proveedor caido, timeout). La
+        // coordenada ya esta guardada; esto solo le pone nombre. Va cada 5
+        // minutos y de a pocos registros para respetar el limite de 1
+        // consulta/segundo de Nominatim.
+        $schedule->command('geo:fill-addresses --limit=30')
+            ->everyFiveMinutes()
+            ->withoutOverlapping();
+
         $schedule->command('liquidation:historical')->dailyAt('23:55');
         $schedule->command('liquidation:notify-pending')->dailyAt('21:52');
         $schedule->command('credits:notify-renewal-pending')->dailyAt('21:00');

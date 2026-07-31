@@ -28,6 +28,23 @@ return [
         'key' => env('RESEND_KEY'),
     ],
 
+    // Geocodificación inversa (coordenadas -> dirección legible) para la
+    // ubicación de los comentarios del cliente. OPCIONAL: sin key configurada
+    // el sistema sigue guardando lat/long y solo omite el texto de la dirección
+    // (ver ReverseGeocodeService).
+    'google_maps' => [
+        'key' => env('GOOGLE_MAPS_API_KEY'),
+    ],
+
+    // Respaldo gratuito de geocodificación (OpenStreetMap). Se usa cuando no
+    // hay key de Google o su servicio falla, para que la dirección de un
+    // comentario nunca quede vacía. Su política de uso exige un User-Agent que
+    // identifique a la aplicación y un máximo de 1 consulta por segundo.
+    'nominatim' => [
+        'enabled' => env('NOMINATIM_ENABLED', true),
+        'user_agent' => env('NOMINATIM_USER_AGENT', 'ControlCD/1.0 (soporte@marandconsultores.com)'),
+    ],
+
     'slack' => [
         'notifications' => [
             'bot_user_oauth_token' => env('SLACK_BOT_USER_OAUTH_TOKEN'),

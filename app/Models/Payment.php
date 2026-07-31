@@ -23,6 +23,9 @@ class Payment extends Model
         'payment_reference',
         'latitude',
         'longitude',
+        // Precisión (metros) y origen ('gps' | 'network') de la ubicación.
+        'gps_accuracy',
+        'gps_source',
         'client_created_at',
         'client_timezone',
         'business_timestamp',

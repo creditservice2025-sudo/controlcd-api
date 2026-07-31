@@ -288,13 +288,15 @@ class ClientController extends Controller
             $search = $request->input('search', '');
             $companyId = $request->input('company_id');
             $status = $request->input('status', null);
+            // Sub-filtro de la agenda del día: pagados | pendientes | sin_gestion.
+            $todayStatus = $request->input('today_status', null);
 
             $seller = Seller::find($sellerId);
             if (!$seller) {
                 return $this->errorResponse('Vendedor no encontrado', 404);
             }
 
-            $clients = $this->clientService->getClientsBySeller($sellerId, $search, $companyId, $status);
+            $clients = $this->clientService->getClientsBySeller($sellerId, $search, $companyId, $status, $todayStatus);
 
             return $this->successResponse([
                 'success' => true,
