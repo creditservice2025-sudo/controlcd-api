@@ -81,6 +81,15 @@ return [
         // (no reenvia a Telegram ni loguea). Permite apagar el ruido sin
         // recompilar el APK, y re-encender solo para medir el fix en campo.
         'diag_enabled' => env('TELEGRAM_DIAG_ENABLED', false),
+
+        // Qué niveles se reenvían al chat. Por defecto SOLO incidentes: los
+        // eventos normales (arranque, entrar/salir de la cámara, cambios de
+        // background) quedan únicamente en el log diario. Sin esto el chat se
+        // llena de mensajes de operación normal y el fallo se pierde.
+        // Para una sesión de depuración puntual: TELEGRAM_DIAG_LEVELS=error,warn,info
+        'diag_levels' => array_filter(
+            explode(',', (string) env('TELEGRAM_DIAG_LEVELS', 'error'))
+        ),
     ],
 
 ];

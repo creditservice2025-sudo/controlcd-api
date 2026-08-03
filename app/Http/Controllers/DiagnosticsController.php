@@ -44,9 +44,23 @@ class DiagnosticsController extends Controller
             ];
 
             // Log completo del lado servidor (respaldo por si Telegram falla).
+            // Acá sí entra TODO, incluidas las migas: sirve para reconstruir la
+            // secuencia de un incidente sin depender del chat.
             Log::channel('daily')->info('DIAG: ' . json_encode($data, JSON_UNESCAPED_UNICODE));
 
-            $this->sendToTelegram($data);
+            // AL CHAT SOLO VAN LOS INCIDENTES.
+            //
+            // Antes se reenviaba cada evento, incluidos "app_arranque",
+            // "captura_inicio/fin" y cada cambio de background: con 163 rutas
+            // eso llenaba el chat de mensajes de operación normal y el fallo
+            // que se está buscando quedaba enterrado. El APK en producción
+            // sigue enviando esos eventos, así que el filtro va acá: permite
+            // encender el diagnóstico sin actualizar la app y sin ruido.
+            $nivelesReportables = (array) config('services.telegram.diag_levels', ['error']);
+
+            if (in_array($data['level'], $nivelesReportables, true)) {
+                $this->sendToTelegram($data);
+            }
 
             return response()->json(['success' => true]);
         } catch (\Throwable $e) {
