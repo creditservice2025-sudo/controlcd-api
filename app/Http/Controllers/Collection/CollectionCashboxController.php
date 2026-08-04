@@ -53,4 +53,15 @@ class CollectionCashboxController extends Controller
 
         return $this->service->destroy($request, $id);
     }
+
+    /**
+     * Traza de altas, renombrados y bajas de cajas de la empresa.
+     */
+    public function history(Request $request)
+    {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
+        return $this->service->history($request);
+    }
 }

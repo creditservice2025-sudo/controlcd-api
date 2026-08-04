@@ -508,6 +508,8 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
 
         // Cajas (multi-caja): contenedores de la bit\u00e1cora, cada uno con su saldo.
         Route::get('cashboxes', [\App\Http\Controllers\Collection\CollectionCashboxController::class, 'index']);
+        // Antes de cashboxes/{id} para que 'history' no se coma como un id.
+        Route::get('cashboxes/history', [\App\Http\Controllers\Collection\CollectionCashboxController::class, 'history']);
         Route::post('cashboxes', [\App\Http\Controllers\Collection\CollectionCashboxController::class, 'store']);
         Route::put('cashboxes/{id}', [\App\Http\Controllers\Collection\CollectionCashboxController::class, 'update']);
         Route::delete('cashboxes/{id}', [\App\Http\Controllers\Collection\CollectionCashboxController::class, 'destroy']);
