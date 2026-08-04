@@ -70,10 +70,15 @@ class CollectionClientController extends Controller
         if (!is_int($companyId)) return $companyId;
 
         $validated = $request->validate([
-            // Ningun dato del cliente es obligatorio: se registra con lo que
-            // haya a mano y se completa despues. Solo se valida el FORMATO de lo
-            // que efectivamente venga cargado.
-            'name' => 'nullable|string|max:255',
+            // Salvo el nombre, ningun dato del cliente es obligatorio: se
+            // registra con lo que haya a mano y se completa despues. Solo se
+            // valida el FORMATO de lo que efectivamente venga cargado.
+            //
+            // El nombre SI se exige en el alta: un cliente sin nombre no se
+            // puede identificar en la lista de cobro ni en el historial. En
+            // update() sigue siendo opcional a proposito, para no bloquear la
+            // correccion de clientes viejos que se guardaron sin nombre.
+            'name' => 'required|string|max:255',
             'dni' => ['nullable', 'string', 'max:20', 'regex:/^[0-9]+$/'],
             'phone' => 'nullable|string|max:30',
             'email' => 'nullable|email|max:255',
@@ -86,6 +91,8 @@ class CollectionClientController extends Controller
             'country_code' => 'nullable|string|max:5',
             'profile_photo' => 'nullable|file|image|max:4096',
             'document_photo' => 'nullable|file|image|max:4096',
+        ], [
+            'name.required' => 'El campo nombre completo es obligatorio',
         ]);
         $validated['company_id'] = $companyId;
 
