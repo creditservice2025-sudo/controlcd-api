@@ -74,8 +74,13 @@ class CollectionCreditService
                 'created_ip' => request()->ip(),
             ];
 
-            $currency = $payload['currency'] ?? 'COP';
-            $countryCode = $payload['country_code'] ?? 'CO';
+            // Par moneda/pais: define la caja donde cae el credito. Si el payload
+            // no lo trae, se cae al DEFAULT DE LA EMPRESA en vez de a un COP/CO
+            // hardcodeado: una empresa que solo opera en Peru no tiene por que
+            // heredar Colombia. Que el par este habilitado se valida mas abajo.
+            $config = \App\Models\Collection\CollectionCompanyConfig::where('company_id', $companyId)->first();
+            $currency = strtoupper($payload['currency'] ?? '') ?: (($config->default_currency ?? null) ?: 'COP');
+            $countryCode = strtoupper($payload['country_code'] ?? '') ?: (($config->default_country_code ?? null) ?: 'CO');
 
             // Fecha contable del crédito (desembolso): usa la fecha seleccionada
             // por el usuario (credit_date) o hoy por defecto. Se ancla al día
@@ -90,8 +95,8 @@ class CollectionCreditService
                 return $this->errorResponse('La fecha de crédito no puede ser futura', 422);
             }
 
-            // Validar contra la configuración de la empresa
-            $config = \App\Models\Collection\CollectionCompanyConfig::where('company_id', $companyId)->first();
+            // Validar contra la configuración de la empresa (ya cargada arriba
+            // para resolver el par por defecto).
             if ($config) {
                 if (!$config->hasCurrency($currency, $countryCode)) {
                     return $this->errorResponse("La moneda {$currency} ({$countryCode}) no está habilitada para esta empresa.", 422);

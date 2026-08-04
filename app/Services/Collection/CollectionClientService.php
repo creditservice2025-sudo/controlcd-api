@@ -204,11 +204,17 @@ class CollectionClientService
         }
 
         $dni = trim((string) ($payload['dni'] ?? ''));
-        $existsDniQuery = CollectionClient::query()->where('dni', $dni);
-        if ($this->hasClientCompanyColumn()) {
-            $existsDniQuery->where('company_id', $companyId);
+        // El documento dejo de ser obligatorio, asi que puede llegar vacio. Sin
+        // esta guarda, el segundo cliente sin documento chocaba contra el primero
+        // ('' == '') y el alta se rechazaba por "documento duplicado".
+        $existsDni = false;
+        if ($dni !== '') {
+            $existsDniQuery = CollectionClient::query()->where('dni', $dni);
+            if ($this->hasClientCompanyColumn()) {
+                $existsDniQuery->where('company_id', $companyId);
+            }
+            $existsDni = $existsDniQuery->exists();
         }
-        $existsDni = $existsDniQuery->exists();
 
         if ($existsDni) {
             return $this->errorResponse('El documento ya existe en Collection', 422);
@@ -293,13 +299,17 @@ class CollectionClientService
         }
 
         $incomingDni = trim((string) ($payload['dni'] ?? $client->dni));
-        $duplicateDniQuery = CollectionClient::query()
-            ->where('dni', $incomingDni)
-            ->where('id', '!=', $clientId);
-        if ($this->hasClientCompanyColumn()) {
-            $duplicateDniQuery->where('company_id', $companyId);
+        // Idem create(): sin documento no hay duplicado que controlar.
+        $duplicateDni = false;
+        if ($incomingDni !== '') {
+            $duplicateDniQuery = CollectionClient::query()
+                ->where('dni', $incomingDni)
+                ->where('id', '!=', $clientId);
+            if ($this->hasClientCompanyColumn()) {
+                $duplicateDniQuery->where('company_id', $companyId);
+            }
+            $duplicateDni = $duplicateDniQuery->exists();
         }
-        $duplicateDni = $duplicateDniQuery->exists();
 
         if ($duplicateDni) {
             return $this->errorResponse('El documento ya existe en Collection', 422);

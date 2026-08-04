@@ -70,11 +70,14 @@ class CollectionClientController extends Controller
         if (!is_int($companyId)) return $companyId;
 
         $validated = $request->validate([
-            'name' => 'required|string|max:255',
-            'dni' => ['required', 'string', 'max:20', 'regex:/^[0-9]+$/'],
-            'phone' => 'required|string|max:30',
+            // Ningun dato del cliente es obligatorio: se registra con lo que
+            // haya a mano y se completa despues. Solo se valida el FORMATO de lo
+            // que efectivamente venga cargado.
+            'name' => 'nullable|string|max:255',
+            'dni' => ['nullable', 'string', 'max:20', 'regex:/^[0-9]+$/'],
+            'phone' => 'nullable|string|max:30',
             'email' => 'nullable|email|max:255',
-            'address' => 'required|string|max:1000',
+            'address' => 'nullable|string|max:1000',
             'reference' => 'nullable|string|max:500',
             'company_name' => 'nullable|string|max:255',
             // Sin esta regla, validate() descartaba el país que envía el front y
@@ -103,11 +106,14 @@ class CollectionClientController extends Controller
         if (!is_int($companyId)) return $companyId;
 
         $validated = $request->validate([
-            'name' => 'required|string|max:255',
-            'dni' => ['required', 'string', 'max:20', 'regex:/^[0-9]+$/'],
-            'phone' => 'required|string|max:30',
+            // Ningun dato del cliente es obligatorio: se registra con lo que
+            // haya a mano y se completa despues. Solo se valida el FORMATO de lo
+            // que efectivamente venga cargado.
+            'name' => 'nullable|string|max:255',
+            'dni' => ['nullable', 'string', 'max:20', 'regex:/^[0-9]+$/'],
+            'phone' => 'nullable|string|max:30',
             'email' => 'nullable|email|max:255',
-            'address' => 'required|string|max:1000',
+            'address' => 'nullable|string|max:1000',
             'reference' => 'nullable|string|max:500',
             'company_name' => 'nullable|string|max:255',
             // Idem store(): sin la regla el país nunca llegaba al servicio y el

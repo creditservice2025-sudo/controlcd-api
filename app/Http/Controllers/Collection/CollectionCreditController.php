@@ -24,14 +24,17 @@ class CollectionCreditController extends Controller
 
         $validated = $request->validate([
             'client_id' => 'required|integer|min:1',
+            // Monto e interes son los dos unicos campos obligatorios del
+            // formulario: sin monto no hay credito y sin tasa no se calcula la
+            // cuota. El resto quedo opcional y solo se valida el formato de lo
+            // que venga cargado.
             'credit_value' => 'required|numeric|min:0.01',
-            'interest_rate' => 'nullable|numeric|min:0',
+            'interest_rate' => 'required|numeric|min:0',
             // Fecha contable del crédito (desembolso). Se valida no-futura en el
             // servicio según la zona horaria del país del crédito.
             'credit_date' => 'nullable|date',
-            // Nombre de la ruta y descripción: obligatorios para todo crédito nuevo.
-            'route_name' => 'required|string|max:150',
-            'description' => 'required|string|max:1000',
+            'route_name' => 'nullable|string|max:150',
+            'description' => 'nullable|string|max:1000',
             // Credito abierto: N no aplica; se genera 1 cuota y las siguientes al pagar.
             // Se deja nullable para soportar el unico modo actual (monthly_interest_open).
             'number_installments' => 'nullable|integer|min:1|max:1000',
@@ -45,10 +48,15 @@ class CollectionCreditController extends Controller
             'images' => 'nullable|array',
             'images.*.file' => 'nullable|file|image|max:4096',
             'images.*.type' => 'nullable|string|max:80',
+            // El par moneda/pais define la caja donde cae el credito. El front
+            // siempre los manda (los toma de la wallet activa), pero al no estar
+            // declarados aca validate() los descartaba y el servicio caia a su
+            // default COP/CO: un credito de Peru terminaba en la caja de Colombia
+            // y no aparecia nunca en el balance PEN.
+            'currency' => 'nullable|string|size:3',
+            'country_code' => 'nullable|string|size:2',
         ], [
-            'route_name.required' => 'El nombre de la ruta es obligatorio.',
             'route_name.max' => 'El nombre de la ruta no puede superar los 150 caracteres.',
-            'description.required' => 'La descripción es obligatoria.',
             'description.max' => 'La descripción no puede superar los 1000 caracteres.',
         ]);
 
@@ -61,6 +69,14 @@ class CollectionCreditController extends Controller
         }
 
         $validated['company_id'] = $companyId;
+
+        // Normalizacion: la wallet se busca por par exacto en mayusculas.
+        if (!empty($validated['currency'])) {
+            $validated['currency'] = strtoupper($validated['currency']);
+        }
+        if (!empty($validated['country_code'])) {
+            $validated['country_code'] = strtoupper($validated['country_code']);
+        }
 
         return $this->collectionCreditService->create($validated);
     }
