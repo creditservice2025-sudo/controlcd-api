@@ -479,6 +479,11 @@ class CollectionClientService
             return [
                 'id' => $credit->id,
                 'amount' => (float) $credit->amount,
+                // Moneda y país del crédito: la cartera de un cliente puede
+                // tener créditos en países distintos, y sin estos campos el
+                // front formateaba TODO en pesos colombianos.
+                'currency' => $credit->currency ?? null,
+                'country_code' => $credit->country_code ?? null,
                 'interest_rate' => (float) $credit->interest_rate,
                 'total_installments' => $credit->total_installments,
                 'payment_frequency' => $credit->payment_frequency,
