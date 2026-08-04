@@ -90,7 +90,12 @@ class LiquidationController extends Controller
         $seller = Seller::with('city.country')->find($request->seller_id);
         $country = $seller->city->country ?? null;
         $currency = $country->currency ?? 'PEN'; // Fallback a PEN si no hay país
-        $timezone = $country->timezone ?? config('app.timezone'); // Fallback a config
+        // Zona del VENDEDOR resuelta por TimezoneHelper. Antes salía de
+        // countries.timezone, columna mal poblada (Bolivia, Chile, Argentina,
+        // México y Venezuela figuran como America/Lima). De esta zona depende
+        // $todayDate, que es el tope del corte de LiquidationDatePolicy: con la
+        // zona equivocada el tope se corre y vuelve a colarse el día de más.
+        $timezone = \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
 
         Log::info('Liquidation creation started', [
             'user_id' => $user->id,

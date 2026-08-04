@@ -618,13 +618,34 @@ class LiquidationService
             }
         }
 
-        // Si no existe y es para HOY, y autoCreate está activo, crearla automáticamente (Apertura)
+        // Si no existe y es para HOY, y autoCreate está activo, crearla
+        // automáticamente (Apertura).
+        //
+        // Dos anclajes, porque CONSULTAR no debe abrir un día:
+        //  1) "Hoy" se calcula en la zona del VENDEDOR, no en la de quien mira.
+        //     Con $tz del navegador, un admin operando pasada su medianoche veía
+        //     $date == $todayStr y abría el día SIGUIENTE del vendedor.
+        //  2) Si la ruta no opera ese día (descanso semanal / feriado) no se crea
+        //     nada por el solo hecho de abrir la pantalla. Los movimientos reales
+        //     (pagos, créditos, cuotas) siguen creando su día por su propia vía:
+        //     nunca queda plata sin caja.
         if ($autoCreate) {
-            $todayStr = Carbon::now($tz)->toDateString();
+            $sellerForDay = Seller::with('city.country', 'config')->find($sellerId);
+            $sellerTz = \App\Helpers\TimezoneHelper::getSellerTimezone($sellerForDay);
+            $todayStr = Carbon::now($sellerTz)->toDateString();
+
             if ($date == $todayStr) {
-                \Log::info("Auto-creando liquidación (Apertura) para vendedor $sellerId en fecha $date");
-                $newLiquidation = $this->getOrCreateLiquidation($sellerId, $date, $timezone);
-                return $this->formatLiquidationResponse($newLiquidation, true);
+                if ($sellerForDay && \App\Services\BusinessCalendar::isNonWorkingDate($sellerForDay, $date)) {
+                    \Log::info('[liquidation.autocreate] omitida: la ruta no opera ese día', [
+                        'seller_id' => $sellerId,
+                        'date'      => $date,
+                        'timezone'  => $sellerTz,
+                    ]);
+                } else {
+                    \Log::info("Auto-creando liquidación (Apertura) para vendedor $sellerId en fecha $date");
+                    $newLiquidation = $this->getOrCreateLiquidation($sellerId, $date, $timezone);
+                    return $this->formatLiquidationResponse($newLiquidation, true);
+                }
             }
         }
         // 2. Obtener datos del endpoint dailyPaymentTotals
@@ -906,7 +927,10 @@ class LiquidationService
         if (!$liquidation)
             return [];
 
-        $seller = Seller::find($sellerId);
+        // withTrashed: un vendedor dado de baja seguía resolviendo a null y con él
+        // $userId, así que gastos e ingresos de sus días históricos se calculaban
+        // en CERO. Para un vendedor activo no cambia nada (nunca está trashed).
+        $seller = Seller::withTrashed()->find($sellerId);
         $userId = $seller ? $seller->user_id : null;
 
         $dailyTotals = $this->getDailyTotals($sellerId, $date, $userId, $timezone);
