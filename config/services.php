@@ -74,6 +74,14 @@ return [
         'bot_token' => env('TELEGRAM_COLLECTION_BOT_TOKEN'),
         'bot_username' => env('TELEGRAM_COLLECTION_BOT_USERNAME'),
         'webhook_secret' => env('TELEGRAM_COLLECTION_WEBHOOK_SECRET'),
+
+        // Bot OPCIONAL solo para los reportes de cobranza ("Reporte de Cobranza
+        // Diario"). Si se define, los reportes salen por acá y el bot de carga
+        // de gastos queda para la operación del cobrador. Si se deja vacío, los
+        // reportes usan el bot de Deuda & Abono de arriba — nunca el de
+        // Control CD.
+        'report_bot_token' => env('TELEGRAM_COLLECTION_REPORT_BOT_TOKEN'),
+        'report_bot_username' => env('TELEGRAM_COLLECTION_REPORT_BOT_USERNAME'),
     ],
 
 ];
