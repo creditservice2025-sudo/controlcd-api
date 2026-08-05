@@ -519,6 +519,11 @@ class CollectionClientService
                 'first_installment_date' => $credit->first_installment_date?->toDateString(),
                 'status' => $credit->status,
                 'balance' => $realBalance,
+                // Las dos patas del saldo, explícitas. El front las mostraba
+                // restando (balance − capital) y esa resta se desalinea con los
+                // redondeos; además es la cifra que el cliente quiere leer tal cual.
+                'remaining_principal' => round($remainingPrincipal, 2),
+                'pending_interest' => round($pendingInterest, 2),
                 'total_paid' => (float) ($stats->total_paid_all ?? 0),
                 'total_principal_paid' => (float) ($stats->total_principal_paid ?? 0),
                 'total_interest_paid' => (float) ($stats->total_paid_all ?? 0) - (float) ($stats->total_principal_paid ?? 0),
@@ -575,16 +580,36 @@ class CollectionClientService
                 ->get()
                 ->map(function ($inst) {
                     $deletingUser = $inst->deleted_by ? \App\Models\User::find($inst->deleted_by) : null;
+
+                    $principalAmount = (float) ($inst->principal_amount ?? ($inst->amount));
+                    $interestAmount = (float) ($inst->interest_amount ?? 0);
+                    // Saldo por componentes: un abono dirigido solo a capital puede
+                    // superar el monto de la cuota sin saldar el interés del período,
+                    // así que `amount − paid_amount` no sirve como pendiente.
+                    $pendingInterest = max(0, round($interestAmount - (float) ($inst->interest_paid ?? 0), 2));
+                    $pendingPrincipal = max(0, round($principalAmount - (float) ($inst->principal_paid ?? 0), 2));
+
                     return [
                         'id' => $inst->id,
                         'installment_number' => $inst->installment_number,
                         'due_date' => $inst->due_date?->toDateString(),
                         'amount' => (float) $inst->amount,
-                        'principal_amount' => (float) ($inst->principal_amount ?? ($inst->amount)),
-                        'interest_amount' => (float) ($inst->interest_amount ?? 0),
+                        'principal_amount' => $principalAmount,
+                        'interest_amount' => $interestAmount,
+                        // Capital sobre el que se devengó este interés. NULL en
+                        // cuotas antiguas cuyo origen no se pudo reconstruir.
+                        'principal_base' => $inst->principal_base !== null
+                            ? (float) $inst->principal_base
+                            : null,
+                        // Instante en que se generó la cuota: permite reconstruir
+                        // de qué movimientos se compone su capital base.
+                        'recorded_at' => optional($inst->recorded_at)->toISOString(),
                         'paid_amount' => (float) $inst->paid_amount,
                         'principal_paid' => (float) ($inst->principal_paid ?? 0),
                         'interest_paid' => (float) ($inst->interest_paid ?? 0),
+                        'pending_interest' => $pendingInterest,
+                        'pending_principal' => $pendingPrincipal,
+                        'pending_amount' => round($pendingInterest + $pendingPrincipal, 2),
                         'status' => $inst->status,
                         'last_payment_at' => $inst->last_payment_at?->toISOString(),
                         'payment_method' => $inst->payment_method,

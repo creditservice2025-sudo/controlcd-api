@@ -638,14 +638,22 @@ class CollectionCreditService
             $paid = (float) $i->paid_amount;
             $status = strtolower((string) $i->status);
 
+            // El saldo de la cuota se mide por componentes, no por `amount − paid_amount`:
+            // un abono dirigido solo a capital puede superar el monto de la cuota y aun
+            // así dejar el interés del período sin cobrar.
+            $interestDue = max(0, round((float) $i->interest_amount - (float) ($i->interest_paid ?? 0), 2));
+            $principalDue = max(0, round((float) $i->principal_amount - (float) ($i->principal_paid ?? 0), 2));
+
             return [
                 'number' => (int) $i->installment_number,
                 'due_date' => optional($i->due_date)->toDateString(),
                 'amount' => $due,
                 'paid_amount' => $paid,
-                'pending' => max(0, round($due - $paid, 2)),
+                'pending' => round($interestDue + $principalDue, 2),
+                'pending_interest' => $interestDue,
+                'pending_principal' => $principalDue,
                 'status' => $status,
-                'is_paid' => $status === 'pagado' || $paid >= $due,
+                'is_paid' => $status === 'pagado' || ($interestDue <= 0 && $principalDue <= 0),
                 'last_payment_at' => optional($i->last_payment_at)->toISOString(),
                 'payment_method' => $i->payment_method,
             ];
@@ -989,8 +997,10 @@ class CollectionCreditService
             $credit->amount = $newAmount;
             $credit->save();
 
-            // 2b) El interes sigue al capital: la cuota vigente se recalcula ya.
-            $this->syncOpenInstallmentInterest($credit, $companyId);
+            // 2b) La cuota de interes vigente NO se recalcula: su interes ya se
+            // devengo sobre el saldo con el que arranco el periodo. El capital
+            // agregado empieza a generar interes en la SIGUIENTE cuota, que se
+            // crea sobre el capital pendiente del momento (generateNextOpenEndedInstallment).
 
             // 3) Wallet movement: debit por el capital entregado
             app(\App\Services\Collection\CollectionWalletService::class)->recordMovement([
@@ -1005,7 +1015,13 @@ class CollectionCreditService
                 'description' => "Adición de capital al crédito #{$credit->id}",
             ]);
 
-            $nextQuota = round($newAmount * (float) $credit->interest_rate / 100, 2);
+            // La próxima cuota se calcula sobre el capital VIVO (ya descontado lo
+            // amortizado), igual que generateNextOpenEndedInstallment. Sobre
+            // `amount` a secas cobraría interés de plata que el cliente devolvió.
+            $nextQuota = round(
+                $this->openEndedRemainingPrincipal($credit) * (float) $credit->interest_rate / 100,
+                2
+            );
 
             return $this->successCreatedResponse([
                 'success' => true,
@@ -1164,56 +1180,6 @@ class CollectionCreditService
     }
 
     /**
-     * Recalcula el interés de la cuota vigente contra el capital vivo.
-     *
-     * Regla: el interés mensual SIEMPRE es CAPITAL VIVO × tasa, donde el capital
-     * vivo es `amount` menos el capital ya devuelto. No es `amount` a secas: en
-     * un crédito abierto el cliente amortiza capital y el interés del mes
-     * siguiente baja (ver crédito 6: 50 → 45 → 39,75 → 34,24). Calcularlo sobre
-     * `amount` le cobraría intereses sobre plata que ya devolvió.
-     *
-     * Si se agrega (o se corrige) capital, la cuota abierta se actualiza en el
-     * acto — antes quedaba con el interés del capital viejo.
-     *
-     * No toca cuotas ya pagadas: ese período se cobró con el capital que había
-     * entonces y reescribirlo falsearía el histórico. Si la cuota tiene pagos
-     * parciales sí se recalcula: lo abonado se conserva y la diferencia queda
-     * pendiente.
-     */
-    private function syncOpenInstallmentInterest(CollectionCredit $credit, int $companyId): void
-    {
-        $open = CollectionInstallment::query()
-            ->where('company_id', $companyId)
-            ->where('credit_id', $credit->id)
-            ->whereNull('deleted_at')
-            ->whereIn(DB::raw('LOWER(status)'), ['pendiente', 'parcial'])
-            ->orderBy('installment_number')
-            ->first();
-
-        if (!$open) {
-            return;
-        }
-
-        $principalPaid = (float) CollectionInstallment::query()
-            ->where('company_id', $companyId)
-            ->where('credit_id', $credit->id)
-            ->whereNull('deleted_at')
-            ->sum('principal_paid');
-
-        $livePrincipal = max(0, round((float) $credit->amount - $principalPaid, 2));
-
-        $interest = round($livePrincipal * (float) $credit->interest_rate / 100, 2);
-        $interestPaid = (float) ($open->interest_paid ?? 0);
-
-        $open->amount = $interest;
-        $open->interest_amount = $interest;
-        $open->principal_amount = 0;
-        // Si lo ya abonado alcanza el nuevo interés, la cuota queda saldada.
-        $open->status = $interestPaid >= $interest ? 'pagado' : ($interestPaid > 0 ? 'parcial' : 'pendiente');
-        $open->save();
-    }
-
-    /**
      * ¿Se puede corregir esta adición de capital?
      *
      * Misma ventana que el crédito y por los mismos motivos: día real de
@@ -1355,8 +1321,9 @@ class CollectionCreditService
                 $credit->amount = round((float) $credit->amount + $delta, 2);
                 $credit->save();
 
-                // El interés sigue al capital, también al corregir la adición.
-                $this->syncOpenInstallmentInterest($credit, $companyId);
+                // La cuota vigente no se toca: la adición nunca alteró su interés
+                // devengado, así que corregir el monto tampoco debe hacerlo. El
+                // delta se refleja en la siguiente cuota.
 
                 app(\App\Services\Collection\CollectionWalletService::class)->recordMovement([
                     'company_id' => $companyId,
@@ -1525,6 +1492,9 @@ class CollectionCreditService
                 'amount' => $interest,
                 'principal_amount' => 0,
                 'interest_amount' => $interest,
+                // Capital que generó este interés. Queda congelado con la cuota:
+                // el capital del crédito cambiará, el origen del interés no.
+                'principal_base' => $principal,
                 'paid_amount' => 0,
                 'principal_paid' => 0,
                 'interest_paid' => 0,
@@ -1734,29 +1704,27 @@ class CollectionCreditService
             return;
         }
 
-        // Capital pendiente = credit.amount - suma(principal_paid).
-        $paidPrincipal = (float) DB::connection(self::CONNECTION)
-            ->table('collection_installments')
-            ->where('company_id', $credit->company_id)
-            ->where('credit_id', $credit->id)
-            ->sum('principal_paid');
-
-        $remainingPrincipal = round((float) $credit->amount - $paidPrincipal, 2);
-
-        if ($remainingPrincipal <= 0) {
-            $credit->update(['status' => 'pagado']);
-            return;
-        }
-
-        // Solo generar siguiente si no hay ninguna cuota pendiente o parcial.
+        // Solo se avanza de periodo cuando no queda ninguna cuota abierta. Mientras
+        // haya una cuota vigente (aunque el capital ya este saldado) el credito sigue
+        // vivo: el interes devengado de ese periodo aun debe cobrarse.
         $hasPending = DB::connection(self::CONNECTION)
             ->table('collection_installments')
             ->where('company_id', $credit->company_id)
             ->where('credit_id', $credit->id)
-            ->whereIn('status', ['pendiente', 'parcial'])
+            ->whereNull('deleted_at')
+            ->whereIn(DB::raw('LOWER(status)'), ['pendiente', 'parcial'])
             ->exists();
 
         if ($hasPending) {
+            return;
+        }
+
+        // Capital pendiente = credit.amount - suma(principal_paid).
+        $remainingPrincipal = $this->openEndedRemainingPrincipal($credit);
+
+        if ($remainingPrincipal <= 0) {
+            // Sin capital y sin cuotas abiertas: no hay nada mas que cobrar.
+            $credit->update(['status' => 'pagado']);
             return;
         }
 
@@ -1783,6 +1751,8 @@ class CollectionCreditService
             'amount' => $interest,
             'principal_amount' => 0,
             'interest_amount' => $interest,
+            // El capital vivo del momento: es lo que explica este interés.
+            'principal_base' => $remainingPrincipal,
             'paid_amount' => 0,
             'principal_paid' => 0,
             'interest_paid' => 0,
@@ -1867,7 +1837,17 @@ class CollectionCreditService
     }
 
     /**
-     * Recalcula el interes de las cuotas futuras pendientes si el capital varia.
+     * Sincroniza el estado del credito abierto despues de un movimiento de capital.
+     *
+     * REGLA DE NEGOCIO: el interes ya devengado no se toca. Una cuota de interes,
+     * una vez generada, conserva su monto aunque el capital baje (abono a capital)
+     * o suba (adicion de capital) — ese interes corresponde al periodo en curso y
+     * ya se causo sobre el saldo que hubo al inicio del periodo. El capital nuevo
+     * se refleja en la SIGUIENTE cuota, que generateNextOpenEndedInstallment()
+     * calcula sobre el capital pendiente del momento en que se crea.
+     *
+     * Por eso aqui no se recalcula ningun `interest_amount`: solo se decide si el
+     * credito quedo saldado.
      */
     public function recalculateFutureInstallments(CollectionCredit $credit): void
     {
@@ -1876,7 +1856,25 @@ class CollectionCreditService
             return;
         }
 
-        // 1. Calcular capital pendiente actual
+        if ($this->openEndedRemainingPrincipal($credit) > 0) {
+            return;
+        }
+
+        // Capital saldado. El credito solo se cierra si tampoco queda interes
+        // devengado por cobrar: pagar todo el capital no perdona el interes del
+        // mes en curso.
+        if ($this->openEndedPendingInterest($credit) > 0) {
+            return;
+        }
+
+        $this->closeSettledOpenEndedCredit($credit);
+    }
+
+    /**
+     * Capital pendiente = desembolsado (incluye adiciones) − capital abonado.
+     */
+    private function openEndedRemainingPrincipal(CollectionCredit $credit): float
+    {
         $paidPrincipal = (float) DB::connection(self::CONNECTION)
             ->table('collection_installments')
             ->where('company_id', $credit->company_id)
@@ -1884,44 +1882,44 @@ class CollectionCreditService
             ->whereNull('deleted_at')
             ->sum('principal_paid');
 
-        $remainingPrincipal = round((float) $credit->amount - $paidPrincipal, 2);
+        return round((float) $credit->amount - $paidPrincipal, 2);
+    }
 
-        if ($remainingPrincipal <= 0) {
-            // Si el capital ya se saldo, marcar todas las pendientes como cerradas (o que el proximo pago liquide el interes)
-             DB::connection(self::CONNECTION)
-                ->table('collection_installments')
-                ->where('company_id', $credit->company_id)
-                ->where('credit_id', $credit->id)
-                ->where('status', 'pendiente')
-                ->update([
-                    'interest_amount' => 0,
-                    'amount' => 0,
-                    'status' => 'pagado', // Opcional: si ya no hay deuda, se cierran
-                ]);
-            $credit->update(['status' => 'pagado']);
-            return;
-        }
-
-        // 2. Buscar todas las cuotas PENDIENTES o PARCIALES (futuras)
-        $futureInstallments = \App\Models\Collection\CollectionInstallment::query()
+    /**
+     * Interes devengado y aun no cobrado sobre las cuotas abiertas.
+     */
+    private function openEndedPendingInterest(CollectionCredit $credit): float
+    {
+        $rows = DB::connection(self::CONNECTION)
+            ->table('collection_installments')
             ->where('company_id', $credit->company_id)
             ->where('credit_id', $credit->id)
-            ->whereIn('status', ['pendiente', 'parcial'])
-            ->get();
+            ->whereNull('deleted_at')
+            ->whereIn(DB::raw('LOWER(status)'), ['pendiente', 'parcial'])
+            ->get(['interest_amount', 'interest_paid']);
 
-        foreach ($futureInstallments as $inst) {
-            $interestRate = (float) $credit->interest_rate;
-            $newInterest = round(($remainingPrincipal * $interestRate) / 100, 2);
-            
-            // Si ya tiene algo pagado de interes, hay que restar eso
-            $pendingInterest = max(0, $newInterest - (float)($inst->interest_paid ?? 0));
-            $pendingPrincipal = max(0, (float)($inst->principal_amount ?? 0) - (float)($inst->principal_paid ?? 0));
-            
-            $inst->update([
-                'interest_amount' => $newInterest,
-                'amount' => round($newInterest + (float)($inst->principal_amount ?? 0), 2),
-                'paid_amount' => (float)($inst->interest_paid ?? 0) + (float)($inst->principal_paid ?? 0),
-            ]);
+        $pending = 0.0;
+        foreach ($rows as $row) {
+            $pending += max(0, (float) $row->interest_amount - (float) ($row->interest_paid ?? 0));
         }
+
+        return round($pending, 2);
+    }
+
+    /**
+     * Cierra el credito abierto ya saldado (capital 0 e interes 0) y da por
+     * cerradas las cuotas abiertas que quedaron sin saldo por cobrar.
+     */
+    private function closeSettledOpenEndedCredit(CollectionCredit $credit): void
+    {
+        DB::connection(self::CONNECTION)
+            ->table('collection_installments')
+            ->where('company_id', $credit->company_id)
+            ->where('credit_id', $credit->id)
+            ->whereNull('deleted_at')
+            ->whereIn(DB::raw('LOWER(status)'), ['pendiente', 'parcial'])
+            ->update(['status' => 'pagado']);
+
+        $credit->update(['status' => 'pagado']);
     }
 }

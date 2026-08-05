@@ -30,6 +30,9 @@ class CollectionInstallment extends Model
         'deleted_ip',
         'principal_amount',
         'interest_amount',
+        // Capital sobre el que se devengó el interés de ESTA cuota. Se escribe al
+        // generarla y no se toca después: es la explicación del monto.
+        'principal_base',
         'principal_paid',
         'interest_paid',
         'history',
@@ -41,6 +44,7 @@ class CollectionInstallment extends Model
         'paid_amount' => 'decimal:2',
         'principal_amount' => 'decimal:2',
         'interest_amount' => 'decimal:2',
+        'principal_base' => 'decimal:2',
         'principal_paid' => 'decimal:2',
         'interest_paid' => 'decimal:2',
         'last_payment_at' => 'datetime',
