@@ -149,4 +149,13 @@ return Application::configure(basePath: dirname(__DIR__))
             ->everyMinute()
             ->withoutOverlapping()
             ->emailOutputOnFailure('creditservice2025@gmail.com');
+
+        // Collection: reporte diario de cobranza por Telegram (quién debe pagar
+        // hoy y quién pagó). everyMinute por la misma razón que el corte: la
+        // hora de envío es LOCAL de cada empresa y los países difieren. El
+        // comando decide a quién le toca y es idempotente por empresa+día.
+        $schedule->command('collection:telegram-daily-report')
+            ->everyMinute()
+            ->withoutOverlapping()
+            ->emailOutputOnFailure('creditservice2025@gmail.com');
     })->create();

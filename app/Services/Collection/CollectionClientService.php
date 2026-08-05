@@ -119,11 +119,22 @@ class CollectionClientService
             $totalPending = 0.0;
             $activeCount = 0;
             $aggCurrency = $latestCredit?->currency ?? 'COP';
+            // Desglose por crédito activo para el listado: un cliente con varios
+            // créditos tiene una fecha de primera cuota POR CRÉDITO, y mostrar
+            // solo la del último (que es lo que había) es arbitrario.
+            $creditsSummary = [];
             foreach (($creditsByClient[$client->id] ?? []) as $c) {
                 if (!in_array(strtolower((string) $c->status), $activeStatuses, true)) {
                     continue;
                 }
                 $activeCount++;
+                $creditsSummary[] = [
+                    'id' => $c->id,
+                    'route_name' => $c->route_name ?? null,
+                    'first_installment_date' => $c->first_installment_date?->toDateString(),
+                    'amount' => (float) $c->amount,
+                    'currency' => $c->currency ?? null,
+                ];
                 $amount = (float) $c->amount;
                 $rate = (float) $c->interest_rate;
                 $interest = $amount * $rate / 100;
@@ -140,6 +151,18 @@ class CollectionClientService
                 $totalPending += $balance;
                 $aggCurrency = $c->currency ?? $aggCurrency;
             }
+
+            // Orden cronológico: la primera cuota más vieja arriba. Los créditos
+            // sin fecha van al final para no encabezar la lista con un guion.
+            usort($creditsSummary, function ($a, $b) {
+                $x = $a['first_installment_date'] ?? '9999-12-31';
+                $y = $b['first_installment_date'] ?? '9999-12-31';
+                return $x <=> $y;
+            });
+
+            $firstDates = array_values(array_filter(
+                array_column($creditsSummary, 'first_installment_date')
+            ));
 
             $creditMeta = is_array($latestCredit?->metadata) ? $latestCredit->metadata : [];
 
@@ -171,6 +194,12 @@ class CollectionClientService
                 'credit_total_installments' => $latestCredit?->total_installments,
                 'credit_payment_frequency' => $latestCredit?->payment_frequency,
                 'credit_first_installment_date' => $latestCredit?->first_installment_date?->toDateString(),
+                // Primera cuota de la cartera: la más antigua entre los créditos
+                // activos. Es el valor que encabeza la columna; el desglose
+                // completo va en `credits_summary`.
+                'first_installment_date' => $firstDates[0] ?? null,
+                'first_installment_date_last' => count($firstDates) ? end($firstDates) : null,
+                'credits_summary' => $creditsSummary,
                 'credit_status' => $latestCredit?->status,
                 'credit_route_name' => $latestCredit?->route_name ?? null,
                 'credit_description' => $latestCredit?->description ?? null,
