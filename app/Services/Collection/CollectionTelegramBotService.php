@@ -588,7 +588,12 @@ class CollectionTelegramBotService
         $payload = ['chat_id' => $chatId, 'text' => str_replace('\n', "\n", $text), 'parse_mode' => 'Markdown'];
         if ($replyMarkup) $payload['reply_markup'] = $replyMarkup;
         try {
-            Http::withoutVerifying()->post("https://api.telegram.org/bot{$this->token}/sendMessage", $payload);
+            // Con timeout: sin él, una red lenta cuelga el request hasta que PHP
+            // lo mata. El mensaje es secundario, la operación no puede depender de él.
+            Http::withoutVerifying()
+                ->connectTimeout(3)
+                ->timeout(5)
+                ->post("https://api.telegram.org/bot{$this->token}/sendMessage", $payload);
         } catch (\Throwable $e) {
             Log::error('[collection.telegram] sendMessage falló: ' . $e->getMessage());
         }
@@ -659,10 +664,16 @@ class CollectionTelegramBotService
         if (!$this->token) return null;
         try {
             $meta = Http::withoutVerifying()
+                ->connectTimeout(3)
+                ->timeout(10)
                 ->get("https://api.telegram.org/bot{$this->token}/getFile", ['file_id' => $fileId])->json();
             $path = $meta['result']['file_path'] ?? null;
             if (!$path) return null;
-            $binary = Http::withoutVerifying()->get("https://api.telegram.org/file/bot{$this->token}/{$path}")->body();
+            // Descarga de la foto: más margen que un mensaje, pero acotado igual.
+            $binary = Http::withoutVerifying()
+                ->connectTimeout(3)
+                ->timeout(20)
+                ->get("https://api.telegram.org/file/bot{$this->token}/{$path}")->body();
             if (!$binary) return null;
             $tmp = tempnam(sys_get_temp_dir(), 'tgc') . '.jpg';
             file_put_contents($tmp, $binary);
