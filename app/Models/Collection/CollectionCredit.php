@@ -35,6 +35,28 @@ class CollectionCredit extends Model
         'metadata' => 'array',
     ];
 
+    /**
+     * Estado de un crédito dado de baja.
+     *
+     * La baja es LÓGICA: la fila nunca se borra. Un crédito que existió y movió
+     * caja tiene que poder explicarse después — el corte del día, los reportes y
+     * la auditoría lo necesitan. Lo que cambia es que deja de aparecer en la
+     * operación diaria.
+     */
+    public const STATUS_CANCELLED = 'anulado';
+
+    /** Excluye los créditos dados de baja: es el filtro de la vista operativa. */
+    public function scopeNotCancelled($query)
+    {
+        return $query->where('status', '!=', self::STATUS_CANCELLED);
+    }
+
+    /** ¿Este crédito está dado de baja? */
+    public function isCancelled(): bool
+    {
+        return $this->status === self::STATUS_CANCELLED;
+    }
+
     public function client()
     {
         return $this->belongsTo(CollectionClient::class, 'client_id', 'id');

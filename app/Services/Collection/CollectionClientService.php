@@ -66,7 +66,11 @@ class CollectionClientService
         $creditsByClient = [];
         $latestByClient = [];
         if (!empty($clientIds)) {
+            // Los créditos dados de baja no entran en el listado: su capital ya
+            // volvió a la caja y sus cuotas están anuladas, así que sumarlos
+            // inflaría la cartera del cliente con deuda que no existe.
             $allCredits = CollectionCredit::query()
+                ->notCancelled()
                 ->whereIn('client_id', $clientIds)
                 ->when($hasCreditCompany, function ($creditQuery) use ($companyId) {
                     $creditQuery->where('company_id', $companyId);
@@ -419,7 +423,16 @@ class CollectionClientService
         });
     }
 
-    public function get(int $clientId, ?int $requestedCompanyId = null, ?int $requestedCreditId = null)
+    /**
+     * @param bool $includeCancelled Incluye los créditos dados de baja. Fuera de
+     *        la auditoría no se piden: la operación diaria solo ve los vigentes.
+     */
+    public function get(
+        int $clientId,
+        ?int $requestedCompanyId = null,
+        ?int $requestedCreditId = null,
+        bool $includeCancelled = false
+    )
     {
         $companyId = $this->resolveCompanyId($requestedCompanyId);
         if (!$companyId) {
@@ -439,13 +452,28 @@ class CollectionClientService
         }
 
         $meta = $this->hasClientMetadataColumn() ? ($client->metadata ?? []) : [];
+
+        // La cartera muestra los créditos vigentes. Los dados de baja quedan
+        // fuera de la vista diaria pero NO se borran: se piden aparte con
+        // `include_cancelled` para poder auditarlos cuando haga falta.
         $allCredits = CollectionCredit::query()
             ->where('client_id', $client->id)
+            ->when(!$includeCancelled, fn ($q) => $q->notCancelled())
             ->when($this->hasCreditCompanyColumn(), function ($creditQuery) use ($companyId) {
                 $creditQuery->where('company_id', $companyId);
             })
             ->orderByDesc('id')
             ->get();
+
+        // Cuántos quedaron fuera: la UI ofrece verlos sin tener que adivinar
+        // que existen.
+        $cancelledCount = $includeCancelled ? 0 : CollectionCredit::query()
+            ->where('client_id', $client->id)
+            ->where('status', CollectionCredit::STATUS_CANCELLED)
+            ->when($this->hasCreditCompanyColumn(), function ($q) use ($companyId) {
+                $q->where('company_id', $companyId);
+            })
+            ->count();
 
         $creditsData = $allCredits->map(function ($credit) use ($companyId) {
             $meta = is_array($credit->metadata) ? $credit->metadata : [];
@@ -655,6 +683,8 @@ class CollectionClientService
             'credit_amount' => $latestCredit?->amount,
             'credit_status' => $latestCredit?->status,
             'installments' => $installments,
+            // Créditos dados de baja que quedaron fuera de la cartera visible.
+            'cancelled_credits_count' => $cancelledCount,
             'created_at' => optional($client->created_at)->toISOString(),
         ];
 

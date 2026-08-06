@@ -38,10 +38,14 @@ class CollectionClientController extends Controller
             if (!is_int($companyId)) return $companyId;
 
             $creditId = $request->input('credit_id');
+
+            // Por defecto la cartera solo trae los créditos vigentes. Los dados
+            // de baja se piden explícitamente para consultarlos o auditarlos.
             return $this->collectionClientService->get(
                 $clientId,
                 $companyId,
-                $creditId ? (int) $creditId : null
+                $creditId ? (int) $creditId : null,
+                $request->boolean('include_cancelled')
             );
         } catch (\Exception $e) {
             return $this->errorResponse('Error en el servidor: ' . $e->getMessage(), 500);

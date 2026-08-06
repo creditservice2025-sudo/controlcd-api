@@ -52,7 +52,16 @@ class CollectionTelegramNotifier
         }
 
         try {
-            $response = Http::withoutVerifying()->post(
+            // Timeout obligatorio: esta llamada corre DENTRO del request del
+            // usuario. Sin él, una red lenta (VPN, corte de salida) deja el
+            // pedido colgado hasta que PHP lo mata a los 30 s, y el usuario ve
+            // un error genérico en una operación que ya se completó en base.
+            // El aviso por Telegram es secundario; el catch de abajo lo trata
+            // como no entregado y la operación sigue su curso.
+            $response = Http::withoutVerifying()
+                ->connectTimeout(3)
+                ->timeout(5)
+                ->post(
                 "https://api.telegram.org/bot{$this->token}/sendMessage",
                 [
                     'chat_id' => $chatId,
