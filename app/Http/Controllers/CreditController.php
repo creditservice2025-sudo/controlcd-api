@@ -36,6 +36,11 @@ class CreditController extends Controller
             'restoreClientFromUncollectible',
             'changeCreditClient',
         ]);
+        // Colocar y renovar es trabajo de campo: el Super-Admin (1) y el
+        // Admin (2) no dan de alta créditos ni los renuevan. Editar, unificar
+        // o dar de baja uno existente sigue siendo tarea suya, y la
+        // importación masiva va por ImportController, que no pasa por acá.
+        $this->middleware('block.admin.field.ops')->only(['create', 'renew']);
         /*  $this->middleware('permission:ver_creditos')->only('index');
          $this->middleware('permission:crear_creditos')->only('create');
          $this->middleware('permission:editar_creditos')->only('update');

@@ -32,6 +32,7 @@ use App\Services\TelegramService;
 class ClientService
 {
     use ApiResponse;
+    use \App\Services\Traits\EnforcesCashOpen;
 
     private const TIMEZONE = 'America/Lima';
 
@@ -84,6 +85,31 @@ class ClientService
     {
         try {
             $params = $request->validated();
+
+            // ── LA CAJA DEL DÍA TIENE QUE ESTAR ABIERTA ────────────────────
+            //
+            // Dar de alta un cliente es, en este sistema, dar de alta también
+            // su crédito inicial: credit_value, interest_rate,
+            // installment_count y payment_frequency son obligatorios y el
+            // crédito se crea en la misma transacción, unas líneas más abajo.
+            // O sea que por esta puerta sale plata de la caja.
+            //
+            // Los cerrojos de crédito vivían solo en CreditController y
+            // CreditService, así que este camino los esquivaba entero: con la
+            // caja del día ya aprobada se colocó un crédito de S/ 300 y la
+            // liquidación quedó con new_credits = 0. La plata salió y la caja
+            // no se enteró.
+            //
+            // Mismo criterio que CreditService::create: sin excepción por rol.
+            // Una caja cerrada no admite colocaciones de nadie.
+            if (!empty($params['seller_id'])) {
+                $seller = \App\Models\Seller::with('city.country')->find($params['seller_id']);
+                $tzGuard = \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
+                $this->assertSellerCashOpen(
+                    (int) $params['seller_id'],
+                    \Carbon\Carbon::now($tzGuard)->toDateString()
+                );
+            }
 
             // Restricción por monto total de ventas nuevas en el día
             if (!empty($params['credit_value']) && (float) $params['credit_value'] > 0) {
@@ -284,6 +310,12 @@ class ClientService
                     'data' => $client->fresh(),
                 ]);
             }, 5);
+        } catch (\App\Exceptions\CashClosedException $e) {
+            // La caja cerrada es una regla de negocio, no un fallo técnico:
+            // 422 con el motivo legible, igual que en IncomeService y
+            // ExpenseService. Va ANTES del catch genérico, que si no lo
+            // convertiría en un 500 sin explicación.
+            return $this->errorResponse($e->getMessage(), 422);
         } catch (\Exception $e) {
             Log::error("Error in client creation process: {$e->getMessage()} | " . $e->getTraceAsString());
             return $this->errorResponse($e->getMessage(), 500);
@@ -2497,6 +2529,23 @@ class ClientService
                 $clientsQuery->where('seller_id', $seller->id);
             }
 
+            // Supervisor (6) / Cobrador-abono (7) / Secretaria (11): solo las
+            // rutas asignadas en user_routes, mismo criterio que
+            // indexWithCredits. Sin esto el contador devolvía los clientes de
+            // TODO el sistema: no fallaba, contestaba de más, y el número
+            // llegaba a pantalla como si fuera el de su ruta.
+            if (in_array((int) $user->role_id, [6, 7, 11], true)) {
+                $sellerIds = \App\Models\UserRoute::where('user_id', $user->id)
+                    ->pluck('seller_id')
+                    ->toArray();
+
+                if (!empty($sellerIds)) {
+                    $clientsQuery->whereIn('seller_id', $sellerIds);
+                } else {
+                    $clientsQuery->whereRaw('0 = 1');
+                }
+            }
+
             $totalClients = $clientsQuery->count();
 
             return $this->successResponse([
@@ -2663,6 +2712,24 @@ class ClientService
             // scope to sellers asociados para role 11
             if ($user->role_id == 11) {
                 $sellerIds = \App\Models\UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
+                $query->whereIn('clients.seller_id', $sellerIds);
+            }
+
+            // Supervisor (rol 6): mismo criterio que el 11 — solo las rutas que
+            // tiene asignadas en user_routes.
+            //
+            // No tenía NINGÚN scope: la consulta salía sin filtro de vendedor y
+            // se traía los clientes de todo el sistema (37.288 en la base de
+            // hoy). El resultado no era una fuga visible sino un 500 por
+            // memoria agotada — el "Error al cargar la lista de clientes".
+            //
+            // Va como filtro propio, ADEMÁS del $sellerId que llegue por
+            // parámetro: así un supervisor tampoco puede pedir la cartera de
+            // una ruta que no le corresponde mandando otro seller_id.
+            if ($user->role_id == 6) {
+                $sellerIds = \App\Models\UserRoute::where('user_id', $user->id)
+                    ->pluck('seller_id')
+                    ->toArray();
                 $query->whereIn('clients.seller_id', $sellerIds);
             }
 

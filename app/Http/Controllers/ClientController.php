@@ -31,6 +31,12 @@ class ClientController extends Controller
     {
         $this->clientService = $clientService;
 
+        // Supervisor (rol 6) en solo-lectura cuando la caja del vendedor que
+        // supervisa ya está cerrada. Este controller no lo tenía, y como el
+        // alta de cliente crea también su crédito inicial, era la puerta por
+        // la que entraban colocaciones a una caja ya firmada.
+        $this->middleware('block.writes.cash.closed')->only(['create']);
+
         /*  $this->middleware('permission:ver_clientes')->only('index');
         $this->middleware('permission:crear_clientes')->only('store');
         $this->middleware('permission:editar_clientes')->only('update');
@@ -419,6 +425,16 @@ class ClientController extends Controller
             if ($sellerId === 'null') {
                 $sellerId = null;
             }
+
+            // Supervisor (rol 6): consulta la RUTA ACTIVA que eligió. El APK no
+            // manda seller_id en esta pantalla —el cobrador no lo necesita—, así
+            // que se toma del header X-Active-Seller-Id ya resuelto por
+            // ResolveActiveSeller. Sin esto la consulta salía sin vendedor.
+            $user = $request->user();
+            if (!$sellerId && (int) ($user->role_id ?? 0) === 6) {
+                $sellerId = $request->attributes->get('active_seller_id') ?: null;
+            }
+
             return $this->clientService->getClientsSelect($search, $companyId, $sellerId);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
@@ -487,12 +503,32 @@ class ClientController extends Controller
                     return $this->errorResponse('No tiene acceso a este vendedor', 403);
                 }
             }
+            // Supervisor (rol 6): solo las rutas que tiene asignadas en
+            // user_routes. Faltaba: el sellerId llega por la URL y sin este
+            // chequeo podía pedir la morosidad de cualquier ruta del sistema
+            // cambiando el número.
+            if ($user->role_id === 6 && !$this->supervisaAlVendedor($user->id, (int) $sellerId)) {
+                return $this->errorResponse('No tiene acceso a este vendedor', 403);
+            }
 
             return $this->clientService->getDebtorClientsBySeller($sellerId);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             return $this->errorResponse('Error al obtener los clientes morosos', 500);
         }
+    }
+
+    /**
+     * ¿El supervisor tiene asignada esa ruta? Es la misma fuente de verdad que
+     * usa ResolveActiveSeller para validar el header X-Active-Seller-Id: la
+     * tabla user_routes. Se consulta acá también porque en estos endpoints el
+     * vendedor llega por la URL, no por el header.
+     */
+    private function supervisaAlVendedor(int $userId, int $sellerId): bool
+    {
+        return \App\Models\UserRoute::where('user_id', $userId)
+            ->where('seller_id', $sellerId)
+            ->exists();
     }
 
     /**

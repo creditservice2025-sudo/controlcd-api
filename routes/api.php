@@ -373,6 +373,9 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         Route::get('{id}/detail', [LiquidationController::class, 'getLiquidationDetail']);
         Route::prefix('seller/{sellerId}')->group(function () {
             Route::get('/', [LiquidationController::class, 'getBySeller']);
+            // Estado de la caja del día. Liviano y de solo lectura: el APK lo
+            // usa para apagar los botones de alta cuando la caja está cerrada.
+            Route::get('/cash-status', [LiquidationController::class, 'cashStatus']);
             Route::get('/stats', [LiquidationController::class, 'getSellerStats']);
             Route::get('daily-movements', [LiquidationController::class, 'getDailyMovements']);
         });

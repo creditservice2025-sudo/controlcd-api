@@ -28,6 +28,10 @@ class PaymentController extends Controller
             'deletePaymentInstallment',
             'reapply',
         ]);
+        // Cobrar es trabajo de campo: el Super-Admin (1) y el Admin (2) no
+        // registran pagos. Solo el ALTA — corregir o eliminar un pago ya
+        // existente sigue siendo tarea suya.
+        $this->middleware('block.admin.field.ops')->only(['create']);
     }
 
     public function create(PaymentRequest $request)
@@ -279,15 +283,34 @@ class PaymentController extends Controller
         $todayDate = Carbon::now($timezone)->toDateString();
         $user = Auth::user();
 
-        if (!in_array($user->role_id, [1, 2, 5, 11])) {
+        // El Supervisor (6) faltaba en esta lista: la pantalla de Liquidaciones
+        // del APK llama a este endpoint cuando el día todavía no tiene
+        // liquidación, y el supervisor recibía un 403 seco.
+        if (!in_array($user->role_id, [1, 2, 5, 6, 11])) {
             return response()->json([
                 'error' => 'Unauthorized'
             ], 403);
         }
 
         $sellerId = null;
-        if ($user->role_id == 5) {
+        if ($user->role_id == 5 && $user->seller) {
             $sellerId = $user->seller->id;
+        }
+
+        // El Supervisor no tiene vendedor propio: los totales son los de la
+        // RUTA ACTIVA que eligió, ya validada contra user_routes por
+        // ResolveActiveSeller. Sin ruta elegida $sellerId queda null y los
+        // totales salen sin acotar, así que se corta acá.
+        if ((int) $user->role_id === 6) {
+            $sellerId = $request->attributes->get('active_seller_id');
+
+            if (!$sellerId) {
+                return response()->json([
+                    'error' => 'Seleccioná la ruta que querés consultar.',
+                ], 422);
+            }
+
+            $sellerId = (int) $sellerId;
         }
 
         // 1. Pagos del día (Total Cobrado)

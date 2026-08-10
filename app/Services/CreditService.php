@@ -2773,6 +2773,25 @@ class CreditService
                 });
             }
 
+            // Supervisor (6) / Cobrador-abono (7) / Secretaria (11): solo las
+            // rutas asignadas en user_routes, mismo criterio que
+            // ClientService::indexWithCredits. Antes devolvía los créditos de
+            // todas las rutas del sistema, paginados y sin ninguna señal de que
+            // no eran los suyos.
+            if (in_array((int) $user->role_id, [6, 7, 11], true)) {
+                $sellerIds = \App\Models\UserRoute::where('user_id', $user->id)
+                    ->pluck('seller_id')
+                    ->toArray();
+
+                if (!empty($sellerIds)) {
+                    $query->whereHas('client', function ($q) use ($sellerIds) {
+                        $q->whereIn('seller_id', $sellerIds);
+                    });
+                } else {
+                    $query->whereRaw('0 = 1');
+                }
+            }
+
 
             if (!empty($search)) {
                 $query->where(function ($q) use ($search) {
@@ -3032,10 +3051,29 @@ class CreditService
         }
     }
 
-    public function generateDailyReport($date)
+    /**
+     * @param int|null $sellerId Vendedor cuyo día se reporta. Lo resuelve
+     *   getReport() porque el Supervisor (rol 6) NO tiene vendedor propio:
+     *   trabaja sobre la ruta activa que eligió. Derivándolo sólo de
+     *   `$user->seller` quedaba en null y el reporte respondía "contacta al
+     *   vendedor para cerrar la liquidación" aunque la caja estuviera cerrada.
+     *   Si llega null se cae a la relación del usuario, para no romper a
+     *   ningún otro llamador.
+     */
+    public function generateDailyReport($date, ?int $sellerId = null)
     {
         $user = Auth::user();
-        $sellerId = $user && $user->seller ? $user->seller->id : null;
+        $sellerId = $sellerId ?: ($user && $user->seller ? $user->seller->id : null);
+
+        // Sin vendedor resuelto no hay reporte posible. Antes se seguía de
+        // largo y las consultas de créditos corrían SIN filtro de vendedor.
+        if (!$sellerId) {
+            return $this->errorResponse(
+                'No hay una ruta seleccionada para consultar. Elegí la ruta del vendedor y volvé a intentarlo.',
+                422
+            );
+        }
+
         $maxDate = Carbon::now(self::TIMEZONE);
         $minDate = Carbon::now(self::TIMEZONE)->subDays(7);
         $reportDate = Carbon::createFromFormat('Y-m-d', $date, self::TIMEZONE);
@@ -3057,6 +3095,12 @@ class CreditService
         }
 
 
+        // Dueño de los movimientos del día: el USUARIO DEL VENDEDOR, no el que
+        // pide el reporte. Gastos e ingresos cuelgan de `user_id`, y usando el
+        // del solicitante el supervisor veía sus propios movimientos (ninguno)
+        // en lugar de los del vendedor que está consultando.
+        $sellerUserId = Seller::withTrashed()->whereKey($sellerId)->value('user_id');
+
         // Obtener créditos con pagos en la fecha especificada usando business_date
         $creditsQuery = Credit::with(['client', 'installments', 'payments'])
             ->whereHas('payments', function ($query) use ($date) {
@@ -3072,18 +3116,29 @@ class CreditService
 
         $credits = $creditsQuery->get();
 
-        // Obtener gastos del día
-        $expensesQuery = Expense::whereBetween('expenses.created_at', [$start, $end]);
-        if ($user) {
-            $expensesQuery->where('user_id', $user->id);
+        // Gastos e ingresos del día contable del vendedor.
+        //
+        // Antes se filtraban con `whereBetween('created_at', [$start, $end])` y
+        // NINGUNA de esas dos variables existía en el método: cualquier reporte
+        // que llegara hasta acá moría con "Undefined variable $start" y salía
+        // 500. Quedaba tapado porque el guard de más arriba rechazaba antes.
+        //
+        // Se usa `business_date`, que es el criterio canónico del sistema para
+        // decir a qué caja pertenece un movimiento (el mismo de
+        // calculateLiquidationMetrics y de Liquidation::hasMovements), y no la
+        // hora UTC de inserción.
+        $expensesQuery = Expense::where('expenses.business_date', $date)
+            ->whereNull('expenses.deleted_at');
+        if ($sellerUserId) {
+            $expensesQuery->where('user_id', $sellerUserId);
         }
         $expenses = $expensesQuery->get();
         $totalExpenses = $expenses->sum('value');
 
-        // Obtener ingresos del día
-        $incomesQuery = Income::whereBetween('incomes.created_at', [$start, $end]);
-        if ($user) {
-            $incomesQuery->where('user_id', $user->id);
+        $incomesQuery = Income::where('incomes.business_date', $date)
+            ->whereNull('incomes.deleted_at');
+        if ($sellerUserId) {
+            $incomesQuery->where('user_id', $sellerUserId);
         }
         $incomes = $incomesQuery->get();
         $totalIncomes = $incomes->sum('value');
@@ -3109,7 +3164,13 @@ class CreditService
             $credit->total_amount = $totalCreditValue; // Add to model in memory for consistency
             $totalPaid = $credit->payments->sum('amount');
             $remainingAmount = $totalCreditValue - $totalPaid;
-            $dayPayments = $credit->payments()->whereBetween('payments.created_at', [$start, $end])->get();
+            // Mismo criterio que el resto del reporte: el día contable del
+            // pago, no su hora UTC de inserción. (Acá también se usaban las
+            // inexistentes $start/$end.)
+            $dayPayments = $credit->payments()
+                ->where('payments.business_date', $date)
+                ->whereNull('payments.deleted_at')
+                ->get();
 
             $positivePaid = $dayPayments->where('amount', '>=', 0)->sum('amount');
             $negativePaid = $dayPayments->where('amount', '<', 0)->sum('amount');
@@ -3162,8 +3223,10 @@ class CreditService
             ];
         }
 
-        // Obtener nuevos créditos del día
-        $newCredits = Credit::whereBetween('credits.created_at', [$start, $end])
+        // Nuevos créditos del día. Mismo criterio de fecha que usa la fórmula
+        // canónica de la caja (COALESCE(imported_at, created_at)), interpretado
+        // en la zona del vendedor. (Acá también se usaban $start/$end.)
+        $newCredits = Credit::whereRaw('DATE(COALESCE(imported_at, created_at)) = ?', [$date])
             ->whereNull('renewed_from_id');
         if ($sellerId) {
             $newCredits->whereHas('client', function ($query) use ($sellerId) {
@@ -3228,7 +3291,23 @@ class CreditService
     public function getReport($request)
     {
         $date = $request->date ?? \Carbon\Carbon::now(self::TIMEZONE)->format('Y-m-d');
-        $reportData = $this->generateDailyReport($date);
+
+        // Quién es el vendedor del reporte:
+        //  - Cobrador (5): el suyo.
+        //  - Supervisor (6): el de la RUTA ACTIVA. No tiene vendedor propio, así
+        //    que sin esto el reporte salía vacío. El seller_id llega por el
+        //    header X-Active-Seller-Id, ya validado contra user_routes por el
+        //    middleware ResolveActiveSeller — el supervisor no puede pedir el
+        //    reporte de una ruta que no tiene asignada.
+        $user = Auth::user();
+        $sellerId = $user && $user->seller ? $user->seller->id : null;
+
+        $activeSellerId = $request->attributes->get('active_seller_id');
+        if ((int) ($user->role_id ?? 0) === 6 && $activeSellerId) {
+            $sellerId = (int) $activeSellerId;
+        }
+
+        $reportData = $this->generateDailyReport($date, $sellerId);
 
         if ($reportData instanceof \Illuminate\Http\JsonResponse) {
             return $reportData;

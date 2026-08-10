@@ -62,6 +62,19 @@ class FinancialIntegrityTest extends TestCase
     }
 
     /**
+     * El Cobrador (rol 5) solo opera desde el APK: el middleware
+     * BlockSellerWebSession devuelve 401 a cualquier request suyo que llegue
+     * sin `X-Client-Type: mobile`. Sin este header las llamadas del test
+     * morían en 401 antes de tocar ninguna regla de negocio.
+     */
+    private function comoCobrador(): self
+    {
+        $this->actingAs($this->sellerUser, 'api');
+
+        return $this->withHeaders(['X-Client-Type' => 'mobile']);
+    }
+
+    /**
      * Test a complete business cycle.
      * 1. Create client.
      * 2. Create credit.
@@ -87,7 +100,7 @@ class FinancialIntegrityTest extends TestCase
             ]
         ];
         
-        $response = $this->actingAs($this->sellerUser, 'api')->postJson('/api/clients/create', $clientData);
+        $response = $this->comoCobrador()->postJson('/api/clients/create', $clientData);
         $response->assertSuccessful();
         $clientId = $response->json('data.id');
 
@@ -108,9 +121,13 @@ class FinancialIntegrityTest extends TestCase
             ]
         ];
 
-        $response = $this->actingAs($this->admin, 'api')->postJson('/api/credit/create', $creditData);
+        // Lo coloca el COBRADOR, no el administrador: colocar y renovar es
+        // trabajo de campo y el back-office quedó bloqueado con 403
+        // (middleware block.admin.field.ops). El test decía "admin" porque se
+        // escribió antes de esa regla.
+        $response = $this->comoCobrador()->postJson('/api/credit/create', $creditData);
         $response->assertSuccessful();
-        
+
         $creditId = $response->json('data.credit.id');
         $this->assertNotNull($creditId, "Credit ID should not be null");
         $this->assertDatabaseHas('credits', ['id' => $creditId]);
@@ -147,7 +164,7 @@ class FinancialIntegrityTest extends TestCase
             'client_timezone' => $this->timezone
         ];
 
-        $response = $this->actingAs($this->sellerUser, 'api')->postJson('/api/payment/create', $paymentData);
+        $response = $this->comoCobrador()->postJson('/api/payment/create', $paymentData);
         $response->assertSuccessful();
 
         // E. Verify Liquidation
@@ -185,7 +202,7 @@ class FinancialIntegrityTest extends TestCase
         $expectedBusinessDate = '2026-02-10';
         
         // Create an income
-        $response = $this->actingAs($this->sellerUser, 'api')->postJson('/api/income/create', [
+        $response = $this->comoCobrador()->postJson('/api/income/create', [
             'value' => 200,
             'description' => 'Late night income',
             'timezone' => $this->timezone

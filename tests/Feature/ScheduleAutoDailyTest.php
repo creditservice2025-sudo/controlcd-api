@@ -40,4 +40,31 @@ class ScheduleAutoDailyTest extends TestCase
             'auto-daily ya no corre cada 5 min (la ventana 23:55 se disparaba una sola vez)'
         );
     }
+
+    /**
+     * El cron cierra SOLO el día en curso. El barrido de días anteriores no va
+     * programado: cerrar un día viejo le recalcula los montos con los datos de
+     * hoy y no recalcula los días que vienen detrás, así que el `initial_cash`
+     * del siguiente queda desalineado. Medido antes de apagarlo: 215 días
+     * abiertos con fecha pasada, 96 de ellos con días posteriores.
+     *
+     * El barrido sigue existiendo como herramienta manual, para usarse en
+     * ventana controlada y verificando la cadena antes y después.
+     */
+    public function test_el_cron_no_cierra_dias_anteriores(): void
+    {
+        Artisan::call('schedule:list');
+        $output = Artisan::output();
+
+        $line = collect(explode("\n", $output))
+            ->first(fn ($l) => str_contains($l, 'liquidation:auto-daily'));
+
+        $this->assertNotNull($line, 'liquidation:auto-daily debe estar programado');
+
+        $this->assertStringContainsString(
+            '--no-sweep',
+            preg_replace('/\s+/', ' ', $line),
+            'El cron programado debe llevar --no-sweep: un despliegue no puede cerrar ni recalcular días históricos por su cuenta.'
+        );
+    }
 }

@@ -143,7 +143,12 @@ class CreateHistoricalLiquidation extends Command
 
                 $this->info("Fecha: $currentDate - total_pending_absorbed a guardar: {$total_pending_absorbed}, total_renewal_disbursed: {$total_renewal_disbursed}");
 
-                Liquidation::create([
+                // Relleno de huecos históricos: como liquidations:regenerate-day,
+                // este comando SÍ puede crear un día por detrás de uno ya
+                // aprobado, porque su trabajo es justamente tapar agujeros de
+                // la cadena. El guard del modelo se baja explícitamente para
+                // que no aborte la corrida; la auditoría 'apertura' se graba igual.
+                Liquidation::withoutIntegrityGuards(fn () => Liquidation::create([
                     'date' => $currentDate,
                     'seller_id' => $seller->id,
                     'collection_target' => 0,
@@ -161,7 +166,7 @@ class CreateHistoricalLiquidation extends Command
                     'irrecoverable_credits_amount' => $irrecoverableCredits,
                     'renewal_disbursed_total' => $total_renewal_disbursed,
                     'total_pending_absorbed' => $total_pending_absorbed,
-                ]);
+                ]));
 
                 $this->info("Liquidación histórica creada para vendedor {$seller->id} en {$currentDate} | total_pending_absorbed: {$total_pending_absorbed}");
 
