@@ -14,7 +14,36 @@ use Illuminate\Support\Facades\Log;
 
 class PaymentController extends Controller
 {
+    // Sus bloques catch llaman a $this->errorResponse(): sin el trait, el
+    // propio manejo de errores explotaba con "Method errorResponse does not
+    // exist" y tapaba el motivo real del fallo ("caja cerrada", "pago
+    // duplicado", "el monto excede la deuda") justo cuando el cobrador
+    // necesitaba leerlo.
+    use \App\Traits\ApiResponse;
+
     protected $paymentService;
+
+    /**
+     * Mensaje que SÍ se le puede mostrar al cliente.
+     *
+     * Los catch de acá devolvían $e->getMessage() tal cual. Mientras el trait
+     * faltaba eso no se notaba —la respuesta moría antes—, pero al arreglarlo
+     * pasaría a exponer el texto crudo de cualquier excepción, y el de una
+     * QueryException arrastra la sentencia SQL completa: nombres de tablas, de
+     * columnas y los valores enviados. Eso es un mapa de la base para quien
+     * quiera atacarla, y viaja al navegador.
+     *
+     * Criterio: solo se devuelve el texto de las excepciones de REGLA DE
+     * NEGOCIO, que los services lanzan como \Exception a secas y están
+     * redactadas para que las lea un cobrador ("Pago duplicado detectado…").
+     * Cualquier otra clase —QueryException, TypeError, ErrorException— es un
+     * fallo técnico: al cliente le va un mensaje genérico y el detalle queda
+     * en el log, que es donde se investiga.
+     */
+    private function clientSafeMessage(\Throwable $e, string $fallback): string
+    {
+        return get_class($e) === \Exception::class ? $e->getMessage() : $fallback;
+    }
 
     public function __construct(PaymentService $paymentService)
     {
@@ -40,7 +69,7 @@ class PaymentController extends Controller
             return $this->paymentService->create($request);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
-            return $this->errorResponse($e->getMessage(), 500);
+            return $this->errorResponse($this->clientSafeMessage($e, "No se pudo completar la operación. Intente nuevamente."), 500);
         }
     }
 
@@ -55,7 +84,7 @@ class PaymentController extends Controller
             throw $e; // dejar pasar 401/403/404 de autorización
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
-            return $this->errorResponse($e->getMessage(), 500);
+            return $this->errorResponse($this->clientSafeMessage($e, "No se pudo completar la operación. Intente nuevamente."), 500);
         }
     }
 
@@ -68,7 +97,7 @@ class PaymentController extends Controller
             return $this->paymentService->paymentsToday($creditId, $request, $perPage);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
-            return $this->errorResponse($e->getMessage(), 500);
+            return $this->errorResponse($this->clientSafeMessage($e, "No se pudo completar la operación. Intente nuevamente."), 500);
         }
     }
 
@@ -87,7 +116,7 @@ class PaymentController extends Controller
             return $this->paymentService->getPaymentsBySeller($sellerId, $request, $perPage);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
-            return $this->errorResponse($e->getMessage(), 500);
+            return $this->errorResponse($this->clientSafeMessage($e, "No se pudo completar la operación. Intente nuevamente."), 500);
         }
     }
 
@@ -100,10 +129,20 @@ class PaymentController extends Controller
                 $sellerId = $seller->id;
             }
 
+            // El id del vendedor viaja en la URL y no se validaba: cualquier
+            // usuario autenticado podía pedir la jornada de un vendedor de OTRA
+            // empresa. Ahora, además de los pagos, esta respuesta lleva los
+            // comentarios del día y la ubicación GPS desde donde se escribieron
+            // —datos de personas—, así que la fuga sería peor. Se aplica el
+            // mismo guard de aislamiento que ya usan Gastos, Ingresos y Rutas.
+            \App\Support\Tenant::assertSellerInScope($sellerId);
+
             return $this->paymentService->getAllPaymentsBySeller($sellerId, $request);
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
+            throw $e; // dejar pasar 401/403/404 de autorización
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
-            return $this->errorResponse('Error al obtener los créditos del vendedor: ' . $e->getMessage(), 500);
+            return $this->errorResponse('Error al obtener los créditos del vendedor.', 500);
         }
     }
 
@@ -236,7 +275,7 @@ class PaymentController extends Controller
             return $this->paymentService->show($creditId, $paymentId);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
-            return $this->errorResponse($e->getMessage(), 500);
+            return $this->errorResponse($this->clientSafeMessage($e, "No se pudo completar la operación. Intente nuevamente."), 500);
         }
     }
 
@@ -247,7 +286,7 @@ class PaymentController extends Controller
             return $this->paymentService->getTotalWithoutInstallments($creditId);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
-            return $this->errorResponse($e->getMessage(), 500);
+            return $this->errorResponse($this->clientSafeMessage($e, "No se pudo completar la operación. Intente nuevamente."), 500);
         }
     }
 
@@ -258,7 +297,7 @@ class PaymentController extends Controller
             return $this->paymentService->delete($paymentId, $request);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
-            return $this->errorResponse($e->getMessage(), 500);
+            return $this->errorResponse($this->clientSafeMessage($e, "No se pudo completar la operación. Intente nuevamente."), 500);
         }
     }
 
@@ -269,7 +308,7 @@ class PaymentController extends Controller
             return $this->paymentService->deletePaymentInstallment($paymentInstallmentId, $request);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
-            return $this->errorResponse($e->getMessage(), 500);
+            return $this->errorResponse($this->clientSafeMessage($e, "No se pudo completar la operación. Intente nuevamente."), 500);
         }
     }
 
@@ -597,7 +636,7 @@ class PaymentController extends Controller
             return $this->paymentService->reapplyPayments($creditId);
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
-            return $this->errorResponse($e->getMessage(), 500);
+            return $this->errorResponse($this->clientSafeMessage($e, "No se pudo completar la operación. Intente nuevamente."), 500);
         }
     }
 }
