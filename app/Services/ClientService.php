@@ -2297,21 +2297,25 @@ class ClientService
      * Comentarios escritos HOY por cliente: cantidad y el más reciente con su
      * ubicación (dónde estaba quien lo escribió).
      *
-     * client_comments.created_at es UTC, así que el "día de hoy" del vendedor se
-     * traduce a un rango UTC antes de filtrar; comparar la fecha cruda daría
-     * resultados corridos para las primeras y últimas horas del día.
+     * OJO CON LA ZONA. `client_comments.created_at` NO está en UTC: lo escribe
+     * el timestamp por defecto de Eloquent, o sea en la zona de la aplicación
+     * (config('app.timezone'), hoy America/Lima en producción). Por eso el "día
+     * de hoy" del vendedor se traduce a la zona de la APP y no a UTC: pasarlo a
+     * UTC corría la ventana el equivalente al offset y perdía los comentarios
+     * de la madrugada. Mismo criterio que commentsForPaymentsView.
      *
      * @param  array<int>  $clientIds
      * @return array<int, array{count:int, last:array}>
      */
     private function commentsTodayByClient(array $clientIds, string $todayLocal, string $timezone): array
     {
-        $startUTC = Carbon::parse($todayLocal, $timezone)->startOfDay()->timezone('UTC');
-        $endUTC = Carbon::parse($todayLocal, $timezone)->endOfDay()->timezone('UTC');
+        $appTz = config('app.timezone') ?: 'UTC';
+        $start = Carbon::parse($todayLocal, $timezone)->startOfDay()->timezone($appTz);
+        $end = Carbon::parse($todayLocal, $timezone)->endOfDay()->timezone($appTz);
 
         $comments = ClientComment::with(['user:id,name,role_id', 'category:id,name'])
             ->whereIn('client_id', $clientIds)
-            ->whereBetween('created_at', [$startUTC, $endUTC])
+            ->whereBetween('created_at', [$start, $end])
             ->orderBy('created_at', 'desc')
             ->get(['id', 'client_id', 'user_id', 'comment_category_id', 'body', 'created_at']);
 

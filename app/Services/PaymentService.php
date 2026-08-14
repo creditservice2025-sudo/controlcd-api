@@ -1445,9 +1445,14 @@ class PaymentService
      * la única fuente de verdad de ubicaciones del sistema. Se resuelve todo en
      * dos consultas para no generar N+1 sobre una tabla que crece rápido.
      *
-     * created_at es UTC, así que el rango de días locales se traduce a UTC
-     * antes de filtrar; comparar la fecha cruda dejaría fuera los comentarios
-     * de las primeras y últimas horas del día.
+     * OJO CON LA ZONA. `client_comments.created_at` NO está en UTC: lo escribe
+     * el timestamp por defecto de Eloquent, o sea en la zona de la aplicación
+     * (config('app.timezone'), hoy America/Lima en producción). Solo
+     * `payments.created_at` está en UTC, porque ese lo fuerza create() a mano.
+     * Por eso el rango del día del vendedor se traduce a la zona de la APP y no
+     * a UTC: convertirlo a UTC corría la ventana el equivalente al offset y
+     * dejaba fuera los comentarios de la madrugada, colando los del día
+     * siguiente.
      *
      * @param  array<int>  $clientIds
      * @return array<int, array>
@@ -1469,9 +1474,14 @@ class PaymentService
             $to = $from->copy()->endOfDay();
         }
 
+        $appTz = config('app.timezone') ?: 'UTC';
+
         $comments = \App\Models\ClientComment::with(['user:id,name,role_id', 'category:id,name'])
             ->whereIn('client_id', $clientIds)
-            ->whereBetween('created_at', [$from->copy()->utc(), $to->copy()->utc()])
+            ->whereBetween('created_at', [
+                $from->copy()->setTimezone($appTz),
+                $to->copy()->setTimezone($appTz),
+            ])
             ->orderBy('created_at', 'desc')
             ->get(['id', 'client_id', 'user_id', 'comment_category_id', 'body', 'created_at']);
 
@@ -1505,6 +1515,143 @@ class PaymentService
         }
 
         return $result;
+    }
+
+    /**
+     * Comentarios del rango cuyo cliente NO tuvo pago ese día.
+     *
+     * Sin esto quedaban invisibles para el administrador: la lista del día se
+     * arma desde los créditos que tuvieron pago, así que un cliente sin
+     * movimiento no produce fila y su motivo no se lee en ningún lado. Medido
+     * sobre producción: 1.810 comentarios en esa situación.
+     *
+     * SE PARTE DEL COMENTARIO, NO DE LA VISITA. Es la diferencia que importa:
+     * hay tres formas de dejar una nota y solo una crea visita.
+     *   - "Gestión del cliente" en la calle -> comentario + visita (con GPS);
+     *   - "No pagó" de la ruta de cobro     -> comentario + visita + pago en cero;
+     *   - back-office desde un escritorio   -> comentario SUELTO, sin visita.
+     * De los 12.566 comentarios de producción, 3.180 no tienen visita. Filtrar
+     * por visitas dejaba fuera justamente los del administrador.
+     *
+     * Se devuelven como filas marcadas (`is_management_only`), sin payment_id y
+     * con monto null: NO son pagos y no deben poder eliminarse ni sumarse.
+     *
+     * @return array<int, array>
+     */
+    private function managementsWithoutPayment($sellerId, Request $request, string $timezone): array
+    {
+        // OPT-IN a propósito. Este endpoint lo consumen dos pantallas: la de
+        // Liquidaciones del administrador (web, que sí sabe pintar estas filas)
+        // y la liquidación del cobrador dentro del APK YA INSTALADO en los
+        // teléfonos. Devolverlas siempre le metería al APK viejo filas con
+        // monto null y un botón "Eliminar pago" sobre algo que no es un pago.
+        // Con el parámetro, desplegar el backend solo no cambia nada en campo.
+        if (!filter_var($request->get('include_managements', false), FILTER_VALIDATE_BOOLEAN)) {
+            return [];
+        }
+
+        if ($request->get('include_deleted', 'false') === 'true') {
+            return []; // La vista de eliminados muestra pagos borrados, no gestiones.
+        }
+
+        if ($request->has('start_date') && $request->has('end_date')) {
+            $from = Carbon::parse($request->get('start_date'), $timezone)->startOfDay();
+            $to = Carbon::parse($request->get('end_date'), $timezone)->endOfDay();
+        } elseif ($request->has('date')) {
+            $from = Carbon::parse($request->get('date'), $timezone)->startOfDay();
+            $to = $from->copy()->endOfDay();
+        } else {
+            $from = Carbon::now($timezone)->startOfDay();
+            $to = $from->copy()->endOfDay();
+        }
+
+        // Misma razón que en commentsForPaymentsView: created_at está en la zona
+        // de la app, no en UTC.
+        $appTz = config('app.timezone') ?: 'UTC';
+        $fromApp = $from->copy()->setTimezone($appTz);
+        $toApp = $to->copy()->setTimezone($appTz);
+
+        $comments = DB::table('client_comments as cc')
+            ->join('clients as cl', 'cl.id', '=', 'cc.client_id')
+            // La visita es OPCIONAL: si existe aporta el resultado y la
+            // ubicación; si no, el comentario vale por sí solo.
+            ->leftJoin('client_visits as v', function ($j) {
+                $j->on('v.client_comment_id', '=', 'cc.id')->whereNull('v.deleted_at');
+            })
+            ->leftJoin('users as u', 'u.id', '=', 'cc.user_id')
+            ->leftJoin('comment_categories as k', 'k.id', '=', 'cc.comment_category_id')
+            ->where('cl.seller_id', $sellerId)
+            ->whereNull('cc.deleted_at')
+            ->whereBetween('cc.created_at', [$fromApp, $toApp])
+            // Si el cliente tuvo pago ese día ya tiene su fila, y el comentario
+            // viaja dentro de ella: no se duplica.
+            ->whereNotExists(function ($q) {
+                $q->select(DB::raw(1))
+                    ->from('payments as p')
+                    ->join('credits as cr', 'cr.id', '=', 'p.credit_id')
+                    ->whereColumn('cr.client_id', 'cc.client_id')
+                    ->whereNull('p.deleted_at')
+                    ->whereRaw('p.business_date = COALESCE(v.business_date, DATE(cc.created_at))');
+            })
+            ->orderByDesc('cc.created_at')
+            ->get([
+                'cc.id as comment_id', 'cc.client_id', 'cc.body as comment_body',
+                'cc.created_at as comment_created_at',
+                'v.id as visit_id', 'v.result', 'v.business_date', 'v.business_timestamp',
+                'v.business_timezone',
+                'cl.name as client_name', 'cl.dni as client_dni',
+                'u.name as author', 'u.role_id as author_role_id', 'k.name as category',
+            ]);
+
+        if ($comments->isEmpty()) {
+            return [];
+        }
+
+        // Ubicación en una sola consulta, igual que en el resto del módulo: la
+        // fuente de verdad es client_geolocation_histories, no la fila del
+        // comentario. Un left join aquí duplicaría filas si hay más de un punto.
+        $locations = \App\Models\ClientGeolocationHistory::where('action_type', 'comment_created')
+            ->whereIn('action_id', $comments->pluck('comment_id'))
+            ->get(['action_id', 'latitude', 'longitude', 'accuracy', 'address'])
+            ->keyBy('action_id');
+
+        return $comments->map(function ($c) use ($locations, $timezone) {
+            $location = $locations->get($c->comment_id);
+            $createdAt = Carbon::parse($c->comment_created_at);
+
+            return [
+                'is_management_only' => true,
+                'payment_id' => null,
+                'id' => 'comment-' . $c->comment_id,
+                'credit_id' => null,
+                'client_id' => (int) $c->client_id,
+                'client_name' => $c->client_name,
+                'client_dni' => $c->client_dni,
+                'amount' => null,
+                // Sin visita no hay resultado que declarar: es una nota, y se
+                // dice así en vez de inventarle un estado de cobranza.
+                'status' => $c->result ?: 'Comentario',
+                'business_date' => $c->business_date ?: $createdAt->toDateString(),
+                'business_timestamp' => $c->business_timestamp ?: $createdAt->toDateTimeString(),
+                'business_timezone' => $c->business_timezone ?: $timezone,
+                'payment_date' => $c->business_date ?: $createdAt->toDateString(),
+                'created_at' => $c->comment_created_at,
+                'deleted_at' => null,
+                'created_by_user' => $c->author ? ['name' => $c->author] : null,
+                'comments' => [[
+                    'id' => $c->comment_id,
+                    'body' => $c->comment_body,
+                    'author' => $c->author,
+                    'author_role_id' => $c->author_role_id !== null ? (int) $c->author_role_id : null,
+                    'category' => $c->category,
+                    'created_at' => $c->comment_created_at,
+                    'address' => $location?->displayAddress(),
+                    'latitude' => $location ? (float) $location->latitude : null,
+                    'longitude' => $location ? (float) $location->longitude : null,
+                    'accuracy' => $location && $location->accuracy !== null ? (float) $location->accuracy : null,
+                ]],
+            ];
+        })->all();
     }
 
     public function getAllPaymentsBySeller($sellerId, Request $request)
@@ -1606,8 +1753,22 @@ class PaymentService
             }
         });
 
+        // Comentarios del rango consultado, por cliente. El administrador lee
+        // esta lista para entender la jornada: un pago en cero solo dice que no
+        // entró dinero; el motivo está en el comentario que el cobrador dejó al
+        // registrarlo. Antes solo viajaba el CONTEO, así que en pantalla había
+        // un número sin texto y había que abrir un modal cliente por cliente.
+        $commentsByClient = $this->commentsForPaymentsView(
+            $payments->pluck('credit.client.id')->filter()->unique()->values()->all(),
+            $request,
+            $timezone
+        );
+
+        // Gestiones del día que no dejaron pago. Van al final de la lista.
+        $managements = $this->managementsWithoutPayment($sellerId, $request, $timezone);
+
         if ($flatStructure) {
-            $flatPayments = $payments->map(function ($payment) use ($includeDeleted) {
+            $flatPayments = $payments->map(function ($payment) use ($includeDeleted, $commentsByClient) {
                 $credit = $payment->credit;
                 $paymentInstallments = DB::table('payment_installments')
                     ->join('installments', 'payment_installments.installment_id', '=', 'installments.id')
@@ -1625,6 +1786,8 @@ class PaymentService
                     'client_dni' => $credit->client->dni ?? 'N/A',
                     'client' => $credit->client ?? null,
                     'client_comments_count' => optional($credit->client)->comments_count ?? 0,
+                    // Comentarios del rango, con autor, categoría y ubicación.
+                    'comments' => $commentsByClient[(int) ($credit->client->id ?? 0)] ?? [],
                     'credit_info' => $credit, // Objeto completo con relaciones cargadas
                     'payment_date' => $payment->created_at, // Exact time
                     'business_date' => $payment->business_date,
@@ -1651,15 +1814,23 @@ class PaymentService
                 'success' => true,
                 'message' => 'Pagos obtenidos correctamente (flat)',
                 'data' => [
-                    'payments' => $flatPayments
+                    'payments' => $flatPayments->concat($managements)->values()
                 ]
             ]);
         }
 
+        // Misma información que en la variante flat: la pantalla de
+        // Liquidaciones consume ESTA rama (flat = false), así que sin esto el
+        // administrador seguiría viendo el pago en cero sin su motivo.
+        $payments->each(function ($payment) use ($commentsByClient) {
+            $clientId = (int) ($payment->credit->client->id ?? 0);
+            $payment->setAttribute('comments', $commentsByClient[$clientId] ?? []);
+        });
+
         return $this->successResponse([
             'success' => true,
             'message' => 'Pagos obtenidos correctamente',
-            'data' => $payments
+            'data' => $payments->concat($managements)->values()
         ]);
     }
 
