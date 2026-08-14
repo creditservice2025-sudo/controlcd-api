@@ -111,9 +111,18 @@ class PaymentController extends Controller
                 $sellerId = $seller->id;
             }
 
+            // Mismo criterio que getSellerPayments: el id viaja en la URL y hay
+            // que comprobar que el vendedor sea del alcance de quien pregunta.
+            // Esta respuesta ya incluía los comentarios del día con la ubicación
+            // GPS desde donde se escribieron, así que la fuga alcanzaba a datos
+            // de personas, no solo a montos.
+            \App\Support\Tenant::assertSellerInScope($sellerId);
+
             $perPage = $request->get('perPage') ?? $request->get('rowsPerPage') ?? 10;
 
             return $this->paymentService->getPaymentsBySeller($sellerId, $request, $perPage);
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
+            throw $e; // dejar pasar 401/403/404 de autorización
         } catch (\Exception $e) {
             \Log::error($e->getMessage());
             return $this->errorResponse($this->clientSafeMessage($e, "No se pudo completar la operación. Intente nuevamente."), 500);
@@ -157,6 +166,10 @@ class PaymentController extends Controller
                 $seller = \App\Models\Seller::where('uuid', $sellerId)->firstOrFail();
                 $sellerId = $seller->id;
             }
+
+            // Devuelve nombres de clientes, créditos y montos del día: mismo
+            // aislamiento por empresa que el resto de los endpoints por vendedor.
+            \App\Support\Tenant::assertSellerInScope($sellerId);
 
             $date = $request->get('date') ?: \Carbon\Carbon::now($request->get('timezone', 'America/Lima'))->toDateString();
 
@@ -207,6 +220,8 @@ class PaymentController extends Controller
                 ],
                 'items' => $items,
             ]);
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
+            throw $e; // dejar pasar 401/403/404 de autorización
         } catch (\Exception $e) {
             \Log::error("getSellerDelDiaLite error: " . $e->getMessage());
             return $this->errorResponse('Error al obtener pagos del dia del vendedor', 500);
@@ -225,6 +240,10 @@ class PaymentController extends Controller
                 $seller = \App\Models\Seller::where('uuid', $sellerId)->firstOrFail();
                 $sellerId = $seller->id;
             }
+
+            // Devuelve el histórico cobrado del vendedor con nombres de cliente:
+            // mismo aislamiento por empresa que los demás endpoints por vendedor.
+            \App\Support\Tenant::assertSellerInScope($sellerId);
 
             $query = \DB::table('payments')
                 ->join('credits', 'credits.id', '=', 'payments.credit_id')
@@ -263,6 +282,8 @@ class PaymentController extends Controller
                 'total' => $rows->count(),
                 'total_amount' => (float) $rows->sum('amount'),
             ]);
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
+            throw $e; // dejar pasar 401/403/404 de autorización
         } catch (\Exception $e) {
             \Log::error("getSellerCobradoLite error: " . $e->getMessage());
             return $this->errorResponse('Error al obtener los pagos del vendedor', 500);
