@@ -105,11 +105,23 @@ class ClientCommentController extends Controller
             return $this->errorResponse($validator->errors()->first(), 422);
         }
 
+        // Día de negocio anclado al VENDEDOR dueño del cliente, no a quien
+        // escribe ni al reloj de la app. Este es justamente el comentario
+        // "suelto" —el que el administrador deja desde un escritorio, sin
+        // visita—, así que es el que más necesita el ancla: sin él su jornada
+        // se deducía de created_at, que corre con la zona de la aplicación.
+        $stamp = \App\Helpers\TimezoneHelper::businessStampForSeller(
+            $client->seller_id ? \App\Models\Seller::with('city.country')->find($client->seller_id) : null
+        );
+
         $comment = ClientComment::create([
             'client_id' => $client->id,
             'user_id' => Auth::id(),
             'comment_category_id' => $request->input('comment_category_id'),
             'body' => trim($request->input('body')),
+            'business_date' => $stamp['business_date'],
+            'business_timestamp' => $stamp['business_timestamp'],
+            'business_timezone' => $stamp['business_timezone'],
         ]);
 
         $comment->load(['user:id,name,role_id', 'category:id,name']);

@@ -2297,27 +2297,33 @@ class ClientService
      * Comentarios escritos HOY por cliente: cantidad y el más reciente con su
      * ubicación (dónde estaba quien lo escribió).
      *
-     * OJO CON LA ZONA. `client_comments.created_at` NO está en UTC: lo escribe
-     * el timestamp por defecto de Eloquent, o sea en la zona de la aplicación
-     * (config('app.timezone'), hoy America/Lima en producción). Por eso el "día
-     * de hoy" del vendedor se traduce a la zona de la APP y no a UTC: pasarlo a
-     * UTC corría la ventana el equivalente al offset y perdía los comentarios
-     * de la madrugada. Mismo criterio que commentsForPaymentsView.
+     * OJO CON LA ZONA. El "hoy" que importa es el del VENDEDOR, y el comentario
+     * ya lo trae anclado en `business_date`: se compara día contra día. El
+     * histórico sin anclar cae al rango sobre `created_at`, que NO está en UTC
+     * sino en la zona de la aplicación (lo escribe el timestamp por defecto de
+     * Eloquent). Todo eso vive en TimezoneHelper::whereBusinessDayBetween.
      *
      * @param  array<int>  $clientIds
      * @return array<int, array{count:int, last:array}>
      */
     private function commentsTodayByClient(array $clientIds, string $todayLocal, string $timezone): array
     {
-        $appTz = config('app.timezone') ?: 'UTC';
-        $start = Carbon::parse($todayLocal, $timezone)->startOfDay()->timezone($appTz);
-        $end = Carbon::parse($todayLocal, $timezone)->endOfDay()->timezone($appTz);
+        $start = Carbon::parse($todayLocal, $timezone)->startOfDay();
+        $end = Carbon::parse($todayLocal, $timezone)->endOfDay();
 
-        $comments = ClientComment::with(['user:id,name,role_id', 'category:id,name'])
-            ->whereIn('client_id', $clientIds)
-            ->whereBetween('created_at', [$start, $end])
+        $query = ClientComment::with(['user:id,name,role_id', 'category:id,name'])
+            ->whereIn('client_id', $clientIds);
+
+        \App\Helpers\TimezoneHelper::whereBusinessDayBetween(
+            $query, $start, $end, 'business_date', 'created_at'
+        );
+
+        $comments = $query
             ->orderBy('created_at', 'desc')
-            ->get(['id', 'client_id', 'user_id', 'comment_category_id', 'body', 'created_at']);
+            ->get([
+                'id', 'client_id', 'user_id', 'comment_category_id', 'body', 'created_at',
+                'business_date', 'business_timestamp', 'business_timezone',
+            ]);
 
         if ($comments->isEmpty()) {
             return [];
@@ -2342,7 +2348,11 @@ class ClientService
                     'author' => $latest->user->name ?? null,
                     'author_role_id' => $latest->user->role_id ?? null,
                     'category' => $latest->category->name ?? null,
-                    'created_at' => $latest->created_at->copy()->timezone($timezone)->format('Y-m-d H:i:s'),
+                    // Hora local del vendedor cuando está anclada (cruda, sin
+                    // convertir); el histórico se sigue traduciendo desde la
+                    // zona de la app.
+                    'created_at' => $latest->business_timestamp
+                        ?: $latest->created_at->copy()->timezone($timezone)->format('Y-m-d H:i:s'),
                     // Nunca vacío cuando hay ubicación: si la dirección todavía
                     // no se resolvió, van las coordenadas (ver displayAddress).
                     'address' => $location?->displayAddress(),

@@ -276,6 +276,13 @@ class PaymentService
                             'user_id' => $user->id,
                             'comment_category_id' => $params['comment_category_id'] ?? null,
                             'body' => trim($params['comment']),
+                            // El motivo del no pago pertenece al MISMO día de
+                            // negocio que el registro que lo generó: se reusa
+                            // el ancla ya calculada arriba en vez de volver a
+                            // resolverla, para que no puedan divergir.
+                            'business_date' => $businessDate,
+                            'business_timestamp' => $businessNow->format('Y-m-d H:i:s'),
+                            'business_timezone' => $businessTz,
                         ]);
                     }
 
@@ -1445,14 +1452,14 @@ class PaymentService
      * la única fuente de verdad de ubicaciones del sistema. Se resuelve todo en
      * dos consultas para no generar N+1 sobre una tabla que crece rápido.
      *
-     * OJO CON LA ZONA. `client_comments.created_at` NO está en UTC: lo escribe
-     * el timestamp por defecto de Eloquent, o sea en la zona de la aplicación
-     * (config('app.timezone'), hoy America/Lima en producción). Solo
+     * OJO CON LA ZONA. El comentario ya trae `business_date` anclado a la zona
+     * del VENDEDOR, así que el filtro compara día contra día y no depende del
+     * reloj de nadie. Las filas históricas (previas al anclaje) tienen
+     * business_date null y caen a la rama de compatibilidad sobre `created_at`,
+     * que NO está en UTC: lo escribe el timestamp por defecto de Eloquent, o sea
+     * en la zona de la aplicación (config('app.timezone')). Solo
      * `payments.created_at` está en UTC, porque ese lo fuerza create() a mano.
-     * Por eso el rango del día del vendedor se traduce a la zona de la APP y no
-     * a UTC: convertirlo a UTC corría la ventana el equivalente al offset y
-     * dejaba fuera los comentarios de la madrugada, colando los del día
-     * siguiente.
+     * Toda esa lógica vive en TimezoneHelper::whereBusinessDayBetween.
      *
      * @param  array<int>  $clientIds
      * @return array<int, array>
@@ -1474,16 +1481,19 @@ class PaymentService
             $to = $from->copy()->endOfDay();
         }
 
-        $appTz = config('app.timezone') ?: 'UTC';
+        $query = \App\Models\ClientComment::with(['user:id,name,role_id', 'category:id,name'])
+            ->whereIn('client_id', $clientIds);
 
-        $comments = \App\Models\ClientComment::with(['user:id,name,role_id', 'category:id,name'])
-            ->whereIn('client_id', $clientIds)
-            ->whereBetween('created_at', [
-                $from->copy()->setTimezone($appTz),
-                $to->copy()->setTimezone($appTz),
-            ])
+        \App\Helpers\TimezoneHelper::whereBusinessDayBetween(
+            $query, $from, $to, 'business_date', 'created_at'
+        );
+
+        $comments = $query
             ->orderBy('created_at', 'desc')
-            ->get(['id', 'client_id', 'user_id', 'comment_category_id', 'body', 'created_at']);
+            ->get([
+                'id', 'client_id', 'user_id', 'comment_category_id', 'body', 'created_at',
+                'business_date', 'business_timestamp', 'business_timezone',
+            ]);
 
         if ($comments->isEmpty()) {
             return [];
@@ -1504,7 +1514,16 @@ class PaymentService
                 'author' => $comment->user->name ?? null,
                 'author_role_id' => $comment->user->role_id ?? null,
                 'category' => $comment->category->name ?? null,
-                'created_at' => $comment->created_at->copy()->timezone($timezone)->format('Y-m-d H:i:s'),
+                // La hora que se muestra sale del ancla del vendedor cuando
+                // existe: son los mismos dígitos que vio quien lo escribió, sin
+                // ninguna conversión de por medio. Solo el histórico sin anclar
+                // sigue traduciéndose desde created_at (zona de la app).
+                'created_at' => $comment->business_timestamp
+                    ?: $comment->created_at->copy()->timezone($timezone)->format('Y-m-d H:i:s'),
+                'business_date' => $comment->business_date
+                    ? $comment->business_date->toDateString()
+                    : null,
+                'business_timezone' => $comment->business_timezone,
                 // Nunca vacío cuando hay ubicación: si la dirección aún no se
                 // resolvió van las coordenadas (ver displayAddress).
                 'address' => $location?->displayAddress(),
@@ -1565,11 +1584,11 @@ class PaymentService
             $to = $from->copy()->endOfDay();
         }
 
-        // Misma razón que en commentsForPaymentsView: created_at está en la zona
-        // de la app, no en UTC.
-        $appTz = config('app.timezone') ?: 'UTC';
-        $fromApp = $from->copy()->setTimezone($appTz);
-        $toApp = $to->copy()->setTimezone($appTz);
+        // Día de negocio del comentario: el propio ancla si lo tiene, si no el
+        // de su visita, y recién en último lugar la fecha del reloj de la app.
+        // Este orden es el que decide a qué jornada pertenece la gestión, y se
+        // usa tanto para no duplicar contra el pago como para etiquetar la fila.
+        $businessDayExpr = 'COALESCE(cc.business_date, v.business_date, DATE(cc.created_at))';
 
         $comments = DB::table('client_comments as cc')
             ->join('clients as cl', 'cl.id', '=', 'cc.client_id')
@@ -1581,22 +1600,32 @@ class PaymentService
             ->leftJoin('users as u', 'u.id', '=', 'cc.user_id')
             ->leftJoin('comment_categories as k', 'k.id', '=', 'cc.comment_category_id')
             ->where('cl.seller_id', $sellerId)
-            ->whereNull('cc.deleted_at')
-            ->whereBetween('cc.created_at', [$fromApp, $toApp])
+            ->whereNull('cc.deleted_at');
+
+        // Ventana de la jornada: día contra día para lo anclado, rango sobre
+        // created_at (zona de la app) para el histórico sin anclar.
+        \App\Helpers\TimezoneHelper::whereBusinessDayBetween(
+            $comments, $from, $to, 'cc.business_date', 'cc.created_at'
+        );
+
+        $comments = $comments
             // Si el cliente tuvo pago ese día ya tiene su fila, y el comentario
             // viaja dentro de ella: no se duplica.
-            ->whereNotExists(function ($q) {
+            ->whereNotExists(function ($q) use ($businessDayExpr) {
                 $q->select(DB::raw(1))
                     ->from('payments as p')
                     ->join('credits as cr', 'cr.id', '=', 'p.credit_id')
                     ->whereColumn('cr.client_id', 'cc.client_id')
                     ->whereNull('p.deleted_at')
-                    ->whereRaw('p.business_date = COALESCE(v.business_date, DATE(cc.created_at))');
+                    ->whereRaw("p.business_date = {$businessDayExpr}");
             })
             ->orderByDesc('cc.created_at')
             ->get([
                 'cc.id as comment_id', 'cc.client_id', 'cc.body as comment_body',
                 'cc.created_at as comment_created_at',
+                'cc.business_date as comment_business_date',
+                'cc.business_timestamp as comment_business_timestamp',
+                'cc.business_timezone as comment_business_timezone',
                 'v.id as visit_id', 'v.result', 'v.business_date', 'v.business_timestamp',
                 'v.business_timezone',
                 'cl.name as client_name', 'cl.dni as client_dni',
@@ -1619,6 +1648,15 @@ class PaymentService
             $location = $locations->get($c->comment_id);
             $createdAt = Carbon::parse($c->comment_created_at);
 
+            // Mismo orden de prioridad que el SQL de arriba: el ancla propia del
+            // comentario manda, después la de su visita, y solo el histórico sin
+            // anclar cae al reloj de la app. Que la fila diga un día distinto al
+            // que usó el filtro haría que la pantalla la escondiera.
+            $businessDate = $c->comment_business_date ?: ($c->business_date ?: $createdAt->toDateString());
+            $businessTimestamp = $c->comment_business_timestamp
+                ?: ($c->business_timestamp ?: $createdAt->toDateTimeString());
+            $businessTimezone = $c->comment_business_timezone ?: ($c->business_timezone ?: $timezone);
+
             return [
                 'is_management_only' => true,
                 'payment_id' => null,
@@ -1631,10 +1669,10 @@ class PaymentService
                 // Sin visita no hay resultado que declarar: es una nota, y se
                 // dice así en vez de inventarle un estado de cobranza.
                 'status' => $c->result ?: 'Comentario',
-                'business_date' => $c->business_date ?: $createdAt->toDateString(),
-                'business_timestamp' => $c->business_timestamp ?: $createdAt->toDateTimeString(),
-                'business_timezone' => $c->business_timezone ?: $timezone,
-                'payment_date' => $c->business_date ?: $createdAt->toDateString(),
+                'business_date' => $businessDate,
+                'business_timestamp' => $businessTimestamp,
+                'business_timezone' => $businessTimezone,
+                'payment_date' => $businessDate,
                 'created_at' => $c->comment_created_at,
                 'deleted_at' => null,
                 'created_by_user' => $c->author ? ['name' => $c->author] : null,
@@ -1644,7 +1682,10 @@ class PaymentService
                     'author' => $c->author,
                     'author_role_id' => $c->author_role_id !== null ? (int) $c->author_role_id : null,
                     'category' => $c->category,
-                    'created_at' => $c->comment_created_at,
+                    // Hora local del vendedor, cruda (ver formatBusinessDateTime).
+                    'created_at' => $businessTimestamp,
+                    'business_date' => $businessDate,
+                    'business_timezone' => $businessTimezone,
                     'address' => $location?->displayAddress(),
                     'latitude' => $location ? (float) $location->latitude : null,
                     'longitude' => $location ? (float) $location->longitude : null,

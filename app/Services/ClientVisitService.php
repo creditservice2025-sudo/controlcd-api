@@ -66,6 +66,14 @@ class ClientVisitService
                     'user_id' => Auth::id(),
                     'comment_category_id' => $data['comment_category_id'] ?? null,
                     'body' => trim($data['comment']),
+                    // El comentario hereda EXACTAMENTE el ancla de la visita:
+                    // es el mismo acto, en el mismo lugar y momento. Si se
+                    // recalculara aparte, una visita hecha a las 23:50 y
+                    // sincronizada al otro día quedaría en un día distinto al
+                    // de su propio comentario.
+                    'business_date' => $occurredAt->toDateString(),
+                    'business_timestamp' => $occurredAt->format('Y-m-d H:i:s'),
+                    'business_timezone' => $timezone,
                 ]);
             }
 
