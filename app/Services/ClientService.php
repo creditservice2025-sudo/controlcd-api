@@ -787,6 +787,26 @@ class ClientService
                     $imageRecord['description'] = $creditDescription;
                 }
 
+                // EL VÍNCULO CON EL CRÉDITO, como columna y no solo como texto.
+                //
+                // Este método ya recibía $credit, pero lo usaba SOLO para
+                // redactar la descripción ("Crédito ID: 132290 - Valor: ..."):
+                // el crédito quedaba nombrado en una cadena y la FK se iba en
+                // null. Como el cliente nuevo nace junto con su crédito
+                // obligatorio (Stage 3) y sus fotos las guarda este método
+                // (Stage 4), el PRIMER crédito de cada cliente se quedaba sin
+                // foto: en Liquidaciones la columna "Doc" mostraba un guion
+                // aunque la evidencia del dinero en mano estuviera cargada.
+                //
+                // Medido antes de arreglarlo: del 1 al 13 de agosto, 7 de 1.239
+                // primeros créditos tenían la foto ligada (0,6%), contra 7.582
+                // de 7.585 en los créditos posteriores (100%) —esos pasan por
+                // CreditService, que sí escribe la FK—. Es la misma línea que
+                // CreditService ya tenía; acá faltaba.
+                if ($credit) {
+                    $imageRecord['credit_id'] = $credit->id;
+                }
+
                 // Add GPS metadata if available
                 if (isset($imageData['latitude'])) {
                     $imageRecord['latitude'] = $imageData['latitude'];
