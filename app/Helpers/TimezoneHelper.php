@@ -22,6 +22,11 @@ class TimezoneHelper
         'Argentina' => 'America/Argentina/Buenos_Aires',
         'Ecuador' => 'America/Guayaquil',
         'Venezuela' => 'America/Caracas',
+        // Bolivia es UTC-4. Sin esta entrada caía al default (Lima, UTC-5) y el
+        // día de negocio de sus vendedores se cortaba una hora antes: lo
+        // registrado entre 00:00 y 00:59 hora boliviana quedaba fechado el día
+        // anterior. Corrige de acá en adelante; lo ya registrado no se toca.
+        'Bolivia' => 'America/La_Paz',
         // Default fallback
         'default' => 'America/Lima'
     ];
