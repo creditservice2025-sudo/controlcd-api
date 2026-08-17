@@ -1874,6 +1874,18 @@ class LiquidationService
         $cities = $citiesQuery->get();
         $report = [];
 
+        // Una sola consulta para TODAS las ciudades: adentro del foreach serían
+        // 22 consultas de ~2s y el Excel se caería por timeout.
+        $countsByCity = $this->getCreditCountsByGroup(
+            Carbon::parse($startDate)->format('Y-m-d'),
+            Carbon::parse($endDate)->format('Y-m-d'),
+            'city',
+            $companyId
+        );
+        $currencies = DB::table('cities')
+            ->leftJoin('countries', 'countries.id', '=', 'cities.country_id')
+            ->pluck('countries.currency', 'cities.id');
+
         foreach ($cities as $city) {
             $liquidations = Liquidation::whereHas('seller', function ($q) use ($city, $companyId) {
                 $q->where('city_id', $city->id);
@@ -1927,8 +1939,15 @@ class LiquidationService
                         }
                     })->sum('value');
 
+                $counts = $countsByCity[$city->id] ?? null;
+
                 $report[] = [
                     'city' => $city->name,
+                    'city_id' => $city->id,
+                    'currency' => $currencies[$city->id] ?? '',
+                    'new_clients' => $counts['new_clients'] ?? 0,
+                    'existing_clients' => $counts['existing_clients'] ?? 0,
+                    'renewed_clients' => $counts['renewed_clients'] ?? 0,
                     'previous_cash' => $previous_cash,
                     'collected' => $collected,
                     'loans' => $loans,
@@ -1941,6 +1960,183 @@ class LiquidationService
         }
         return $report;
     }
+    /**
+     * Clasifica los créditos OTORGADOS en el período según la historia del
+     * cliente, y devuelve la cantidad de CLIENTES de cada tipo por grupo.
+     *
+     *   nuevo       el crédito es el primero de ese cliente
+     *   renovación  el cliente liquidó un crédito DENTRO del período y se le
+     *               activó otro después de esa liquidación
+     *   existente   el resto de los clientes con historia: ya venían con
+     *               crédito de antes del período, o tomaron uno adicional
+     *
+     * Los tres son excluyentes y suman los clientes distintos que recibieron
+     * crédito en el período. Se cuentan CLIENTES, no créditos: si un cliente
+     * tomó dos créditos del mismo tipo en el período, cuenta una vez.
+     *
+     * POR QUÉ SE DERIVA Y NO SE LEE UN FLAG. `credits.renewed_from_id` existe,
+     * pero está poblado en 6 de 131.922 créditos: la renovación no se registra
+     * como tal en la práctica, el cobrador simplemente crea un crédito nuevo.
+     * Leer ese campo daría cero en todas las rutas.
+     *
+     * La renovación se reconoce por el rastro que sí es confiable: un crédito
+     * anterior del mismo cliente que hoy está 'Liquidado' y cuyo ÚLTIMO pago
+     * cae dentro del período y antes o el mismo día del crédito nuevo. Por eso
+     * el agregado de pagos se acota al período: un pago anterior no puede
+     * cerrar nada dentro de la ventana consultada. Esa cota es lo que baja la
+     * consulta de ~40s a ~3s.
+     *
+     * La base es la tabla `credits` por su propio día de negocio, NO las
+     * liquidaciones: cuenta lo colocado el día aunque ese día no tenga
+     * liquidación aprobada. Puede no cuadrar con la columna "Nuevos Créditos",
+     * que sale de `liquidations`.
+     *
+     * @param  string  $groupBy  'city' | 'seller' | 'day'
+     * @return array<string|int, array{new_clients:int, existing_clients:int, renewed_clients:int, credits_granted:int}>
+     */
+    public function getCreditCountsByGroup(
+        $startDate,
+        $endDate,
+        string $groupBy,
+        $companyId = null,
+        $sellerIds = null,
+        $cityId = null,
+        $sellerId = null
+    ): array {
+        $start = Carbon::parse($startDate)->format('Y-m-d');
+        $end = Carbon::parse($endDate)->format('Y-m-d');
+        $this->assertDateFormat($start);
+        $this->assertDateFormat($end);
+
+        $groupColumn = [
+            'city' => 'k.city_id',
+            'seller' => 'k.seller_id',
+            'day' => 'k.business_day',
+        ][$groupBy] ?? null;
+
+        if ($groupColumn === null) {
+            throw new \InvalidArgumentException("Agrupación inválida: {$groupBy}");
+        }
+
+        // El día de negocio del crédito; COALESCE para el histórico anterior al
+        // anclaje, que todavía se fecha por created_at.
+        $day = 'COALESCE(c.business_date, DATE(c.created_at))';
+
+        $bindings = [$start, $end];
+        $filters = '';
+
+        if ($companyId !== null) {
+            $filters .= ' AND s.company_id = ?';
+            $bindings[] = $companyId;
+        }
+        if ($sellerIds !== null) {
+            $placeholders = implode(',', array_fill(0, max(count($sellerIds), 1), '?'));
+            $filters .= " AND c.seller_id IN ({$placeholders})";
+            $bindings = array_merge($bindings, $sellerIds ?: [-1]);
+        }
+        if ($cityId !== null) {
+            $filters .= ' AND s.city_id = ?';
+            $bindings[] = $cityId;
+        }
+        if ($sellerId !== null) {
+            $filters .= ' AND c.seller_id = ?';
+            $bindings[] = $sellerId;
+        }
+
+        // FORCE INDEX: sin él el optimizador elige el índice de deleted_at y
+        // barre 466k filas de pagos (15s). Con el de business_date, 0,1s.
+        $bindings[] = $start;
+
+        $sql = "
+            SELECT {$groupColumn} AS group_key,
+                   COUNT(DISTINCT CASE WHEN k.prev_total = 0 THEN k.client_id END) AS new_clients,
+                   COUNT(DISTINCT CASE WHEN k.prev_total > 0 AND k.closed_in_period = 0 THEN k.client_id END) AS existing_clients,
+                   COUNT(DISTINCT CASE WHEN k.prev_total > 0 AND k.closed_in_period = 1 THEN k.client_id END) AS renewed_clients,
+                   COUNT(*) AS credits_granted
+            FROM (
+                SELECT u.id,
+                       u.client_id,
+                       u.seller_id,
+                       u.city_id,
+                       u.business_day,
+                       COUNT(p.id) AS prev_total,
+                       MAX(CASE WHEN p.id IS NOT NULL
+                                 AND p.status = 'Liquidado'
+                                 AND lp.last_payment IS NOT NULL
+                                 AND lp.last_payment <= u.business_day
+                                THEN 1 ELSE 0 END) AS closed_in_period
+                FROM (
+                    SELECT c.id, c.client_id, c.seller_id, s.city_id, c.created_at,
+                           {$day} AS business_day
+                    FROM credits c
+                    JOIN sellers s ON s.id = c.seller_id
+                    WHERE c.deleted_at IS NULL
+                      AND {$day} BETWEEN ? AND ?
+                      {$filters}
+                ) u
+                LEFT JOIN credits p
+                       ON p.client_id = u.client_id
+                      AND p.deleted_at IS NULL
+                      AND (p.created_at < u.created_at
+                           OR (p.created_at = u.created_at AND p.id < u.id))
+                LEFT JOIN (
+                    SELECT pay.credit_id, MAX(pay.business_date) AS last_payment
+                    FROM payments pay FORCE INDEX (payments_business_date_deleted_index)
+                    WHERE pay.deleted_at IS NULL
+                      AND pay.business_date >= ?
+                    GROUP BY pay.credit_id
+                ) lp ON lp.credit_id = p.id
+                GROUP BY u.id, u.client_id, u.seller_id, u.city_id, u.business_day
+            ) k
+            GROUP BY {$groupColumn}
+        ";
+
+        $counts = [];
+        foreach (DB::select($sql, $bindings) as $row) {
+            $key = $groupBy === 'day' ? (string) $row->group_key : (int) $row->group_key;
+            $counts[$key] = [
+                'new_clients' => (int) $row->new_clients,
+                'existing_clients' => (int) $row->existing_clients,
+                'renewed_clients' => (int) $row->renewed_clients,
+                'credits_granted' => (int) $row->credits_granted,
+            ];
+        }
+
+        return $counts;
+    }
+
+    /**
+     * Pega los conteos sobre las filas del reporte. Un grupo sin créditos en el
+     * período queda en cero explícito, no en null: la pantalla y el Excel
+     * muestran un número, no un vacío ambiguo.
+     */
+    private function attachCreditCounts($rows, array $counts, string $keyField)
+    {
+        return $rows->map(function ($row) use ($counts, $keyField) {
+            $key = is_array($row) ? ($row[$keyField] ?? null) : ($row->{$keyField} ?? null);
+            // PHP normaliza "23" a 23 al indexar, así que sirve venga el id como
+            // int (Eloquent) o como string (driver crudo).
+            $found = $key !== null ? ($counts[$key] ?? null) : null;
+
+            $values = [
+                'new_clients' => $found['new_clients'] ?? 0,
+                'existing_clients' => $found['existing_clients'] ?? 0,
+                'renewed_clients' => $found['renewed_clients'] ?? 0,
+                'credits_granted' => $found['credits_granted'] ?? 0,
+            ];
+
+            foreach ($values as $field => $value) {
+                if (is_array($row)) {
+                    $row[$field] = $value;
+                } else {
+                    $row->{$field} = $value;
+                }
+            }
+
+            return $row;
+        });
+    }
+
     public function getAccumulatedByCity($startDate, $endDate, $companyId = null, $sellerIds = null)
     {
         $timezone = 'America/Lima';
@@ -2007,9 +2203,14 @@ class LiquidationService
         $query = DB::table(DB::raw('(' . $perSellerSub->toSql() . ') as per_seller'))
             ->mergeBindings($perSellerSub)
             ->join('cities', 'cities.id', '=', 'per_seller.city_id')
+            // La moneda sale del país de la ciudad, no de una constante: el
+            // reporte mezcla rutas de Perú, Colombia, Bolivia y Argentina en la
+            // misma tabla, y hasta ahora todas se mostraban con "$".
+            ->leftJoin('countries', 'countries.id', '=', 'cities.country_id')
             ->select(
                 'cities.name as city_name',
                 'cities.id as city_id',
+                DB::raw("COALESCE(countries.currency, '') as currency"),
                 // COALESCE blinda el agregado: si un seller no tuvo
                 // liquidación 'approved' en el rango, el subquery devuelve
                 // NULL → SUM(NULL) sería NULL en MySQL. Forzamos 0 para
@@ -2025,11 +2226,15 @@ class LiquidationService
                 DB::raw('COALESCE(SUM(per_seller.surplus), 0) as surplus'),
                 DB::raw('COALESCE(SUM(per_seller.cash_delivered), 0) as cash_delivered')
             )
-            ->groupBy('cities.id', 'cities.name');
+            ->groupBy('cities.id', 'cities.name', 'countries.currency');
 
         \Log::debug("getAccumulatedByCity - SQL:", ['sql' => $query->toSql(), 'bindings' => $query->getBindings()]);
 
         $result = $query->get();
+
+        $counts = $this->getCreditCountsByGroup($startUTC, $endUTC, 'city', $companyId, $sellerIds);
+        $result = $this->attachCreditCounts($result, $counts, 'city_id');
+
         \Log::debug("getAccumulatedByCity - Resultado:", ['count' => $result->count(), 'data' => $result]);
         return $result;
     }
@@ -2045,11 +2250,17 @@ class LiquidationService
         $query = DB::table('liquidations')
             ->join('sellers', 'liquidations.seller_id', '=', 'sellers.id')
             ->join('cities', 'sellers.city_id', '=', 'cities.id')
+            ->leftJoin('countries', 'countries.id', '=', 'cities.country_id')
             ->join('users', 'sellers.user_id', '=', 'users.id')
             ->select(
                 'sellers.id as seller_id',
-                'sellers.seller_id as seller_code',
+                // Antes acá se pedía `sellers.seller_id`, columna que no existe
+                // en la tabla: cualquier llamada a este método reventaba con
+                // "Unknown column". Se mantiene el alias con el uuid, que es el
+                // identificador público real del vendedor.
+                'sellers.uuid as seller_code',
                 'users.name as seller_name',
+                DB::raw("COALESCE(countries.currency, '') as currency"),
                 DB::raw('SUM(liquidations.total_collected) as total_collected'),
                 DB::raw('SUM(liquidations.total_expenses) as total_expenses'),
                 DB::raw('SUM(liquidations.new_credits) as new_credits'),
@@ -2076,8 +2287,12 @@ class LiquidationService
             $query->whereIn('sellers.id', $sellerIds);
         }
 
-        return $query->groupBy('sellers.id', 'sellers.seller_id', 'users.name')
+        $result = $query->groupBy('sellers.id', 'sellers.uuid', 'users.name', 'countries.currency')
             ->get();
+
+        $counts = $this->getCreditCountsByGroup($startUTC, $endUTC, 'seller', $companyId, $sellerIds, $cityId);
+
+        return $this->attachCreditCounts($result, $counts, 'seller_id');
     }
 
     public function getAccumulatedBySellersInCity($cityId, $startDate, $endDate, $companyId = null, $sellerIds = null)
@@ -2091,11 +2306,13 @@ class LiquidationService
         $query = DB::table('liquidations')
             ->join('sellers', 'liquidations.seller_id', '=', 'sellers.id')
             ->join('cities', 'sellers.city_id', '=', 'cities.id')
+            ->leftJoin('countries', 'countries.id', '=', 'cities.country_id')
             ->join('users', 'sellers.user_id', '=', 'users.id')
             ->select(
                 'sellers.id as seller_id',
                 'users.name as seller_name',
                 'cities.name as city_name',
+                DB::raw("COALESCE(countries.currency, '') as currency"),
                 DB::raw('SUM(liquidations.total_collected) as total_collected'),
                 DB::raw('SUM(liquidations.total_expenses) as total_expenses'),
                 DB::raw('SUM(liquidations.new_credits) as new_credits'),
@@ -2119,8 +2336,12 @@ class LiquidationService
             $query->whereIn('sellers.id', $sellerIds);
         }
 
-        return $query->groupBy('sellers.id', 'users.name', 'cities.name')
+        $result = $query->groupBy('sellers.id', 'users.name', 'cities.name', 'countries.currency')
             ->get();
+
+        $counts = $this->getCreditCountsByGroup($startUTC, $endUTC, 'seller', $companyId, $sellerIds, $cityId);
+
+        return $this->attachCreditCounts($result, $counts, 'seller_id');
     }
 
     public function getSellerLiquidationsDetail($sellerId, $startDate, $endDate)
@@ -2129,11 +2350,36 @@ class LiquidationService
         $startUTC = Carbon::parse($startDate, $timezone)->format('Y-m-d');
         $endUTC = Carbon::parse($endDate, $timezone)->format('Y-m-d');
 
-        return Liquidation::with(['seller', 'seller.user'])
+        $liquidations = Liquidation::with(['seller', 'seller.user'])
             ->where('seller_id', $sellerId)
             ->whereBetween('date', [$startUTC, $endUTC])
             ->orderBy('date', 'asc')
             ->get();
+
+        // Moneda del país de la ruta del vendedor, resuelta una sola vez.
+        $currency = DB::table('sellers')
+            ->join('cities', 'cities.id', '=', 'sellers.city_id')
+            ->leftJoin('countries', 'countries.id', '=', 'cities.country_id')
+            ->where('sellers.id', $sellerId)
+            ->value('countries.currency') ?? '';
+
+        // Los conteos van por DÍA de negocio del crédito, así que la fila de
+        // cada liquidación muestra lo colocado ese día aunque la liquidación
+        // esté pendiente: son dos hechos distintos del mismo día.
+        $counts = $this->getCreditCountsByGroup($startUTC, $endUTC, 'day', null, null, null, $sellerId);
+
+        return $liquidations->map(function ($liquidation) use ($counts, $currency) {
+            $day = $liquidation->date ? Carbon::parse($liquidation->date)->format('Y-m-d') : null;
+            $found = $day !== null ? ($counts[$day] ?? null) : null;
+
+            $liquidation->currency = $currency;
+            $liquidation->new_clients = $found['new_clients'] ?? 0;
+            $liquidation->existing_clients = $found['existing_clients'] ?? 0;
+            $liquidation->renewed_clients = $found['renewed_clients'] ?? 0;
+            $liquidation->credits_granted = $found['credits_granted'] ?? 0;
+
+            return $liquidation;
+        });
     }
 
     public function reopenRoute($sellerId, $date, $request)
