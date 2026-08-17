@@ -14,6 +14,7 @@ use App\Traits\ApiResponse;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
 
@@ -2020,7 +2021,15 @@ class LiquidationService
 
         // El día de negocio del crédito; COALESCE para el histórico anterior al
         // anclaje, que todavía se fecha por created_at.
-        $day = 'COALESCE(c.business_date, DATE(c.created_at))';
+        //
+        // El hasColumn no es paranoia: la migración que agrega business_date a
+        // credits todavía no corrió en producción, y sin este chequeo el
+        // reporte entero devolvería "Unknown column" apenas se despliegue.
+        // Mientras no exista la columna se cae a created_at, que es lo mismo
+        // que hace la rama de compatibilidad del resto del sistema.
+        $day = Schema::hasColumn('credits', 'business_date')
+            ? 'COALESCE(c.business_date, DATE(c.created_at))'
+            : 'DATE(c.created_at)';
 
         $bindings = [$start, $end];
         $filters = '';
