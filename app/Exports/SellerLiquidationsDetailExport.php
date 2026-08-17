@@ -48,6 +48,10 @@ class SellerLiquidationsDetailExport implements FromCollection, WithHeadings, Wi
         return [
             $liquidation->date ? Carbon::parse($liquidation->date)->format('d/m/Y') : '',
             $liquidation->seller->user->name ?? 'N/A',
+            $liquidation->currency ?? '',
+            (int) ($liquidation->new_clients ?? 0),
+            (int) ($liquidation->existing_clients ?? 0),
+            (int) ($liquidation->renewed_clients ?? 0),
             number_format($liquidation->total_collected, 2),
             number_format($liquidation->total_expenses, 2),
             number_format($liquidation->total_income, 2),
@@ -69,6 +73,10 @@ class SellerLiquidationsDetailExport implements FromCollection, WithHeadings, Wi
             [
                 'Fecha',
                 'Nombre del Vendedor',
+                'Moneda',
+                'Clientes Nuevos',
+                'Clientes Existentes',
+                'Renovaciones',
                 'Total Recaudado',
                 'Total Gastos',
                 'Total Ingresos',

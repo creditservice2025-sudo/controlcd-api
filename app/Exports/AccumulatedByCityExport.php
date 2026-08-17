@@ -53,13 +53,19 @@ class AccumulatedByCityExport implements FromArray, WithEvents
         $rows[] = $headerRow;
         $rows[] = $subHeaderRow;
 
+        // MONEDA y los tres conteos de colocación se leen igual que el resto:
+        // una fila por concepto, dos columnas por ciudad (etiqueta y cifra).
         $conceptos = [
+            'MONEDA' => 'currency',
             'CAJA ANTERIOR' => 'previous_cash',
             'COBRO' => 'collected',
             'PRESTAMOS' => 'loans',
             'INGRESOS' => 'ingresos',
             'GASTOS' => 'expenses',
             'CAJA ACTUAL' => 'current_cash',
+            'CLIENTES NUEVOS' => 'new_clients',
+            'CLIENTES EXISTENTES' => 'existing_clients',
+            'RENOVACIONES' => 'renewed_clients',
         ];
 
         foreach ($conceptos as $concepto => $key) {

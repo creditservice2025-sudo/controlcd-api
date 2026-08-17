@@ -1380,11 +1380,14 @@ class LiquidationController extends Controller
                 return response()->json(['success' => false, 'message' => 'No tienes permisos para ver este vendedor'], 403);
             }
 
-            $liquidations = Liquidation::with(['seller', 'seller.user'])
-                ->where('seller_id', $sellerId)
-                ->whereBetween('date', [$startDate, $endDate])
-                ->orderBy('date', 'asc')
-                ->get();
+            // Delegado al servicio: es la MISMA consulta que ya vivía acá
+            // duplicada, y así la pantalla recibe los conteos de colocación y la
+            // moneda igual que el Excel, que siempre usó el servicio.
+            $liquidations = $this->liquidationService->getSellerLiquidationsDetail(
+                $sellerId,
+                $startDate,
+                $endDate
+            );
 
             return response()->json([
                 'success' => true,
