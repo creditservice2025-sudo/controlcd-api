@@ -21,7 +21,12 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'verified' => \App\Http\Middleware\EnsureEmailIsVerified::class,
             // Aliases Spatie Permission (Laravel 11 requiere registro explicito).
-            'role'               => \Spatie\Permission\Middleware\RoleMiddleware::class,
+            // 'role' NO usa el middleware de Spatie: ese lee el pivote
+            // model_has_roles, que la aplicación nunca escribe (no hay una sola
+            // llamada a assignRole en el código). El rol vive en users.role_id,
+            // que es lo que mira este middleware, con el chequeo de Spatie como
+            // segunda vuelta para no quitarle acceso a nadie.
+            'role'               => \App\Http\Middleware\RoleFromUserRoleId::class,
             'permission'         => \Spatie\Permission\Middleware\PermissionMiddleware::class,
             'role_or_permission' => \Spatie\Permission\Middleware\RoleOrPermissionMiddleware::class,
             // Bloquea Cobrador (rol 5) cuando su Supervisor (rol 6) tiene
