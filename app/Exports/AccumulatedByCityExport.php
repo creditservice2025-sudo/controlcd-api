@@ -64,8 +64,8 @@ class AccumulatedByCityExport implements FromArray, WithEvents
             'GASTOS' => 'expenses',
             'CAJA ACTUAL' => 'current_cash',
             'CLIENTES NUEVOS' => 'new_clients',
-            'CLIENTES EXISTENTES' => 'existing_clients',
-            'RENOVACIONES' => 'renewed_clients',
+            'LIQUIDO Y TOMO OTRO' => 'settled_clients',
+            'CREDITO ADICIONAL' => 'additional_clients',
         ];
 
         foreach ($conceptos as $concepto => $key) {

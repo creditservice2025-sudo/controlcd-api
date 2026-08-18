@@ -1947,8 +1947,8 @@ class LiquidationService
                     'city_id' => $city->id,
                     'currency' => $currencies[$city->id] ?? '',
                     'new_clients' => $counts['new_clients'] ?? 0,
-                    'existing_clients' => $counts['existing_clients'] ?? 0,
-                    'renewed_clients' => $counts['renewed_clients'] ?? 0,
+                    'settled_clients' => $counts['settled_clients'] ?? 0,
+                    'additional_clients' => $counts['additional_clients'] ?? 0,
                     'previous_cash' => $previous_cash,
                     'collected' => $collected,
                     'loans' => $loans,
@@ -1965,27 +1965,35 @@ class LiquidationService
      * Clasifica los créditos OTORGADOS en el período según la historia del
      * cliente, y devuelve la cantidad de CLIENTES de cada tipo por grupo.
      *
-     *   nuevo       el crédito es el primero de ese cliente
-     *   renovación  el cliente liquidó un crédito DENTRO del período y se le
-     *               activó otro después de esa liquidación
-     *   existente   el resto de los clientes con historia: ya venían con
-     *               crédito de antes del período, o tomaron uno adicional
+     * Las tres categorías, definidas por el negocio:
+     *
+     *   nuevo        el crédito es el PRIMERO de ese cliente: entra al sistema
+     *                como cliente nuevo, y el crédito es obligatorio para
+     *                contarlo (un cliente dado de alta sin crédito no cuenta)
+     *   liquidó y
+     *   tomó otro    cliente existente que ya había cerrado: al momento del
+     *                crédito nuevo no le quedaba ninguno abierto
+     *   adicional    cliente existente al que se le activó otro crédito SIN
+     *                haber liquidado el anterior: al momento del nuevo tenía
+     *                al menos uno abierto
      *
      * Los tres son excluyentes y suman los clientes distintos que recibieron
      * crédito en el período. Se cuentan CLIENTES, no créditos: si un cliente
-     * tomó dos créditos del mismo tipo en el período, cuenta una vez.
+     * tomó dos créditos de la misma categoría en el período, cuenta una vez.
      *
-     * POR QUÉ SE DERIVA Y NO SE LEE UN FLAG. `credits.renewed_from_id` existe,
-     * pero está poblado en 6 de 131.922 créditos: la renovación no se registra
-     * como tal en la práctica, el cobrador simplemente crea un crédito nuevo.
-     * Leer ese campo daría cero en todas las rutas.
+     * QUÉ ES "ABIERTO EN ESE MOMENTO". El crédito anterior cuenta como abierto
+     * si HOY no está 'Liquidado' —un crédito no vuelve atrás, así que tampoco
+     * lo estaba entonces— o si recibió pagos DESPUÉS del día del crédito
+     * nuevo, que es la prueba de que todavía se estaba cobrando. Por eso el
+     * agregado de pagos se acota al período: un pago anterior al período es,
+     * por definición, anterior al crédito nuevo, y no puede cambiar nada. Esa
+     * cota es lo que baja la consulta de ~40s a ~3s.
      *
-     * La renovación se reconoce por el rastro que sí es confiable: un crédito
-     * anterior del mismo cliente que hoy está 'Liquidado' y cuyo ÚLTIMO pago
-     * cae dentro del período y antes o el mismo día del crédito nuevo. Por eso
-     * el agregado de pagos se acota al período: un pago anterior no puede
-     * cerrar nada dentro de la ventana consultada. Esa cota es lo que baja la
-     * consulta de ~40s a ~3s.
+     * NO SE USA `credits.renewed_from_id` PARA ESTO. Ese campo marca el flujo
+     * renew() —crédito activo al que se le cruza el saldo y se le entrega la
+     * diferencia—, que es otra cosa y recién empieza a usarse: 6 créditos de
+     * 131.922, todos de una ruta desde julio de 2026. Lo que acá se clasifica
+     * es la colocación tal como ocurre hoy, que sale por "Nuevo crédito".
      *
      * La base es la tabla `credits` por su propio día de negocio, NO las
      * liquidaciones: cuenta lo colocado el día aunque ese día no tenga
@@ -1993,7 +2001,7 @@ class LiquidationService
      * que sale de `liquidations`.
      *
      * @param  string  $groupBy  'city' | 'seller' | 'day'
-     * @return array<string|int, array{new_clients:int, existing_clients:int, renewed_clients:int, credits_granted:int}>
+     * @return array<string|int, array{new_clients:int, settled_clients:int, additional_clients:int, credits_granted:int}>
      */
     public function getCreditCountsByGroup(
         $startDate,
@@ -2019,14 +2027,196 @@ class LiquidationService
             throw new \InvalidArgumentException("Agrupación inválida: {$groupBy}");
         }
 
-        // El día de negocio del crédito; COALESCE para el histórico anterior al
-        // anclaje, que todavía se fecha por created_at.
-        //
+        // Mismo armado de filtros que usa el detalle del modal: si los dos no
+        // filtran igual, el número y la lista dejan de coincidir.
+        [$day, $filters, $bindings] = $this->buildClassificationFilters(
+            $start, $end, $companyId, $sellerIds, $cityId, $sellerId
+        );
+
+        $sql = "
+            SELECT {$groupColumn} AS group_key,
+                   COUNT(DISTINCT CASE WHEN " . self::BUCKET_SQL['new'] . " THEN k.client_id END) AS new_clients,
+                   COUNT(DISTINCT CASE WHEN " . self::BUCKET_SQL['settled'] . " THEN k.client_id END) AS settled_clients,
+                   COUNT(DISTINCT CASE WHEN " . self::BUCKET_SQL['additional'] . " THEN k.client_id END) AS additional_clients,
+                   COUNT(*) AS credits_granted
+            FROM (" . $this->creditClassificationSql($day, $filters) . ") k
+            GROUP BY {$groupColumn}
+        ";
+
+        $counts = [];
+        foreach (DB::select($sql, $bindings) as $row) {
+            $key = $groupBy === 'day' ? (string) $row->group_key : (int) $row->group_key;
+            $counts[$key] = [
+                'new_clients' => (int) $row->new_clients,
+                'settled_clients' => (int) $row->settled_clients,
+                'additional_clients' => (int) $row->additional_clients,
+                'credits_granted' => (int) $row->credits_granted,
+            ];
+        }
+
+        return $counts;
+    }
+
+    /**
+     * Condición de cada categoría sobre la subconsulta clasificada. Vive en una
+     * sola constante para que el número de la pantalla y la lista del modal no
+     * puedan discrepar: si alguna vez cambia la definición, cambia para los
+     * dos a la vez.
+     */
+    private const BUCKET_SQL = [
+        'new' => 'k.prev_total = 0',
+        'settled' => 'k.prev_total > 0 AND k.prev_open = 0',
+        'additional' => 'k.prev_total > 0 AND k.prev_open = 1',
+    ];
+
+    /**
+     * Subconsulta que clasifica cada crédito otorgado en el período.
+     *
+     * Devuelve una fila por crédito con `prev_total` (cuántos créditos tenía
+     * antes ese cliente) y `prev_open` (si alguno seguía abierto el día del
+     * crédito nuevo). De esas dos columnas salen las tres categorías.
+     */
+    private function creditClassificationSql(string $day, string $filters): string
+    {
+        return "
+                SELECT u.id,
+                       u.client_id,
+                       u.seller_id,
+                       u.city_id,
+                       u.business_day,
+                       COUNT(p.id) AS prev_total,
+                       MAX(CASE WHEN p.id IS NOT NULL
+                                 AND (p.status <> 'Liquidado' OR lp.last_payment > u.business_day)
+                                THEN 1 ELSE 0 END) AS prev_open
+                FROM (
+                    SELECT c.id, c.client_id, c.seller_id, s.city_id, c.created_at,
+                           {$day} AS business_day
+                    FROM credits c
+                    JOIN sellers s ON s.id = c.seller_id
+                    WHERE c.deleted_at IS NULL
+                      AND {$day} BETWEEN ? AND ?
+                      {$filters}
+                ) u
+                LEFT JOIN credits p
+                       ON p.client_id = u.client_id
+                      AND p.deleted_at IS NULL
+                      AND (p.created_at < u.created_at
+                           OR (p.created_at = u.created_at AND p.id < u.id))
+                LEFT JOIN (
+                    SELECT pay.credit_id, MAX(pay.business_date) AS last_payment
+                    FROM payments pay FORCE INDEX (payments_business_date_deleted_index)
+                    WHERE pay.deleted_at IS NULL
+                      AND pay.business_date >= ?
+                    GROUP BY pay.credit_id
+                ) lp ON lp.credit_id = p.id
+                GROUP BY u.id, u.client_id, u.seller_id, u.city_id, u.business_day
+        ";
+    }
+
+    /**
+     * Lista los CLIENTES detrás de uno de los números del reporte.
+     *
+     * Es la contrapartida del conteo: mismo período, mismos filtros y la MISMA
+     * subconsulta de clasificación, así que la cantidad de filas que devuelve
+     * tiene que dar exactamente el número que muestra la pantalla. Se hizo así
+     * a propósito —y no con una consulta paralela "parecida"— porque un
+     * reporte que no se puede auditar contra su propio detalle no sirve para
+     * decidir nada.
+     *
+     * Devuelve un cliente por fila, con el crédito que lo hizo entrar en la
+     * categoría. Si el mismo cliente tomó dos créditos de la misma categoría en
+     * el período, aparece una sola vez (el primero), igual que en el conteo.
+     *
+     * @param  string  $bucket  'new' | 'settled' | 'additional'
+     */
+    public function getCreditClassificationDetail(
+        $startDate,
+        $endDate,
+        string $bucket,
+        $companyId = null,
+        $sellerIds = null,
+        $cityId = null,
+        $sellerId = null,
+        $day = null
+    ): array {
+        if (!isset(self::BUCKET_SQL[$bucket])) {
+            throw new \InvalidArgumentException("Categoría inválida: {$bucket}");
+        }
+
+        $start = Carbon::parse($startDate)->format('Y-m-d');
+        $end = Carbon::parse($endDate)->format('Y-m-d');
+        $this->assertDateFormat($start);
+        $this->assertDateFormat($end);
+
+        [$dayExpr, $filters, $bindings] = $this->buildClassificationFilters(
+            $start, $end, $companyId, $sellerIds, $cityId, $sellerId
+        );
+
+        $condicionDia = '';
+        if ($day !== null) {
+            $diaNormalizado = Carbon::parse($day)->format('Y-m-d');
+            $this->assertDateFormat($diaNormalizado);
+            $condicionDia = ' AND k.business_day = ?';
+            $bindings[] = $diaNormalizado;
+        }
+
+        $sql = "
+            SELECT cl.id AS client_id,
+                   cl.name AS client_name,
+                   cl.dni,
+                   cl.phone,
+                   u.name AS seller_name,
+                   ci.name AS city_name,
+                   k.business_day,
+                   cr.credit_value,
+                   cr.total_amount,
+                   cr.status AS credit_status,
+                   k.prev_total AS creditos_previos
+            FROM (
+                  SELECT b.*,
+                         ROW_NUMBER() OVER (
+                             PARTITION BY b.bucket, b.client_id
+                             ORDER BY b.business_day, b.id
+                         ) AS rn
+                  FROM (
+                      SELECT k.*,
+                             CASE WHEN " . self::BUCKET_SQL['new'] . " THEN 'new'
+                                  WHEN " . self::BUCKET_SQL['settled'] . " THEN 'settled'
+                                  ELSE 'additional' END AS bucket
+                      FROM (" . $this->creditClassificationSql($dayExpr, $filters) . ") k
+                  ) b
+                 ) k
+            JOIN clients cl ON cl.id = k.client_id
+            JOIN credits cr ON cr.id = k.id
+            JOIN sellers s ON s.id = k.seller_id
+            JOIN users u ON u.id = s.user_id
+            JOIN cities ci ON ci.id = k.city_id
+            WHERE k.bucket = '{$bucket}'
+              AND k.rn = 1
+              {$condicionDia}
+            ORDER BY k.business_day ASC, cl.name ASC
+        ";
+
+        return array_map(fn ($row) => (array) $row, DB::select($sql, $bindings));
+    }
+
+    /**
+     * Filtros y bindings compartidos por el conteo y por el detalle. Estaban
+     * duplicados y era cuestión de tiempo que uno filtrara distinto del otro.
+     *
+     * @return array{0: string, 1: string, 2: array}
+     */
+    private function buildClassificationFilters(
+        string $start,
+        string $end,
+        $companyId,
+        $sellerIds,
+        $cityId,
+        $sellerId
+    ): array {
         // El hasColumn no es paranoia: la migración que agrega business_date a
         // credits todavía no corrió en producción, y sin este chequeo el
         // reporte entero devolvería "Unknown column" apenas se despliegue.
-        // Mientras no exista la columna se cae a created_at, que es lo mismo
-        // que hace la rama de compatibilidad del resto del sistema.
         $day = Schema::hasColumn('credits', 'business_date')
             ? 'COALESCE(c.business_date, DATE(c.created_at))'
             : 'DATE(c.created_at)';
@@ -2052,66 +2242,11 @@ class LiquidationService
             $bindings[] = $sellerId;
         }
 
-        // FORCE INDEX: sin él el optimizador elige el índice de deleted_at y
-        // barre 466k filas de pagos (15s). Con el de business_date, 0,1s.
+        // El binding del agregado de pagos va último porque en el SQL aparece
+        // después de la subconsulta del universo.
         $bindings[] = $start;
 
-        $sql = "
-            SELECT {$groupColumn} AS group_key,
-                   COUNT(DISTINCT CASE WHEN k.prev_total = 0 THEN k.client_id END) AS new_clients,
-                   COUNT(DISTINCT CASE WHEN k.prev_total > 0 AND k.closed_in_period = 0 THEN k.client_id END) AS existing_clients,
-                   COUNT(DISTINCT CASE WHEN k.prev_total > 0 AND k.closed_in_period = 1 THEN k.client_id END) AS renewed_clients,
-                   COUNT(*) AS credits_granted
-            FROM (
-                SELECT u.id,
-                       u.client_id,
-                       u.seller_id,
-                       u.city_id,
-                       u.business_day,
-                       COUNT(p.id) AS prev_total,
-                       MAX(CASE WHEN p.id IS NOT NULL
-                                 AND p.status = 'Liquidado'
-                                 AND lp.last_payment IS NOT NULL
-                                 AND lp.last_payment <= u.business_day
-                                THEN 1 ELSE 0 END) AS closed_in_period
-                FROM (
-                    SELECT c.id, c.client_id, c.seller_id, s.city_id, c.created_at,
-                           {$day} AS business_day
-                    FROM credits c
-                    JOIN sellers s ON s.id = c.seller_id
-                    WHERE c.deleted_at IS NULL
-                      AND {$day} BETWEEN ? AND ?
-                      {$filters}
-                ) u
-                LEFT JOIN credits p
-                       ON p.client_id = u.client_id
-                      AND p.deleted_at IS NULL
-                      AND (p.created_at < u.created_at
-                           OR (p.created_at = u.created_at AND p.id < u.id))
-                LEFT JOIN (
-                    SELECT pay.credit_id, MAX(pay.business_date) AS last_payment
-                    FROM payments pay FORCE INDEX (payments_business_date_deleted_index)
-                    WHERE pay.deleted_at IS NULL
-                      AND pay.business_date >= ?
-                    GROUP BY pay.credit_id
-                ) lp ON lp.credit_id = p.id
-                GROUP BY u.id, u.client_id, u.seller_id, u.city_id, u.business_day
-            ) k
-            GROUP BY {$groupColumn}
-        ";
-
-        $counts = [];
-        foreach (DB::select($sql, $bindings) as $row) {
-            $key = $groupBy === 'day' ? (string) $row->group_key : (int) $row->group_key;
-            $counts[$key] = [
-                'new_clients' => (int) $row->new_clients,
-                'existing_clients' => (int) $row->existing_clients,
-                'renewed_clients' => (int) $row->renewed_clients,
-                'credits_granted' => (int) $row->credits_granted,
-            ];
-        }
-
-        return $counts;
+        return [$day, $filters, $bindings];
     }
 
     /**
@@ -2129,8 +2264,8 @@ class LiquidationService
 
             $values = [
                 'new_clients' => $found['new_clients'] ?? 0,
-                'existing_clients' => $found['existing_clients'] ?? 0,
-                'renewed_clients' => $found['renewed_clients'] ?? 0,
+                'settled_clients' => $found['settled_clients'] ?? 0,
+                'additional_clients' => $found['additional_clients'] ?? 0,
                 'credits_granted' => $found['credits_granted'] ?? 0,
             ];
 

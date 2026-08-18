@@ -18,12 +18,17 @@ use Tests\TestCase;
 /**
  * Conteo de colocación del reporte de resumen general.
  *
- * Las tres columnas nuevas se DERIVAN de la historia de cada cliente, no de un
- * flag: `credits.renewed_from_id` está poblado en 6 de 131.922 créditos, así
- * que leerlo daría cero en todas las rutas. Por eso lo que se prueba acá es la
- * clasificación misma, con el caso que la hace no trivial: un cliente cuyo
- * crédito anterior se liquidó ANTES del período no es una renovación del
- * período, aunque hoy figure como liquidado igual que el que sí lo es.
+ * Las tres categorías las define el negocio, y lo que las separa es el estado
+ * del cliente EN EL MOMENTO del crédito nuevo:
+ *
+ *   nuevo        es su primer crédito (el crédito es obligatorio: un cliente
+ *                dado de alta sin crédito no entra en el conteo)
+ *   liquidó y
+ *   tomó otro    ya tenía historia y no le quedaba ningún crédito abierto
+ *   adicional    se le activó otro crédito SIN liquidar el anterior
+ *
+ * Además del conteo se prueba el detalle que abre el modal, porque un número
+ * que no se puede auditar contra su propia lista no sirve para decidir.
  */
 class ReportCreditCountsTest extends TestCase
 {
@@ -61,12 +66,13 @@ class ReportCreditCountsTest extends TestCase
         ]);
     }
 
-    private function makeClient(): Client
+    private function makeClient(string $nombre = null): Client
     {
         return Client::factory()->create([
             'seller_id' => $this->seller->id,
             'geolocation' => '[]',
             'uuid' => Str::uuid()->toString(),
+            'name' => $nombre ?? ('Cliente ' . Str::random(6)),
         ]);
     }
 
@@ -76,10 +82,9 @@ class ReportCreditCountsTest extends TestCase
             'client_id' => $client->id,
             'seller_id' => $this->seller->id,
             'status' => $status,
-            // CreditFactory manda 'diario' y el enum de la tabla es 'Diaria':
-            // sin esto ni siquiera se puede insertar un crédito de prueba.
-            'payment_frequency' => 'Diaria',
             'business_date' => $day,
+            // CreditFactory manda 'diario' y el enum de la tabla es 'Diaria'.
+            'payment_frequency' => 'Diaria',
             'created_at' => $day . ' 10:00:00',
             'updated_at' => $day . ' 10:00:00',
         ], $extra));
@@ -99,125 +104,201 @@ class ReportCreditCountsTest extends TestCase
         ]);
     }
 
+    private function counts(string $desde = self::DESDE, string $hasta = self::HASTA): array
+    {
+        return app(LiquidationService::class)
+            ->getCreditCountsByGroup($desde, $hasta, 'seller', null, null, null, $this->seller->id)[$this->seller->id];
+    }
+
+    private function detalle(string $bucket, string $desde = self::DESDE, string $hasta = self::HASTA): array
+    {
+        return app(LiquidationService::class)
+            ->getCreditClassificationDetail($desde, $hasta, $bucket, null, null, null, $this->seller->id);
+    }
+
     /**
-     * Un escenario con los cuatro casos que se pueden dar el mismo día, más el
-     * ruido que no debe contarse (crédito borrado y crédito fuera del rango).
+     * Un cliente de cada categoría, más el ruido que no debe contarse.
      */
     private function escenarioCompleto(): void
     {
         // A: su primer crédito -> nuevo
-        $this->makeCredit($this->makeClient(), self::DIA);
+        $this->makeCredit($this->makeClient('A NUEVO'), self::DIA);
 
-        // B: ya tenía uno abierto -> existente
-        $b = $this->makeClient();
+        // B: tenía uno Vigente sin liquidar -> adicional
+        $b = $this->makeClient('B ADICIONAL');
         $this->makeCredit($b, '2026-06-01', 'Vigente');
         $this->makeCredit($b, self::DIA);
 
-        // C: liquidó DENTRO del período y se le activó otro -> renovación
-        $c = $this->makeClient();
+        // C: liquidó dentro del período y tomó otro -> liquidó y tomó otro
+        $c = $this->makeClient('C LIQUIDO DENTRO');
         $viejoC = $this->makeCredit($c, '2026-06-01', 'Liquidado');
         $this->makePayment($viejoC, '2026-08-03');
         $this->makeCredit($c, self::DIA);
 
-        // D: liquidó ANTES del período -> existente, no renovación del período
-        $d = $this->makeClient();
+        // D: liquidó ANTES del período. Tampoco tenía nada abierto el día del
+        // crédito nuevo, así que es la misma categoría que C.
+        $d = $this->makeClient('D LIQUIDO ANTES');
         $viejoD = $this->makeCredit($d, '2026-06-01', 'Liquidado');
         $this->makePayment($viejoD, '2026-07-20');
         $this->makeCredit($d, self::DIA);
 
         // Ruido: crédito borrado dentro del rango y crédito fuera del rango.
-        $this->makeCredit($this->makeClient(), self::DIA, 'Vigente', ['deleted_at' => now()]);
-        $this->makeCredit($this->makeClient(), '2026-08-25');
+        $this->makeCredit($this->makeClient('BORRADO'), self::DIA, 'Vigente', ['deleted_at' => now()]);
+        $this->makeCredit($this->makeClient('FUERA'), '2026-08-25');
     }
 
     /** @test */
-    public function clasifica_nuevos_existentes_y_renovaciones_del_periodo(): void
+    public function clasifica_las_tres_categorias_del_negocio(): void
     {
         $this->escenarioCompleto();
 
-        $counts = app(LiquidationService::class)
-            ->getCreditCountsByGroup(self::DESDE, self::HASTA, 'seller', null, null, null, $this->seller->id);
+        $counts = $this->counts();
 
-        $this->assertSame(1, $counts[$this->seller->id]['new_clients'],
+        $this->assertSame(1, $counts['new_clients'],
             'Nuevo es el cliente cuyo primer crédito cae en el período.');
-        $this->assertSame(2, $counts[$this->seller->id]['existing_clients'],
-            'Existentes: el que ya tenía uno abierto y el que había liquidado ANTES del período.');
-        $this->assertSame(1, $counts[$this->seller->id]['renewed_clients'],
-            'Renovación: liquidó dentro del período y se le activó otro después.');
-        $this->assertSame(4, $counts[$this->seller->id]['credits_granted'],
+        $this->assertSame(2, $counts['settled_clients'],
+            'Liquidó y tomó otro: no le quedaba ninguno abierto, sin importar cuándo cerró.');
+        $this->assertSame(1, $counts['additional_clients'],
+            'Adicional: se le activó otro crédito sin liquidar el anterior.');
+        $this->assertSame(4, $counts['credits_granted'],
             'El crédito borrado y el de fuera del rango no entran.');
     }
 
     /**
-     * El caso que separa "renovación" de "existente" es el DÍA en que se cerró
-     * el crédito anterior. Si el último pago del viejo cae dentro del período,
-     * es renovación; si cayó antes, el cliente simplemente volvió.
+     * Lo que separa "adicional" de "liquidó y tomó otro" es si el crédito
+     * anterior seguía vivo ESE día, no la fecha en que se cerró.
      *
      * @test
      */
-    public function no_es_renovacion_si_el_credito_anterior_se_cerro_antes_del_periodo(): void
+    public function haber_liquidado_antes_del_periodo_no_lo_hace_adicional(): void
     {
         $cliente = $this->makeClient();
         $viejo = $this->makeCredit($cliente, '2026-06-01', 'Liquidado');
         $this->makePayment($viejo, '2026-07-20');
         $this->makeCredit($cliente, self::DIA);
 
-        $svc = app(LiquidationService::class);
+        $counts = $this->counts();
 
-        $fuera = $svc->getCreditCountsByGroup(self::DESDE, self::HASTA, 'seller', null, null, null, $this->seller->id);
-        $this->assertSame(0, $fuera[$this->seller->id]['renewed_clients']);
-        $this->assertSame(1, $fuera[$this->seller->id]['existing_clients']);
-
-        // El mismo cliente, con el período abierto hasta incluir el cierre del
-        // crédito viejo: ahí sí es una renovación ocurrida dentro de la ventana.
-        $dentro = $svc->getCreditCountsByGroup('2026-07-01', self::HASTA, 'seller', null, null, null, $this->seller->id);
-        $this->assertSame(1, $dentro[$this->seller->id]['renewed_clients']);
-        $this->assertSame(0, $dentro[$this->seller->id]['existing_clients']);
+        $this->assertSame(1, $counts['settled_clients']);
+        $this->assertSame(0, $counts['additional_clients']);
     }
 
     /**
-     * Un pago posterior al crédito nuevo no cierra nada "antes": el crédito
-     * viejo seguía vivo ese día, así que el cliente es existente.
+     * Un crédito que hoy figura Liquidado pero recibió pagos DESPUÉS del
+     * crédito nuevo seguía abierto ese día: el cliente es adicional.
      *
      * @test
      */
-    public function el_pago_posterior_al_credito_nuevo_no_cuenta_como_cierre_previo(): void
+    public function el_pago_posterior_prueba_que_el_credito_viejo_seguia_abierto(): void
     {
         $cliente = $this->makeClient();
         $viejo = $this->makeCredit($cliente, '2026-06-01', 'Liquidado');
         $this->makePayment($viejo, '2026-08-10'); // después del crédito nuevo
         $this->makeCredit($cliente, self::DIA);
 
-        $counts = app(LiquidationService::class)
-            ->getCreditCountsByGroup(self::DESDE, self::HASTA, 'seller', null, null, null, $this->seller->id);
+        $counts = $this->counts();
 
-        $this->assertSame(0, $counts[$this->seller->id]['renewed_clients']);
-        $this->assertSame(1, $counts[$this->seller->id]['existing_clients']);
+        $this->assertSame(0, $counts['settled_clients']);
+        $this->assertSame(1, $counts['additional_clients']);
     }
 
     /**
-     * Se cuentan CLIENTES, no créditos: dos créditos del mismo cliente en el
-     * período son un cliente, aunque credits_granted sí diga dos.
+     * Se cuentan CLIENTES, no créditos.
      *
      * @test
      */
-    public function un_cliente_con_dos_creditos_en_el_periodo_cuenta_una_vez(): void
+    public function un_cliente_con_dos_creditos_cuenta_una_vez_por_categoria(): void
     {
         $cliente = $this->makeClient();
         $this->makeCredit($cliente, self::DIA);
         $this->makeCredit($cliente, '2026-08-08');
 
-        $counts = app(LiquidationService::class)
-            ->getCreditCountsByGroup(self::DESDE, self::HASTA, 'seller', null, null, null, $this->seller->id);
+        $counts = $this->counts();
 
-        $this->assertSame(1, $counts[$this->seller->id]['new_clients']);
-        $this->assertSame(1, $counts[$this->seller->id]['existing_clients'],
-            'El segundo crédito ya lo encuentra con historia.');
-        $this->assertSame(2, $counts[$this->seller->id]['credits_granted']);
+        $this->assertSame(1, $counts['new_clients']);
+        $this->assertSame(1, $counts['additional_clients'],
+            'El segundo crédito lo encuentra con el primero abierto.');
+        $this->assertSame(2, $counts['credits_granted']);
+    }
+
+    /**
+     * EL TEST QUE IMPORTA PARA EL MODAL: la lista tiene que dar exactamente el
+     * número que muestra la pantalla, en las tres categorías. Si alguna vez se
+     * separan, el reporte deja de ser auditable.
+     *
+     * @test
+     */
+    public function el_detalle_del_modal_da_exactamente_el_numero_de_la_pantalla(): void
+    {
+        $this->escenarioCompleto();
+
+        $counts = $this->counts();
+
+        $this->assertCount($counts['new_clients'], $this->detalle('new'));
+        $this->assertCount($counts['settled_clients'], $this->detalle('settled'));
+        $this->assertCount($counts['additional_clients'], $this->detalle('additional'));
+
+        $nombres = array_column($this->detalle('settled'), 'client_name');
+        sort($nombres);
+        $this->assertSame(['C LIQUIDO DENTRO', 'D LIQUIDO ANTES'], $nombres,
+            'La lista nombra a los clientes concretos, no un número suelto.');
+    }
+
+    /**
+     * Un cliente puede caer en DOS categorías si tomó dos créditos distintos:
+     * el conteo lo cuenta en las dos, así que el modal también tiene que
+     * mostrarlo en las dos. Al deduplicar por cliente sin mirar la categoría,
+     * la lista perdía filas y no cuadraba con el número.
+     *
+     * @test
+     */
+    public function un_cliente_en_dos_categorias_aparece_en_las_dos_listas(): void
+    {
+        $cliente = $this->makeClient('DOBLE CATEGORIA');
+
+        // Primer crédito del período: es su primer crédito -> nuevo.
+        $primero = $this->makeCredit($cliente, self::DIA);
+        // Lo liquida y toma otro: sin nada abierto -> liquidó y tomó otro.
+        $primero->update(['status' => 'Liquidado']);
+        $this->makePayment($primero, '2026-08-06');
+        $this->makeCredit($cliente, '2026-08-08');
+
+        $counts = $this->counts();
+        $this->assertSame(1, $counts['new_clients']);
+        $this->assertSame(1, $counts['settled_clients']);
+
+        $this->assertCount(1, $this->detalle('new'));
+        $this->assertCount(1, $this->detalle('settled'));
     }
 
     /** @test */
-    public function agrupa_por_dia_y_por_ciudad_con_los_mismos_totales(): void
+    public function el_detalle_se_puede_acotar_a_un_dia(): void
+    {
+        $this->escenarioCompleto();
+
+        $delDia = app(LiquidationService::class)->getCreditClassificationDetail(
+            self::DESDE, self::HASTA, 'new', null, null, null, $this->seller->id, self::DIA
+        );
+        $otroDia = app(LiquidationService::class)->getCreditClassificationDetail(
+            self::DESDE, self::HASTA, 'new', null, null, null, $this->seller->id, '2026-08-09'
+        );
+
+        $this->assertCount(1, $delDia);
+        $this->assertCount(0, $otroDia, 'Un día sin colocación no devuelve clientes.');
+    }
+
+    /** @test */
+    public function la_categoria_invalida_se_rechaza(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+
+        app(LiquidationService::class)->getCreditClassificationDetail(
+            self::DESDE, self::HASTA, 'renovaciones', null, null, null, $this->seller->id
+        );
+    }
+
+    /** @test */
+    public function agrupa_por_dia_y_por_ciudad(): void
     {
         $this->escenarioCompleto();
 
@@ -229,13 +310,13 @@ class ReportCreditCountsTest extends TestCase
 
         $porCiudad = $svc->getCreditCountsByGroup(self::DESDE, self::HASTA, 'city', null, null, $this->city->id);
         $this->assertSame(1, $porCiudad[$this->city->id]['new_clients']);
-        $this->assertSame(1, $porCiudad[$this->city->id]['renewed_clients']);
+        $this->assertSame(2, $porCiudad[$this->city->id]['settled_clients']);
     }
 
     /**
      * El reporte por ciudad tiene que traer la moneda del país de la ruta: la
-     * tabla mezcla Perú, Colombia, Bolivia y Argentina, y antes todas las cifras
-     * se mostraban con un "$" fijo.
+     * tabla mezcla Perú, Colombia, Bolivia y Argentina, y antes todas las
+     * cifras se mostraban con un "$" fijo.
      *
      * @test
      */
@@ -269,7 +350,7 @@ class ReportCreditCountsTest extends TestCase
         $this->assertNotNull($fila, 'La ciudad con liquidación aprobada tiene que aparecer.');
         $this->assertSame('PEN', $fila->currency);
         $this->assertSame(1, $fila->new_clients);
-        $this->assertSame(2, $fila->existing_clients);
-        $this->assertSame(1, $fila->renewed_clients);
+        $this->assertSame(2, $fila->settled_clients);
+        $this->assertSame(1, $fila->additional_clients);
     }
 }
