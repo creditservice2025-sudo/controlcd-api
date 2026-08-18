@@ -351,6 +351,8 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         Route::get('history', [LiquidationController::class, 'getLiquidationHistory']);
 
         Route::get('accumulated-by-city', [LiquidationController::class, 'getAccumulatedByCity']);
+        // Clientes detrás de cada conteo del resumen (el modal de verificación).
+        Route::get('credit-classification-detail', [LiquidationController::class, 'getCreditClassificationDetail']);
         Route::get('accumulated-by-city-with-sellers', [LiquidationController::class, 'getAccumulatedByCityWithSellers']);
         Route::get('sellers-summary-by-city', [LiquidationController::class, 'getSellersSummaryByCity']);
         Route::get('seller/{sellerId}/liquidations-detail', [LiquidationController::class, 'getSellerLiquidationsDetail']);

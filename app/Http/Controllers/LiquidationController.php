@@ -1219,6 +1219,72 @@ class LiquidationController extends Controller
         $result = $this->liquidationService->getLiquidationHistory($sellerId, $request->start_date, $request->end_date);
         return response()->json(['success' => true, 'data' => $result]);
     }
+    /**
+     * Lista los clientes detrás de uno de los conteos del reporte.
+     *
+     * Es lo que abre el modal al tocar el número: sale de la MISMA
+     * clasificación que produce ese número, así que la cantidad de filas tiene
+     * que coincidir con lo que muestra la pantalla. Sirve para auditar el
+     * reporte sin salir de él.
+     */
+    public function getCreditClassificationDetail(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'start_date' => 'required|date',
+            'end_date' => 'required|date|after_or_equal:start_date',
+            'bucket' => 'required|in:new,settled,additional',
+            'city_id' => 'nullable|exists:cities,id',
+            'seller_id' => 'nullable|exists:sellers,id',
+            'day' => 'nullable|date',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validación fallida',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        try {
+            $user = Auth::user();
+            $companyId = $request->input('company_id');
+
+            // Mismo aislamiento que el resto del reporte: el admin (rol 2) solo
+            // ve su empresa, sin importar el company_id que llegue.
+            if ($user->role_id == 2) {
+                $companyId = $user->company ? $user->company->id : -1;
+            }
+
+            $clientes = $this->liquidationService->getCreditClassificationDetail(
+                $request->input('start_date'),
+                $request->input('end_date'),
+                $request->input('bucket'),
+                $companyId,
+                null,
+                $request->input('city_id'),
+                $request->input('seller_id'),
+                $request->input('day')
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Detalle obtenido exitosamente',
+                'data' => [
+                    'bucket' => $request->input('bucket'),
+                    'total' => count($clientes),
+                    'clients' => $clientes,
+                ],
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al obtener el detalle de clientes',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
     public function getAccumulatedByCity(Request $request)
     {
         $validator = Validator::make($request->all(), [
