@@ -487,6 +487,25 @@ class CreditService
             // Validar tope ANTES de abrir la transacción para no dejarla
             // colgada con un return temprano.
             $oldCreditPreCheck = Credit::findOrFail($request->old_credit_id);
+
+            // El bloqueo de nuevos créditos también frena la renovación: renovar
+            // es liquidar el viejo y ABRIR uno nuevo, que es exactamente lo que
+            // el administrador quiso impedir. El crédito vigente se sigue
+            // cobrando normal; lo único que no se puede es abrir otro.
+            //
+            // Se valida acá y no solo en create(): la renovación escribe su
+            // propio Credit::create y nunca pasa por ese método, así que la
+            // guarda de create() no la alcanzaba.
+            $clientPreCheck = \App\Models\Client::find($oldCreditPreCheck->client_id);
+            if ($clientPreCheck && (bool) $clientPreCheck->credit_block_active) {
+                $reasonLabel = $this->humanizeBlockReason($clientPreCheck->credit_block_reason);
+                return $this->errorResponse(
+                    'Cliente bloqueado para nuevos créditos, no se puede renovar. Motivo: ' . $reasonLabel
+                        . ($clientPreCheck->credit_block_notes ? ' — ' . $clientPreCheck->credit_block_notes : '')
+                        . '. El crédito vigente se sigue cobrando normalmente.',
+                    422
+                );
+            }
             $sellerConfigRenewal = \App\Models\SellerConfig::where('seller_id', $oldCreditPreCheck->seller_id)->first();
             $maxRenewal = $sellerConfigRenewal ? floatval($sellerConfigRenewal->max_credit_amount_renewal ?? 0) : 0;
             $newCreditValueRequested = floatval($request->new_credit_value);
