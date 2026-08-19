@@ -2546,7 +2546,12 @@ class LiquidationService
                 DB::raw('COALESCE(SUM(per_seller.surplus), 0) as surplus'),
                 DB::raw('COALESCE(SUM(per_seller.cash_delivered), 0) as cash_delivered')
             )
-            ->groupBy('cities.id', 'cities.name', 'countries.currency');
+            ->groupBy('cities.id', 'cities.name', 'countries.currency')
+            // Alfabético: el orden natural de la agregación es el del índice y
+            // salía impredecible, así que buscar una ruta era leer la tabla
+            // entera. Va en la consulta para que el Excel y el PDF salgan en el
+            // mismo orden que la pantalla.
+            ->orderBy('cities.name');
 
         \Log::debug("getAccumulatedByCity - SQL:", ['sql' => $query->toSql(), 'bindings' => $query->getBindings()]);
 
@@ -2609,6 +2614,7 @@ class LiquidationService
         }
 
         $result = $query->groupBy('sellers.id', 'sellers.uuid', 'users.name', 'countries.currency')
+            ->orderBy('users.name')
             ->get();
 
         $counts = $this->getCreditCountsByGroup($startUTC, $endUTC, 'seller', $companyId, $sellerIds, $cityId);
@@ -2659,6 +2665,7 @@ class LiquidationService
         }
 
         $result = $query->groupBy('sellers.id', 'users.name', 'cities.name', 'countries.currency')
+            ->orderBy('users.name')
             ->get();
 
         $counts = $this->getCreditCountsByGroup($startUTC, $endUTC, 'seller', $companyId, $sellerIds, $cityId);
