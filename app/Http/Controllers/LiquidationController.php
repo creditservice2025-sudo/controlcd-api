@@ -1285,6 +1285,44 @@ class LiquidationController extends Controller
         }
     }
 
+    /**
+     * Créditos anteriores de un cliente respecto de uno dado. Alimenta el
+     * acordeón del modal: se pide al desplegar la fila, no con el listado.
+     */
+    public function getPreviousCredits(Request $request, $creditId)
+    {
+        try {
+            $user = Auth::user();
+
+            // Aislamiento: el admin solo puede mirar créditos de su empresa.
+            if ($user->role_id == 2) {
+                $companyId = $user->company ? $user->company->id : -1;
+                $esDeSuEmpresa = \App\Models\Credit::where('credits.id', $creditId)
+                    ->whereHas('client.seller', fn ($q) => $q->where('company_id', $companyId))
+                    ->exists();
+
+                if (!$esDeSuEmpresa) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'No tienes permisos para ver este crédito',
+                    ], 403);
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Historial obtenido exitosamente',
+                'data' => $this->liquidationService->getPreviousCreditsOfCredit((int) $creditId),
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al obtener el historial del cliente',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
     public function getAccumulatedByCity(Request $request)
     {
         $validator = Validator::make($request->all(), [

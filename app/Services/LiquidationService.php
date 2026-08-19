@@ -2162,6 +2162,7 @@ class LiquidationService
 
         $sql = "
             SELECT cl.id AS client_id,
+                   k.id AS credit_id,
                    cl.name AS client_name,
                    cl.dni,
                    cl.phone,
@@ -2198,6 +2199,72 @@ class LiquidationService
         ";
 
         return array_map(fn ($row) => (array) $row, DB::select($sql, $bindings));
+    }
+
+    /**
+     * Créditos ANTERIORES del cliente respecto de un crédito dado: el que
+     * liquidó antes de tomar este, o el que tenía abierto.
+     *
+     * Se consulta bajo demanda, al desplegar la fila del modal, y no dentro del
+     * listado: pegarle un subquery por fila a una lista de 800 clientes es
+     * exactamente lo que vuelve pesado un reporte. Acá es una consulta chica
+     * sobre índices (client_id, credit_id) y devuelve como mucho 5 filas.
+     */
+    public function getPreviousCreditsOfCredit(int $creditId, int $limit = 5): array
+    {
+        $referencia = DB::table('credits')
+            ->select('id', 'client_id', 'created_at')
+            ->whereNull('deleted_at')
+            ->find($creditId);
+
+        if (!$referencia) {
+            return [];
+        }
+
+        $filas = DB::table('credits as c')
+            ->where('c.client_id', $referencia->client_id)
+            ->whereNull('c.deleted_at')
+            ->where(function ($q) use ($referencia) {
+                $q->where('c.created_at', '<', $referencia->created_at)
+                    ->orWhere(function ($q2) use ($referencia) {
+                        $q2->where('c.created_at', '=', $referencia->created_at)
+                            ->where('c.id', '<', $referencia->id);
+                    });
+            })
+            ->select(
+                'c.id',
+                'c.credit_value',
+                'c.total_amount',
+                'c.status',
+                'c.created_at',
+                DB::raw('(SELECT MAX(p.business_date) FROM payments p
+                          WHERE p.credit_id = c.id AND p.deleted_at IS NULL) as last_payment'),
+                DB::raw('(SELECT COALESCE(SUM(p.amount), 0) FROM payments p
+                          WHERE p.credit_id = c.id AND p.deleted_at IS NULL) as total_paid')
+            )
+            ->orderByDesc('c.created_at')
+            ->orderByDesc('c.id')
+            ->limit($limit)
+            ->get();
+
+        return $filas->map(function ($fila) {
+            $total = (float) $fila->total_amount;
+            $pagado = (float) $fila->total_paid;
+
+            return [
+                'id' => (int) $fila->id,
+                'credit_value' => (float) $fila->credit_value,
+                'total_amount' => $total,
+                'total_paid' => $pagado,
+                // Lo que quedaba sin cobrar; nunca negativo, que confunde más
+                // de lo que informa cuando hubo pagos de más.
+                'pending' => max($total - $pagado, 0),
+                'status' => $fila->status,
+                'granted_at' => Carbon::parse($fila->created_at)->format('Y-m-d'),
+                'last_payment' => $fila->last_payment,
+                'settled' => $fila->status === 'Liquidado',
+            ];
+        })->all();
     }
 
     /**
