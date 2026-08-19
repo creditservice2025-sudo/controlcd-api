@@ -2591,8 +2591,8 @@ class LiquidationService
 
             $liquidation->currency = $currency;
             $liquidation->new_clients = $found['new_clients'] ?? 0;
-            $liquidation->existing_clients = $found['existing_clients'] ?? 0;
-            $liquidation->renewed_clients = $found['renewed_clients'] ?? 0;
+            $liquidation->settled_clients = $found['settled_clients'] ?? 0;
+            $liquidation->additional_clients = $found['additional_clients'] ?? 0;
             $liquidation->credits_granted = $found['credits_granted'] ?? 0;
 
             return $liquidation;
