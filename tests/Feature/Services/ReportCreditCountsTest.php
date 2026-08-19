@@ -287,6 +287,53 @@ class ReportCreditCountsTest extends TestCase
         $this->assertCount(0, $otroDia, 'Un día sin colocación no devuelve clientes.');
     }
 
+    /**
+     * La FORMA de la respuesta, no solo el contenido: el modal lee
+     * `data.clients` y `data.total`. La primera versión del frontend
+     * desenvolvía un nivel de más y el modal aparecía vacío aunque la columna
+     * mostrara el número y el servicio devolviera bien los clientes. Este test
+     * es el que hubiera atajado eso.
+     *
+     * @test
+     */
+    public function el_endpoint_devuelve_los_clientes_en_data_clients(): void
+    {
+        $this->escenarioCompleto();
+
+        if (!DB::table('roles')->where('id', 1)->exists()) {
+            DB::table('roles')->insert([
+                'id' => 1,
+                'name' => 'Role-1-' . uniqid(),
+                'guard_name' => 'web',
+                'is_assignable' => 1,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $admin = User::factory()->create(['role_id' => 1]);
+
+        $respuesta = $this->actingAs($admin, 'api')
+            ->withoutMiddleware([
+                \App\Http\Middleware\CheckSupervisorLock::class,
+            ])
+            ->getJson('/api/liquidations/credit-classification-detail?' . http_build_query([
+                'start_date' => self::DESDE,
+                'end_date' => self::HASTA,
+                'bucket' => 'settled',
+                'seller_id' => $this->seller->id,
+            ]));
+
+        $respuesta->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.bucket', 'settled')
+            ->assertJsonPath('data.total', 2)
+            ->assertJsonCount(2, 'data.clients')
+            ->assertJsonStructure([
+                'data' => ['clients' => [['client_name', 'dni', 'seller_name', 'business_day', 'credit_value']]],
+            ]);
+    }
+
     /** @test */
     public function la_categoria_invalida_se_rechaza(): void
     {
