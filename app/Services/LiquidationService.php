@@ -2387,6 +2387,9 @@ class LiquidationService
                 'l.seller_id as seller_id',
                 DB::raw('SUM(l.total_collected) as total_collected'),
                 DB::raw('SUM(l.total_expenses) as total_expenses'),
+                // Ingresos del dia (dinero que entra a la caja por fuera del
+                // cobro). Estaba en la tabla y el reporte nunca lo pedia.
+                DB::raw('SUM(l.total_income) as total_income'),
                 DB::raw('SUM(l.new_credits) as new_credits'),
                 DB::raw('SUM(l.base_delivered) as base_delivered'),
                 DB::raw('SUM(l.real_to_deliver) as real_to_deliver'),
@@ -2429,6 +2432,7 @@ class LiquidationService
                 // (utilidad, márgenes) no propaguen NULL.
                 DB::raw('COALESCE(SUM(per_seller.total_collected), 0) as total_collected'),
                 DB::raw('COALESCE(SUM(per_seller.total_expenses), 0) as total_expenses'),
+                DB::raw('COALESCE(SUM(per_seller.total_income), 0) as total_income'),
                 DB::raw('COALESCE(SUM(per_seller.new_credits), 0) as new_credits'),
                 DB::raw('COALESCE(SUM(per_seller.initial_cash), 0) as initial_cash'),
                 DB::raw('COALESCE(SUM(per_seller.base_delivered), 0) as base_delivered'),
@@ -2474,6 +2478,7 @@ class LiquidationService
                 DB::raw("COALESCE(countries.currency, '') as currency"),
                 DB::raw('SUM(liquidations.total_collected) as total_collected'),
                 DB::raw('SUM(liquidations.total_expenses) as total_expenses'),
+                DB::raw('SUM(liquidations.total_income) as total_income'),
                 DB::raw('SUM(liquidations.new_credits) as new_credits'),
                 DB::raw("(SELECT l2.initial_cash FROM liquidations l2 WHERE l2.seller_id = sellers.id AND l2.date >= '$startUTC' AND l2.date <= '$endUTC' AND l2.status = 'approved' ORDER BY l2.date ASC LIMIT 1) as initial_cash"),
                 DB::raw('SUM(liquidations.base_delivered) as base_delivered'),
@@ -2526,6 +2531,7 @@ class LiquidationService
                 DB::raw("COALESCE(countries.currency, '') as currency"),
                 DB::raw('SUM(liquidations.total_collected) as total_collected'),
                 DB::raw('SUM(liquidations.total_expenses) as total_expenses'),
+                DB::raw('SUM(liquidations.total_income) as total_income'),
                 DB::raw('SUM(liquidations.new_credits) as new_credits'),
                 DB::raw("(SELECT l2.initial_cash FROM liquidations l2 WHERE l2.seller_id = sellers.id AND l2.date >= '$startUTC' AND l2.date <= '$endUTC' AND l2.status = 'approved' ORDER BY l2.date ASC LIMIT 1) as initial_cash"),
                 DB::raw('SUM(liquidations.base_delivered) as base_delivered'),
