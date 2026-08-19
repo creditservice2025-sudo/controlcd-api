@@ -356,6 +356,8 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         // Créditos anteriores de un cliente: el acordeón de ese modal, pedido
         // al desplegar cada fila para no cargar el listado con subconsultas.
         Route::get('credits/{creditId}/previous', [LiquidationController::class, 'getPreviousCredits']);
+        // Descarga del resumen (Excel o PDF) desde los mismos datos de pantalla.
+        Route::get('summary-download', [LiquidationController::class, 'downloadSummary']);
         Route::get('accumulated-by-city-with-sellers', [LiquidationController::class, 'getAccumulatedByCityWithSellers']);
         Route::get('sellers-summary-by-city', [LiquidationController::class, 'getSellersSummaryByCity']);
         Route::get('seller/{sellerId}/liquidations-detail', [LiquidationController::class, 'getSellerLiquidationsDetail']);

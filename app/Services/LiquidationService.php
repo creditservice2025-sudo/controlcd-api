@@ -2202,6 +2202,111 @@ class LiquidationService
     }
 
     /**
+     * Arma la matriz que se descarga (Excel o PDF) del resumen general.
+     *
+     * Sale de los MISMOS métodos que alimentan la pantalla, así que lo
+     * descargado dice exactamente lo que se ve. El Excel viejo no: usaba
+     * getReportByCity, otra agregación con otros conceptos, que además tarda
+     * ~6s, no filtra por 'approved' y pierde el primer día del rango por
+     * comparar una columna DATE contra bordes convertidos a UTC.
+     *
+     * Los totales van por moneda: el resumen mezcla seis, y un total único
+     * sumaría soles con pesos.
+     *
+     * @param  string  $level  'city' | 'seller' | 'day'
+     */
+    public function buildSummaryExport(
+        string $level,
+        $startDate,
+        $endDate,
+        $companyId = null,
+        $sellerIds = null,
+        $cityId = null,
+        $sellerId = null
+    ): array {
+        $etiquetaPrimera = ['city' => 'Ciudad/Ruta', 'seller' => 'Vendedor', 'day' => 'Fecha'][$level] ?? null;
+
+        if ($etiquetaPrimera === null) {
+            throw new \InvalidArgumentException("Nivel inválido: {$level}");
+        }
+
+        if ($level === 'city') {
+            $filas = $this->getAccumulatedByCity($startDate, $endDate, $companyId, $sellerIds);
+            $primera = fn ($f) => $f->city_name;
+            $titulo = 'Resumen por Ciudades/Rutas';
+        } elseif ($level === 'seller') {
+            $filas = $this->getAccumulatedBySellersInCity($cityId, $startDate, $endDate, $companyId, $sellerIds);
+            $primera = fn ($f) => $f->seller_name;
+            $titulo = 'Vendedores de ' . ($filas->first()->city_name ?? 'la ruta');
+        } else {
+            $filas = $this->getSellerLiquidationsDetail($sellerId, $startDate, $endDate);
+            $primera = fn ($f) => Carbon::parse($f->date)->format('d/m/Y');
+            $titulo = 'Liquidaciones de ' . ($filas->first()->seller->user->name ?? 'vendedor');
+        }
+
+        $columnas = [
+            $etiquetaPrimera,
+            'Moneda',
+            'Total Recaudado',
+            'Total Ingresos',
+            'Total Gastos',
+            'Nuevos Créditos',
+            'Clientes Nuevos',
+            'Liquidó y Tomó Otro',
+            'Crédito Adicional',
+            'Caja Inicial',
+        ];
+
+        $campos = [
+            'total_collected', 'total_income', 'total_expenses', 'new_credits',
+            'new_clients', 'settled_clients', 'additional_clients', 'initial_cash',
+        ];
+
+        $rows = [];
+        $totales = [];
+
+        foreach ($filas as $fila) {
+            $moneda = $fila->currency ?: '—';
+            $valores = [];
+
+            foreach ($campos as $campo) {
+                $valor = $fila->{$campo} ?? 0;
+                $valores[$campo] = in_array($campo, ['new_clients', 'settled_clients', 'additional_clients'], true)
+                    ? (int) $valor
+                    : (float) $valor;
+            }
+
+            if (!isset($totales[$moneda])) {
+                $totales[$moneda] = array_fill_keys($campos, 0);
+            }
+            foreach ($campos as $campo) {
+                $totales[$moneda][$campo] += $valores[$campo];
+            }
+
+            $rows[] = array_merge([$primera($fila), $moneda], array_values($valores));
+        }
+
+        ksort($totales);
+        $filasTotales = [];
+        foreach ($totales as $moneda => $suma) {
+            $filasTotales[] = array_merge(['Total ' . $moneda, $moneda], array_values($suma));
+        }
+
+        return [
+            'title' => $titulo,
+            'subtitle' => 'Del ' . Carbon::parse($startDate)->format('d/m/Y')
+                . ' al ' . Carbon::parse($endDate)->format('d/m/Y'),
+            'generated_at' => Carbon::now()->format('d/m/Y H:i'),
+            'columns' => $columnas,
+            'rows' => $rows,
+            'totals' => $filasTotales,
+            // Índices de las columnas que son dinero, para formatear sin
+            // adivinar por el contenido.
+            'money_columns' => [2, 3, 4, 5, 9],
+        ];
+    }
+
+    /**
      * Créditos ANTERIORES del cliente respecto de un crédito dado: el que
      * liquidó antes de tomar este, o el que tenía abierto.
      *

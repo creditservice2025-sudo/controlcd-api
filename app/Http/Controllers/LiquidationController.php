@@ -1286,6 +1286,77 @@ class LiquidationController extends Controller
     }
 
     /**
+     * Descarga del resumen general en Excel o PDF, desde los mismos datos que
+     * muestra la pantalla.
+     */
+    public function downloadSummary(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'start_date' => 'required|date',
+            'end_date' => 'required|date|after_or_equal:start_date',
+            'format' => 'required|in:excel,pdf',
+            'level' => 'required|in:city,seller,day',
+            'city_id' => 'required_if:level,seller|nullable|exists:cities,id',
+            'seller_id' => 'required_if:level,day|nullable|exists:sellers,id',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validación fallida',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        try {
+            $user = Auth::user();
+            $companyId = $request->input('company_id');
+
+            if ($user->role_id == 2) {
+                $companyId = $user->company ? $user->company->id : -1;
+            }
+
+            $datos = $this->liquidationService->buildSummaryExport(
+                $request->input('level'),
+                $request->input('start_date'),
+                $request->input('end_date'),
+                $companyId,
+                null,
+                $request->input('city_id'),
+                $request->input('seller_id')
+            );
+
+            $nombre = 'resumen_' . $request->input('level') . '_'
+                . Carbon::parse($request->input('start_date'))->format('Ymd') . '-'
+                . Carbon::parse($request->input('end_date'))->format('Ymd');
+
+            if ($request->input('format') === 'pdf') {
+                $pdf = app('dompdf.wrapper');
+                // Apaisado: con diez columnas, en vertical la tabla se parte y
+                // el reporte deja de servir para leerlo impreso.
+                $pdf->setPaper('a4', 'landscape');
+                $pdf->loadView('reports.summary', $datos);
+
+                return response()->make($pdf->output(), 200, [
+                    'Content-Type' => 'application/pdf',
+                    'Content-Disposition' => 'attachment; filename="' . $nombre . '.pdf"',
+                ]);
+            }
+
+            return \Maatwebsite\Excel\Facades\Excel::download(
+                new \App\Exports\SummaryReportExport($datos),
+                $nombre . '.xlsx'
+            );
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al generar la descarga',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
      * Créditos anteriores de un cliente respecto de uno dado. Alimenta el
      * acordeón del modal: se pide al desplegar la fila, no con el listado.
      */
