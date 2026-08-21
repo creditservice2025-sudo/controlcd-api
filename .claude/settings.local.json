@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(php artisan credits:validate-chain:*)",
+      "Bash(php artisan credits:affected-report:*)",
+      "Bash(php artisan credits:recalculate-remaining:*)"
+    ]
+  }
+}
