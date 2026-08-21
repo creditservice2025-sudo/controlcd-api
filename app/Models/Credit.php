@@ -102,6 +102,61 @@ class Credit extends Model
         return $this->hasMany(Image::class, 'credit_id');
     }
 
+    /**
+     * Saldo REAL por pagar, derivado de la cadena
+     * credits -> installments -> payments -> payment_installments.
+     *
+     * No usa credits.remaining_amount. Auditoria del 2026-08-19 sobre 129.735
+     * creditos vivos: la columna declara $291.988.479 de cartera vigente contra
+     * $709.060.717 reales. Son 3.254 creditos desincronizados y el patron
+     * dominante es remaining_amount = 0 con cuotas vivas y cero pagos (la
+     * columna nunca se inicializo), o sea creditos intactos que el sistema
+     * muestra como saldados.
+     *
+     * Tampoco usa total_amount - SUM(pagos): esa via ignora el dinero recibido
+     * que quedo sin aplicar a ninguna cuota (unapplied_amount), 988 creditos
+     * por $1.530.981.
+     *
+     * Fuente: cuotas vivas menos el dinero recibido aun sin aplicar. Reconcilia
+     * con total_amount - SUM(pagos) dentro de $2.922 sobre $709M (21 creditos
+     * de 23.215); el residuo son los creditos donde total_amount no coincide
+     * con SUM(quota_amount).
+     *
+     * Usa las relaciones ya cargadas cuando existen, para no disparar N+1
+     * dentro de los loops de reportes.
+     */
+    public function outstandingAmount(): float
+    {
+        $deudaCuotas = $this->relationLoaded('installments')
+            ? (float) $this->installments->sum(fn ($i) => (float) $i->quota_amount - (float) $i->paid_amount)
+            : (float) $this->installments()->sum(\Illuminate\Support\Facades\DB::raw('quota_amount - paid_amount'));
+
+        $sinAplicar = $this->relationLoaded('payments')
+            ? (float) $this->payments->sum('unapplied_amount')
+            : (float) $this->payments()->sum('unapplied_amount');
+
+        return round(max(0, $deudaCuotas - $sinAplicar), 2);
+    }
+
+    /**
+     * Valor total del credito segun las cuotas realmente emitidas. Cae a la
+     * formula capital + interes solo si no hay cuotas vivas (35 creditos en la
+     * auditoria).
+     */
+    public function totalFromInstallments(): float
+    {
+        $suma = $this->relationLoaded('installments')
+            ? (float) $this->installments->sum('quota_amount')
+            : (float) $this->installments()->sum('quota_amount');
+
+        if ($suma > 0) {
+            return round($suma, 2);
+        }
+
+        $capital = (float) ($this->credit_value ?? 0);
+
+        return round($capital * (1 + ((float) ($this->total_interest ?? 0) / 100)), 2);
+    }
     public function renewedFrom()
     {
         return $this->belongsTo(Credit::class, 'renewed_from_id');
@@ -152,12 +207,28 @@ class Credit extends Model
      */
     public function recalculateRemainingAndStatus(): void
     {
-        $remaining = (float) $this->installments()
+        $deudaCuotas = (float) $this->installments()
             ->whereNull('deleted_at')
             ->selectRaw('COALESCE(SUM(quota_amount - paid_amount), 0) as pending')
             ->value('pending');
 
-        $remaining = max(0, round($remaining, 2));
+        // El dinero recibido que todavía no completó ninguna cuota también es
+        // deuda saldada: el cliente ya lo pagó. Sin restarlo, un abono que no
+        // alcanza a cubrir la cuota entraba a caja pero no bajaba el saldo, y
+        // al cliente se le seguía cobrando lo que ya había puesto.
+        //
+        // Se nota sobre todo en el import: reapplyPayments() no aplica de a
+        // pedazos (hace `break` si el stack no cubre la cuota completa), así
+        // que un `pagos_realizados` menor a una cuota quedaba entero en
+        // unapplied_amount y el crédito persistía el total sin descontarlo.
+        //
+        // Misma fórmula que Credit::outstandingAmount(), que es la que usan
+        // los reportes: así la columna y los reportes no pueden divergir.
+        $sinAplicar = (float) $this->payments()
+            ->whereNull('deleted_at')
+            ->sum('unapplied_amount');
+
+        $remaining = max(0, round($deudaCuotas - $sinAplicar, 2));
         $this->remaining_amount = $remaining;
 
         // Si el status ya es terminal/administrativo, solo actualizamos el
