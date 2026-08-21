@@ -28,26 +28,34 @@ class LiquidationExport implements FromArray, WithHeadings, WithStyles, WithColu
         $data[] = ['FECHA DEL CIERRE: ' . ($this->reportData['report_date'] ?? '')];
         // Pagos del día
         $data[] = ['Pagos del día'];
-        $data[] = ['No.', 'Cliente', 'Crédito', 'Frecuencia', 'Vr. Cuota', 'Por Pagar', 'Vr. Pago Hoy', 'Hora'];
+        $data[] = ['No.', 'Cliente', 'Crédito', 'Frecuencia', 'Valor Crédito', 'Interés $ (%)', 'Vr. Cuota', 'Por Pagar', 'Vr. Pago Hoy', 'Estatus', 'F. Pago Pend.', 'Fecha / Hora'];
         $total_paid_today = 0;
         if (count($this->reportData['report_data'] ?? []) === 0) {
-            $data[] = ['No hay pagos para la fecha.', '', '', '', '', '', '', ''];
+            $data[] = ['No hay pagos para la fecha.', '', '', '', '', '', '', '', '', '', '', ''];
         } else {
             foreach ($this->reportData['report_data'] ?? [] as $item) {
+                $rate = rtrim(rtrim(number_format($item['interest_rate'] ?? 0, 2), '0'), '.');
                 $data[] = [
                     $item['no'],
                     $item['client_name'],
                     '#00' . $item['credit_id'],
                     $item['payment_frequency'],
+                    number_format($item['capital'], 2),
+                    number_format($item['interest'], 2) . ' (' . $rate . '%)',
                     number_format($item['quota_amount'], 2),
                     number_format($item['remaining_amount'], 2),
                     number_format($item['paid_today'], 2),
-                    $item['payment_time'] ?? 'N/A',
+                    $item['status'] ?? 'N/A',
+                    $item['next_due_date'] ?? 'N/A',
+                    // En el PDF la fecha va debajo del monto y la hora en su
+                    // propia columna. En una planilla partirlo en dos celdas no
+                    // aporta: se juntan acá y queda una sola columna ordenable.
+                    trim(($item['payment_date'] ?? '') . ' ' . ($item['payment_time'] ?? '')) ?: 'N/A',
                 ];
                 $total_paid_today += $item['paid_today'];
             }
         }
-        $data[] = ['', '', '', '', '', 'TOTAL DE PAGOS', number_format($total_paid_today, 2), ''];
+        $data[] = ['', '', '', '', '', '', '', 'TOTAL DE PAGOS', number_format($total_paid_today, 2), '', '', ''];
         // Créditos nuevos
         $data[] = ['LISTADO DE CRÉDITOS NUEVOS DENTRO DEL COBRO'];
         $data[] = ['No.', 'Cliente', 'Crédito', 'F. Pago', 'V.C + U'];
@@ -200,8 +208,8 @@ class LiquidationExport implements FromArray, WithHeadings, WithStyles, WithColu
                 str_contains($cellValue, 'TOTAL GASTOS') ||
                 str_contains($cellValue, 'No. CRÉDITOS NUEVOS')
             )) {
-                $sheet->getStyle('A'.$rowIdx.':H'.$rowIdx)->getFont()->setBold(true);
-                $sheet->getStyle('A'.$rowIdx.':H'.$rowIdx)->getAlignment()->setHorizontal('center');
+                $sheet->getStyle('A'.$rowIdx.':L'.$rowIdx)->getFont()->setBold(true);
+                $sheet->getStyle('A'.$rowIdx.':L'.$rowIdx)->getAlignment()->setHorizontal('center');
                 $sheet->getRowDimension($rowIdx)->setRowHeight(22);
             }
         }
@@ -219,15 +227,21 @@ class LiquidationExport implements FromArray, WithHeadings, WithStyles, WithColu
 
     public function columnWidths(): array
     {
+        // Las columnas las comparten varias tablas de la misma hoja, por eso
+        // cada ancho lista los usos que conviven en esa letra.
         return [
             'A' => 8,   // No.
             'B' => 28,  // Cliente
             'C' => 16,  // Crédito
             'D' => 18,  // Frecuencia/F. Pago
-            'E' => 38,  // Vr. Cuota / V.C + U
-            'F' => 18,  // Saldo Actual / V.C / % Microseguro
-            'G' => 18,  // Vr. Pago Hoy / Vr. Microseguro
-            'H' => 14,  // Hora
+            'E' => 38,  // Valor Crédito / V.C + U
+            'F' => 20,  // Interés $ (%) / V.C / % Microseguro
+            'G' => 18,  // Vr. Cuota / Vr. Microseguro
+            'H' => 18,  // Por Pagar
+            'I' => 18,  // Vr. Pago Hoy
+            'J' => 20,  // Estatus
+            'K' => 16,  // F. Pago Pend.
+            'L' => 20,  // Fecha / Hora
         ];
     }
 
@@ -254,7 +268,7 @@ class LiquidationExport implements FromArray, WithHeadings, WithStyles, WithColu
                         str_contains($cellValue, 'FIRMA RECAUDADOR') ||
                         str_contains($cellValue, 'FIRMA COBRADOR')
                     )) {
-                        $sheet->mergeCells('A'.$rowIdx.':H'.$rowIdx);
+                        $sheet->mergeCells('A'.$rowIdx.':L'.$rowIdx);
                     }
                 }
             }
