@@ -576,9 +576,11 @@ class LiquidationController extends Controller
     public function recalculateLiquidation($sellerId, $date)
     {
         // Obtener timezone del vendedor dinámicamente
+        // Zona del vendedor por el helper, igual que en storeLiquidation. Leerla
+        // de countries.timezone hacía que el recálculo cortara el día con otra
+        // zona que la del cierre que estaba recalculando.
         $seller = Seller::with('city.country')->find($sellerId);
-        $country = $seller?->city?->country ?? null;
-        $timezone = $country?->timezone ?? config('app.timezone', 'America/Lima');
+        $timezone = \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
         
         $startUTC = Carbon::parse($date, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC = Carbon::parse($date, $timezone)->endOfDay()->setTimezone('UTC');
