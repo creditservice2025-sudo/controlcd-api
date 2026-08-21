@@ -386,9 +386,13 @@ class DashboardService
             $user = Auth::user();
             $role = $user->role_id;
 
-            // Timezone: prioridad request -> company country -> Lima. Evita el hardcode previo.
+            // Timezone: prioridad request -> país de la empresa -> Lima. El país
+            // se resuelve por el helper y no por countries.timezone, que tiene
+            // cinco países como 'America/Lima' sin serlo.
             $timezone = $request->get('timezone')
-                ?: (($user->company && $user->company->country) ? $user->company->country->timezone : null)
+                ?: (($user->company && $user->company->country)
+                    ? \App\Helpers\TimezoneHelper::getCountryTimezone($user->company->country->name)
+                    : null)
                 ?: 'America/Lima';
             $startUTC  = Carbon::now($timezone)->startOfDay()->timezone('UTC');
             $endUTC    = Carbon::now($timezone)->endOfDay()->timezone('UTC');
