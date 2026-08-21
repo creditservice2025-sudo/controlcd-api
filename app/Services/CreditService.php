@@ -3160,10 +3160,12 @@ class CreditService
             $quotaAmount = ($credit->credit_value + $interestAmount) / $credit->number_installments;
 
             // Calcular el saldo actual (valor total - pagos realizados)
-            $totalCreditValue = $credit->credit_value + $interestAmount;
+            $totalCreditValue = $credit->totalFromInstallments();
             $credit->total_amount = $totalCreditValue; // Add to model in memory for consistency
             $totalPaid = $credit->payments->sum('amount');
-            $remainingAmount = $totalCreditValue - $totalPaid;
+            // Misma fuente única que el cuadre de liquidación, para que los dos
+            // reportes no puedan divergir. Ver Credit::outstandingAmount().
+            $remainingAmount = $credit->outstandingAmount();
             // Mismo criterio que el resto del reporte: el día contable del
             // pago, no su hora UTC de inserción. (Acá también se usaban las
             // inexistentes $start/$end.)

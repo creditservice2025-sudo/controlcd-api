@@ -124,3 +124,6 @@ tests_failure.txt
 tests/phpunit_log.xml
 *.orig
 *.rej
+
+# Claude Code (configuracion personal, no compartida)
+.claude/settings.local.json

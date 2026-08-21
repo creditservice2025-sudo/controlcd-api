@@ -28,7 +28,7 @@ class LiquidationExport implements FromArray, WithHeadings, WithStyles, WithColu
         $data[] = ['FECHA DEL CIERRE: ' . ($this->reportData['report_date'] ?? '')];
         // Pagos del día
         $data[] = ['Pagos del día'];
-        $data[] = ['No.', 'Cliente', 'Crédito', 'Frecuencia', 'Vr. Cuota', 'Saldo Actual', 'Vr. Pago Hoy', 'Hora'];
+        $data[] = ['No.', 'Cliente', 'Crédito', 'Frecuencia', 'Vr. Cuota', 'Por Pagar', 'Vr. Pago Hoy', 'Hora'];
         $total_paid_today = 0;
         if (count($this->reportData['report_data'] ?? []) === 0) {
             $data[] = ['No hay pagos para la fecha.', '', '', '', '', '', '', ''];

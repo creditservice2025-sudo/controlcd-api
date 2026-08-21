@@ -2917,9 +2917,12 @@ class LiquidationService
         foreach ($credits as $index => $credit) {
             $interestAmount = $credit->credit_value * ($credit->total_interest / 100);
             $quotaAmount = ($credit->credit_value + $interestAmount) / $credit->number_installments;
-            $totalCreditValue = $credit->credit_value + $interestAmount;
+            $totalCreditValue = $credit->totalFromInstallments();
             $totalPaid = $credit->payments->sum('amount');
-            $remainingAmount = $totalCreditValue - $totalPaid;
+            // Por Pagar sale de la cadena real (cuotas vivas menos el dinero aún
+            // sin aplicar), no de credit_value*(1+interés) - pagos. La auditoría
+            // que lo motiva está documentada en Credit::outstandingAmount().
+            $remainingAmount = $credit->outstandingAmount();
             $dayPayments = $credit->payments()->whereBetween('payments.created_at', [$start, $end])->get();
             $paidToday = $dayPayments->sum('amount');
             $paymentTime = $dayPayments->isNotEmpty() ? $dayPayments->last()->created_at->timezone(self::TIMEZONE)->format('H:i:s') : null;
