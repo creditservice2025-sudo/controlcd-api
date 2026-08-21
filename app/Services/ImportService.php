@@ -636,6 +636,21 @@ class ImportService
         Log::info("ImportService: Generating installments for credit", ['credit_id' => $credit->id]);
         $this->generateInstallments($credit);
 
+        // 3.b Sembrar el saldo desde las cuotas recién generadas.
+        //
+        // Sin esto el crédito nacía con remaining_amount = 0 (el default de la
+        // columna): el Credit::create de arriba nunca lo setea, a diferencia
+        // del alta normal en CreditService. El crédito quedaba mostrándose como
+        // saldado mientras debía el total, y solo se corregía de rebote si más
+        // tarde recibía un pago —porque recién ahí alguien llamaba a este
+        // recálculo—. Los créditos importados que nunca recibieron un pago se
+        // quedaban en cero para siempre.
+        //
+        // Se deriva de las cuotas (no se asigna $totalAmount directo) para que
+        // el saldo no pueda separarse del redondeo que aplicó
+        // generateInstallments() al repartir las cuotas.
+        $credit->recalculateRemainingAndStatus();
+
         // 4. Handle Historical Payments
         $paidAmount = floatval($row['pagos_realizados'] ?? 0);
         Log::info("ImportService: Handling historical payments", ['paid_amount' => $paidAmount]);
