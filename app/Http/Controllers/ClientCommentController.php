@@ -4,7 +4,10 @@ namespace App\Http\Controllers;
 
 use App\Models\Client;
 use App\Models\ClientComment;
+use App\Models\ClientGeolocationHistory;
 use App\Models\CommentCategory;
+use App\Services\GeolocationHistoryService;
+use App\Services\ReverseGeocodeService;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -16,10 +19,20 @@ use Illuminate\Support\Facades\Validator;
  * Regla acordada: supervisor (rol 6), admins (rol 1/2) y vendedor (rol 5)
  * pueden agregar y ver. Cada comentario guarda autor y fecha (hilo). Solo el
  * autor o un admin (rol 1/2) puede eliminar.
+ *
+ * UBICACIÓN DEL COMENTARIO: cada comentario puede registrar desde DÓNDE se
+ * escribió. No se guarda en `client_comments` sino en el historial ya existente
+ * `client_geolocation_histories` (action_type = 'comment_created'), que es la
+ * única fuente de verdad de ubicaciones del sistema. Es OPCIONAL a propósito:
+ * un supervisor comenta desde la oficina y eso es legítimo. La ubicación
+ * obligatoria pertenece al registro de VISITA, que es otra entidad.
  */
 class ClientCommentController extends Controller
 {
     use ApiResponse;
+
+    /** action_type con el que se indexa la ubicación de un comentario. */
+    private const GEO_ACTION_TYPE = 'comment_created';
 
     public function index($clientId)
     {
@@ -33,14 +46,39 @@ class ClientCommentController extends Controller
             ->orderBy('created_at', 'desc')
             ->get();
 
+        // Ubicación de cada comentario en UNA sola consulta (sin N+1).
+        $locations = ClientGeolocationHistory::where('action_type', self::GEO_ACTION_TYPE)
+            ->whereIn('action_id', $comments->pluck('id'))
+            ->get(['action_id', 'latitude', 'longitude', 'accuracy', 'address'])
+            ->keyBy('action_id');
+
+        $comments->transform(function ($comment) use ($locations) {
+            $location = $locations->get($comment->id);
+            $comment->location = $location ? [
+                'latitude' => (float) $location->latitude,
+                'longitude' => (float) $location->longitude,
+                'accuracy' => $location->accuracy !== null ? (float) $location->accuracy : null,
+                // Nunca vacío: si la dirección aún no se resolvió van las
+                // coordenadas, y geo:fill-addresses la completa después.
+                'address' => $location->displayAddress(),
+                'address_pending' => empty($location->address),
+            ] : null;
+
+            return $comment;
+        });
+
         return $this->successResponse([
             'success' => true,
             'data' => $comments,
         ]);
     }
 
-    public function store(Request $request, $clientId)
-    {
+    public function store(
+        Request $request,
+        $clientId,
+        GeolocationHistoryService $geolocationHistory,
+        ReverseGeocodeService $reverseGeocode
+    ) {
         $client = Client::find($clientId);
         if (!$client) {
             return $this->errorResponse('El cliente no existe.', 404);
@@ -49,25 +87,81 @@ class ClientCommentController extends Controller
         $validator = Validator::make($request->all(), [
             'body' => 'required|string|max:2000',
             'comment_category_id' => 'required|integer|exists:comment_categories,id',
+            // Ubicación opcional; si viene, debe venir completa y ser válida.
+            'latitude' => 'nullable|numeric|between:-90,90|required_with:longitude',
+            'longitude' => 'nullable|numeric|between:-180,180|required_with:latitude',
+            'accuracy' => 'nullable|numeric|min:0',
+            'address' => 'nullable|string|max:500',
         ], [
             'body.required' => 'El comentario no puede estar vacío.',
             'body.max' => 'El comentario no puede superar los 2000 caracteres.',
             'comment_category_id.required' => 'La categoría es obligatoria.',
             'comment_category_id.exists' => 'La categoría seleccionada no existe.',
+            'latitude.required_with' => 'La ubicación llegó incompleta.',
+            'longitude.required_with' => 'La ubicación llegó incompleta.',
         ]);
 
         if ($validator->fails()) {
             return $this->errorResponse($validator->errors()->first(), 422);
         }
 
+        // Día de negocio anclado al VENDEDOR dueño del cliente, no a quien
+        // escribe ni al reloj de la app. Este es justamente el comentario
+        // "suelto" —el que el administrador deja desde un escritorio, sin
+        // visita—, así que es el que más necesita el ancla: sin él su jornada
+        // se deducía de created_at, que corre con la zona de la aplicación.
+        $stamp = \App\Helpers\TimezoneHelper::businessStampForSeller(
+            $client->seller_id ? \App\Models\Seller::with('city.country')->find($client->seller_id) : null
+        );
+
         $comment = ClientComment::create([
             'client_id' => $client->id,
             'user_id' => Auth::id(),
             'comment_category_id' => $request->input('comment_category_id'),
             'body' => trim($request->input('body')),
+            'business_date' => $stamp['business_date'],
+            'business_timestamp' => $stamp['business_timestamp'],
+            'business_timezone' => $stamp['business_timezone'],
         ]);
 
         $comment->load(['user:id,name,role_id', 'category:id,name']);
+        $comment->location = null;
+
+        $latitude = $request->input('latitude');
+        $longitude = $request->input('longitude');
+
+        if ($latitude !== null && $longitude !== null) {
+            $latitude = (float) $latitude;
+            $longitude = (float) $longitude;
+            $accuracy = $request->input('accuracy') !== null ? (float) $request->input('accuracy') : null;
+
+            // Dirección: se prefiere la que ya resolvió el front (evita una
+            // llamada extra). Si no vino, se intenta acá contra la cascada de
+            // proveedores. Si aun así falla, se guarda null a propósito: la
+            // coordenada ya quedó registrada y el comando geo:fill-addresses
+            // reintenta hasta completarla. En pantalla nunca se ve vacío.
+            $address = $request->input('address') ?: $reverseGeocode->resolve($latitude, $longitude);
+
+            $author = Auth::user();
+            $geolocationHistory->record(
+                $client->id,
+                $latitude,
+                $longitude,
+                self::GEO_ACTION_TYPE,
+                'Comentario registrado por ' . ($author->name ?? 'usuario') . ' (#' . $comment->id . ')',
+                $comment->id,
+                $address,
+                $accuracy
+            );
+
+            $comment->location = [
+                'latitude' => $latitude,
+                'longitude' => $longitude,
+                'accuracy' => $accuracy,
+                'address' => $address ?: sprintf('Ubicación %.5f, %.5f', $latitude, $longitude),
+                'address_pending' => empty($address),
+            ];
+        }
 
         return $this->successResponse([
             'success' => true,

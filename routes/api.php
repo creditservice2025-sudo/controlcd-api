@@ -14,6 +14,8 @@ use App\Http\Controllers\CitiesController;
 use App\Http\Controllers\RoleController;
 use App\Http\Controllers\ClientController;
 use App\Http\Controllers\ClientCommentController;
+use App\Http\Controllers\ClientVisitController;
+use App\Http\Controllers\GeocodeController;
 use App\Http\Controllers\CompanyController;
 use App\Http\Controllers\GuarantorController;
 use App\Http\Controllers\CreditController;
@@ -230,6 +232,11 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         Route::post('/{id}/comments', [ClientCommentController::class, 'store']);
         Route::delete('/{id}/comments/{commentId}', [ClientCommentController::class, 'destroy']);
 
+        // Visitas / gestión de cobranza. La ubicación es obligatoria y el uuid
+        // lo genera el APK para que el reintento sin señal no duplique.
+        Route::get('/{id}/visits', [ClientVisitController::class, 'index']);
+        Route::post('/{id}/visits', [ClientVisitController::class, 'store']);
+
         // Transferencia de clientes
         Route::post('/{id}/transfer', [ClientController::class, 'transfer'])
             ->middleware('permission:transferir_clientes');
@@ -239,6 +246,9 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         // Orden de ruta
         Route::post('/update-order', [ClientController::class, 'updateOrder']);
     });
+
+    // Traducción de coordenadas a dirección, bajo demanda (ver GeocodeController).
+    Route::post('geo/reverse', [GeocodeController::class, 'reverse']);
 
     // Categorías de comentarios de clientes (set propio, separado de Gastos).
     Route::get('comment-categories', [ClientCommentController::class, 'categories']);
@@ -372,6 +382,9 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         Route::get('{id}/detail', [LiquidationController::class, 'getLiquidationDetail']);
         Route::prefix('seller/{sellerId}')->group(function () {
             Route::get('/', [LiquidationController::class, 'getBySeller']);
+            // Estado de la caja del día. Liviano y de solo lectura: el APK lo
+            // usa para apagar los botones de alta cuando la caja está cerrada.
+            Route::get('/cash-status', [LiquidationController::class, 'cashStatus']);
             Route::get('/stats', [LiquidationController::class, 'getSellerStats']);
             Route::get('daily-movements', [LiquidationController::class, 'getDailyMovements']);
         });

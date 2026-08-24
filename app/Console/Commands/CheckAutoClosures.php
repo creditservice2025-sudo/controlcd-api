@@ -41,9 +41,12 @@ class CheckAutoClosures extends Command
         $alertEmail = $this->option('email') ?: self::ALERT_EMAIL;
         $forcedDate = $this->option('date');
 
-        $sellers = Seller::whereHas('config', function ($q) {
-            $q->where('auto_closures_collectors', true);
-        })->with('user')->get();
+        // TODOS los vendedores, no solo los que tienen auto_closures_collectors.
+        // Desde que auto-daily hace el barrido de días atrasados, ninguna caja
+        // debería sobrevivir a su fecha, tenga o no el auto-cierre configurado.
+        // Filtrar por el flag dejaba 91 rutas fuera del radar: sus días quedaban
+        // abiertos y el vigilante decía "OK".
+        $sellers = Seller::with('user')->get();
 
         $failed = [];
         $skippedTooEarly = 0;
@@ -65,12 +68,11 @@ class CheckAutoClosures extends Command
             // Dia que YA debio cerrarse: ayer en la zona del vendedor (o el forzado).
             $day = $forcedDate ?: $nowLocal->copy()->subDay()->toDateString();
 
-            // Si ese día la ruta NO opera (descanso semanal / feriado), el
-            // auto-cierre lo saltea a propósito: no es una falla, no alertar.
-            if (\App\Services\BusinessCalendar::isNonWorkingDate($seller, $day)) {
-                continue;
-            }
-
+            // Los días no laborables YA NO se saltean. El auto-cierre no ABRE
+            // esos días, pero si la fila existe la cierra igual; por lo tanto una
+            // fila abierta en domingo/feriado también es una falla que hay que
+            // reportar. Saltearla era lo que hacía que estos casos no llegaran
+            // nunca al correo de alerta.
             $liq = Liquidation::where('seller_id', $seller->id)
                 ->whereDate('date', $day)
                 ->first();

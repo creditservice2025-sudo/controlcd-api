@@ -22,6 +22,11 @@ class TimezoneHelper
         'Argentina' => 'America/Argentina/Buenos_Aires',
         'Ecuador' => 'America/Guayaquil',
         'Venezuela' => 'America/Caracas',
+        // Bolivia es UTC-4. Sin esta entrada caía al default (Lima, UTC-5) y el
+        // día de negocio de sus vendedores se cortaba una hora antes: lo
+        // registrado entre 00:00 y 00:59 hora boliviana quedaba fechado el día
+        // anterior. Corrige de acá en adelante; lo ya registrado no se toca.
+        'Bolivia' => 'America/La_Paz',
         // Default fallback
         'default' => 'America/Lima'
     ];
@@ -129,5 +134,50 @@ class TimezoneHelper
             'business_date' => $local->toDateString(),
             'business_timezone' => $tz,
         ];
+    }
+
+    /**
+     * Filtro "pertenece a esta jornada" para una tabla que tiene día de negocio
+     * anclado pero arrastra filas históricas sin anclar.
+     *
+     * Dos ramas, y la distinción importa:
+     *  - Fila CON `business_date`: se compara día contra día. No hay conversión
+     *    posible de por medio, así que da igual la zona del que consulta.
+     *  - Fila SIN `business_date` (histórico previo al anclaje): se cae al rango
+     *    sobre `created_at`, que es el reloj GLOBAL de la app
+     *    (config('app.timezone')) porque lo escribe el timestamp por defecto de
+     *    Eloquent. Por eso la ventana se traduce a la zona de la APP: pasarla a
+     *    UTC —como se hacía antes— la corría el equivalente al offset y perdía
+     *    los registros de la madrugada mientras colaba los del día siguiente.
+     *
+     * Es el mismo patrón que PaymentService ya aplica sobre `payments`, y es lo
+     * que permite desplegar el anclaje sin backfill previo ni ventana de
+     * mantenimiento: mientras el backfill no corra, lo viejo sigue leyéndose por
+     * la rama de compatibilidad.
+     *
+     * @param  \Illuminate\Database\Query\Builder|\Illuminate\Database\Eloquent\Builder  $query
+     */
+    public static function whereBusinessDayBetween(
+        $query,
+        Carbon $from,
+        Carbon $to,
+        string $businessDateColumn,
+        string $createdAtColumn
+    ) {
+        $appTz = config('app.timezone') ?: 'UTC';
+        $fromApp = $from->copy()->setTimezone($appTz);
+        $toApp = $to->copy()->setTimezone($appTz);
+        $fromDay = $from->toDateString();
+        $toDay = $to->toDateString();
+
+        return $query->where(function ($q) use (
+            $businessDateColumn, $createdAtColumn, $fromApp, $toApp, $fromDay, $toDay
+        ) {
+            $q->whereBetween($businessDateColumn, [$fromDay, $toDay])
+                ->orWhere(function ($q2) use ($businessDateColumn, $createdAtColumn, $fromApp, $toApp) {
+                    $q2->whereNull($businessDateColumn)
+                        ->whereBetween($createdAtColumn, [$fromApp, $toApp]);
+                });
+        });
     }
 }

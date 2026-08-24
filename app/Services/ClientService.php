@@ -8,6 +8,7 @@ use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use App\Helpers\Helper;
+use App\Helpers\TimezoneHelper;
 use App\Http\Requests\Client\ClientRequest;
 use App\Models\Credit;
 use Illuminate\Support\Facades\Storage;
@@ -20,7 +21,10 @@ use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Throwable;
+use App\Models\ClientComment;
+use App\Models\ClientGeolocationHistory;
 use App\Models\ClientHistory;
+use App\Models\ClientVisit;
 use App\Models\Image;
 use App\Models\Liquidation;
 use App\Services\TelegramService;
@@ -28,8 +32,35 @@ use App\Services\TelegramService;
 class ClientService
 {
     use ApiResponse;
+    use \App\Services\Traits\EnforcesCashOpen;
 
     private const TIMEZONE = 'America/Lima';
+
+    /**
+     * Estados de crédito que ya NO generan cobro (cerrados o fuera de la cartera
+     * activa). Se usan para acotar la agenda de cobro del día ("cuota_hoy"):
+     * un crédito liquidado, renovado o irrecuperable no debe aportar cuotas.
+     */
+    /**
+     * Filtros de la jornada. Cada uno responde una pregunta distinta y produce
+     * su propia lista; no se mezclan entre sí.
+     *
+     *   vencen_hoy   -> ¿a quién le toca pagar hoy? (installments.due_date = hoy)
+     *   atrasados    -> ¿quién tiene cuotas vencidas sin saldar?
+     *   cobrados_hoy -> ¿de quién entró dinero hoy?
+     *   sin_gestion  -> ¿a quién no tocó nadie hoy (ni pago, ni visita, ni nota)?
+     */
+    public const DAY_FILTERS = ['vencen_hoy', 'atrasados', 'cobrados_hoy', 'sin_gestion'];
+
+    private const CREDIT_STATUSES_CLOSED = [
+        'Liquidado',
+        'Renovado',
+        'Unificado',
+        'Inactivo',
+        'Irrecuperable',
+        'Cartera Irrecuperable',
+    ];
+
     private const MAX_PROFILE_IMAGES = 1;
     private const MAX_GALLERY_IMAGES = 4;
     private const MAX_IMAGE_SIZE_BYTES = 2097152;
@@ -54,6 +85,31 @@ class ClientService
     {
         try {
             $params = $request->validated();
+
+            // ── LA CAJA DEL DÍA TIENE QUE ESTAR ABIERTA ────────────────────
+            //
+            // Dar de alta un cliente es, en este sistema, dar de alta también
+            // su crédito inicial: credit_value, interest_rate,
+            // installment_count y payment_frequency son obligatorios y el
+            // crédito se crea en la misma transacción, unas líneas más abajo.
+            // O sea que por esta puerta sale plata de la caja.
+            //
+            // Los cerrojos de crédito vivían solo en CreditController y
+            // CreditService, así que este camino los esquivaba entero: con la
+            // caja del día ya aprobada se colocó un crédito de S/ 300 y la
+            // liquidación quedó con new_credits = 0. La plata salió y la caja
+            // no se enteró.
+            //
+            // Mismo criterio que CreditService::create: sin excepción por rol.
+            // Una caja cerrada no admite colocaciones de nadie.
+            if (!empty($params['seller_id'])) {
+                $seller = \App\Models\Seller::with('city.country')->find($params['seller_id']);
+                $tzGuard = \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
+                $this->assertSellerCashOpen(
+                    (int) $params['seller_id'],
+                    \Carbon\Carbon::now($tzGuard)->toDateString()
+                );
+            }
 
             // Restricción por monto total de ventas nuevas en el día
             if (!empty($params['credit_value']) && (float) $params['credit_value'] > 0) {
@@ -254,6 +310,12 @@ class ClientService
                     'data' => $client->fresh(),
                 ]);
             }, 5);
+        } catch (\App\Exceptions\CashClosedException $e) {
+            // La caja cerrada es una regla de negocio, no un fallo técnico:
+            // 422 con el motivo legible, igual que en IncomeService y
+            // ExpenseService. Va ANTES del catch genérico, que si no lo
+            // convertiría en un 500 sin explicación.
+            return $this->errorResponse($e->getMessage(), 422);
         } catch (\Exception $e) {
             Log::error("Error in client creation process: {$e->getMessage()} | " . $e->getTraceAsString());
             return $this->errorResponse($e->getMessage(), 500);
@@ -723,6 +785,26 @@ class ClientService
                 // Add credit description if available
                 if ($creditDescription) {
                     $imageRecord['description'] = $creditDescription;
+                }
+
+                // EL VÍNCULO CON EL CRÉDITO, como columna y no solo como texto.
+                //
+                // Este método ya recibía $credit, pero lo usaba SOLO para
+                // redactar la descripción ("Crédito ID: 132290 - Valor: ..."):
+                // el crédito quedaba nombrado en una cadena y la FK se iba en
+                // null. Como el cliente nuevo nace junto con su crédito
+                // obligatorio (Stage 3) y sus fotos las guarda este método
+                // (Stage 4), el PRIMER crédito de cada cliente se quedaba sin
+                // foto: en Liquidaciones la columna "Doc" mostraba un guion
+                // aunque la evidencia del dinero en mano estuviera cargada.
+                //
+                // Medido antes de arreglarlo: del 1 al 13 de agosto, 7 de 1.239
+                // primeros créditos tenían la foto ligada (0,6%), contra 7.582
+                // de 7.585 en los créditos posteriores (100%) —esos pasan por
+                // CreditService, que sí escribe la FK—. Es la misma línea que
+                // CreditService ya tenía; acá faltaba.
+                if ($credit) {
+                    $imageRecord['credit_id'] = $credit->id;
                 }
 
                 // Add GPS metadata if available
@@ -1686,11 +1768,18 @@ class ClientService
         return $result;
     }
 
-    public function getClientsBySeller($sellerId, $search = '', $companyId = null, $status = null)
+    public function getClientsBySeller($sellerId, $search = '', $companyId = null, $status = null, $todayStatus = null)
     {
         try {
             $search = trim((string) $search);
             Log::info('status: ' . $status);
+
+            // Día de negocio del VENDEDOR (no el del servidor ni el del navegador
+            // del administrador que consulta): la agenda de cobro se ancla a la
+            // zona horaria del cobrador, igual que business_date en pagos.
+            $sellerForTz = Seller::with('city.country')->find($sellerId);
+            $timezone = TimezoneHelper::getSellerTimezone($sellerForTz);
+            $todayLocal = Carbon::now($timezone)->toDateString();
 
             $clientsQuery = Client::query()
                 ->select('id', 'uuid', 'name', 'dni', 'email', 'address', 'seller_id', 'routing_order', 'geolocation', 'gps_geolocalization', 'gps_address', 'phone', 'capacity', 'needs_update', 'created_at')
@@ -1736,12 +1825,49 @@ class ClientService
                     });
                 });
 
-            // Filtro solo para con_creditos y sin_creditos
+            // Filtro solo para con_creditos, sin_creditos y cuota_hoy
             if ($status === 'con_creditos') {
                 $clientsQuery->whereHas('credits', fn($q) => $q->whereIn('status', ['Activo', 'Vigente']));
                 $clientsQuery->with(['credits' => fn($q) => $q->whereIn('status', ['Activo', 'Vigente'])]);
             } elseif ($status === 'sin_creditos') {
                 $clientsQuery->whereDoesntHave('credits', fn($q) => $q->whereIn('status', ['Activo', 'Vigente']));
+            } elseif (in_array($status, self::DAY_FILTERS, true)) {
+                // FILTROS DE LA JORNADA. Cada uno responde UNA pregunta concreta
+                // y devuelve una lista distinta. Antes existía un único filtro
+                // "cuota_hoy" que mezclaba los tres primeros casos; el resultado
+                // era una lista donde cada fila tenía que explicar por qué
+                // estaba ahí, con columnas repitiendo información.
+                if ($status === 'vencen_hoy') {
+                    // ¿A quién le toca pagar hoy? Incluye las ya pagadas por
+                    // adelantado: el administrador necesita ver esa visita como
+                    // cubierta, no que el cliente desaparezca del listado.
+                    $clientsQuery->whereHas('credits', function ($q) use ($todayLocal) {
+                        $q->whereNotIn('status', self::CREDIT_STATUSES_CLOSED)
+                            ->whereHas('installments', fn($iq) => $iq->where('due_date', $todayLocal));
+                    });
+                } elseif ($status === 'atrasados') {
+                    // ¿Quién debe cuotas vencidas y sin saldar?
+                    $clientsQuery->whereHas('credits', function ($q) use ($todayLocal) {
+                        $q->whereNotIn('status', self::CREDIT_STATUSES_CLOSED)
+                            ->whereHas('installments', function ($iq) use ($todayLocal) {
+                                $iq->where('due_date', '<', $todayLocal)
+                                    ->where('status', '<>', 'Pagado');
+                            });
+                    });
+                } elseif ($status === 'cobrados_hoy') {
+                    // ¿De quién entró dinero hoy? Sin importar a qué cuota se
+                    // aplicó (puede ser una atrasada o un adelanto).
+                    $clientsQuery->whereHas('credits.payments', function ($pq) use ($todayLocal) {
+                        $pq->where('business_date', $todayLocal);
+                    });
+                } elseif ($status === 'sin_gestion') {
+                    // ¿A quién no tocó nadie hoy? Se acota a clientes con crédito
+                    // vivo (los demás no son parte de la jornada) y el descarte
+                    // final se hace tras calcular la gestión, más abajo.
+                    $clientsQuery->whereHas('credits', function ($q) {
+                        $q->whereNotIn('status', self::CREDIT_STATUSES_CLOSED);
+                    });
+                }
             }
 
             $clientsQuery->whereDoesntHave('credits', function ($q) {
@@ -1752,19 +1878,511 @@ class ClientService
 
             $clients = $clientsQuery->get();
 
-            $clients->transform(function ($client) {
+            // Resumen de la jornada por cliente: alimenta las columnas Cuota,
+            // Pago y Gestión del listado.
+            $isDayView = in_array($status, self::DAY_FILTERS, true);
+            $todaySummary = $isDayView
+                ? $this->todayCollectionSummary($clients->pluck('id')->all(), $todayLocal, $timezone)
+                : [];
+
+            $clients->transform(function ($client) use ($todaySummary, $isDayView) {
                 $totalCreditsValue = $client->credits
                     ->whereIn('status', ['Activo', 'Vigente'])
                     ->sum('credit_value');
                 $client->total_credits_value = $totalCreditsValue;
+
+                if ($isDayView) {
+                    $client->today_collection = $todaySummary[$client->id] ?? null;
+                }
+
                 return $client;
             });
+
+            // "Sin gestión" solo se puede resolver una vez calculado el resumen:
+            // depende de pagos, visitas y comentarios del día a la vez.
+            if ($status === 'sin_gestion') {
+                $clients = $clients
+                    ->filter(fn($client) => ($client->today_collection['managed'] ?? false) === false)
+                    ->values();
+            }
+
+            // Sub-filtro adicional dentro de una lista de jornada (p. ej. ver
+            // solo los que están fuera de rango). Se aplica DESPUÉS del resumen
+            // porque el estado se deriva de varias fuentes a la vez; repetirlo
+            // como SQL duplicaría la lógica y sería fácil desincronizarlas.
+            if ($isDayView && $todayStatus) {
+                $clients = $clients->filter(function ($client) use ($todayStatus) {
+                    $summary = $client->today_collection;
+                    if (!$summary) {
+                        return false;
+                    }
+
+                    // "Pagado" = entró dinero hoy (aunque haya sido un abono
+                    // parcial o a una cuota atrasada), o la cuota del día ya
+                    // venía saldada. Antes se miraba solo el estado de la cuota
+                    // que vence hoy y quedaban fuera quienes sí habían pagado.
+                    $pago = ($summary['collected_today'] ?? 0) > 0
+                        || in_array($summary['status'], ['Adelantada', 'Al día'], true);
+
+                    return match ($todayStatus) {
+                        'pagados' => $pago,
+                        // Falta plata por entrar hoy (incluye al que solo tiene atraso).
+                        'pendientes' => !$pago,
+                        // Nadie lo tocó hoy: ni pago, ni visita, ni comentario.
+                        'sin_gestion' => $summary['managed'] === false,
+                        // Sin visita registrada, aunque haya pago o comentario:
+                        // mide cobertura real de la ruta.
+                        'no_visitados' => $summary['visited'] === false,
+                        // Visita registrada lejos del domicilio del cliente.
+                        'fuera_de_rango' => ($summary['visit']['out_of_range'] ?? null) === true,
+                        default => true,
+                    };
+                })->values();
+            }
 
             return $clients;
         } catch (\Exception $e) {
             Log::error("getClientsBySeller error: {$e->getMessage()} | " . $e->getTraceAsString());
             throw $e;
         }
+    }
+
+    /**
+     * Resumen de cobro del día por cliente, calculado en SQL sobre installments
+     * (nunca sobre credits.remaining_amount, que puede estar desincronizado).
+     *
+     * Devuelve, indexado por client_id:
+     *  - quota_amount / paid_amount / pending_amount de las cuotas que vencen HOY
+     *  - status:
+     *      'Cobrada hoy' -> la cuota se saldó con dinero que entró HOY (va a la
+     *                       liquidación del día).
+     *      'Adelantada'  -> la cuota de hoy ya estaba saldada de antes. El
+     *                       cliente no debe nada, pero HOY no entró plata: la
+     *                       diferencia importa para el corte de caja.
+     *      'Parcial' | 'Pendiente' | 'Sin cuota'
+     *  - overdue_amount / overdue_count: saldo de cuotas vencidas sin pagar
+     *  - managed: si alguien gestionó al cliente hoy (pago o comentario). Es una
+     *    aproximación hasta que exista el registro explícito de visita: un
+     *    comentario de hoy es evidencia de gestión, pero no prueba presencia.
+     *  - last_comment: el comentario más reciente del día, con su ubicación
+     *
+     * @param  array<int>  $clientIds
+     * @return array<int, array>
+     */
+    private function todayCollectionSummary(array $clientIds, string $todayLocal, string $timezone): array
+    {
+        if (empty($clientIds)) {
+            return [];
+        }
+
+        $collectedToday = $this->collectedTodayByClient($clientIds, $todayLocal);
+        $quotaDetails = $this->focusQuotaByClient($clientIds, $todayLocal);
+        $paymentsToday = $this->paymentCountTodayByClient($clientIds, $todayLocal);
+        $commentsToday = $this->commentsTodayByClient($clientIds, $todayLocal, $timezone);
+        $visitsToday = $this->visitsTodayByClient($clientIds, $todayLocal);
+
+        $rows = DB::table('installments')
+            ->join('credits', 'installments.credit_id', '=', 'credits.id')
+            ->whereNull('installments.deleted_at')
+            ->whereNull('credits.deleted_at')
+            ->whereIn('credits.client_id', $clientIds)
+            ->whereNotIn('credits.status', self::CREDIT_STATUSES_CLOSED)
+            ->selectRaw(
+                "credits.client_id,
+                 COALESCE(SUM(CASE WHEN installments.due_date = ? THEN installments.quota_amount END), 0) as today_amount,
+                 COALESCE(SUM(CASE WHEN installments.due_date = ? THEN installments.paid_amount END), 0) as today_paid,
+                 COALESCE(SUM(CASE WHEN installments.due_date = ? THEN 1 END), 0) as today_count,
+                 COALESCE(SUM(CASE WHEN installments.due_date < ? AND installments.status <> 'Pagado'
+                     THEN GREATEST(installments.quota_amount - installments.paid_amount, 0) END), 0) as overdue_amount,
+                 COALESCE(SUM(CASE WHEN installments.due_date < ? AND installments.status <> 'Pagado' THEN 1 END), 0) as overdue_count,
+                 MIN(CASE WHEN installments.due_date < ? AND installments.status <> 'Pagado' THEN installments.due_date END) as oldest_overdue_date",
+                array_fill(0, 6, $todayLocal)
+            )
+            ->groupBy('credits.client_id')
+            ->get();
+
+        $summary = [];
+
+        foreach ($rows as $row) {
+            $clientId = (int) $row->client_id;
+            $todayAmount = (float) $row->today_amount;
+            $todayPaid = (float) $row->today_paid;
+            $todayCount = (int) $row->today_count;
+            $collected = $collectedToday[$clientId]['total'] ?? 0.0;
+            $comment = $commentsToday[$clientId] ?? null;
+            $visit = $visitsToday[$clientId] ?? null;
+
+            $pendingToday = max($todayAmount - $todayPaid, 0);
+            $overdueAmount = (float) $row->overdue_amount;
+
+            // El estado se decide por el DINERO QUE ENTRÓ HOY, no solo por la
+            // cuota que vence hoy. Un cliente puede pagar una cuota atrasada o
+            // adelantar una futura: en ambos casos pagó, y así lo tiene que ver
+            // el administrador.
+            if ($collected > 0) {
+                $todayStatus = ($pendingToday + $overdueAmount) <= 0.01
+                    ? 'Cobrada hoy'
+                    : 'Abono parcial';
+            } elseif ($todayCount > 0 && $todayPaid >= $todayAmount - 0.01) {
+                // La cuota de hoy ya estaba saldada de antes: el cliente está
+                // al día, pero hoy no entró dinero.
+                $todayStatus = 'Adelantada';
+            } elseif ($todayCount === 0 && $overdueAmount <= 0.01) {
+                // Ni cuota hoy, ni atraso, ni cobro: está al día.
+                $todayStatus = 'Al día';
+            } elseif ($todayPaid > 0) {
+                $todayStatus = 'Parcial';
+            } else {
+                $todayStatus = 'Pendiente';
+            }
+
+            $summary[$clientId] = [
+                'date' => $todayLocal,
+                'quota_amount' => round($todayAmount, 2),
+                'paid_amount' => round($todayPaid, 2),
+                'pending_amount' => round(max($todayAmount - $todayPaid, 0), 2),
+                'collected_today' => round($collected, 2),
+                // Cuota en foco: valor, vencimiento, pagado y fecha del pago.
+                'quota' => $quotaDetails[$clientId] ?? null,
+                'installments_count' => $todayCount,
+                'status' => $todayStatus,
+                'overdue_amount' => round((float) $row->overdue_amount, 2),
+                'overdue_count' => (int) $row->overdue_count,
+                // Días desde el vencimiento de la cuota más antigua sin saldar:
+                // es la medida de gravedad del atraso, no el monto.
+                'overdue_days' => $row->oldest_overdue_date
+                    ? Carbon::parse($row->oldest_overdue_date)->diffInDays(Carbon::parse($todayLocal))
+                    : 0,
+                'managed' => ($paymentsToday[$clientId] ?? 0) > 0
+                    || $comment !== null
+                    || $visit !== null,
+                'comments_today' => $comment['count'] ?? 0,
+                'last_comment' => $comment['last'] ?? null,
+                // Visita del día: la respuesta directa a "¿pasó o no por él?".
+                // Solo la visita prueba presencia; el pago y el comentario son
+                // indicios (se puede cobrar por transferencia o comentar desde
+                // la oficina).
+                'visited' => $visit !== null,
+                'visit' => $visit,
+            ];
+        }
+
+        return $summary;
+    }
+
+    /**
+     * Última visita registrada HOY por cliente (día de negocio del vendedor).
+     *
+     * @param  array<int>  $clientIds
+     * @return array<int, array>
+     */
+    private function visitsTodayByClient(array $clientIds, string $todayLocal): array
+    {
+        $visits = ClientVisit::with(['user:id,name,role_id', 'comment:id,body'])
+            ->whereIn('client_id', $clientIds)
+            ->where('business_date', $todayLocal)
+            ->orderByDesc('business_timestamp')
+            ->get();
+
+        if ($visits->isEmpty()) {
+            return [];
+        }
+
+        $presenter = app(ClientVisitService::class);
+        $result = [];
+
+        foreach ($visits->groupBy('client_id') as $clientId => $group) {
+            // La más reciente manda: si el cobrador pasó dos veces, vale la
+            // última gestión (p. ej. "no estaba" y luego "cobrado").
+            $result[(int) $clientId] = $presenter->present($group->first())
+                + ['visits_count' => $group->count()];
+        }
+
+        return $result;
+    }
+
+    /**
+     * Cuota "en foco" de cada cliente: la que el administrador necesita ver en
+     * la agenda, con su valor, su vencimiento, lo pagado y cuándo se pagó.
+     *
+     * Cuál se elige, en este orden:
+     *   1. La cuota que vence HOY (es la del día).
+     *   2. Si no hay, la cuota a la que se aplicó el pago de hoy — puede ser
+     *      una atrasada que se está saldando o una futura que se adelantó.
+     *   3. Si tampoco, la cuota atrasada más antigua sin pagar.
+     *
+     * @param  array<int>  $clientIds
+     * @return array<int, array>
+     */
+    private function focusQuotaByClient(array $clientIds, string $todayLocal): array
+    {
+        // Se resuelve en tres consultas acotadas en vez de una con subconsulta
+        // agregada: unir contra un GROUP BY de payment_installments completo
+        // (millones de filas, sin filtro) hacía que este listado tardara ~20
+        // segundos. Acotando por los clientes de la página baja a milisegundos.
+
+        // 1) Cuotas afectadas por pagos de HOY (identifica abonos a cuotas
+        //    atrasadas y adelantos de cuotas futuras).
+        $touchedToday = DB::table('payment_installments')
+            ->join('payments', 'payments.id', '=', 'payment_installments.payment_id')
+            ->join('installments', 'installments.id', '=', 'payment_installments.installment_id')
+            ->join('credits', 'credits.id', '=', 'installments.credit_id')
+            ->whereNull('payment_installments.deleted_at')
+            ->whereNull('payments.deleted_at')
+            ->whereNull('installments.deleted_at')
+            ->whereIn('credits.client_id', $clientIds)
+            ->where('payments.business_date', $todayLocal)
+            ->pluck('installments.id')
+            ->unique()
+            ->all();
+
+        // 2) Cuotas candidatas: la de hoy, las atrasadas sin saldar y las
+        //    tocadas hoy.
+        $rows = DB::table('installments')
+            ->join('credits', 'credits.id', '=', 'installments.credit_id')
+            ->whereNull('installments.deleted_at')
+            ->whereNull('credits.deleted_at')
+            ->whereIn('credits.client_id', $clientIds)
+            ->whereNotIn('credits.status', self::CREDIT_STATUSES_CLOSED)
+            ->where(function ($q) use ($todayLocal, $touchedToday) {
+                $q->where('installments.due_date', $todayLocal)
+                    ->orWhere(function ($o) use ($todayLocal) {
+                        $o->where('installments.due_date', '<', $todayLocal)
+                            ->where('installments.status', '<>', 'Pagado');
+                    });
+
+                if (!empty($touchedToday)) {
+                    $q->orWhereIn('installments.id', $touchedToday);
+                }
+            })
+            ->orderBy('credits.client_id')
+            ->orderBy('installments.due_date')
+            ->get([
+                'credits.client_id',
+                'installments.id',
+                'installments.quota_number',
+                'installments.due_date',
+                'installments.quota_amount',
+                'installments.paid_amount',
+            ]);
+
+        if ($rows->isEmpty()) {
+            return [];
+        }
+
+        // 3) Último pago de esas cuotas (conjunto chico): fecha, hora y monto.
+        //    Se ordena por timestamp y se toma el primero de cada cuota; así se
+        //    obtiene el pago concreto, no solo la fecha agregada.
+        $payments = DB::table('payment_installments')
+            ->join('payments', 'payments.id', '=', 'payment_installments.payment_id')
+            ->whereNull('payment_installments.deleted_at')
+            ->whereNull('payments.deleted_at')
+            ->whereIn('payment_installments.installment_id', $rows->pluck('id'))
+            ->orderByDesc('payments.business_timestamp')
+            ->orderByDesc('payments.id')
+            ->get([
+                'payment_installments.installment_id',
+                'payment_installments.applied_amount',
+                'payments.business_date',
+                'payments.business_timestamp',
+            ])
+            ->groupBy('installment_id')
+            ->map(fn($group) => $group->first());
+
+        $result = [];
+
+        foreach ($rows->groupBy('client_id') as $clientId => $group) {
+            $group = $group->map(function ($row) use ($payments) {
+                $payment = $payments[$row->id] ?? null;
+                $row->last_payment_date = $payment->business_date ?? null;
+                // business_timestamp ya es hora local del negocio: se expone
+                // tal cual, sin convertir (mismo criterio del resto del sistema).
+                $row->last_payment_timestamp = $payment->business_timestamp ?? null;
+                $row->last_payment_amount = $payment ? (float) $payment->applied_amount : null;
+                return $row;
+            });
+
+            $focus = $group->firstWhere('due_date', $todayLocal)               // 1
+                ?? $group->firstWhere('last_payment_date', $todayLocal)        // 2
+                ?? $group->first();                                            // 3
+
+            if (!$focus) {
+                continue;
+            }
+
+            $result[(int) $clientId] = [
+                'quota_number' => (int) $focus->quota_number,
+                'due_date' => $focus->due_date,
+                'quota_amount' => round((float) $focus->quota_amount, 2),
+                'paid_amount' => round((float) $focus->paid_amount, 2),
+                'pending_amount' => round(max((float) $focus->quota_amount - (float) $focus->paid_amount, 0), 2),
+                'last_payment_date' => $focus->last_payment_date,
+                'last_payment_timestamp' => $focus->last_payment_timestamp,
+                'last_payment_amount' => $focus->last_payment_amount,
+                'is_due_today' => $focus->due_date === $todayLocal,
+            ];
+        }
+
+        return $result;
+    }
+
+    /**
+     * Dinero que entró HOY por cliente. Devuelve dos cifras distintas:
+     *
+     *  - 'total'  : todo lo cobrado hoy, sin importar a qué cuota se aplicó.
+     *               Un cliente puede abonar una cuota atrasada o adelantar una
+     *               futura: en ambos casos entró plata a la caja del día y el
+     *               cliente fue gestionado.
+     *  - 'on_due' : solo lo aplicado a la cuota que vence HOY. Sirve para
+     *               distinguir "la cobré hoy" de "ya venía pagada" (adelantada).
+     *
+     * Mirar únicamente 'on_due' era el error original: dejaba fuera del filtro
+     * de pagados a quien abonó una cuota atrasada o adelantó una futura.
+     *
+     * @param  array<int>  $clientIds
+     * @return array<int, array{total: float, on_due: float}>
+     */
+    private function collectedTodayByClient(array $clientIds, string $todayLocal): array
+    {
+        $result = [];
+
+        // Total cobrado hoy (a nivel de pago, no de cuota).
+        $totals = DB::table('payments')
+            ->join('credits', 'credits.id', '=', 'payments.credit_id')
+            ->whereNull('payments.deleted_at')
+            ->whereNull('credits.deleted_at')
+            ->whereIn('credits.client_id', $clientIds)
+            ->where('payments.business_date', $todayLocal)
+            ->groupBy('credits.client_id')
+            ->selectRaw('credits.client_id, COALESCE(SUM(payments.amount), 0) as total')
+            ->get();
+
+        foreach ($totals as $row) {
+            $result[(int) $row->client_id] = ['total' => (float) $row->total, 'on_due' => 0.0];
+        }
+
+        // Parte aplicada específicamente a la cuota que vence hoy.
+        $onDue = DB::table('payment_installments')
+            ->join('payments', 'payments.id', '=', 'payment_installments.payment_id')
+            ->join('installments', 'installments.id', '=', 'payment_installments.installment_id')
+            ->join('credits', 'credits.id', '=', 'installments.credit_id')
+            ->whereNull('payment_installments.deleted_at')
+            ->whereNull('payments.deleted_at')
+            ->whereNull('installments.deleted_at')
+            ->whereNull('credits.deleted_at')
+            ->whereIn('credits.client_id', $clientIds)
+            ->where('payments.business_date', $todayLocal)
+            ->where('installments.due_date', $todayLocal)
+            ->groupBy('credits.client_id')
+            ->selectRaw('credits.client_id, COALESCE(SUM(payment_installments.applied_amount), 0) as collected')
+            ->get();
+
+        foreach ($onDue as $row) {
+            $clientId = (int) $row->client_id;
+            $result[$clientId]['total'] = $result[$clientId]['total'] ?? 0.0;
+            $result[$clientId]['on_due'] = (float) $row->collected;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Cantidad de pagos registrados hoy por cliente (cualquier cuota, incluidos
+     * abonos a atrasos). Es la evidencia más fuerte de que el cobrador pasó.
+     *
+     * @param  array<int>  $clientIds
+     * @return array<int, int>
+     */
+    private function paymentCountTodayByClient(array $clientIds, string $todayLocal): array
+    {
+        $rows = DB::table('payments')
+            ->join('credits', 'credits.id', '=', 'payments.credit_id')
+            ->whereNull('payments.deleted_at')
+            ->whereNull('credits.deleted_at')
+            ->whereIn('credits.client_id', $clientIds)
+            ->where('payments.business_date', $todayLocal)
+            ->groupBy('credits.client_id')
+            ->selectRaw('credits.client_id, COUNT(*) as total')
+            ->get();
+
+        $result = [];
+        foreach ($rows as $row) {
+            $result[(int) $row->client_id] = (int) $row->total;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Comentarios escritos HOY por cliente: cantidad y el más reciente con su
+     * ubicación (dónde estaba quien lo escribió).
+     *
+     * OJO CON LA ZONA. El "hoy" que importa es el del VENDEDOR, y el comentario
+     * ya lo trae anclado en `business_date`: se compara día contra día. El
+     * histórico sin anclar cae al rango sobre `created_at`, que NO está en UTC
+     * sino en la zona de la aplicación (lo escribe el timestamp por defecto de
+     * Eloquent). Todo eso vive en TimezoneHelper::whereBusinessDayBetween.
+     *
+     * @param  array<int>  $clientIds
+     * @return array<int, array{count:int, last:array}>
+     */
+    private function commentsTodayByClient(array $clientIds, string $todayLocal, string $timezone): array
+    {
+        $start = Carbon::parse($todayLocal, $timezone)->startOfDay();
+        $end = Carbon::parse($todayLocal, $timezone)->endOfDay();
+
+        $query = ClientComment::with(['user:id,name,role_id', 'category:id,name'])
+            ->whereIn('client_id', $clientIds);
+
+        \App\Helpers\TimezoneHelper::whereBusinessDayBetween(
+            $query, $start, $end, 'business_date', 'created_at'
+        );
+
+        $comments = $query
+            ->orderBy('created_at', 'desc')
+            ->get([
+                'id', 'client_id', 'user_id', 'comment_category_id', 'body', 'created_at',
+                'business_date', 'business_timestamp', 'business_timezone',
+            ]);
+
+        if ($comments->isEmpty()) {
+            return [];
+        }
+
+        // Ubicación de esos comentarios en una sola consulta.
+        $locations = ClientGeolocationHistory::where('action_type', 'comment_created')
+            ->whereIn('action_id', $comments->pluck('id'))
+            ->get(['action_id', 'latitude', 'longitude', 'accuracy', 'address'])
+            ->keyBy('action_id');
+
+        $result = [];
+        foreach ($comments->groupBy('client_id') as $clientId => $group) {
+            $latest = $group->first();
+            $location = $locations->get($latest->id);
+
+            $result[(int) $clientId] = [
+                'count' => $group->count(),
+                'last' => [
+                    'id' => $latest->id,
+                    'body' => $latest->body,
+                    'author' => $latest->user->name ?? null,
+                    'author_role_id' => $latest->user->role_id ?? null,
+                    'category' => $latest->category->name ?? null,
+                    // Hora local del vendedor cuando está anclada (cruda, sin
+                    // convertir); el histórico se sigue traduciendo desde la
+                    // zona de la app.
+                    'created_at' => $latest->business_timestamp
+                        ?: $latest->created_at->copy()->timezone($timezone)->format('Y-m-d H:i:s'),
+                    // Nunca vacío cuando hay ubicación: si la dirección todavía
+                    // no se resolvió, van las coordenadas (ver displayAddress).
+                    'address' => $location?->displayAddress(),
+                    'latitude' => $location ? (float) $location->latitude : null,
+                    'longitude' => $location ? (float) $location->longitude : null,
+                ],
+            ];
+        }
+
+        return $result;
     }
 
     public function getAllClientsBySeller($sellerId, $search = '', $date = null, $timezone = null)
@@ -1945,6 +2563,23 @@ class ClientService
                 $clientsQuery->where('seller_id', $seller->id);
             }
 
+            // Supervisor (6) / Cobrador-abono (7) / Secretaria (11): solo las
+            // rutas asignadas en user_routes, mismo criterio que
+            // indexWithCredits. Sin esto el contador devolvía los clientes de
+            // TODO el sistema: no fallaba, contestaba de más, y el número
+            // llegaba a pantalla como si fuera el de su ruta.
+            if (in_array((int) $user->role_id, [6, 7, 11], true)) {
+                $sellerIds = \App\Models\UserRoute::where('user_id', $user->id)
+                    ->pluck('seller_id')
+                    ->toArray();
+
+                if (!empty($sellerIds)) {
+                    $clientsQuery->whereIn('seller_id', $sellerIds);
+                } else {
+                    $clientsQuery->whereRaw('0 = 1');
+                }
+            }
+
             $totalClients = $clientsQuery->count();
 
             return $this->successResponse([
@@ -2111,6 +2746,24 @@ class ClientService
             // scope to sellers asociados para role 11
             if ($user->role_id == 11) {
                 $sellerIds = \App\Models\UserRoute::where('user_id', $user->id)->pluck('seller_id')->toArray();
+                $query->whereIn('clients.seller_id', $sellerIds);
+            }
+
+            // Supervisor (rol 6): mismo criterio que el 11 — solo las rutas que
+            // tiene asignadas en user_routes.
+            //
+            // No tenía NINGÚN scope: la consulta salía sin filtro de vendedor y
+            // se traía los clientes de todo el sistema (37.288 en la base de
+            // hoy). El resultado no era una fuga visible sino un 500 por
+            // memoria agotada — el "Error al cargar la lista de clientes".
+            //
+            // Va como filtro propio, ADEMÁS del $sellerId que llegue por
+            // parámetro: así un supervisor tampoco puede pedir la cartera de
+            // una ruta que no le corresponde mandando otro seller_id.
+            if ($user->role_id == 6) {
+                $sellerIds = \App\Models\UserRoute::where('user_id', $user->id)
+                    ->pluck('seller_id')
+                    ->toArray();
                 $query->whereIn('clients.seller_id', $sellerIds);
             }
 

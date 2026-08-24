@@ -66,10 +66,18 @@ class CreditRequest extends FormRequest
             'phone' => 'required|string|min:7',
             'images' => 'required|array|min:1',
             'images.*.file' => 'required|image',
+            // La ubicación real de la foto (dinero en mano) es obligatoria al
+            // crear: cada captura debe registrar dónde se tomó (evidencia por
+            // crédito). No se hereda del cliente.
+            'images.0.latitude' => 'required|numeric',
+            'images.0.longitude' => 'required|numeric',
             'number_installments' => 'required|integer|min:1'
         ];
 
         if ($this->isMethod('put') || $this->isMethod('get')) {
+            // La edición no re-captura la foto, así que no se re-exige la ubicación.
+            $rules['images.0.latitude'] = 'nullable|numeric';
+            $rules['images.0.longitude'] = 'nullable|numeric';
             $rules['client_id'] = 'nullable|exists:clients,id';
             $rules['guarantor_id'] = 'nullable|exists:guarantors,id';
             $rules['seller_id'] = 'nullable|exists:sellers,id';
@@ -118,6 +126,10 @@ class CreditRequest extends FormRequest
             'images.min' => 'Debe subir al menos una foto',
             'images.*.file.required' => 'El archivo de imagen es obligatorio',
             'images.*.file.image' => 'El archivo debe ser una imagen válida',
+            'images.0.latitude.required' => 'La ubicación (GPS) de la foto es obligatoria. Activá el GPS y usá "Reintentar".',
+            'images.0.longitude.required' => 'La ubicación (GPS) de la foto es obligatoria. Activá el GPS y usá "Reintentar".',
+            'images.0.latitude.numeric' => 'La latitud de la foto no es válida',
+            'images.0.longitude.numeric' => 'La longitud de la foto no es válida',
         ];
     }
 }

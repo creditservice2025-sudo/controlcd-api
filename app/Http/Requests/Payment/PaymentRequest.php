@@ -31,6 +31,15 @@ class PaymentRequest extends FormRequest
             'credit_id' => 'required|exists:credits,id',
             'latitude' => 'nullable',
             'longitude' => 'nullable',
+            // Calidad de la ubicación: precisión en metros y de dónde salió el
+            // punto. Nullable para no romper versiones viejas del APK que aún
+            // no los envían.
+            'gps_accuracy' => 'nullable|numeric|min:0',
+            'gps_source' => 'nullable|string|in:gps,network,unknown',
+            // Motivo del "No pagó". Obligatorio en ese caso: un no pago sin
+            // explicación no le sirve a nadie para gestionar la cobranza.
+            'comment' => 'nullable|string|max:2000',
+            'comment_category_id' => 'nullable|integer|exists:comment_categories,id',
             'timezone' => 'nullable|string',
             'client_created_at' => 'nullable|date',
             'client_timezone' => 'nullable|string',
@@ -39,6 +48,14 @@ class PaymentRequest extends FormRequest
         // Si el monto es mayor a 0, requerir payment_method
         if ($this->input('amount') > 0) {
             $rules['payment_method'] = 'required|string';
+        }
+
+        // "No pagó" EXIGE explicación: es el registro que el administrador va a
+        // leer para entender por qué no entró dinero. Sin motivo, la fila solo
+        // dice que no pagó y no sirve para gestionar la cobranza.
+        if ($this->isMethod('post') && (string) $this->input('status') === 'No Pagado') {
+            $rules['comment'] = 'required|string|max:2000';
+            $rules['comment_category_id'] = 'required|integer|exists:comment_categories,id';
         }
 
         if ($this->isMethod('put')) {
@@ -69,6 +86,9 @@ class PaymentRequest extends FormRequest
             'status.required' => 'El estado es requerido',
             'status.in' => 'El estado debe ser Abonado, Pagado, No Pagado o Devuelto',
             'payment_reference.numeric' => 'El número de referencia debe ser numerico',
+            'comment.required' => 'Debe indicar el motivo por el que el cliente no pagó.',
+            'comment_category_id.required' => 'Debe seleccionar la categoría del motivo.',
+            'comment_category_id.exists' => 'La categoría seleccionada no existe.',
         ];
     }
 }

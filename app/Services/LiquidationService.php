@@ -21,6 +21,13 @@ class LiquidationService
 {
     const TIMEZONE = 'America/Lima';
 
+    /**
+     * Estados que representan "caja cerrada". Misma lista que
+     * Liquidation::CLOSED_STATUSES, EnforcesCashOpen y el bloqueo de login: si
+     * alguna se desalinea, el ciclo deja de ser coherente.
+     */
+    private const CLOSED_STATUSES = ['pending', 'auto', 'approved'];
+
     protected $metricsCacheService;
 
     public function __construct(MetricsCacheService $metricsCacheService)
@@ -127,15 +134,57 @@ class LiquidationService
      */
     public function updateLiquidation(Liquidation $liquidation, array $data): Liquidation
     {
+        $tzCierre = !empty($data['timezone']) ? $data['timezone'] : self::TIMEZONE;
+
         if (isset($data['timezone']) && !empty($data['timezone'])) {
             $data['updated_at'] = Carbon::now($data['timezone']);
             unset($data['timezone']);
         }
+
+        // ── CIERRE DE CAJA: 'En curso' → 'pending' ─────────────────────────
+        //
+        // El cobrador cierra su caja por ESTE endpoint, no por storeLiquidation:
+        // la fila del día ya existe (la crea la auto-apertura del login con
+        // status 'En curso'), así que el front siempre toma la rama de update.
+        //
+        // validateData() descarta `status` a propósito —si entrara al $validated
+        // este PUT podría APROBAR una liquidación salteándose approve()—, y el
+        // efecto colateral era que el cierre NO cambiaba el estado: la caja
+        // quedaba 'En curso' para siempre. Con eso no se disparaba ni el bloqueo
+        // de login (LoginService) ni el candado de sesión del observer del
+        // modelo, y el cobrador volvía a entrar el mismo día después de cerrar.
+        //
+        // La transición se aplica acá, explícita y acotada:
+        //   · solo el valor 'pending' (approved/rejected/auto siguen su flujo)
+        //   · solo desde 'En curso' (una caja ya cerrada no se re-cierra, ni se
+        //     "des-aprueba" mandando pending sobre una approved)
+        $esCierre = ($data['status'] ?? null) === 'pending'
+            && $liquidation->status === 'En curso';
+        $usuarioCierre = Auth::user();
+
         $validated = $this->validateData($data, $liquidation);
 
-        return DB::transaction(function () use ($liquidation, $validated) {
+        return DB::transaction(function () use ($liquidation, $validated, $esCierre, $usuarioCierre, $tzCierre) {
             $this->calculateFields($validated);
-            $liquidation->update($validated);
+
+            // La identidad del día NO se edita: `seller_id` y `date` llegan en
+            // el payload solo para identificar la fila (así la manda el front)
+            // y para las notificaciones de abajo. Aplicarlos permitiría mover
+            // la caja de un día a otro vendedor, o cambiarle la fecha, y con
+            // ella todo su recaudo. Se validan, se usan, no se guardan.
+            $aGuardar = $validated;
+            unset($aGuardar['seller_id'], $aGuardar['date']);
+
+            // Trazabilidad del cierre: quién lo hizo (vendedor rol 5 o
+            // supervisor rol 6 sobre la ruta) y cuándo, igual que storeLiquidation.
+            if ($esCierre) {
+                $aGuardar['status'] = 'pending';
+                $aGuardar['closed_by'] = $usuarioCierre?->id;
+                $aGuardar['closed_by_role'] = $usuarioCierre?->role_id;
+                $aGuardar['closed_at'] = Carbon::now($tzCierre);
+            }
+
+            $liquidation->update($aGuardar);
 
             // Invalida el caché después de actualizar
             $this->metricsCacheService->invalidateLiquidationMetrics($liquidation->seller_id, $liquidation->date->toDateString());
@@ -264,15 +313,27 @@ class LiquidationService
                 );
             }
 
+            // ORDEN: primero se recalcula el día, DESPUÉS se sella.
+            //
+            // Se mantiene la regla vigente: entre el cierre del cobrador y la
+            // aprobación, el administrador puede agregar un movimiento (un
+            // gasto, un ingreso) y ese día TIENE que recalcularse. Por eso el
+            // recálculo va con la liquidación todavía abierta.
+            //
+            // Antes iba al revés (sellar y después recalcular). Con la caja
+            // firmada ya congelada, ese orden dejaría el movimiento del
+            // administrador afuera y rompería la regla.
+            $this->recalculateLiquidation($liquidation->seller_id, $liquidation->date);
+            $liquidation->refresh();
+
             $updateData = [
                 'status' => 'approved',
                 'end_date' => $timezone ? Carbon::now($timezone) : now()
             ];
             $liquidation->update($updateData);
 
-            $this->recalculateLiquidation($liquidation->seller_id, $liquidation->date);
-
-            // Recalcula todas las liquidaciones posteriores
+            // Los días posteriores se re-encadenan, pero los que ya están
+            // firmados se saltean solos: la cascada no reescribe lo firmado.
             $this->recalculateNextLiquidations($liquidation->seller_id, $liquidation->date);
 
             return $this->successResponse([
@@ -320,15 +381,19 @@ class LiquidationService
                     );
                 }
 
+                // Mismo orden que en approve(): recalcular con el día abierto
+                // (para tomar los movimientos que cargó el administrador) y
+                // sellar recién después. Ver el comentario extenso en approve().
+                $this->recalculateLiquidation($liquidation->seller_id, $liquidation->date);
+                $liquidation->refresh();
+
                 $updateData = [
                     'status' => 'approved',
                     'end_date' => $timezone ? Carbon::now($timezone) : now()
                 ];
                 $liquidation->update($updateData);
 
-                $this->recalculateLiquidation($liquidation->seller_id, $liquidation->date);
-
-                // Recalcula todas las liquidaciones posteriores para cada liquidación aprobada
+                // Los posteriores ya firmados se saltean solos.
                 $this->recalculateNextLiquidations($liquidation->seller_id, $liquidation->date);
             }
 
@@ -363,11 +428,16 @@ class LiquidationService
             'total_collected' => 'required|numeric|min:0',
             'total_expenses' => 'required|numeric|min:0',
             'new_credits' => 'required|numeric|min:0',
-            'status' => 'sometimes|in:pending,approved,rejected',
             'path' => 'nullable|string',
             'observation' => 'nullable|string',
         ];
 
+        // 'status' NO se valida acá a propósito: si estuviera en las reglas,
+        // pasaría al $validated y de ahí a $liquidation->update(), o sea que
+        // PUT /liquidations/update/{id} podría APROBAR una liquidación
+        // salteándose el control de secuencia de approve()/approveMultiple(),
+        // sin el permiso `aprobar_liquidaciones` y sin dejar rastro. El estado
+        // se cambia únicamente por los flujos que lo validan.
         return Validator::make($data, $rules)->validate();
     }
 
@@ -496,9 +566,29 @@ class LiquidationService
             ->orderBy('date', 'asc')
             ->get();
 
+        $sellados = 0;
+
         foreach ($liquidations as $liquidation) {
+            if (Liquidation::integrityGuardsEnabled() && $liquidation->isSealed()) {
+                $sellados++;
+                continue; // caja firmada: se saltea sin tocarla (ver recalculateLiquidation)
+            }
+
             // Usamos la lógica completa de recalculateLiquidation para cada una
             $this->recalculateLiquidation($sellerId, $liquidation->date->format('Y-m-d'));
+        }
+
+        // Que una cascada se frene contra días sellados NO es un error, pero
+        // tiene que verse: significa que los datos de esos días cambiaron
+        // después de firmarse y que el reporte ya no coincide con la fuente.
+        // El detalle sale por `liquidations:verify-chain`.
+        if ($sellados > 0) {
+            \Log::info('[liquidation.chain] cascada detenida en días sellados', [
+                'seller_id'      => $sellerId,
+                'desde'          => (string) $fromDate,
+                'dias_sellados'  => $sellados,
+                'dias_recalculados' => $liquidations->count() - $sellados,
+            ]);
         }
     }
 
@@ -618,13 +708,34 @@ class LiquidationService
             }
         }
 
-        // Si no existe y es para HOY, y autoCreate está activo, crearla automáticamente (Apertura)
+        // Si no existe y es para HOY, y autoCreate está activo, crearla
+        // automáticamente (Apertura).
+        //
+        // Dos anclajes, porque CONSULTAR no debe abrir un día:
+        //  1) "Hoy" se calcula en la zona del VENDEDOR, no en la de quien mira.
+        //     Con $tz del navegador, un admin operando pasada su medianoche veía
+        //     $date == $todayStr y abría el día SIGUIENTE del vendedor.
+        //  2) Si la ruta no opera ese día (descanso semanal / feriado) no se crea
+        //     nada por el solo hecho de abrir la pantalla. Los movimientos reales
+        //     (pagos, créditos, cuotas) siguen creando su día por su propia vía:
+        //     nunca queda plata sin caja.
         if ($autoCreate) {
-            $todayStr = Carbon::now($tz)->toDateString();
+            $sellerForDay = Seller::with('city.country', 'config')->find($sellerId);
+            $sellerTz = \App\Helpers\TimezoneHelper::getSellerTimezone($sellerForDay);
+            $todayStr = Carbon::now($sellerTz)->toDateString();
+
             if ($date == $todayStr) {
-                \Log::info("Auto-creando liquidación (Apertura) para vendedor $sellerId en fecha $date");
-                $newLiquidation = $this->getOrCreateLiquidation($sellerId, $date, $timezone);
-                return $this->formatLiquidationResponse($newLiquidation, true);
+                if ($sellerForDay && \App\Services\BusinessCalendar::isNonWorkingDate($sellerForDay, $date)) {
+                    \Log::info('[liquidation.autocreate] omitida: la ruta no opera ese día', [
+                        'seller_id' => $sellerId,
+                        'date'      => $date,
+                        'timezone'  => $sellerTz,
+                    ]);
+                } else {
+                    \Log::info("Auto-creando liquidación (Apertura) para vendedor $sellerId en fecha $date");
+                    $newLiquidation = $this->getOrCreateLiquidation($sellerId, $date, $timezone);
+                    return $this->formatLiquidationResponse($newLiquidation, true);
+                }
             }
         }
         // 2. Obtener datos del endpoint dailyPaymentTotals
@@ -839,7 +950,115 @@ class LiquidationService
         }
     }
 
-    public function recalculateLiquidation($sellerId, $date, $timezone = null)
+    /**
+     * Ajuste sancionado de una caja YA CERRADA por un movimiento tardío.
+     *
+     * El caso real: el administrador aprueba la liquidación y recién después
+     * carga un ingreso del día. Antes ese ingreso quedaba grabado en `incomes`
+     * pero en NINGUNA caja —la liquidación aprobada no se recalcula nunca— y
+     * la plata desaparecía de la cadena. Se midió: S/ 2.000 en un día.
+     *
+     * Acá se recalcula ese día, y SOLO ese día. Las dos condiciones que lo
+     * hacen seguro, y que se verifican antes de tocar nada:
+     *
+     *   1. Es el día EN CURSO del vendedor. Un movimiento sobre un día viejo
+     *      no se ajusta: se reabre la caja, que queda auditado.
+     *   2. No existe ninguna liquidación POSTERIOR de ese vendedor. El saldo
+     *      inicial de cada día es el importe a entregar del anterior, así que
+     *      mover un día con días encima corre la cadena entera hacia adelante
+     *      (es el mecanismo por el que se descuadraron 786 días aprobados).
+     *      Si el día siguiente ya existe, esto falla y no ajusta nada.
+     *
+     * Por eso NO se llama a recalculateNextLiquidations: si hubiera algo que
+     * arrastrar, la condición 2 ya habría abortado.
+     *
+     * Se parte en dos porque IncomeService NO corre en transacción: la
+     * verificación tiene que pasar ANTES de grabar el movimiento, o un rechazo
+     * dejaría el ingreso creado y el 422 devuelto — el mismo huérfano que se
+     * está corrigiendo.
+     *
+     * @return bool true si la caja está cerrada y admite el ajuste; false si
+     *   está abierta (ahí el recálculo normal ya hizo lo suyo).
+     * @throws \App\Exceptions\CashClosedException si está cerrada y NO se puede ajustar
+     */
+    public function assertClosedDayCanTakeLateMovement(int $sellerId, string $businessDate, ?string $timezone = null): bool
+    {
+        $liquidation = Liquidation::where('seller_id', $sellerId)
+            ->whereDate('date', $businessDate)
+            ->first();
+
+        // Sin liquidación, o con la caja abierta, el recálculo normal ya
+        // corrió por su cuenta: acá no hay nada que ajustar.
+        if (!$liquidation || !in_array($liquidation->status, self::CLOSED_STATUSES, true)) {
+            return false;
+        }
+
+        $seller = Seller::withTrashed()->with('city.country', 'config')->find($sellerId);
+        $sellerTz = $timezone ?: \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
+        $hoy = Carbon::now($sellerTz)->toDateString();
+
+        if ($businessDate !== $hoy) {
+            throw new \App\Exceptions\CashClosedException(
+                'La caja del ' . Carbon::parse($businessDate)->format('d/m/Y') . ' ya fue cerrada y no es el día en curso. '
+                . 'Un movimiento sobre un día anterior no ajusta esa caja: hay que reabrirla para corregirla.'
+            );
+        }
+
+        $diaPosterior = Liquidation::where('seller_id', $sellerId)
+            ->whereDate('date', '>', $businessDate)
+            ->orderBy('date')
+            ->first();
+
+        if ($diaPosterior) {
+            throw new \App\Exceptions\CashClosedException(
+                'No se puede ajustar la caja del ' . Carbon::parse($businessDate)->format('d/m/Y')
+                . ': ya existe la caja del ' . Carbon::parse($diaPosterior->date)->format('d/m/Y')
+                . ', y el ajuste correría el saldo inicial de esa y de todas las siguientes.'
+            );
+        }
+
+        return true;
+    }
+
+    /**
+     * @throws \App\Exceptions\CashClosedException si no se cumplen las condiciones
+     */
+    public function adjustClosedDayForLateMovement(int $sellerId, string $businessDate, ?string $timezone = null): bool
+    {
+        if (!$this->assertClosedDayCanTakeLateMovement($sellerId, $businessDate, $timezone)) {
+            return false;
+        }
+
+        $liquidation = Liquidation::where('seller_id', $sellerId)
+            ->whereDate('date', $businessDate)
+            ->first();
+
+        $seller = Seller::withTrashed()->with('city.country', 'config')->find($sellerId);
+        $sellerTz = $timezone ?: \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
+
+        // Recálculo del día, saltando el congelamiento SOLO para esta fila.
+        $this->recalculateLiquidation($sellerId, $businessDate, $sellerTz, true);
+
+        \Log::info('[liquidation.late-movement] caja cerrada ajustada por movimiento tardío', [
+            'liquidation_id' => $liquidation->id,
+            'seller_id'      => $sellerId,
+            'business_date'  => $businessDate,
+            'status'         => $liquidation->status,
+            'actor'          => Auth::id(),
+        ]);
+
+        return true;
+    }
+
+    /**
+     * @param bool $permitirDiaCerrado Salta el congelamiento de una caja
+     *   firmada. ÚNICO llamador autorizado: adjustClosedDayForLateMovement(),
+     *   que antes verifica que sea el día en curso y que no haya días encima.
+     *   No pasar `true` desde ningún otro lugar: sin esas dos verificaciones,
+     *   recalcular un día aprobado corre la cadena de todos los días
+     *   posteriores.
+     */
+    public function recalculateLiquidation($sellerId, $date, $timezone = null, bool $permitirDiaCerrado = false)
     {
         if (!$timezone) {
             $timezone = 'America/Lima';
@@ -850,6 +1069,33 @@ class LiquidationService
             ->first();
 
         if (!$liquidation) {
+            return;
+        }
+
+        // ── CAJA FIRMADA = CAJA CONGELADA ──────────────────────────────────
+        //
+        // Una liquidación aprobada es el corte que el cobrador firmó y contra
+        // el cual entregó el efectivo. Sus montos son un HECHO, no un cálculo
+        // pendiente de repetir.
+        //
+        // Hasta acá, cualquier recálculo la reescribía con la foto de HOY. Y la
+        // foto de hoy no es la misma: los pagos se borran, los business_date se
+        // corrigen con backfills, las fórmulas cambian. Resultado medido sobre
+        // producción: aprobar el día 2025-11-11 del vendedor 19 reescribía 207
+        // días ya aprobados, corría la caja de la ruta $572 y le inventaba a un
+        // cobrador un faltante de $940 en un día liquidado siete meses antes.
+        // Ese es el mecanismo por el que "se descuadran las cajas" sin que nadie
+        // haya tocado la liquidación que se descuadró.
+        //
+        // A nivel sistema hay 786 días aprobados (22 vendedores) cuyos montos ya
+        // no coinciden con sus propios movimientos: cada uno es un descuadre
+        // esperando que una cascada lo alcance.
+        //
+        // La diferencia NO se tapa: se reporta con `liquidations:verify-chain`.
+        // Y si un día sellado hay que corregirlo de verdad, se reabre (queda
+        // auditado) o se usa una herramienta de reparación bajo
+        // Liquidation::withoutIntegrityGuards().
+        if (Liquidation::integrityGuardsEnabled() && !$permitirDiaCerrado && $liquidation->isSealed()) {
             return;
         }
 
@@ -906,7 +1152,10 @@ class LiquidationService
         if (!$liquidation)
             return [];
 
-        $seller = Seller::find($sellerId);
+        // withTrashed: un vendedor dado de baja seguía resolviendo a null y con él
+        // $userId, así que gastos e ingresos de sus días históricos se calculaban
+        // en CERO. Para un vendedor activo no cambia nada (nunca está trashed).
+        $seller = Seller::withTrashed()->find($sellerId);
         $userId = $seller ? $seller->user_id : null;
 
         $dailyTotals = $this->getDailyTotals($sellerId, $date, $userId, $timezone);
@@ -1587,6 +1836,11 @@ class LiquidationService
             'status' => $liquidation->status,
             'created_at' => $liquidation->created_at,
             'end_date' => $liquidation->end_date,
+            // Cuándo y quién cerró la caja. El front lo usa para avisar
+            // "la caja fue cerrada el dd/mm/aaaa hh:mm:ss" antes de aceptar un
+            // movimiento tardío que la va a ajustar.
+            'closed_at' => $liquidation->closed_at,
+            'closed_by_role' => $liquidation->closed_by_role,
         ];
     }
     protected function getPreviousLiquidation($sellerId, $date)
@@ -2088,9 +2342,12 @@ class LiquidationService
         foreach ($credits as $index => $credit) {
             $interestAmount = $credit->credit_value * ($credit->total_interest / 100);
             $quotaAmount = ($credit->credit_value + $interestAmount) / $credit->number_installments;
-            $totalCreditValue = $credit->credit_value + $interestAmount;
+            $totalCreditValue = $credit->totalFromInstallments();
             $totalPaid = $credit->payments->sum('amount');
-            $remainingAmount = $totalCreditValue - $totalPaid;
+            // Por Pagar sale de la cadena real (cuotas vivas menos el dinero aún
+            // sin aplicar), no de credit_value*(1+interés) - pagos. La auditoría
+            // que lo motiva está documentada en Credit::outstandingAmount().
+            $remainingAmount = $credit->outstandingAmount();
             $dayPayments = $credit->payments()->whereBetween('payments.created_at', [$start, $end])->get();
             $paidToday = $dayPayments->sum('amount');
             $paymentTime = $dayPayments->isNotEmpty() ? $dayPayments->last()->created_at->timezone(self::TIMEZONE)->format('H:i:s') : null;
@@ -2410,7 +2667,6 @@ class LiquidationService
             'liquidation_id' => 'required|exists:liquidations,id',
             'password' => 'required|string',
             'observation' => 'required|string|min:10',
-            'initial_cash' => 'nullable|numeric',
             'base_delivered' => 'nullable|numeric',
             'cash_delivered' => 'nullable|numeric',
         ]);
@@ -2433,12 +2689,31 @@ class LiquidationService
         $liquidation = Liquidation::findOrFail($data['liquidation_id']);
         $user = Auth::user();
 
+        // El SALDO INICIAL es derivado, no editable.
+        //
+        // Antes se podía escribir acá… y no servía para nada: unas líneas más
+        // abajo, recalculateLiquidation() lo recalcula desde el cierre del día
+        // anterior y lo pisa. El ajuste se evaporaba sin aviso.
+        //
+        // Y aunque no se pisara, tampoco correspondería: initial_cash ES el
+        // cierre del día anterior. Escribirlo a mano rompe la cadena (19 casos
+        // así en el histórico). Para meter o sacar plata de la caja está el
+        // Ingreso/Gasto con descripción AJUSTE, que la fórmula canónica ya
+        // contempla, que suma donde tiene que sumar y que queda auditado.
+        //
+        // Se TOLERA que venga con el valor actual: el modal de ajuste lo manda
+        // siempre, precargado. Solo se rechaza el intento real de cambiarlo,
+        // así un ajuste legítimo de base/entregado sigue funcionando igual.
+        if (array_key_exists('initial_cash', $data) && $data['initial_cash'] !== null
+            && round((float) $data['initial_cash'], 2) !== round((float) $liquidation->initial_cash, 2)) {
+            throw new \Exception(
+                'El saldo inicial no se ajusta a mano: siempre es el cierre del día anterior. '
+                . 'Para corregir la caja, registrá un Ingreso o Gasto con descripción AJUSTE en el día que corresponda.'
+            );
+        }
+
         // Registrar cambios para la observación
         $changes = [];
-        if (isset($data['initial_cash'])) {
-            $changes[] = "Saldo Inicial: {$liquidation->initial_cash} -> {$data['initial_cash']}";
-            $liquidation->initial_cash = $data['initial_cash'];
-        }
         if (isset($data['base_delivered'])) {
             $changes[] = "Base: {$liquidation->base_delivered} -> {$data['base_delivered']}";
             $liquidation->base_delivered = $data['base_delivered'];

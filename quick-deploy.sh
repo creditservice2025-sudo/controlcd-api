@@ -18,11 +18,23 @@ NC='\033[0m'
 echo -e "${YELLOW}Quick Deploy - Solo archivos y config${NC}"
 
 # Rsync
+#
+# OJO con --delete: borra en el servidor todo lo que no esté en la copia
+# local. Las fotos que suben los cobradores viven en public/images y NO están
+# en el repo, así que sin este exclude un deploy las elimina de producción
+# (fotos de créditos, documentos y perfiles que ya no se pueden recuperar).
+# Mismo criterio que deploy-to-server-prod.sh y el .rsyncignore del CI.
+# El .env del servidor tiene credenciales propias: tampoco se pisa.
 rsync -avzP --delete \
   -e "ssh -i $SSH_KEY" \
   --exclude='.git' \
   --exclude='vendor/' \
   --exclude='node_modules/' \
+  --exclude='.env' \
+  --exclude='.env.staging' \
+  --exclude='.env.prod' \
+  --exclude='public/images' \
+  --exclude='storage/app' \
   --exclude='storage/logs/*' \
   --exclude='storage/framework/cache/*' \
   --exclude='storage/framework/sessions/*' \

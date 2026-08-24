@@ -130,7 +130,7 @@
                 <th>Crédito</th>
                 <th>Frecuencia</th>
                 <th>Vr. Cuota</th>
-                <th>Saldo Actual</th>
+                <th>Por Pagar</th>
                 <th>Vr. Pago Hoy</th>
                 <th>Hora</th>
             </tr>

@@ -90,7 +90,12 @@ class LiquidationController extends Controller
         $seller = Seller::with('city.country')->find($request->seller_id);
         $country = $seller->city->country ?? null;
         $currency = $country->currency ?? 'PEN'; // Fallback a PEN si no hay país
-        $timezone = $country->timezone ?? config('app.timezone'); // Fallback a config
+        // Zona del VENDEDOR resuelta por TimezoneHelper. Antes salía de
+        // countries.timezone, columna mal poblada (Bolivia, Chile, Argentina,
+        // México y Venezuela figuran como America/Lima). De esta zona depende
+        // $todayDate, que es el tope del corte de LiquidationDatePolicy: con la
+        // zona equivocada el tope se corre y vuelve a colarse el día de más.
+        $timezone = \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
 
         Log::info('Liquidation creation started', [
             'user_id' => $user->id,
@@ -504,6 +509,25 @@ class LiquidationController extends Controller
         // Resolver modelo explícitamente para coincidir con la firma del servicio
         $liquidation = $id instanceof Liquidation ? $id : Liquidation::findOrFail($id);
 
+        // El endpoint no tenía NINGÚN control de acceso: cualquier usuario
+        // autenticado podía editar la caja de cualquier vendedor de cualquier
+        // empresa con solo conocer el id. Se valida contra el vendedor DUEÑO
+        // de la liquidación, no contra el seller_id que venga en el payload
+        // (que además ya se ignora al guardar).
+        if (!$this->checkAuthorization($user, $liquidation->seller_id)) {
+            Log::warning('Intento de editar una liquidación ajena', [
+                'user_id'        => $user->id,
+                'role_id'        => $user->role_id,
+                'liquidation_id' => $liquidation->id,
+                'seller_id'      => $liquidation->seller_id,
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'No tienes permisos para editar la liquidación de este vendedor',
+            ], 403);
+        }
+
         $data = $request->all();
         
         // Asegurar que observation esté presente si se envía
@@ -823,6 +847,52 @@ class LiquidationController extends Controller
         }
 
         return false;
+    }
+
+    /**
+     * ¿La caja del día de este vendedor está cerrada?
+     *
+     * Consulta liviana y de solo lectura, pensada para que el APK apague los
+     * botones de alta (Nuevo cliente, Nuevo crédito) en vez de ofrecerlos y
+     * cobrar un 422. getLiquidationData no sirve para esto: recalcula la caja
+     * entera en cada llamada.
+     *
+     * Devuelve el estado tal cual, sin interpretarlo: `closed` es la misma
+     * lista de estados que usan EnforcesCashOpen y el bloqueo de login.
+     */
+    public function cashStatus($sellerId, Request $request)
+    {
+        $user = Auth::user();
+
+        if (!$this->checkAuthorization($user, (int) $sellerId)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No tienes acceso a este vendedor',
+            ], 403);
+        }
+
+        $seller = \App\Models\Seller::with('city.country')->find($sellerId);
+
+        if (!$seller) {
+            return response()->json(['success' => false, 'message' => 'Vendedor no encontrado'], 404);
+        }
+
+        $tz = \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
+        $fecha = $request->query('date') ?: Carbon::now($tz)->toDateString();
+
+        $liquidation = Liquidation::where('seller_id', $sellerId)
+            ->whereDate('date', $fecha)
+            ->first();
+
+        $estado = $liquidation->status ?? null;
+
+        return response()->json([
+            'success'   => true,
+            'date'      => $fecha,
+            'status'    => $estado,
+            'closed'    => in_array($estado, ['pending', 'auto', 'approved'], true),
+            'closed_at' => $liquidation->closed_at ?? null,
+        ]);
     }
 
     public function getLiquidationData($sellerId, $date, Request $request)

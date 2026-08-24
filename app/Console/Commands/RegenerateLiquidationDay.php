@@ -90,7 +90,10 @@ class RegenerateLiquidationDay extends Command
         $this->renderChain($sellerId, $date, 'CADENA ACTUAL');
 
         $run = function () use ($svc, $sellerId, $date, $tz) {
-            $svc->getOrCreateLiquidation($sellerId, $date, $tz);
+            // Herramienta de reparación sancionada: SÍ puede rellenar un hueco
+            // por detrás de un día aprobado (para eso existe). Un día faltante
+            // en el medio de la cadena descuadra más que uno regenerado.
+            Liquidation::withoutIntegrityGuards(fn () => $svc->getOrCreateLiquidation($sellerId, $date, $tz));
             $svc->recalculateLiquidation($sellerId, $date);
             $svc->recalculateNextLiquidations($sellerId, $date);
         };
@@ -146,7 +149,12 @@ class RegenerateLiquidationDay extends Command
         $this->renderChain($sellerId, $date, 'CADENA ACTUAL');
 
         $run = function () use ($liq, $svc, $sellerId, $date) {
-            $liq->delete(); // soft-delete (restaurable)
+            // Única baja autorizada de un día: la reversión de una
+            // regeneración hecha por esta misma herramienta, y solo mientras
+            // siga 'En curso' (validado arriba). Por eso se bajan los guards
+            // de integridad del modelo, que si no bloquean el borrado de un
+            // día con movimientos. La auditoría 'baja_dia' se graba igual.
+            Liquidation::withoutIntegrityGuards(fn () => $liq->delete()); // soft-delete (restaurable)
             $svc->recalculateNextLiquidations($sellerId, $date);
         };
 

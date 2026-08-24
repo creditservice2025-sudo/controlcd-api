@@ -97,6 +97,17 @@ class IncomeService
                 $this->assertSellerCashOpen($seller->id, $businessDate);
             }
 
+            // Para el admin, "poder" no es incondicional: si la caja del día ya
+            // está cerrada, el ingreso la va a AJUSTAR, y eso solo se admite
+            // sobre el día en curso y sin días posteriores encima. Se verifica
+            // ANTES de grabar —este método no corre en transacción—, así que un
+            // rechazo no deja el ingreso huérfano. El ajuste en sí va después
+            // de crear, ya con el importe adentro.
+            if ($seller && $isAdmin) {
+                app(\App\Services\LiquidationService::class)
+                    ->assertClosedDayCanTakeLateMovement($seller->id, $businessDate, $businessTimezone);
+            }
+
             $incomeData = [
                 'value' => $validated['value'],
                 'description' => $validated['description'],
@@ -119,11 +130,23 @@ class IncomeService
 
             $income = Income::create($incomeData);
 
+            $ajusteDeCajaCerrada = false;
+
             if ($seller) {
                 // Recalcular liquidaciones
                 $liquidationService = app(\App\Services\LiquidationService::class);
                 $liquidationService->recalculateLiquidation($seller->id, $businessDate);
                 $liquidationService->recalculateNextLiquidations($seller->id, $businessDate);
+
+                // Si la caja del día ya estaba cerrada, los dos recálculos de
+                // arriba NO la tocaron (una caja firmada está congelada) y el
+                // ingreso habría quedado grabado pero fuera de toda caja. Acá
+                // se ajusta esa caja, y solo esa: adjustClosedDayForLateMovement
+                // verifica que sea el día en curso y que no haya días encima
+                // antes de mover un peso. Si no se cumple, lanza y la
+                // transacción deja el ingreso sin crear.
+                $ajusteDeCajaCerrada = $liquidationService
+                    ->adjustClosedDayForLateMovement($seller->id, $businessDate, $businessTimezone);
             }
 
             if ($request->hasFile('image')) {
@@ -140,7 +163,13 @@ class IncomeService
 
             return $this->successResponse([
                 'success' => true,
-                'message' => 'Ingreso creado con éxito',
+                'message' => $ajusteDeCajaCerrada
+                    ? 'Ingreso creado con éxito. La caja del día ya estaba cerrada: se le aplicó el ajuste.'
+                    : 'Ingreso creado con éxito',
+                // El front lo usa para avisar que la caja cerrada se movió, y
+                // para refrescar los totales en vez de confiar en los que ya
+                // tenía en pantalla.
+                'cash_box_adjusted' => $ajusteDeCajaCerrada,
                 'data' => $income,
             ]);
         } catch (CashClosedException $e) {

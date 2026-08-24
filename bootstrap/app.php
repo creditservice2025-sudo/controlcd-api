@@ -43,6 +43,11 @@ return Application::configure(basePath: dirname(__DIR__))
             // llega desde el web (sin X-Client-Type: mobile) devuelve 401 para
             // cerrar la sesión del navegador. Corre después de auth:api.
             'seller.apk.only'    => \App\Http\Middleware\BlockSellerWebSession::class,
+            // Cobrar y colocar es trabajo de campo: el Super-Admin (1) y el
+            // Admin de empresa (2) no registran pagos ni colocan/renuevan
+            // créditos. Se aplica solo a los tres endpoints de alta, desde el
+            // constructor de PaymentController y CreditController.
+            'block.admin.field.ops' => \App\Http\Middleware\BlockAdminFieldOperations::class,
             // Restringe el ingreso del Cobrador (rol 5) en días no laborables de
             // su ruta (hoy: domingo, según seller_configs.works_sundays). Expulsa
             // también sesiones abiertas de un día anterior. Corre después de auth:api.
@@ -60,6 +65,24 @@ return Application::configure(basePath: dirname(__DIR__))
         //
     })
     ->withExceptions(function (Exceptions $exceptions) {
+        // Las reglas de integridad de la caja son negocio, no fallo técnico:
+        // se devuelven como 422 con el motivo legible. Si cayeran en el
+        // handler genérico saldrían como 500 "Error al procesar la operación"
+        // y el usuario no se enteraría de POR QUÉ se rechazó —que es
+        // justamente lo que hay que evitar en un descuadre.
+        $exceptions->render(function (\App\Exceptions\LiquidationIntegrityException $e, $request) {
+            \Illuminate\Support\Facades\Log::warning('[liquidation.integrity] operación rechazada', [
+                'motivo'  => $e->getMessage(),
+                'user_id' => optional($request->user())->id,
+                'ruta'    => $request->path(),
+            ]);
+
+            return response()->json([
+                'success'    => false,
+                'message'    => $e->getMessage(),
+                'error_code' => 'LIQUIDATION_INTEGRITY',
+            ], 422);
+        });
     })
     ->withSchedule(function (Schedule $schedule) {
         // auto-daily cierra SOLO el dia en curso (hoy), en la ventana 23:55-23:59
@@ -69,7 +92,29 @@ return Application::configure(basePath: dirname(__DIR__))
         // dispara 5 veces (reintentos same-day) sin cruzar medianoche.
         // withoutOverlapping evita solapes (seguro ademas por el indice unico +
         // getOrCreate atomico).
-        $schedule->command('liquidation:auto-daily')
+        //
+        // --no-sweep: el cron cierra SOLO EL DÍA EN CURSO. El barrido de días
+        // anteriores (sweepStaleOpenDays) queda APAGADO en la programación a
+        // propósito.
+        //
+        // Motivo: cerrar un día viejo le recalcula los montos con los datos de
+        // hoy y NO recalcula los días que vienen detrás, así que el
+        // `initial_cash` del día siguiente queda desalineado con el
+        // `real_to_deliver` que se acaba de reescribir. Medido antes de este
+        // cambio: 215 días abiertos con fecha pasada, 128 vendedores, y 96 de
+        // ellos con días posteriores — se habrían cerrado y recalculado solos
+        // en ~3 minutos desde el primer schedule:run, descuadrando la cadena.
+        //
+        // El barrido sigue disponible como HERRAMIENTA MANUAL, para atacar ese
+        // histórico en ventana controlada y verificando la cadena antes y
+        // después:
+        //     php artisan liquidations:verify-chain          (antes)
+        //     php artisan liquidation:auto-daily --sweep-limit=10
+        //     php artisan liquidations:verify-chain          (después)
+        //
+        // Subir el código y reparar el histórico son dos operaciones distintas:
+        // un despliegue no debe mover una caja pasada.
+        $schedule->command('liquidation:auto-daily --no-sweep')
             ->everyMinute()
             ->withoutOverlapping()
             // (A) Si el comando revienta (excepcion / exit != 0), avisa por correo.
@@ -81,6 +126,15 @@ return Application::configure(basePath: dirname(__DIR__))
         // quedaron 'En curso'. No cierra nada, solo avisa.
         $schedule->command('liquidation:check-auto-closures')
             ->timezone('UTC')->dailyAt('07:00')->withoutOverlapping();
+
+        // Completa las direcciones de geolocalizacion que no se pudieron
+        // resolver al momento de guardarlas (proveedor caido, timeout). La
+        // coordenada ya esta guardada; esto solo le pone nombre. Va cada 5
+        // minutos y de a pocos registros para respetar el limite de 1
+        // consulta/segundo de Nominatim.
+        $schedule->command('geo:fill-addresses --limit=30')
+            ->everyFiveMinutes()
+            ->withoutOverlapping();
 
         $schedule->command('liquidation:historical')->dailyAt('23:55');
         $schedule->command('liquidation:notify-pending')->dailyAt('21:52');
