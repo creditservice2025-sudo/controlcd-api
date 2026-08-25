@@ -1120,6 +1120,29 @@ class CollectionDailyRecordService
             ? Carbon::parse($validated['recorded_at'], $tz)
             : Carbon::now($tz);
         $businessDate = $recordedAt->copy()->toDateString();
+
+        // El día contable lo decide el reloj del SERVIDOR, no el del cliente.
+        //
+        // recorded_at llega como reloj de pared desde el navegador. Una PC o un
+        // teléfono adelantados hacían nacer el movimiento en un día de negocio
+        // que todavía no empezó: la empresa quedaba con module_start_date en el
+        // futuro, la pantalla de hoy en cero, y el calendario sin permitir
+        // retroceder —porque no hay nada antes del inicio—. Se ve como si el
+        // módulo estuviera bloqueado.
+        //
+        // Mismo criterio que LiquidationDatePolicy en financing: fechas pasadas
+        // se permiten (correcciones), futuras no. Un movimiento de caja es algo
+        // que ya ocurrió.
+        $businessToday = Carbon::now($tz)->toDateString();
+        if ($businessDate > $businessToday) {
+            return $this->errorResponse(
+                'No se puede registrar un movimiento con fecha futura (' . $businessDate . '). '
+                    . 'El día de negocio en curso es ' . $businessToday . '. '
+                    . 'Revisá la fecha y la hora del dispositivo.',
+                422
+            );
+        }
+
         if ($this->closureSvc->isDayClosed($companyId, $businessDate)) {
             return $this->errorResponse(
                 'No se pueden registrar movimientos: la caja del día ' . $businessDate . ' está cerrada. El corte del día ya es definitivo.',
