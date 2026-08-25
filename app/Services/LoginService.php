@@ -32,6 +32,19 @@ class LoginService
     private const MOBILE_ALLOWED_ROLES = [5, 6]; // 5=Cobrador, 6=Supervisor
 
     /**
+     * Rol que entra al APK por MÓDULO y no por rol: el administrador de una
+     * empresa con Deuda & Abono habilitado. Ese módulo se opera en la calle y
+     * en el APK es de administradores, así que quedaba en un absurdo: la
+     * empresa tenía el módulo contratado y su admin no podía abrirlo desde el
+     * teléfono.
+     *
+     * Es una puerta acotada a propósito. Control CD en el APK sigue siendo de
+     * cobrador y supervisor: un admin que entra por esta vía entra a Deuda &
+     * Abono, no a operar créditos.
+     */
+    private const MOBILE_COLLECTION_ROLE = 2; // Administrador de empresa
+
+    /**
      * Código que el frontend usa para distinguir un 401 normal de uno
      * provocado por el supervisor revocando la sesión. Usado en el
      * interceptor de axios para mostrar el modal "Sesión finalizada por
@@ -56,6 +69,25 @@ class LoginService
     public static function liquidationClosedKey(int $cobradorUserId): string
     {
         return "liquidation_closed:cobrador:{$cobradorUserId}";
+    }
+
+    /**
+     * ¿Este usuario entra al APK por tener Deuda & Abono, aunque su rol no
+     * esté en MOBILE_ALLOWED_ROLES?
+     *
+     * Solo el administrador de una empresa, y solo si esa empresa tiene el
+     * módulo habilitado. `company` es la empresa que el usuario ENCABEZA
+     * (hasOne por user_id), la misma relación con la que el frontend decide
+     * mostrar el módulo en el menú: si las dos no miraran lo mismo, se podría
+     * entrar al APK y quedar sin nada para abrir.
+     */
+    private function puedeEntrarAlApkPorCollection(?User $user): bool
+    {
+        if (!$user || (int) $user->role_id !== self::MOBILE_COLLECTION_ROLE) {
+            return false;
+        }
+
+        return (bool) ($user->company->is_collection_enabled ?? false);
     }
 
     public function login($credentials)
@@ -89,7 +121,11 @@ class LoginService
             // pueden entrar al APK.
             // ============================================================
             $clientType = request()->header('X-Client-Type', 'web');
-            if ($clientType === 'mobile' && !in_array((int) $user->role_id, self::MOBILE_ALLOWED_ROLES, true)) {
+            if (
+                $clientType === 'mobile'
+                && !in_array((int) $user->role_id, self::MOBILE_ALLOWED_ROLES, true)
+                && !$this->puedeEntrarAlApkPorCollection($user)
+            ) {
                 return $this->errorResponse([
                     'Esta aplicación móvil está disponible únicamente para Cobradores y Supervisores de campo. Para acceder a sus funciones administrativas, ingrese al portal web con sus credenciales habituales.'
                 ], 403);
