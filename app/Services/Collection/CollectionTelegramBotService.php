@@ -291,8 +291,122 @@ class CollectionTelegramBotService
 
     private function startMovement(CollectionTelegramLink $link, int $chatId, string $type): void
     {
-        $link->update(['state' => 'm_amount', 'draft' => ['type' => $type]]);
-        $this->send($chatId, "{$this->typeEmoji($type)} *Nuevo {$this->typeLabel($type)}*\n\n💵 ¿Cuál es el *monto*? (solo el número, ej: 5000)");
+        $draft = ['type' => $type];
+        $cajas = $this->activeCashboxes((int) $link->company_id);
+
+        // Sin cajas habilitadas no hay dónde poner el movimiento. Antes el bot
+        // igual seguía y el backend lo rechazaba recién al final, después de
+        // haber pedido monto, categoría, fecha y foto.
+        if (empty($cajas)) {
+            $this->resetDraft($link);
+            $this->send(
+                $chatId,
+                "⚠️ La empresa no tiene *ninguna caja habilitada*, así que no puedo "
+                . "registrar el movimiento.\n\nPedile a un administrador que habilite "
+                . "o cree una caja desde Registros Diarios."
+            );
+            return;
+        }
+
+        $head = "{$this->typeEmoji($type)} *Nuevo {$this->typeLabel($type)}*";
+
+        // Con una sola caja no se pregunta: no hay elección que hacer y sería un
+        // toque de más en cada carga. Se informa cuál es y sigue de largo.
+        if (count($cajas) === 1) {
+            $caja = $cajas[0];
+            $draft['cashbox_id'] = (int) $caja->id;
+            $draft['cashbox_name'] = $caja->name;
+            $link->update(['state' => 'm_amount', 'draft' => $draft]);
+            $this->send(
+                $chatId,
+                "{$head}\n🏦 Caja: *{$caja->name}*\n\n"
+                . "💵 ¿Cuál es el *monto*? (solo el número, ej: 5000)"
+            );
+            return;
+        }
+
+        // La caja va PRIMERO: define dónde impacta el saldo, y preguntarla al
+        // final obligaría a rehacer el movimiento si se elige la equivocada.
+        $link->update(['state' => 'm_cashbox', 'draft' => $draft]);
+        $this->sendCashboxButtons($chatId, $head, $cajas);
+    }
+
+    /**
+     * Cajas habilitadas de la empresa, en el mismo orden que la app
+     * (principal primero). Las inhabilitadas no reciben movimientos nuevos.
+     *
+     * @return array<int, \App\Models\Collection\CollectionCashbox>
+     */
+    private function activeCashboxes(int $companyId): array
+    {
+        return \App\Models\Collection\CollectionCashbox::where('company_id', $companyId)
+            ->where('active', true)
+            ->orderByDesc('is_default')
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->get()
+            ->all();
+    }
+
+    private function sendCashboxButtons(int $chatId, string $head, array $cajas): void
+    {
+        // Telegram no lleva bien un teclado gigante: pasadas ~12 cajas se listan
+        // los nombres y se espera que escriban, en vez de una pared de botones.
+        $MAX_BOTONES = 12;
+        $conBotones = array_slice($cajas, 0, $MAX_BOTONES);
+        $rows = array_chunk(
+            array_map(fn ($c) => ['text' => $c->name], $conBotones),
+            2
+        );
+
+        $texto = "{$head}\n\n🏦 ¿En qué *caja* entra? (elegí una o escribí el nombre):";
+        if (count($cajas) > $MAX_BOTONES) {
+            $texto .= "\n\n_Mostrando " . $MAX_BOTONES . " de " . count($cajas)
+                . " cajas. Si la tuya no está, escribí su nombre._";
+        }
+
+        $this->send($chatId, $texto, [
+            'keyboard' => $rows,
+            'resize_keyboard' => true,
+            'one_time_keyboard' => true,
+        ]);
+    }
+
+    /**
+     * Busca una caja por lo que escribió el usuario. Compara sin acentos ni
+     * mayúsculas: exacto primero, y si no, que contenga el texto —pero solo si
+     * hay UNA coincidencia, para no elegir por él entre dos parecidas.
+     *
+     * @param  array<int, \App\Models\Collection\CollectionCashbox> $cajas
+     */
+    private function matchCashbox(array $cajas, string $text): ?object
+    {
+        // A mano y no con Normalizer: `ext-intl` no está instalada en todos los
+        // entornos, y una caja llamada "Bogotá" haría reventar al bot entero.
+        $norm = function (string $s): string {
+            $s = mb_strtolower(trim($s), 'UTF-8');
+            return strtr($s, [
+                'á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ú' => 'u',
+                'à' => 'a', 'è' => 'e', 'ì' => 'i', 'ò' => 'o', 'ù' => 'u',
+                'ä' => 'a', 'ë' => 'e', 'ï' => 'i', 'ö' => 'o', 'ü' => 'u',
+                'â' => 'a', 'ê' => 'e', 'î' => 'i', 'ô' => 'o', 'û' => 'u',
+                'ñ' => 'n', 'ç' => 'c',
+            ]);
+        };
+
+        $q = $norm($text);
+        if ($q === '') return null;
+
+        foreach ($cajas as $c) {
+            if ($norm($c->name) === $q) return $c;
+        }
+
+        $parciales = array_values(array_filter(
+            $cajas,
+            fn ($c) => str_contains($norm($c->name), $q)
+        ));
+
+        return count($parciales) === 1 ? $parciales[0] : null;
     }
 
     private function handleMovementFlow(CollectionTelegramLink $link, int $chatId, string $text, string $lower, ?array $photo): void
@@ -301,6 +415,29 @@ class CollectionTelegramBotService
         $type = $draft['type'] ?? 'gasto';
 
         switch ($link->state) {
+            case 'm_cashbox':
+                $cajas = $this->activeCashboxes((int) $link->company_id);
+                $caja = $this->matchCashbox($cajas, $text);
+                if (!$caja) {
+                    // Se reenvía el teclado: si el nombre no coincidió, el
+                    // cobrador se queda sin botones y sin saber qué escribir.
+                    $this->sendCashboxButtons(
+                        $chatId,
+                        "❓ No encontré esa caja.",
+                        $cajas
+                    );
+                    return;
+                }
+                $draft['cashbox_id'] = (int) $caja->id;
+                $draft['cashbox_name'] = $caja->name;
+                $link->update(['state' => 'm_amount', 'draft' => $draft]);
+                $this->send(
+                    $chatId,
+                    "🏦 Caja: *{$caja->name}*\n\n"
+                    . "💵 ¿Cuál es el *monto*? (solo el número, ej: 5000)"
+                );
+                return;
+
             case 'm_amount':
                 $amount = $this->parseAmount($text);
                 if ($amount === null || $amount <= 0) {
@@ -395,6 +532,10 @@ class CollectionTelegramBotService
             'amount' => $draft['amount'],
             'currency' => $link->currency ?: 'USD',
             'country_code' => $link->country_code,
+            // Caja elegida en el flujo. Sin esto el movimiento caía siempre en
+            // la caja principal, sin que quien lo cargaba lo supiera.
+            // (currency y country_code los recalcula create() desde la caja.)
+            'cashbox_id' => $draft['cashbox_id'] ?? null,
             'category' => $draft['category'] ?? null,
             'description' => $draft['description'] ?? null,
             'recorded_at' => $draft['recorded_at'] ?? null,
@@ -456,6 +597,9 @@ class CollectionTelegramBotService
             : 'Hoy';
         $lines = [];
         if ($header) $lines[] = "{$this->typeEmoji($type)} *Revisá el {$this->typeLabel($type)}:*";
+        // La caja va arriba de todo: es lo primero que hay que poder verificar
+        // en el comprobante, porque es donde quedó la plata.
+        if (!empty($draft['cashbox_name'])) $lines[] = "🏦 Caja: *{$draft['cashbox_name']}*";
         $lines[] = "💵 Monto: *{$link->currency} {$monto}*";
         if ($type === 'transferencia' && !empty($draft['destination'])) {
             $lines[] = "🔄 Destino: {$draft['destination']}";

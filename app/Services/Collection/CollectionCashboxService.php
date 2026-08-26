@@ -38,12 +38,16 @@ class CollectionCashboxService
         // en batch aunque solo se muestre en las inhabilitadas: son pocas cajas
         // por empresa y evita una consulta por tarjeta.
         $toggles = $this->lastToggleFor($companyId, $cashboxes->pluck('id')->all());
+        // Primer día con movimiento por caja: define desde cuándo opera cada
+        // una, que no siempre coincide con cuándo se creó su ficha.
+        $primeros = $this->firstMovementFor($companyId);
 
-        $rows = $cashboxes->map(function (CollectionCashbox $c) use ($balances, $toggles) {
+        $rows = $cashboxes->map(function (CollectionCashbox $c) use ($balances, $toggles, $primeros) {
             return $this->presentRow(
                 $c,
                 $balances[$c->id] ?? ['balance' => 0, 'count' => 0],
-                $toggles[(int) $c->id] ?? null
+                $toggles[(int) $c->id] ?? null,
+                $primeros[(int) $c->id] ?? null
             );
         })->values();
 
@@ -168,8 +172,38 @@ class CollectionCashboxService
         }
         if (array_key_exists('icon', $validated)) $cashbox->icon = $validated['icon'];
         if (array_key_exists('color', $validated)) $cashbox->color = $validated['color'];
-        if (array_key_exists('currency', $validated)) $cashbox->currency = $validated['currency'] ?? $cashbox->currency;
-        if (array_key_exists('country_code', $validated)) $cashbox->country_code = $validated['country_code'];
+
+        // La moneda y el país de una caja CON movimientos no se tocan: los
+        // importes ya grabados quedarían reetiquetados (500 pasarían a leerse
+        // como 500 de otra moneda) y el país ancla la fecha contable, así que
+        // cambiarlo podría correr movimientos de día. Se rechaza en el backend
+        // y no solo en la pantalla, porque el APK viejo sigue mandando ambos.
+        $cambiaMoneda = array_key_exists('currency', $validated)
+            && !empty($validated['currency'])
+            && strtoupper($validated['currency']) !== strtoupper((string) $cashbox->currency);
+        $cambiaPais = array_key_exists('country_code', $validated)
+            && strtoupper((string) $validated['country_code']) !== strtoupper((string) $cashbox->country_code);
+
+        if ($cambiaMoneda || $cambiaPais) {
+            $tieneMovimientos = CollectionDailyRecord::where('company_id', $companyId)
+                ->where(function ($q) use ($id) {
+                    $q->where('cashbox_id', $id)->orWhere('cashbox_to_id', $id);
+                })->exists();
+
+            if ($tieneMovimientos) {
+                return response()->json([
+                    'message' => 'La caja ya tiene movimientos: no se puede cambiar su moneda ni su país. '
+                        . 'Creá una caja nueva con la moneda correcta.',
+                ], 422);
+            }
+
+            if ($cambiaMoneda) $cashbox->currency = strtoupper($validated['currency']);
+            if ($cambiaPais) {
+                $cashbox->country_code = $validated['country_code']
+                    ? strtoupper($validated['country_code'])
+                    : null;
+            }
+        }
         if (array_key_exists('opening_balance', $validated)) $cashbox->opening_balance = $validated['opening_balance'];
         if (array_key_exists('sort_order', $validated)) $cashbox->sort_order = $validated['sort_order'];
 
@@ -503,8 +537,69 @@ class CollectionCashboxService
         return $out;
     }
 
+    /**
+     * Primer día con movimiento de cada caja de la empresa, en una sola pasada.
+     *
+     * @return array<int, string> cashbox_id => 'YYYY-MM-DD'
+     */
+    protected function firstMovementFor(int $companyId): array
+    {
+        return CollectionDailyRecord::where('company_id', $companyId)
+            ->whereNotNull('cashbox_id')
+            ->groupBy('cashbox_id')
+            ->selectRaw('cashbox_id')
+            ->selectRaw('MIN(business_date) AS primero')
+            ->get()
+            ->mapWithKeys(fn ($r) => [
+                (int) $r->cashbox_id => \Carbon\Carbon::parse($r->primero)->toDateString(),
+            ])
+            ->all();
+    }
+
+    /**
+     * Desde cuándo opera la caja (dd/mm/aaaa).
+     *
+     * NO es `created_at` a secas: el backfill de multi-caja creó las cajas
+     * DESPUÉS y les asignó los movimientos que ya existían, así que la ficha
+     * puede ser posterior a su propio historial (GUSTAVO GARCIA se creó el
+     * 05/08 y tiene movimientos desde el 04/08). Mostrar la fecha de la ficha
+     * contradecía al calendario, que sí mira los movimientos.
+     *
+     * Se toma la MENOR entre la creación y el primer movimiento. Si la caja
+     * todavía no tiene movimientos, queda la de creación, que es lo único que
+     * hay. La zona es la del PAÍS de la caja, igual que su día contable.
+     */
+    private function openedOn(CollectionCashbox $c, ?string $primerMovimiento = null): ?string
+    {
+        $tz = \App\Helpers\TimezoneHelper::timezoneForCountryCode($c->country_code)
+            ?: (\App\Models\Company::find($c->company_id)?->timezone ?: 'America/Bogota');
+
+        $candidatos = [];
+
+        if ($c->created_at) {
+            try {
+                $candidatos[] = \Carbon\Carbon::parse($c->created_at)->setTimezone($tz)->toDateString();
+            } catch (\Throwable $e) {
+                $candidatos[] = \Carbon\Carbon::parse($c->created_at)->toDateString();
+            }
+        }
+        // El primer movimiento ya viene como fecha contable (business_date):
+        // no se convierte de zona, que es justamente el punto de congelarla.
+        if ($primerMovimiento) $candidatos[] = $primerMovimiento;
+
+        if (empty($candidatos)) return null;
+        sort($candidatos);
+
+        return \Carbon\Carbon::parse($candidatos[0])->format('d/m/Y');
+    }
+
     /** Fila de caja tal como la consume el frontend. */
-    protected function presentRow(CollectionCashbox $c, array $b, ?array $toggle = null): array
+    protected function presentRow(
+        CollectionCashbox $c,
+        array $b,
+        ?array $toggle = null,
+        ?string $primerMovimiento = null
+    ): array
     {
         return [
             'id'              => $c->id,
@@ -519,6 +614,12 @@ class CollectionCashboxService
             'sort_order'      => (int) $c->sort_order,
             'balance'         => round((float) $c->opening_balance + ($b['balance'] ?? 0), 2),
             'movements_count' => $b['count'] ?? 0,
+            // Desde cuándo existe la caja. Se manda ya formateado y en la zona
+            // del PAÍS de la caja —la misma con la que se calcula su día
+            // contable—, no en la del aparato: una caja creada a las 22:00 en
+            // Lima no puede figurar como abierta "al día siguiente" porque el
+            // teléfono de quien mira está en otro huso.
+            'opened_on'       => $this->openedOn($c, $primerMovimiento),
             // Traza del último encendido/apagado (null si nunca se tocó).
             'toggle_action'   => $toggle['action'] ?? null,
             'toggled_at'      => $toggle['at'] ?? null,
