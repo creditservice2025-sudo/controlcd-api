@@ -1055,6 +1055,18 @@ class ClientService
                 // Conteo de comentarios para el distintivo en el listado.
                 ->withCount('comments');
 
+            // Columna "Empresa" del listado: la empresa dueña del cliente no está
+            // en `clients` (no hay company_id), se deriva del vendedor. Solo el
+            // Super Administrador (rol 1) ve clientes de varias empresas, así que
+            // solo para él se carga el nombre; el resto no paga la consulta extra.
+            if ((int) $user->role_id === 1) {
+                $clientsQuery->with([
+                    'seller.company' => function ($q) {
+                        $q->select('id', 'name');
+                    },
+                ]);
+            }
+
             // Role scoping
             switch ($user->role_id) {
                 case 1: // Admin - sin restricciones
@@ -1813,6 +1825,16 @@ class ClientService
                 // Conteo de comentarios para el distintivo en el listado
                 // (mismo badge que la pantalla general de Clientes).
                 ->withCount('comments')
+                // Empresa dueña del cliente para la columna "Empresa": igual que
+                // en index(), solo se carga para el Super Administrador (rol 1),
+                // el único que la ve.
+                ->when((int) Auth::user()->role_id === 1, function ($q) {
+                    $q->with([
+                        'seller.company' => function ($sq) {
+                            $sq->select('id', 'name');
+                        },
+                    ]);
+                })
                 ->where('seller_id', $sellerId)
                 ->when(Auth::user()->role_id == 1 && $companyId, function ($q) use ($companyId) {
                     $q->whereHas('seller', fn($sq) => $sq->where('company_id', $companyId));
