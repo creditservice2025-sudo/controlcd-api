@@ -90,19 +90,60 @@ class CollectionDailyRecordService
      * es válido para la empresa (o no se envía), cae a la caja principal
      * (default). Devuelve null si la empresa no tiene ninguna caja.
      */
+    /**
+     * Acota una consulta de registros a la caja elegida o, si no hay ninguna
+     * elegida, al CONSOLIDADO: solo las cajas habilitadas.
+     *
+     * Antes el consolidado no miraba el estado de la caja, así que con todas
+     * las cajas inhabilitadas la pantalla seguía listando sus movimientos y
+     * mostrando un "Balance del Día" mientras el cartel decía que no había
+     * ninguna caja habilitada. Inhabilitar una caja la saca del consolidado; su
+     * historial se ve entrando a esa caja, que sigue disponible para consulta.
+     *
+     * Los movimientos SIN caja (anteriores al multi-caja) se conservan en el
+     * consolidado: no pertenecen a ninguna caja apagada y esconderlos sería
+     * perder historial.
+     */
+    private function scopeToCashbox($query, int $companyId, ?int $cashboxId): void
+    {
+        if ($cashboxId) {
+            $query->where('cashbox_id', $cashboxId);
+            return;
+        }
+
+        $activeIds = \App\Models\Collection\CollectionCashbox::where('company_id', $companyId)
+            ->where('active', true)
+            ->pluck('id')
+            ->all();
+
+        $query->where(function ($q) use ($activeIds) {
+            $q->whereNull('cashbox_id');
+            if (!empty($activeIds)) $q->orWhereIn('cashbox_id', $activeIds);
+        });
+    }
+
     private function resolveCashboxId(int $companyId, $requested): ?int
     {
         $requested = ($requested !== null && $requested !== '') ? (int) $requested : null;
 
+        // Caja pedida explícitamente: si no es válida o está inhabilitada se
+        // devuelve null y el alta falla. Antes caía al respaldo, así que un
+        // movimiento podía terminar en una caja DISTINTA de la que se eligió
+        // en pantalla, sin decir nada.
         if ($requested) {
             $valid = \App\Models\Collection\CollectionCashbox::where('company_id', $companyId)
                 ->where('id', $requested)
                 ->where('active', true)
                 ->value('id');
-            if ($valid) return (int) $valid;
+            return $valid ? (int) $valid : null;
         }
 
+        // Respaldo (clientes viejos que no mandan caja): la principal, pero
+        // SOLO si está activa. El filtro por `active` faltaba, y desde que se
+        // puede inhabilitar cualquier caja —incluida la principal— el respaldo
+        // podía meter el movimiento en una caja apagada.
         $default = \App\Models\Collection\CollectionCashbox::where('company_id', $companyId)
+            ->where('active', true)
             ->orderByDesc('is_default')
             ->orderBy('id')
             ->value('id');
@@ -167,7 +208,7 @@ class CollectionDailyRecordService
             ->whereNull('deleted_at')
             ->whereBetween('business_date', [$from, $to]);
         if ($countryCode) $drQ->where('country_code', strtoupper($countryCode));
-        if ($cashboxId) $drQ->where('cashbox_id', $cashboxId);
+        $this->scopeToCashbox($drQ, $companyId, $cashboxId);
         $drRows = $drQ
             ->selectRaw("to_char(business_date, 'YYYY-MM-DD') as d, type, SUM(amount) as total")
             ->groupBy('d', 'type')
@@ -572,7 +613,7 @@ class CollectionDailyRecordService
             ->where('type', 'gasto')
             ->whereBetween('business_date', [$from, $to]);
         if ($countryCode) $drQ->where('country_code', strtoupper($countryCode));
-        if ($cashboxId) $drQ->where('cashbox_id', $cashboxId);
+        $this->scopeToCashbox($drQ, $companyId, $cashboxId);
         $drRows = $drQ
             ->selectRaw("COALESCE(NULLIF(category, ''), 'Sin categoría') as cat, SUM(amount) as total, COUNT(*) as cnt")
             ->groupBy('cat')->get();
@@ -698,7 +739,7 @@ class CollectionDailyRecordService
             ->whereNull('deleted_at')
             ->whereBetween('business_date', [$from, $to]);
         if ($countryCode) $movsQ->where('country_code', strtoupper($countryCode));
-        if ($cashboxId) $movsQ->where('cashbox_id', $cashboxId);
+        $this->scopeToCashbox($movsQ, $companyId, $cashboxId);
         $movs = $movsQ->orderBy('business_date', 'desc')->orderBy('recorded_at', 'desc')->get();
 
         $mUids = $movs->pluck('user_id')->filter()->unique()->values()->all();
@@ -796,7 +837,7 @@ class CollectionDailyRecordService
             ->whereNull('deleted_at')
             ->whereBetween('business_date', [$from, $to]);
         if ($countryCode) $q->where('country_code', strtoupper($countryCode));
-        if ($cashboxId) $q->where('cashbox_id', $cashboxId);
+        $this->scopeToCashbox($q, $companyId, $cashboxId);
         if ($type && in_array($type, CollectionDailyRecord::TYPES)) $q->where('type', $type);
 
         $records = $q->orderBy('business_date', 'desc')->orderBy('recorded_at', 'desc')->get();
@@ -840,7 +881,7 @@ class CollectionDailyRecordService
 
             if ($countryCode) $q->where('country_code', strtoupper($countryCode));
             if ($type && in_array($type, CollectionDailyRecord::TYPES)) $q->where('type', $type);
-            if ($cashboxId) $q->where('cashbox_id', $cashboxId);
+            $this->scopeToCashbox($q, $companyId, $cashboxId);
 
             $dailyRecords = $q->orderBy('recorded_at', 'desc')->get();
 
@@ -961,7 +1002,7 @@ class CollectionDailyRecordService
                 ->where('business_date', $date);
             if ($countryCode) $dq->where('country_code', strtoupper($countryCode));
             if ($type && in_array($type, CollectionDailyRecord::TYPES)) $dq->where('type', $type);
-            if ($cashboxId) $dq->where('cashbox_id', $cashboxId);
+            $this->scopeToCashbox($dq, $companyId, $cashboxId);
             $deleted = $dq->orderByDesc('deleted_at')->get();
 
             // Nombres de creador y de quien eliminó (usuarios viven en MySQL).
@@ -1106,20 +1147,64 @@ class CollectionDailyRecordService
         // válida para la empresa, cae a la caja principal (default).
         $cashboxId = $this->resolveCashboxId($companyId, $validated['cashbox_id'] ?? null);
         if (!$cashboxId) {
-            return $this->errorResponse('La empresa no tiene una caja configurada.', 422);
+            // Se distinguen los dos casos porque la salida es distinta: crear
+            // una caja, o volver a habilitar la que se eligió.
+            $hayActivas = \App\Models\Collection\CollectionCashbox::where('company_id', $companyId)
+                ->where('active', true)->exists();
+            return $this->errorResponse(
+                $hayActivas
+                    ? 'La caja elegida no existe o está inhabilitada. Elegí otra caja.'
+                    : 'No hay ninguna caja habilitada. Creá una caja (o habilitá una existente) antes de registrar movimientos.',
+                422
+            );
         }
+
+        // El PAÍS del movimiento lo define la CAJA, no el payload. El cliente
+        // mandaba el país activo del módulo, así que un movimiento cargado en
+        // una caja de Perú podía nacer marcado como Colombia: después no
+        // aparecía en nada que filtre por país (corte del módulo, reportes),
+        // aunque la bitácora de la caja sí lo mostrara. El valor del payload
+        // queda solo como respaldo para cajas sin país cargado.
+        $cashbox = \App\Models\Collection\CollectionCashbox::where('company_id', $companyId)
+            ->find($cashboxId);
+        $payloadCountry = !empty($validated['country_code']) ? strtoupper($validated['country_code']) : null;
+        $countryCode = !empty($cashbox?->country_code)
+            ? strtoupper($cashbox->country_code)
+            : $payloadCountry;
 
         // Fecha contable (business_date): anclada a la zona del PAÍS del
         // movimiento (country_code → IANA); si no hay país conocido, cae a la
         // zona de la empresa. El recorded_at llega como reloj de pared local en
         // esa misma zona. business_date se congela aquí y es la base de todos
         // los cortes/reportes (no se re-deriva en consulta).
-        $countryCode = !empty($validated['country_code']) ? strtoupper($validated['country_code']) : null;
         $tz = TimezoneHelper::timezoneForCountryCode($countryCode) ?: $this->companyTz($companyId);
         $recordedAt = !empty($validated['recorded_at'])
             ? Carbon::parse($validated['recorded_at'], $tz)
             : Carbon::now($tz);
         $businessDate = $recordedAt->copy()->toDateString();
+
+        // El día contable lo decide el reloj del SERVIDOR, no el del cliente.
+        //
+        // recorded_at llega como reloj de pared desde el navegador. Una PC o un
+        // teléfono adelantados hacían nacer el movimiento en un día de negocio
+        // que todavía no empezó: la empresa quedaba con module_start_date en el
+        // futuro, la pantalla de hoy en cero, y el calendario sin permitir
+        // retroceder —porque no hay nada antes del inicio—. Se ve como si el
+        // módulo estuviera bloqueado.
+        //
+        // Mismo criterio que LiquidationDatePolicy en financing: fechas pasadas
+        // se permiten (correcciones), futuras no. Un movimiento de caja es algo
+        // que ya ocurrió.
+        $businessToday = Carbon::now($tz)->toDateString();
+        if ($businessDate > $businessToday) {
+            return $this->errorResponse(
+                'No se puede registrar un movimiento con fecha futura (' . $businessDate . '). '
+                    . 'El día de negocio en curso es ' . $businessToday . '. '
+                    . 'Revisá la fecha y la hora del dispositivo.',
+                422
+            );
+        }
+
         if ($this->closureSvc->isDayClosed($companyId, $businessDate)) {
             return $this->errorResponse(
                 'No se pueden registrar movimientos: la caja del día ' . $businessDate . ' está cerrada. El corte del día ya es definitivo.',
@@ -1153,8 +1238,13 @@ class CollectionDailyRecordService
             if (!empty($validated['transfer_to'])) $metadata['transfer_to'] = $validated['transfer_to'];
         }
 
-        return DB::connection('collection_pgsql')->transaction(function () use ($validated, $companyId, $metadata, $recordedAt, $businessDate, $countryCode, $cashboxId) {
-            $currency = strtoupper($validated['currency']);
+        // Misma regla que el país: la moneda del movimiento es la de la caja
+        // donde entra. El payload solo se usa si la caja no la tiene cargada.
+        $currency = !empty($cashbox?->currency)
+            ? strtoupper($cashbox->currency)
+            : strtoupper($validated['currency']);
+
+        return DB::connection('collection_pgsql')->transaction(function () use ($validated, $companyId, $metadata, $recordedAt, $businessDate, $countryCode, $cashboxId, $currency) {
 
             $record = CollectionDailyRecord::create([
                 'company_id' => $companyId,

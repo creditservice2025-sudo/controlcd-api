@@ -473,6 +473,10 @@ class CompanyService
 
             DB::commit();
 
+            // Misma razón que en toggleModule: editar la empresa y ver el dato
+            // viejo en la tabla durante un minuto se lee como que no guardó.
+            $this->invalidateIndexCache();
+
             return $this->successResponse([
                 'success' => true,
                 'message' => "Empresa actualizada con éxito",
@@ -502,6 +506,13 @@ class CompanyService
             // Toggle the current state
             $company->$field = !$company->$field;
             $company->save();
+
+            // Sin esto el módulo se guardaba pero la tabla seguía mostrando el
+            // estado anterior hasta 60s: el listado está cacheado y el toggle
+            // no lo invalidaba. Desde el lado del usuario se veía como que el
+            // botón no hacía nada. Mismo motivo por el que ya lo hace el
+            // switch de Telegram.
+            $this->invalidateIndexCache();
 
             $moduleName = ($module === 'financing') ? 'Control CD' : 'Deuda & Abono';
             $stateText = $company->$field ? 'activado' : 'desactivado';

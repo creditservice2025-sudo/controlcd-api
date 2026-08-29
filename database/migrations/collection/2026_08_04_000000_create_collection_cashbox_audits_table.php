@@ -24,6 +24,13 @@ return new class extends Migration
 
     public function up(): void
     {
+        // Idempotente a propósito: el servidor de test ya tiene la tabla (la
+        // creó el código de otra rama), así que un create() a secas abortaba el
+        // batch de migraciones entero.
+        if (Schema::connection($this->connection)->hasTable('collection_cashbox_audits')) {
+            return;
+        }
+
         Schema::connection($this->connection)->create('collection_cashbox_audits', function (Blueprint $table) {
             $table->id();
             $table->unsignedBigInteger('company_id')->index();
