@@ -209,6 +209,21 @@ class CollectionCreditController extends Controller
         return $this->collectionCreditService->updateCapitalAddition($additionId, $validated);
     }
 
+    public function destroyCapitalAddition(Request $request, int $additionId)
+    {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
+        // El motivo es obligatorio: la anulacion mueve caja y el historial tiene
+        // que decir por que, no solo que paso.
+        $validated = $request->validate([
+            'reason' => 'required|string|min:3|max:1000',
+        ]);
+        $validated['company_id'] = $companyId;
+
+        return $this->collectionCreditService->destroyCapitalAddition($additionId, $validated);
+    }
+
     public function destroyInstallment(Request $request, int $id)
     {
         $companyId = $this->resolveOwnCompanyId($request);

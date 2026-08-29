@@ -211,7 +211,7 @@ class CollectionClientService
                 'transfer_support_photo' => $creditMeta['transfer_support_photo'] ?? null,
                 'transfer_bank_name' => $creditMeta['transfer_bank_name'] ?? null,
                 'transfer_reference_number' => $creditMeta['transfer_reference_number'] ?? null,
-                'created_at' => optional($client->created_at)->toISOString(),
+                'created_at' => \App\Helpers\CollectionClock::iso($client->created_at),
             ];
         })->values();
 
@@ -555,7 +555,9 @@ class CollectionClientService
                 'total_paid' => (float) ($stats->total_paid_all ?? 0),
                 'total_principal_paid' => (float) ($stats->total_principal_paid ?? 0),
                 'total_interest_paid' => (float) ($stats->total_paid_all ?? 0) - (float) ($stats->total_principal_paid ?? 0),
-                'created_at' => optional($credit->created_at)->toISOString(),
+                // Hora real del registro: los timestamps de Collection se guardan
+                // corridos por la zona de la conexión. Ver App\Helpers\CollectionClock.
+                'created_at' => \App\Helpers\CollectionClock::iso($credit->created_at),
                 'transfer_bank_name' => $meta['transfer_bank_name'] ?? null,
                 'transfer_reference_number' => $meta['transfer_reference_number'] ?? null,
                 'transfer_voucher_photo' => $meta['transfer_voucher_photo'] ?? null,
@@ -631,7 +633,7 @@ class CollectionClientService
                             : null,
                         // Instante en que se generó la cuota: permite reconstruir
                         // de qué movimientos se compone su capital base.
-                        'recorded_at' => optional($inst->recorded_at)->toISOString(),
+                        'recorded_at' => \App\Helpers\CollectionClock::iso($inst->recorded_at),
                         'paid_amount' => (float) $inst->paid_amount,
                         'principal_paid' => (float) ($inst->principal_paid ?? 0),
                         'interest_paid' => (float) ($inst->interest_paid ?? 0),
@@ -639,12 +641,12 @@ class CollectionClientService
                         'pending_principal' => $pendingPrincipal,
                         'pending_amount' => round($pendingInterest + $pendingPrincipal, 2),
                         'status' => $inst->status,
-                        'last_payment_at' => $inst->last_payment_at?->toISOString(),
+                        'last_payment_at' => \App\Helpers\CollectionClock::iso($inst->last_payment_at),
                         'payment_method' => $inst->payment_method,
                         'notes' => $inst->notes,
                         'voucher_path' => $inst->voucher_path,
                         'history' => $inst->history,
-                        'deleted_at' => $inst->deleted_at?->toISOString(),
+                        'deleted_at' => \App\Helpers\CollectionClock::iso($inst->deleted_at),
                         'deleted_by_name' => $deletingUser ? $deletingUser->name : null,
                         'payments' => $inst->payments->map(function($p) {
                             return [
@@ -656,7 +658,7 @@ class CollectionClientService
                                 'payment_method' => $p->payment_method,
                                 'notes' => $p->notes,
                                 'voucher_path' => $p->voucher_path,
-                                'recorded_at' => optional($p->recorded_at)->toISOString(),
+                                'recorded_at' => \App\Helpers\CollectionClock::iso($p->recorded_at),
                             ];
                         }),
                     ];
@@ -685,7 +687,7 @@ class CollectionClientService
             'installments' => $installments,
             // Créditos dados de baja que quedaron fuera de la cartera visible.
             'cancelled_credits_count' => $cancelledCount,
-            'created_at' => optional($client->created_at)->toISOString(),
+            'created_at' => \App\Helpers\CollectionClock::iso($client->created_at),
         ];
 
         return $this->successResponse([
@@ -844,7 +846,7 @@ class CollectionClientService
                 'user_id' => $audit->user_id,
                 'user_name' => $names[$audit->user_id] ?? null,
                 'ip_address' => $audit->ip_address,
-                'created_at' => optional($audit->created_at)->toISOString(),
+                'created_at' => \App\Helpers\CollectionClock::iso($audit->created_at),
                 'fields' => $this->describeAuditChanges(
                     (string) $audit->action,
                     is_array($audit->changes) ? $audit->changes : []

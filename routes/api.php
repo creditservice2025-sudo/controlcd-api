@@ -501,6 +501,8 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         Route::get('credits/{creditId}/cardboard-pdf', [CollectionCreditController::class, 'cardboardPdf']);
         // Corrección de una adición dentro de la ventana del mismo día.
         Route::match(['post', 'put'], 'capital-additions/{additionId}', [CollectionCreditController::class, 'updateCapitalAddition']);
+        // Anulación de una adición, en la misma ventana del mismo día.
+        Route::delete('capital-additions/{additionId}', [CollectionCreditController::class, 'destroyCapitalAddition']);
         Route::delete('installments/{id}', [CollectionCreditController::class, 'destroyInstallment']);
         Route::post('payments', [CollectionPaymentController::class, 'store']);
         Route::get('expenses', [\App\Http\Controllers\Collection\CollectionExpenseController::class, 'index']);

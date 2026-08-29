@@ -247,22 +247,15 @@ class CollectionCreditService
             ->toDateString();
     }
 
-    /** Offset en segundos de la zona horaria de la conexión Postgres (-14400 para -04). */
+    /**
+     * Offset en segundos de la zona horaria de la conexión Postgres (-14400 para -04).
+     *
+     * El cálculo vive en CollectionClock: el mismo desfase afecta a CUALQUIER
+     * hora que se muestre, no solo a la fecha de registro. Ver el helper.
+     */
     private function pgTimezoneOffsetSeconds(): int
     {
-        static $cached = null;
-
-        if ($cached === null) {
-            try {
-                $row = DB::connection(self::CONNECTION)
-                    ->select('SELECT EXTRACT(TIMEZONE FROM now()) AS offset_seconds');
-                $cached = (int) ($row[0]->offset_seconds ?? 0);
-            } catch (\Throwable $e) {
-                $cached = 0;
-            }
-        }
-
-        return $cached;
+        return \App\Helpers\CollectionClock::offsetSeconds();
     }
 
     /**
@@ -654,7 +647,7 @@ class CollectionCreditService
                 'pending_principal' => $principalDue,
                 'status' => $status,
                 'is_paid' => $status === 'pagado' || ($interestDue <= 0 && $principalDue <= 0),
-                'last_payment_at' => optional($i->last_payment_at)->toISOString(),
+                'last_payment_at' => \App\Helpers\CollectionClock::iso($i->last_payment_at),
                 'payment_method' => $i->payment_method,
             ];
         })->values()->all();
@@ -862,7 +855,7 @@ class CollectionCreditService
                 'user_id' => $audit->user_id,
                 'user_name' => $names[$audit->user_id] ?? null,
                 'ip_address' => $audit->ip_address,
-                'created_at' => optional($audit->created_at)->toISOString(),
+                'created_at' => \App\Helpers\CollectionClock::iso($audit->created_at),
                 'fields' => $this->describeCreditAuditChanges($changes),
             ];
         })->values();
@@ -1012,7 +1005,8 @@ class CollectionCreditService
                 'action_type' => 'capital_addition',
                 'reference_type' => 'credit',
                 'reference_id' => $credit->id,
-                'description' => "Adición de capital al crédito #{$credit->id}",
+                'description' => "ADC-{$addition->id} · Adición de capital al crédito #{$credit->id}"
+                    . ($payload['reference_number'] ?? null ? " · ref. " . $payload['reference_number'] : ''),
             ]);
 
             // La próxima cuota se calcula sobre el capital VIVO (ya descontado lo
@@ -1203,7 +1197,7 @@ class CollectionCreditService
             ?: optional($addition->business_date)->toDateString();
 
         if ($registeredOn !== $today) {
-            return [false, 'Una adición solo puede editarse el mismo día en que se registró.'];
+            return [false, 'Una adición solo se puede corregir o anular el mismo día en que se registró.'];
         }
 
         $businessDate = optional($addition->business_date)->toDateString() ?: $today;
@@ -1373,6 +1367,142 @@ class CollectionCreditService
     }
 
     /**
+     * Anula una adicion de capital dentro de la ventana del mismo dia.
+     *
+     * Es el espejo exacto de addCapital(), deshecho:
+     *  - la fila queda marcada (deleted_at), NO se borra: el asiento original
+     *    sigue en el extracto marcado ANULADA, y el historial tiene que poder
+     *    explicar por que el credito bajo de monto
+     *  - el `amount` del credito baja por el monto de la adicion
+     *  - la caja recibe un movimiento NUEVO de vuelta (append-only, nunca se
+     *    edita ni se borra el movimiento original)
+     *
+     * La cuota vigente NO se toca, por la misma razon que al agregar capital: su
+     * interes ya se devengo sobre el capital que habia. El efecto se ve en la
+     * cuota siguiente.
+     */
+    public function destroyCapitalAddition(int $additionId, array $payload)
+    {
+        $companyId = $this->resolveCompanyId($payload['company_id'] ?? null);
+        if (!$companyId) {
+            return $this->errorResponse('No se pudo determinar la compañía para Collection', 422);
+        }
+
+        $addition = CollectionCapitalAddition::query()
+            ->where('id', $additionId)
+            ->where('company_id', $companyId)
+            ->first();
+
+        if (!$addition) {
+            // withTrashed para distinguir "no existe" de "ya la anularon":
+            // sin esto, el segundo clic del cobrador dice "no encontrada" y
+            // parece un error del sistema.
+            $alreadyGone = CollectionCapitalAddition::withTrashed()
+                ->where('id', $additionId)
+                ->where('company_id', $companyId)
+                ->exists();
+
+            return $alreadyGone
+                ? $this->errorResponse('Esta adición ya fue anulada.', 409)
+                : $this->errorNotFoundResponse('Adición de capital no encontrada');
+        }
+
+        $credit = CollectionCredit::query()
+            ->where('id', $addition->credit_id)
+            ->where('company_id', $companyId)
+            ->first();
+
+        [$deletable, $reason] = $this->capitalAdditionEditability($addition, $credit);
+        if (!$deletable) {
+            return $this->errorResponse($reason, 409);
+        }
+
+        $amount = (float) $addition->amount;
+
+        // Sacar la adicion no puede dejar el credito sin capital: eso ya no es
+        // una correccion, es anular el credito, y para eso esta el otro camino.
+        if (round((float) $credit->amount - $amount, 2) <= 0) {
+            return $this->errorResponse(
+                'Anular esta adición deja el crédito en cero o negativo. '
+                . 'Si querés deshacer el crédito completo, usá "Anular crédito".',
+                422
+            );
+        }
+
+        $motivo = trim((string) ($payload['reason'] ?? ''));
+        if ($motivo === '') {
+            return $this->errorResponse('Indicá el motivo de la anulación: queda en el historial.', 422);
+        }
+
+        return DB::connection(self::CONNECTION)->transaction(function () use (
+            $addition, $credit, $companyId, $amount, $motivo
+        ) {
+            $snapshot = [
+                'addition_amount' => $amount,
+                'addition_business_date' => optional($addition->business_date)->toDateString(),
+                'payment_method' => $addition->payment_method,
+                'reference_number' => $addition->reference_number,
+                'bank_name' => $addition->bank_name,
+                'notes' => $addition->notes,
+                'voucher_photo' => $addition->voucher_photo,
+                'credit_amount_before' => (float) $credit->amount,
+            ];
+
+            $addition->deleted_by = Auth::id();
+            $addition->deletion_reason = $motivo;
+            $addition->save();
+            // delete() sobre el trait: marca deleted_at sin tocar la fila.
+            $addition->delete();
+
+            $credit->amount = round((float) $credit->amount - $amount, 2);
+            $credit->save();
+
+            // El capital vuelve a la caja: la adicion habia salido como debit.
+            app(\App\Services\Collection\CollectionWalletService::class)->recordMovement([
+                'company_id' => $companyId,
+                'currency' => strtoupper($credit->currency ?: 'COP'),
+                'country_code' => strtoupper($credit->country_code ?: 'CO'),
+                'amount' => $amount,
+                'type' => 'credit',
+                'action_type' => 'capital_addition_reversal',
+                'reference_type' => 'credit',
+                'reference_id' => $credit->id,
+                'description' => "REV ADC-{$addition->id} · Anulación de la adición del crédito #{$credit->id}: "
+                    . number_format($amount, 2) . ' vuelve a caja'
+                    . ($addition->reference_number ? ' · ref. ' . $addition->reference_number : '')
+                    . '. Motivo: ' . $motivo,
+            ]);
+
+            \App\Models\Collection\CollectionCreditAudit::query()->create([
+                'company_id' => $companyId,
+                'credit_id' => $credit->id,
+                'action' => 'addition_deleted',
+                'user_id' => Auth::id(),
+                'ip_address' => request()->ip(),
+                'changes' => [
+                    'addition_id' => $addition->id,
+                    'old' => $snapshot,
+                    'new' => [
+                        'deleted' => true,
+                        'deletion_reason' => $motivo,
+                        'credit_amount_after' => (float) $credit->amount,
+                    ],
+                ],
+            ]);
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Adición de capital anulada',
+                'data' => [
+                    'id' => $addition->id,
+                    'amount' => $amount,
+                    'credit_amount' => (float) $credit->amount,
+                ],
+            ]);
+        });
+    }
+
+    /**
      * Lista las adiciones de capital hechas sobre un credito (historial).
      * Orden: mas recientes primero. Incluye el nombre del usuario que las hizo.
      */
@@ -1391,7 +1521,10 @@ class CollectionCreditService
             return $this->errorNotFoundResponse('Crédito Collection no encontrado');
         }
 
-        $rows = CollectionCapitalAddition::query()
+        // withTrashed: el historial y el extracto son los UNICOS lugares que
+        // muestran las adiciones anuladas. En el resto del sistema quedan fuera
+        // solas, por el scope global de SoftDeletes del modelo.
+        $rows = CollectionCapitalAddition::withTrashed()
             ->where('credit_id', $creditId)
             ->where('company_id', $companyId)
             ->orderByDesc('business_date')
@@ -1399,7 +1532,9 @@ class CollectionCreditService
             ->get();
 
         // Hidratar nombre del usuario (viene del schema MySQL, conexion separada).
-        $userIds = $rows->pluck('created_by')->filter()->unique()->values()->all();
+        $userIds = $rows->pluck('created_by')
+            ->merge($rows->pluck('deleted_by'))
+            ->filter()->unique()->values()->all();
         $users = [];
         if (!empty($userIds)) {
             $users = \App\Models\User::query()
@@ -1409,7 +1544,12 @@ class CollectionCreditService
         }
 
         $data = $rows->map(function ($r) use ($users, $credit) {
-            [$canEdit, $editReason] = $this->capitalAdditionEditability($r, $credit);
+            $isDeleted = $r->deleted_at !== null;
+            // Una adicion anulada ya no se edita ni se vuelve a anular: su
+            // contrasiento ya esta asentado.
+            [$canEdit, $editReason] = $isDeleted
+                ? [false, 'Esta adición fue anulada.']
+                : $this->capitalAdditionEditability($r, $credit);
 
             return [
                 'id'               => $r->id,
@@ -1422,9 +1562,21 @@ class CollectionCreditService
                 'voucher_photo'    => $r->voucher_photo,
                 'created_by'       => $r->created_by,
                 'created_by_name'  => $users[$r->created_by] ?? null,
-                'created_at'       => optional($r->created_at)->toISOString(),
+                // Hora real del alta (corregida): ver App\Helpers\CollectionClock.
+                'created_at'       => \App\Helpers\CollectionClock::iso($r->created_at),
                 'can_edit'         => $canEdit,
                 'edit_blocked_reason' => $editReason,
+                // Misma ventana que la edicion: si la adicion se puede corregir,
+                // se puede anular. Pedir mas permiso para anular que para editar
+                // seria teatro: bajar el monto a 0,01 deja la caja casi igual
+                // que anularla.
+                'can_delete'       => $canEdit,
+                'delete_blocked_reason' => $editReason,
+                'is_deleted'       => $isDeleted,
+                'deleted_at'       => \App\Helpers\CollectionClock::iso($r->deleted_at),
+                'deleted_by'       => $r->deleted_by,
+                'deleted_by_name'  => $users[$r->deleted_by] ?? null,
+                'deletion_reason'  => $r->deletion_reason,
             ];
         })->values();
 
@@ -1432,8 +1584,11 @@ class CollectionCreditService
             'success' => true,
             'data' => [
                 'items' => $data,
-                'total_count' => $data->count(),
-                'total_amount' => (float) $rows->sum('amount'),
+                // Los totales son del capital REALMENTE agregado: las anuladas se
+                // listan para la traza, pero no suman.
+                'total_count' => $data->where('is_deleted', false)->count(),
+                'total_amount' => (float) $rows->whereNull('deleted_at')->sum('amount'),
+                'deleted_count' => $data->where('is_deleted', true)->count(),
             ],
         ]);
     }

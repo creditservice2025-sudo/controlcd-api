@@ -3,9 +3,17 @@
 namespace App\Models\Collection;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class CollectionCapitalAddition extends Model
 {
+    // SoftDeletes va aca a proposito, y no un ->whereNull('deleted_at') en cada
+    // consulta: las adiciones se leen desde seis servicios (cierre de caja,
+    // dashboard, registros diarios, clientes, creditos). El scope global las
+    // excluye en todos de una vez; olvidarse de uno solo desbalancearia la caja.
+    // El unico que las quiere ver es el historial, y ahi se pide withTrashed().
+    use SoftDeletes;
+
     protected $connection = 'collection_pgsql';
     protected $table = 'collection_capital_additions';
 
@@ -21,11 +29,14 @@ class CollectionCapitalAddition extends Model
         'voucher_photo',
         'notes',
         'created_by',
+        'deleted_by',
+        'deletion_reason',
     ];
 
     protected $casts = [
         'amount' => 'decimal:2',
         'business_date' => 'date',
+        'deleted_at' => 'datetime',
     ];
 
     public function credit()
