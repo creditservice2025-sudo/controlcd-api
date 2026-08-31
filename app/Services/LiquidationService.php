@@ -2350,7 +2350,29 @@ class LiquidationService
             $remainingAmount = $credit->outstandingAmount();
             $dayPayments = $credit->payments()->whereBetween('payments.created_at', [$start, $end])->get();
             $paidToday = $dayPayments->sum('amount');
-            $paymentTime = $dayPayments->isNotEmpty() ? $dayPayments->last()->created_at->timezone(self::TIMEZONE)->format('H:i:s') : null;
+            // Hora del cobro: el sello LOCAL del pago (business_timestamp), tal
+            // cual, sin convertir.
+            //
+            // Antes convertia created_at —que se guarda en UTC— a America/Lima.
+            // Esa cuenta depende del APP_TIMEZONE del proceso PHP: el mismo pago
+            // salia impreso a las 21:17 o a la 01:17 segun como estuviera
+            // configurado el servidor, y con el reloj corrido un cobro de la
+            // noche aparecia como de la madrugada en el papel que firma el
+            // cobrador. El sello local no admite conversion que salga mal: es la
+            // hora que el cobrador vio en su telefono.
+            //
+            // Los pagos viejos sin sello caen a la conversion de antes, pero con
+            // la zona del propio pago y no con una fija.
+            $paymentTime = null;
+            if ($dayPayments->isNotEmpty()) {
+                $ultimoPago = $dayPayments->last();
+                $sello = str_replace('T', ' ', (string) $ultimoPago->business_timestamp);
+                $paymentTime = strlen($sello) >= 19
+                    ? substr($sello, 11, 8)
+                    : $ultimoPago->created_at
+                        ->timezone($ultimoPago->business_timezone ?: self::TIMEZONE)
+                        ->format('H:i:s');
+            }
 
             if ($paidToday > 0) {
                 $withPayment++;
