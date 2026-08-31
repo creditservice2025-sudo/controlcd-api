@@ -515,6 +515,8 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         Route::post('cashboxes', [\App\Http\Controllers\Collection\CollectionCashboxController::class, 'store']);
         Route::put('cashboxes/{id}', [\App\Http\Controllers\Collection\CollectionCashboxController::class, 'update']);
         Route::delete('cashboxes/{id}', [\App\Http\Controllers\Collection\CollectionCashboxController::class, 'destroy']);
+        Route::get('cashboxes/{id}/statement', [\App\Http\Controllers\Collection\CollectionCashboxController::class, 'statement']);
+        Route::patch('cashboxes/{id}/active', [\App\Http\Controllers\Collection\CollectionCashboxController::class, 'setActive']);
 
         // Registros diarios (bit\u00e1cora manual: ingreso | gasto | transferencia | ajuste)
         // Independiente de wallet/ledger.

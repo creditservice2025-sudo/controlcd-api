@@ -56,6 +56,12 @@ class CollectionCashClosureService
             'date' => $date,
             'timezone' => $tz,
             'server_today' => $serverToday,
+            // Instante EXACTO del servidor, en la zona de la empresa. El
+            // formulario propone la hora con esto y no con el reloj del
+            // aparato: un teléfono con la hora corrida hacía nacer el
+            // movimiento a una hora que nunca ocurrió (y si iba adelantado,
+            // en un día de negocio que todavía no empezó).
+            'server_now' => Carbon::now($tz)->toIso8601String(),
             'module_start_date' => $moduleStart,
             'country_code' => $countryCode,
             'totals' => $totals,
