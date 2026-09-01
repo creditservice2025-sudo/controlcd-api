@@ -1126,9 +1126,21 @@ class CollectionCreditService
                     'deleted_ip' => request()->ip(),
                 ]);
 
+            // Zona del credito, mismo criterio que el resto del servicio.
+            $cancelTz = \App\Helpers\TimezoneHelper::timezoneForCountryCode($credit->country_code)
+                ?: 'America/Bogota';
+            $cancelNow = Carbon::now($cancelTz);
+
             $credit->status = 'anulado';
             $meta['cancelled_by'] = Auth::id();
+            // Instante exacto (UTC) para la auditoria: responde "a que hora".
             $meta['cancelled_at'] = Carbon::now()->toISOString();
+            // Dia de negocio de la anulacion, anclado a la zona del credito:
+            // responde "a que jornada de caja pertenece el reintegro". Sin esto,
+            // una anulacion de las 20:30 en Lima es el dia siguiente en UTC y el
+            // corte diario la cuenta en la jornada equivocada.
+            $meta['cancelled_business_date'] = $cancelNow->toDateString();
+            $meta['cancelled_timezone'] = $cancelTz;
             $meta['cancelled_reason'] = $reason;
             $credit->metadata = $meta;
             $credit->save();

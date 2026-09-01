@@ -346,8 +346,12 @@ class CollectionReportsService
 
         if (!$client) return null;
 
+        // Un credito anulado no es cartera: no suma saldo ni cuotas. Se excluye
+        // del reporte por la misma razon que la ficha del cliente lo saca de la
+        // vista diaria (scope notCancelled).
         $credits = CollectionCredit::where('company_id', $companyId)
             ->where('client_id', $clientId)
+            ->notCancelled()
             ->get();
 
         $creditsData = $credits->map(function ($credit) use ($companyId) {

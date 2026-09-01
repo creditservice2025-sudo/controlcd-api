@@ -475,7 +475,14 @@ class CollectionClientService
             })
             ->count();
 
-        $creditsData = $allCredits->map(function ($credit) use ($companyId) {
+        // Nombres de quienes anularon, en UNA consulta. Resolverlos dentro del
+        // map disparaba un SELECT por credito.
+        $cancelledByNames = \App\Models\User::whereIn(
+            'id',
+            $allCredits->pluck('metadata.cancelled_by')->filter()->map(fn ($v) => (int) $v)->unique()->all()
+        )->pluck('name', 'id');
+
+        $creditsData = $allCredits->map(function ($credit) use ($companyId, $cancelledByNames) {
             $meta = is_array($credit->metadata) ? $credit->metadata : [];
             
             // Calculate balance for each credit (Total Principal Remaining + Pending Interest)
@@ -546,6 +553,20 @@ class CollectionClientService
                 'payment_frequency' => $credit->payment_frequency,
                 'first_installment_date' => $credit->first_installment_date?->toDateString(),
                 'status' => $credit->status,
+                // Baja del credito: la cartera lo lista igual que un core
+                // bancario -- la fila no desaparece, se muestra marcada y con
+                // el porque. `cancelled_at` es el instante UTC (convertir en
+                // pantalla a `cancelled_timezone`); `cancelled_business_date`
+                // es la jornada de caja a la que pertenece el reintegro.
+                'is_cancelled' => $credit->isCancelled(),
+                'cancelled_at' => $meta['cancelled_at'] ?? null,
+                'cancelled_business_date' => $meta['cancelled_business_date'] ?? null,
+                'cancelled_timezone' => $meta['cancelled_timezone'] ?? null,
+                'cancelled_by' => isset($meta['cancelled_by']) ? (int) $meta['cancelled_by'] : null,
+                'cancelled_by_name' => isset($meta['cancelled_by'])
+                    ? ($cancelledByNames[(int) $meta['cancelled_by']] ?? null)
+                    : null,
+                'cancelled_reason' => $meta['cancelled_reason'] ?? null,
                 'balance' => $realBalance,
                 // Las dos patas del saldo, explícitas. El front las mostraba
                 // restando (balance − capital) y esa resta se desalinea con los

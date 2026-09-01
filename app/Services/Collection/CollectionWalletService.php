@@ -59,6 +59,15 @@ class CollectionWalletService
                 'description' => $data['description'] ?? null,
                 'user_id' => Auth::id(),
                 'created_at' => Carbon::now(),
+                // Jornada de caja del movimiento, anclada a la zona del PAIS
+                // del wallet -- no a la del servidor. `created_at` dice el
+                // instante; `business_date` dice a que dia contable pertenece,
+                // que es por lo que agrupa el corte diario. Sin esto, un
+                // movimiento de la noche cae en la jornada siguiente.
+                'business_date' => Carbon::now(
+                    \App\Helpers\TimezoneHelper::timezoneForCountryCode($countryCode)
+                        ?: (config('app.timezone') ?: 'UTC')
+                )->toDateString(),
             ]);
         });
     }

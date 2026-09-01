@@ -24,6 +24,9 @@ class CollectionLedger extends Model
         'description',
         'user_id',
         'created_at',
+        // Jornada de caja del movimiento (zona del pais del wallet). Sin esto
+        // en fillable, create() lo descarta en silencio.
+        'business_date',
     ];
 
     protected $casts = [
@@ -31,6 +34,7 @@ class CollectionLedger extends Model
         'balance_before' => 'decimal:2',
         'balance_after' => 'decimal:2',
         'created_at' => 'datetime',
+        'business_date' => 'date',
     ];
 
     public function wallet()

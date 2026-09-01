@@ -34,8 +34,11 @@ class CollectionDashboardService
         // IDs de créditos filtrados por país (si se especifica)
         $creditIdsForCountry = null;
         if ($countryCode) {
+            // Sin notCancelled(), los creditos dados de baja seguian entrando
+            // en los filtros por pais del dashboard.
             $creditIdsForCountry = CollectionCredit::where('company_id', $companyId)
                 ->where('country_code', $countryCode)
+                ->notCancelled()
                 ->pluck('id');
         }
 
