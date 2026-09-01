@@ -3,7 +3,10 @@
 namespace App\Services\Collection;
 
 use App\Models\Collection\CollectionCompanyConfig;
+use App\Models\Collection\CollectionTelegramLink;
 use App\Models\Company;
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
 use App\Models\TelegramLog;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -107,6 +110,20 @@ class CollectionTelegramNotifier
             return $own;
         }
 
+        // 2. Telegram del ADMINISTRADOR de la empresa, ya vinculado al bot de
+        // Deuda & Abono. Evita cargar el chat a mano y, sobre todo, evita el
+        // respaldo del core: `companies.telegram_chat_id` no es unico, hoy hay
+        // dos empresas apuntando al mismo chat y sus avisos se mezclan.
+        //
+        // Se exige rol ADMINISTRATIVO a proposito. Por aca salen los codigos de
+        // autorizacion para borrar movimientos, cuyo sentido es que el cobrador
+        // NO pueda autorizarse solo: si el destino fuera cualquier vinculo, el
+        // mismo cobrador que pide la baja recibiria el codigo.
+        $adminChat = $this->resolveAdminLinkChatId($companyId);
+        if ($adminChat !== null) {
+            return $adminChat;
+        }
+
         $shared = Company::find($companyId)?->telegram_chat_id;
         if (!empty($shared)) {
             Log::info(
@@ -117,5 +134,72 @@ class CollectionTelegramNotifier
         }
 
         return null;
+    }
+
+    /**
+     * Chat del administrador de la empresa que ya vinculo su Telegram con el
+     * bot de Deuda & Abono (`collection_telegram_links`, linked_at != null).
+     *
+     * Administrador es, en este orden: role_id 1 o 2 del core (super-admin y
+     * admin de empresa, el mismo criterio que usa LoginService para dar
+     * `collection_role = admin`), y si ninguno califica, rol `admin` o
+     * `manager` en `collection_user_profiles`.
+     *
+     * Devuelve null si la empresa no tiene vinculos, o si los que tiene son
+     * todos de cobradores: en ese caso es preferible no entregar el codigo por
+     * Telegram (el admin igual lo ve en el panel de codigos pendientes) antes
+     * que mandarselo a quien pidio la eliminacion.
+     *
+     * Con varios admins vinculados gana el mas reciente, para que revincular
+     * un telefono nuevo tenga efecto sin tener que borrar el anterior.
+     */
+    private function resolveAdminLinkChatId(int $companyId): ?string
+    {
+        try {
+            $links = CollectionTelegramLink::where('company_id', $companyId)
+                ->whereNotNull('linked_at')
+                ->whereNotNull('user_id')
+                ->orderByDesc('linked_at')
+                ->get(['chat_id', 'user_id']);
+
+            if ($links->isEmpty()) {
+                return null;
+            }
+
+            $userIds = $links->pluck('user_id')->map(fn ($v) => (int) $v)->all();
+
+            $adminIds = User::whereIn('id', $userIds)
+                ->whereIn('role_id', [1, 2])
+                ->pluck('id')
+                ->map(fn ($v) => (int) $v)
+                ->all();
+
+            if (empty($adminIds)) {
+                $adminIds = DB::connection('collection_pgsql')
+                    ->table('collection_user_profiles')
+                    ->where('company_id', $companyId)
+                    ->whereIn('user_id', $userIds)
+                    ->whereIn('role', ['admin', 'manager'])
+                    ->pluck('user_id')
+                    ->map(fn ($v) => (int) $v)
+                    ->all();
+            }
+
+            if (empty($adminIds)) {
+                Log::info(
+                    "Collection empresa {$companyId}: hay Telegram vinculado, pero ninguno es de un "
+                    . 'administrador. No se entrega el codigo por Telegram; queda en el panel de codigos pendientes.'
+                );
+                return null;
+            }
+
+            $match = $links->first(fn ($l) => in_array((int) $l->user_id, $adminIds, true));
+
+            return $match ? (string) $match->chat_id : null;
+        } catch (\Throwable $e) {
+            // Nunca romper el envio por un fallo resolviendo el destino.
+            Log::warning('[collection.telegram] no se pudo resolver el chat del admin: ' . $e->getMessage());
+            return null;
+        }
     }
 }
