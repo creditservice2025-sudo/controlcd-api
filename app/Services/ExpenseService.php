@@ -748,6 +748,12 @@ class ExpenseService
                 $expensesQuery->where('user_id', $request->seller_id);
             }
 
+            // Filtro por categoría. Opcional: si no viene, la consulta queda
+            // igual que antes, así que no cambia nada para quien no lo use.
+            if ($request->filled('category_id')) {
+                $expensesQuery->where('category_id', $request->category_id);
+            }
+
             if ($request->has('start_date') && $request->has('end_date')) {
                 $timezone = $request->input('timezone', self::TIMEZONE);
                 $start = Carbon::parse($request->start_date, $timezone)->startOfDay()->timezone('UTC');
