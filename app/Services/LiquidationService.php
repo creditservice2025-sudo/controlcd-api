@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Company;
 use App\Models\Client;
 use App\Models\Credit;
 use App\Models\Expense;
@@ -2470,6 +2471,285 @@ class LiquidationService
     }
 
     /**
+     * Cuántos clientes de cada ruta tenían crédito vivo, y cuántos no, AL CIERRE
+     * del rango consultado.
+     *
+     * A diferencia de las otras columnas del reporte —que son flujos: lo que
+     * pasó dentro del rango— estas dos son un ESTADO: una foto del día de corte.
+     * Se reconstruye solo con hechos fechados, nunca con `credits.status`, que
+     * guarda el valor de hoy y no dice desde cuándo:
+     *
+     *   crédito vivo al corte  ⇔  business_date <= corte
+     *                             Y total_amount > pagos con business_date <= corte
+     *
+     * Los pagos se preagregan una sola vez hasta el corte, en vez de resolverlos
+     * con un subquery correlacionado por crédito: son 1.019.095 filas y la
+     * versión correlacionada no termina. `payments.business_date` tiene índice.
+     *
+     * Estados excluidos: 'Renovado' y 'Unificado' son terminales por refundición
+     * —el saldo se mudó a otro crédito— así que contarlos duplicaría al cliente.
+     * 'Cartera Irrecuperable' también se excluye: es cartera muerta y no es
+     * "crédito activo". OJO, esa exclusión sí usa el estado de HOY, porque la
+     * base no registra cuándo se marcó (ver CreditService::updateCreditStatus,
+     * que hace `save()` sin auditoría ni fecha). Es la única parte de estas dos
+     * columnas que no es reconstruible; para el resto, el corte es exacto.
+     *
+     * "Cliente activo" también es el estado de hoy: `clients.status` tampoco
+     * tiene historial. Por eso los dos números suman siempre el total de
+     * clientes activos actuales de la ruta.
+     *
+     * @return array<int, array{clients_with_active_credit:int, clients_without_credit:int}>
+     */
+    public function getClientCreditStateByCity($endDate, $companyId = null, $sellerIds = null): array
+    {
+        $cut = Carbon::parse($endDate)->format('Y-m-d');
+        $this->assertDateFormat($cut);
+
+        // Clientes (activos) con al menos un crédito vivo al corte, por ciudad.
+        // El predicado sale de creditoVivoAlCorte(), el MISMO que usa el
+        // detalle: así el número y la lista que se abre al tocarlo no pueden
+        // despegarse.
+        $conCredito = DB::table('credits as c')
+            ->join('clients as cl', 'cl.id', '=', 'c.client_id')
+            ->join('sellers as s', 's.id', '=', 'cl.seller_id')
+            ->select('s.city_id', DB::raw('COUNT(DISTINCT c.client_id) as n'))
+            ->whereNull('cl.deleted_at')
+            ->whereNull('s.deleted_at')
+            ->where('cl.status', 'active')
+            ->groupBy('s.city_id');
+
+        $this->creditoVivoAlCorte($conCredito, $cut);
+
+        // Total de clientes activos por ciudad, para sacar los "sin crédito"
+        // por diferencia. Contarlos con un NOT EXISTS sería una segunda pasada
+        // sobre créditos y pagos para llegar al mismo número.
+        $totales = DB::table('clients as cl')
+            ->join('sellers as s', 's.id', '=', 'cl.seller_id')
+            ->select('s.city_id', DB::raw('COUNT(*) as n'))
+            ->whereNull('cl.deleted_at')
+            ->whereNull('s.deleted_at')
+            ->where('cl.status', 'active')
+            ->groupBy('s.city_id');
+
+        foreach ([$conCredito, $totales] as $q) {
+            if ($companyId !== null) {
+                $q->where('s.company_id', $companyId);
+            }
+            if ($sellerIds !== null) {
+                $q->whereIn('s.id', $sellerIds);
+            }
+        }
+
+        $conPorCiudad = $conCredito->pluck('n', 'city_id')->all();
+        $totalPorCiudad = $totales->pluck('n', 'city_id')->all();
+
+        $out = [];
+        foreach ($totalPorCiudad as $cityId => $total) {
+            $con = (int) ($conPorCiudad[$cityId] ?? 0);
+            $out[$cityId] = [
+                'clients_with_active_credit' => $con,
+                // max(0) por defensa: si alguna vez las dos consultas dejaran de
+                // filtrar igual, es preferible un 0 que un negativo en pantalla.
+                'clients_without_credit' => max(0, (int) $total - $con),
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * Los clientes que hay detrás de los números "Con Crédito Activo" y "Sin
+     * Crédito". Es el detalle que se abre al tocar el conteo.
+     *
+     * Usa EXACTAMENTE el mismo predicado de "crédito vivo al corte" que
+     * getClientCreditStateByCity —extraído a creditoVivoAlCorte() para que no
+     * puedan divergir—, así la lista devuelve siempre la misma cantidad que el
+     * número al que se le hizo clic. Si los dos se escribieran por separado,
+     * cualquier ajuste futuro en uno rompería silenciosamente al otro.
+     *
+     * @param  string  $bucket  'with_credit' | 'without_credit'
+     */
+    public function getClientCreditStateDetail(
+        $endDate,
+        string $bucket,
+        $companyId = null,
+        $sellerIds = null,
+        $cityId = null
+    ): array {
+        if (!in_array($bucket, ['with_credit', 'without_credit'], true)) {
+            throw new \InvalidArgumentException("Categoría inválida: {$bucket}");
+        }
+
+        $cut = Carbon::parse($endDate)->format('Y-m-d');
+        $this->assertDateFormat($cut);
+
+        // El select() base va PRIMERO: llamarlo después de los addSelect()
+        // borraría las columnas agregadas, porque select() reemplaza la lista
+        // en vez de sumarse. Costó un `creditos_vivos` vacío descubrirlo.
+        $base = DB::table('clients as cl')
+            ->join('sellers as s', 's.id', '=', 'cl.seller_id')
+            ->join('users as u', 'u.id', '=', 's.user_id')
+            ->join('cities as ci', 'ci.id', '=', 's.city_id')
+            ->select(
+                'cl.id as client_id',
+                'cl.name as client_name',
+                'cl.dni',
+                'cl.phone',
+                'u.name as seller_name',
+                'ci.name as city_name'
+            )
+            ->whereNull('cl.deleted_at')
+            ->whereNull('s.deleted_at')
+            ->where('cl.status', 'active');
+
+        if ($companyId !== null) {
+            $base->where('s.company_id', $companyId);
+        }
+        if ($sellerIds !== null) {
+            $base->whereIn('s.id', $sellerIds);
+        }
+        if ($cityId !== null) {
+            $base->where('s.city_id', $cityId);
+        }
+
+        $tieneCreditoVivo = function ($q) use ($cut) {
+            $q->select(DB::raw(1))
+              ->from('credits as c')
+              ->whereColumn('c.client_id', 'cl.id');
+            $this->creditoVivoAlCorte($q, $cut);
+        };
+
+        if ($bucket === 'with_credit') {
+            $base->whereExists($tieneCreditoVivo)
+                 ->addSelect([
+                     // Cuántos créditos vivos tiene, cuánto suman y cuáles son,
+                     // para que la lista no sea solo nombres sueltos.
+                     'creditos_vivos' => function ($q) use ($cut) {
+                         $q->selectRaw('COUNT(*)')->from('credits as c')->whereColumn('c.client_id', 'cl.id');
+                         $this->creditoVivoAlCorte($q, $cut);
+                     },
+                     // Capital colocado. Es el mismo campo que muestra el detalle
+                     // de las otras columnas, para que el modal se lea igual.
+                     'credit_value' => function ($q) use ($cut) {
+                         $q->selectRaw('COALESCE(SUM(c.credit_value), 0)')->from('credits as c')->whereColumn('c.client_id', 'cl.id');
+                         $this->creditoVivoAlCorte($q, $cut);
+                     },
+                     'total_amount' => function ($q) use ($cut) {
+                         $q->selectRaw('COALESCE(SUM(c.total_amount), 0)')->from('credits as c')->whereColumn('c.client_id', 'cl.id');
+                         $this->creditoVivoAlCorte($q, $cut);
+                     },
+                     'business_day' => function ($q) use ($cut) {
+                         $q->selectRaw('MAX(c.business_date)')->from('credits as c')->whereColumn('c.client_id', 'cl.id');
+                         $this->creditoVivoAlCorte($q, $cut);
+                     },
+                     // Los N° de los créditos vivos, del más nuevo al más viejo.
+                     // Un cliente puede tener más de uno (crédito adicional sin
+                     // liquidar el anterior), así que se listan todos separados
+                     // por coma y el front los formatea.
+                     'credit_ids' => function ($q) use ($cut) {
+                         $q->selectRaw('GROUP_CONCAT(c.id ORDER BY c.business_date DESC SEPARATOR ",")')
+                           ->from('credits as c')->whereColumn('c.client_id', 'cl.id');
+                         $this->creditoVivoAlCorte($q, $cut);
+                     },
+                 ]);
+        } else {
+            $base->whereNotExists($tieneCreditoVivo)
+                 ->addSelect([
+                     DB::raw('0 as creditos_vivos'),
+                     DB::raw('NULL as credit_value'),
+                     DB::raw('NULL as total_amount'),
+                     DB::raw('NULL as business_day'),
+                     DB::raw('NULL as credit_ids'),
+                 ]);
+        }
+
+        // Ordenado por VENDEDOR y, dentro de cada uno, por cliente. Una ruta
+        // puede tener miles de clientes repartidos entre varios cobradores
+        // (Chepen: 4.083), y ordenado solo por nombre de cliente la lista mezcla
+        // los cobradores y no se puede revisar la cartera de uno.
+        $rows = $base->orderBy('u.name')->orderBy('cl.name')->get();
+
+        return $rows->map(function ($r) {
+            $a = (array) $r;
+            // El modal usa `credit_id` como key del listado; acá la fila es el
+            // CLIENTE, no un crédito, así que se reutiliza su id. Los números de
+            // los créditos vivos van aparte, en `credit_ids`.
+            $a['credit_id'] = $a['client_id'];
+            $a['credit_status'] = null;
+            $a['creditos_previos'] = null;
+            $a['credit_ids'] = $a['credit_ids']
+                ? array_map('intval', explode(',', $a['credit_ids']))
+                : [];
+            return $a;
+        })->all();
+    }
+
+    /**
+     * Predicado compartido: "este crédito estaba vivo al corte".
+     *
+     * Vive en un solo lugar porque lo usan el conteo y el detalle, y si los dos
+     * lo escribieran por su cuenta el número y la lista se despegarían.
+     * Ver getClientCreditStateByCity() para el razonamiento completo.
+     */
+    private function creditoVivoAlCorte($q, string $cut): void
+    {
+        $q->whereNull('c.deleted_at')
+          ->where('c.business_date', '<=', $cut)
+          ->whereNotIn('c.status', ['Renovado', 'Unificado', 'Cartera Irrecuperable'])
+          ->where(function ($w) use ($cut) {
+              // El "recibió un pago después del corte" va como whereIn contra un
+              // subquery, NO como EXISTS correlacionado. Parece lo mismo y no lo
+              // es: correlacionado, el agregado por ciudad tarda 68 s; con el
+              // subquery, 3,4 s. Los pagos posteriores a un corte reciente son
+              // ~1.162 filas, así que el conjunto se arma una vez y se reusa.
+              $w->where('c.status', '!=', 'Liquidado')
+                ->orWhereIn('c.id', function ($x) use ($cut) {
+                    $x->select('credit_id')
+                      ->from('payments')
+                      ->whereNull('deleted_at')
+                      ->where('business_date', '>', $cut);
+                })
+                // Liquidado que nunca recibió un pago: se saldó a mano, no
+                // cobrando. Al corte debía todo, así que estaba vivo. Son pocos
+                // (35 medidos), pero sin esta rama el número dejaba de cumplir
+                // la definición.
+                ->orWhereNotExists(function ($x) {
+                    $x->select(DB::raw(1))
+                      ->from('payments as p2')
+                      ->whereColumn('p2.credit_id', 'c.id')
+                      ->whereNull('p2.deleted_at');
+                });
+          });
+    }
+
+    /**
+     * Pega sobre cada fila del reporte el estado de clientes al corte. Igual que
+     * attachCreditCounts: una ruta sin datos queda en cero explícito.
+     */
+    private function attachClientCreditState($rows, array $states, string $keyField)
+    {
+        return $rows->map(function ($row) use ($states, $keyField) {
+            $key = is_array($row) ? ($row[$keyField] ?? null) : ($row->{$keyField} ?? null);
+            $found = $key !== null ? ($states[$key] ?? null) : null;
+
+            $values = [
+                'clients_with_active_credit' => $found['clients_with_active_credit'] ?? 0,
+                'clients_without_credit' => $found['clients_without_credit'] ?? 0,
+            ];
+
+            foreach ($values as $field => $value) {
+                if (is_array($row)) {
+                    $row[$field] = $value;
+                } else {
+                    $row->{$field} = $value;
+                }
+            }
+
+            return $row;
+        });
+    }
+
+    /**
      * Pega los conteos sobre las filas del reporte. Un grupo sin créditos en el
      * período queda en cero explícito, no en null: la pantalla y el Excel
      * muestran un número, no un vacío ambiguo.
@@ -2499,6 +2779,243 @@ class LiquidationService
 
             return $row;
         });
+    }
+
+    /**
+     * Cartera viva por ruta: cuánta plata hay hoy en la calle en cada ciudad.
+     *
+     * La fórmula es la canónica de Credit::outstandingAmount() —deuda de cuotas
+     * menos pagos sin aplicar, con piso en cero— pero expresada como agregado
+     * para no instanciar 21.500 modelos. NO se usa `credits.remaining_amount`:
+     * esa columna subestima la cartera casi un 60%.
+     *
+     * Diferencia deliberada con outstandingAmount(): acá se excluyen las CUOTAS
+     * BORRADAS. `Installment` no usa SoftDeletes, así que la relación las trae y
+     * el método las suma como si fueran deuda. Son 174.445 de 1.536.577 (11%).
+     * Medido sobre producción, el efecto se concentra en 3 rutas: talara
+     * $49.028,57 (4,6% de su cartera), Sullana $5.555,02 y Chepén $780,00; las
+     * otras 20 dan idéntico. Una cuota eliminada no es plata por cobrar.
+     *
+     * Estados excluidos: 'Liquidado' (ya no debe), 'Renovado' y 'Unificado' (el
+     * saldo se mudó a otro crédito, contarlos lo duplicaría). 'Cartera
+     * Irrecuperable' SÍ suma: es plata que se sigue debiendo, aunque no se
+     * espere cobrar. Se devuelve aparte para poder mostrarla discriminada.
+     *
+     * NUNCA se llama desde una petición web: medido, tarda ~35 s contra el
+     * límite de 30 s de PHP. Peor: al morir el proceso, el cache no se escribía,
+     * así que la pantalla reintentaba para siempre un cálculo imposible. Lo
+     * ejecuta `php artisan cartera:calcular` desde el planificador, sin límite
+     * de tiempo, y la pantalla lee con getPortfolioByCityCached().
+     */
+    public function getPortfolioByCity($companyId = null, $sellerIds = null, bool $refrescar = false): array
+    {
+        $clave = self::clavePortfolio($companyId, $sellerIds);
+
+        if ($refrescar) {
+            \Illuminate\Support\Facades\Cache::forget($clave);
+        }
+
+        // TTL holgado (12 h) a propósito: el planificador refresca mucho antes.
+        // Si el cron se cae, es preferible mostrar un dato de hace horas —con su
+        // fecha bien visible— que dejar la pantalla vacía.
+        return \Illuminate\Support\Facades\Cache::remember($clave, now()->addHours(12), function () use ($companyId, $sellerIds) {
+            // Las dos agregaciones van SIN join a credits adentro: probado, el
+            // join dentro del subquery cuesta más de lo que ahorra (la consulta
+            // pasa de decenas de segundos a no terminar).
+            $deudaCuotas = DB::table('installments')
+                ->select('credit_id', DB::raw('SUM(quota_amount - paid_amount) as deuda'))
+                ->whereNull('deleted_at')
+                ->groupBy('credit_id');
+
+            $sinAplicar = DB::table('payments')
+                ->select('credit_id', DB::raw('SUM(unapplied_amount) as sin_aplicar'))
+                ->whereNull('deleted_at')
+                ->groupBy('credit_id');
+
+            $q = DB::table('credits as c')
+                ->join('clients as cl', 'cl.id', '=', 'c.client_id')
+                ->join('sellers as s', 's.id', '=', 'cl.seller_id')
+                ->join('cities as ci', 'ci.id', '=', 's.city_id')
+                ->leftJoin('countries as co', 'co.id', '=', 'ci.country_id')
+                ->leftJoinSub($deudaCuotas, 'iv', fn ($j) => $j->on('iv.credit_id', '=', 'c.id'))
+                ->leftJoinSub($sinAplicar, 'pg', fn ($j) => $j->on('pg.credit_id', '=', 'c.id'))
+                ->select(
+                    'ci.id as city_id',
+                    'ci.name as city_name',
+                    DB::raw("COALESCE(co.currency, '') as currency"),
+                    DB::raw('COUNT(*) as credits_count'),
+                    DB::raw('COUNT(DISTINCT c.client_id) as clients_count'),
+                    // El GREATEST(0, ...) por crédito replica el max(0) de
+                    // outstandingAmount(): un crédito sobrepagado no puede
+                    // restarle cartera a los demás.
+                    DB::raw('ROUND(SUM(GREATEST(0, COALESCE(iv.deuda,0) - COALESCE(pg.sin_aplicar,0))), 2) as portfolio'),
+                    DB::raw("ROUND(SUM(CASE WHEN c.status = 'Cartera Irrecuperable' THEN GREATEST(0, COALESCE(iv.deuda,0) - COALESCE(pg.sin_aplicar,0)) ELSE 0 END), 2) as irrecoverable"),
+                    DB::raw("SUM(CASE WHEN c.status = 'Cartera Irrecuperable' THEN 1 ELSE 0 END) as irrecoverable_credits")
+                )
+                ->whereNull('c.deleted_at')
+                ->whereNull('cl.deleted_at')
+                ->whereNull('s.deleted_at')
+                ->whereNotIn('c.status', ['Liquidado', 'Renovado', 'Unificado'])
+                ->groupBy('ci.id', 'ci.name', 'co.currency')
+                ->orderBy('ci.name');
+
+            if ($companyId !== null) {
+                $q->where('s.company_id', $companyId);
+            }
+            if ($sellerIds !== null) {
+                $q->whereIn('s.id', $sellerIds);
+            }
+
+            return [
+                'generated_at' => now()->toDateTimeString(),
+                'rows' => array_map(fn ($r) => (array) $r, $q->get()->all()),
+            ];
+        });
+    }
+
+    /**
+     * Calcula la cartera de TODOS los ámbitos en una sola pasada y cachea cada uno.
+     *
+     * Reemplaza a llamar getPortfolioByCity() una vez por empresa. El motivo es
+     * medido: las dos agregaciones recorren el millón y medio de cuotas y el
+     * millón de pagos ENTEROS, sin importar el filtro de empresa —el filtro se
+     * aplica recién al unir con credits—, así que cada empresa pagaba el costo
+     * completo. Con 14 empresas eran 210 s por corrida, aunque doce de ellas
+     * tuvieran una sola ruta y tardaran los mismos 18 s que la grande.
+     *
+     * Acá se agrupa por (empresa, ciudad) una sola vez y se reparte en memoria:
+     * las filas de cada empresa salen directo, y las globales de sumar por
+     * ciudad entre empresas. Sumar es correcto porque un cliente cuelga de un
+     * vendedor y un vendedor de una sola empresa, así que ningún cliente ni
+     * crédito se cuenta dos veces. Hay 6 ciudades con vendedores de más de una
+     * empresa (Chiclayo, Sullana, sechura, trujillo, Chepen, Santa cruz), y por
+     * eso se agrupa por las dos columnas y no se asume ciudad = empresa.
+     *
+     * @return array<string, int> ámbito => cantidad de rutas cacheadas
+     */
+    public function computeAllPortfolios(): array
+    {
+        $deudaCuotas = DB::table('installments')
+            ->select('credit_id', DB::raw('SUM(quota_amount - paid_amount) as deuda'))
+            ->whereNull('deleted_at')
+            ->groupBy('credit_id');
+
+        $sinAplicar = DB::table('payments')
+            ->select('credit_id', DB::raw('SUM(unapplied_amount) as sin_aplicar'))
+            ->whereNull('deleted_at')
+            ->groupBy('credit_id');
+
+        $vivo = 'GREATEST(0, COALESCE(iv.deuda,0) - COALESCE(pg.sin_aplicar,0))';
+
+        $filas = DB::table('credits as c')
+            ->join('clients as cl', 'cl.id', '=', 'c.client_id')
+            ->join('sellers as s', 's.id', '=', 'cl.seller_id')
+            ->join('cities as ci', 'ci.id', '=', 's.city_id')
+            ->leftJoin('countries as co', 'co.id', '=', 'ci.country_id')
+            ->leftJoinSub($deudaCuotas, 'iv', fn ($j) => $j->on('iv.credit_id', '=', 'c.id'))
+            ->leftJoinSub($sinAplicar, 'pg', fn ($j) => $j->on('pg.credit_id', '=', 'c.id'))
+            ->select(
+                's.company_id',
+                'ci.id as city_id',
+                'ci.name as city_name',
+                DB::raw("COALESCE(co.currency, '') as currency"),
+                DB::raw('COUNT(*) as credits_count'),
+                DB::raw('COUNT(DISTINCT c.client_id) as clients_count'),
+                DB::raw("ROUND(SUM({$vivo}), 2) as portfolio"),
+                DB::raw("ROUND(SUM(CASE WHEN c.status = 'Cartera Irrecuperable' THEN {$vivo} ELSE 0 END), 2) as irrecoverable"),
+                DB::raw("SUM(CASE WHEN c.status = 'Cartera Irrecuperable' THEN 1 ELSE 0 END) as irrecoverable_credits")
+            )
+            ->whereNull('c.deleted_at')
+            ->whereNull('cl.deleted_at')
+            ->whereNull('s.deleted_at')
+            ->whereNotIn('c.status', ['Liquidado', 'Renovado', 'Unificado'])
+            ->groupBy('s.company_id', 'ci.id', 'ci.name', 'co.currency')
+            ->get();
+
+        $generadoEn = now()->toDateTimeString();
+        $porEmpresa = [];
+        $global = [];
+
+        foreach ($filas as $f) {
+            $fila = [
+                'city_id' => (int) $f->city_id,
+                'city_name' => $f->city_name,
+                'currency' => $f->currency,
+                'credits_count' => (int) $f->credits_count,
+                'clients_count' => (int) $f->clients_count,
+                'portfolio' => (float) $f->portfolio,
+                'irrecoverable' => (float) $f->irrecoverable,
+                'irrecoverable_credits' => (int) $f->irrecoverable_credits,
+            ];
+
+            $porEmpresa[$f->company_id][] = $fila;
+
+            // Global: una fila por ciudad, sumando las empresas que la comparten.
+            $k = $fila['city_id'];
+            if (!isset($global[$k])) {
+                $global[$k] = $fila;
+            } else {
+                foreach (['credits_count', 'clients_count', 'portfolio', 'irrecoverable', 'irrecoverable_credits'] as $campo) {
+                    $global[$k][$campo] += $fila[$campo];
+                }
+            }
+        }
+
+        $ordenar = function (array $rows) {
+            usort($rows, fn ($a, $b) => strcasecmp($a['city_name'], $b['city_name']));
+            return $rows;
+        };
+
+        $escrito = [];
+
+        $rowsGlobal = $ordenar(array_values($global));
+        \Illuminate\Support\Facades\Cache::put(
+            self::clavePortfolio(null, null),
+            ['generated_at' => $generadoEn, 'rows' => $rowsGlobal],
+            now()->addHours(12)
+        );
+        $escrito['global'] = count($rowsGlobal);
+
+        // Todas las empresas activas, incluidas las que no tienen ninguna ruta:
+        // si no se les escribe la clave, su pantalla queda en "pendiente" para
+        // siempre esperando un cálculo que nunca les toca.
+        foreach (Company::whereNull('deleted_at')->pluck('id') as $companyId) {
+            $rows = $ordenar($porEmpresa[$companyId] ?? []);
+            \Illuminate\Support\Facades\Cache::put(
+                self::clavePortfolio($companyId, null),
+                ['generated_at' => $generadoEn, 'rows' => $rows],
+                now()->addHours(12)
+            );
+            $escrito['empresa ' . $companyId] = count($rows);
+        }
+
+        return $escrito;
+    }
+
+    /** Clave de cache de la cartera. Una sola definición para que el comando que escribe y la pantalla que lee no puedan mirar claves distintas. */
+    private static function clavePortfolio($companyId, $sellerIds): string
+    {
+        return 'cartera_por_ruta_' . ($companyId ?? 'all') . '_'
+             . ($sellerIds === null ? 'all' : md5(implode(',', (array) $sellerIds)));
+    }
+
+    /**
+     * Lo que lee la pantalla: el resultado ya calculado, sin calcular nada.
+     *
+     * Devuelve `pending => true` cuando el cache todavía está frío. Es la
+     * diferencia que evita el bloqueo: antes de esto, una pantalla con el cache
+     * vencido disparaba un cálculo de 35 s que el servidor mataba a los 30,
+     * dejándola inservible. Preferible decir "todavía no está" que colgar.
+     */
+    public function getPortfolioByCityCached($companyId = null, $sellerIds = null): array
+    {
+        $data = \Illuminate\Support\Facades\Cache::get(self::clavePortfolio($companyId, $sellerIds));
+
+        if (!is_array($data)) {
+            return ['generated_at' => null, 'rows' => [], 'pending' => true];
+        }
+
+        return $data + ['pending' => false];
     }
 
     public function getAccumulatedByCity($startDate, $endDate, $companyId = null, $sellerIds = null)
@@ -2618,6 +3135,12 @@ class LiquidationService
 
         $counts = $this->getCreditCountsByGroup($startUTC, $endUTC, 'city', $companyId, $sellerIds);
         $result = $this->attachCreditCounts($result, $counts, 'city_id');
+
+        // Estado de la cartera de clientes al cierre del rango (columnas
+        // "Con crédito activo" / "Sin crédito"). Va aparte de los conteos de
+        // arriba porque no es un flujo del período sino una foto del corte.
+        $clientState = $this->getClientCreditStateByCity($endUTC, $companyId, $sellerIds);
+        $result = $this->attachClientCreditState($result, $clientState, 'city_id');
 
         \Log::debug("getAccumulatedByCity - Resultado:", ['count' => $result->count(), 'data' => $result]);
         return $result;

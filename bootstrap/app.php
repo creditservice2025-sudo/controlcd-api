@@ -137,4 +137,15 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->command('credits:notify-renewal-pending')->dailyAt('21:00');
         $schedule->command('credits:notify-new-credit-amount-limit')->dailyAt('21:05');
         $schedule->command('credits:notify-new-credit-limit')->dailyAt('21:10');
+
+        // Cartera viva por ruta, para la pantalla "Resumen de cartera". Se
+        // precalcula acá porque dentro de una petición web no entra: recorre
+        // 1,5 M de cuotas y tarda ~35 s contra el límite de 30 s de PHP.
+        //
+        // Cada 30 minutos: la cartera se mueve de a poco y el cálculo es caro
+        // (~35 s por empresa). withoutOverlapping para que una corrida lenta no
+        // se pise con la siguiente.
+        $schedule->command('cartera:calcular')
+            ->everyThirtyMinutes()
+            ->withoutOverlapping();
     })->create();

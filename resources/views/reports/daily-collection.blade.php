@@ -79,6 +79,15 @@
             margin-bottom: 15px;
             font-weight: bold;
         }
+
+        /* Capital neto colocado, dentro del total de créditos nuevos. Es el
+           dato que se busca primero —cuánta plata salió a la calle—, así que va
+           resaltado; el interés y el total quedan en tono normal. */
+        .capital-neto {
+            color: #14477d;
+            font-weight: bold;
+            font-size: 11.5px;
+        }
     </style>
 </head>
 
@@ -172,12 +181,15 @@
                 <th>Cliente</th>
                 <th>Crédito</th>
                 <th>F. Pago</th>
-                <th>V.C + U</th>
+                <th>CAPITAL NETO</th>
             </tr>
         </thead>
         <tbody>
             @php
-                $total_new_credits_value = 0;
+                // Este listado muestra el CAPITAL NETO colocado: cuánta plata
+                // salió a la calle. El interés se sacó de la columna y del pie
+                // por pedido del negocio.
+                $total_new_credits_capital = 0;
             @endphp
             @if(count($new_credits) === 0)
                 <tr>
@@ -186,9 +198,7 @@
             @else
                 @foreach ($new_credits as $index => $credit)
                     @php
-                        $utilidad = $credit->credit_value * ($credit->total_interest / 100);
-                        $total = $credit->credit_value + $utilidad;
-                        $total_new_credits_value += $credit->credit_value + $utilidad;
+                        $total_new_credits_capital += $credit->credit_value;
                     @endphp
                     <tr>
                         <td>{{ $index + 1 }}</td>
@@ -196,9 +206,7 @@
                         <td>#00{{ $credit->id }}</td>
                         <td>{{ $credit->payment_frequency }}</td>
                         <td class="text-right">
-                            ${{ number_format($credit->credit_value, 2) }} +
-                            ${{ number_format($utilidad, 2) }} =
-                            ${{ number_format($total, 2) }}
+                            ${{ number_format($credit->credit_value, 2) }}
                         </td>
                     </tr>
                 @endforeach
@@ -207,7 +215,9 @@
         <tfoot>
             <tr>
                 <th colspan="4">TOTAL CRÉDITOS NUEVOS:</th>
-                <th class="text-right">$ {{ number_format($total_new_credits_value, 2) }}</th>
+                <th class="text-right">
+                    <span class="capital-neto">${{ number_format($total_new_credits_capital, 2) }}</span>
+                </th>
             </tr>
         </tfoot>
     </table>

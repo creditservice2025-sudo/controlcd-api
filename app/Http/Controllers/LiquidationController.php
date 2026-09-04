@@ -1288,6 +1288,103 @@ class LiquidationController extends Controller
     }
 
     /**
+     * Cartera viva por ruta. Alimenta la pantalla "Resumen de Cartera".
+     *
+     * No recibe rango de fechas a propósito: la cartera es un saldo, no un flujo
+     * — es lo que se debe HOY, no lo que pasó en un período. El resultado viene
+     * cacheado; `refresh=1` fuerza el recálculo.
+     */
+    public function getPortfolioByCity(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            $companyId = $request->input('company_id');
+
+            // Mismo aislamiento que el resto del reporte: el admin (rol 2) solo
+            // ve su empresa, sin importar el company_id que llegue.
+            if ($user->role_id == 2) {
+                $companyId = $user->company ? $user->company->id : -1;
+            }
+
+            // SOLO lectura del cache. El cálculo vive en `cartera:calcular`,
+            // que corre por CLI: acá tardaría ~35 s y el servidor lo cortaría a
+            // los 30, dejando la pantalla colgada sin llegar nunca a cachear.
+            $data = $this->liquidationService->getPortfolioByCityCached($companyId, null);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Cartera obtenida exitosamente',
+                'data' => $data,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al obtener la cartera por ruta',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Los clientes detrás de "Con Crédito Activo" / "Sin Crédito".
+     *
+     * Solo recibe `end_date`: esas dos columnas son una foto del cierre del
+     * rango, no un acumulado del período, así que la fecha de inicio no
+     * interviene en el cálculo.
+     */
+    public function getClientCreditStateDetail(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'end_date' => 'required|date',
+            'bucket' => 'required|in:with_credit,without_credit',
+            'city_id' => 'nullable|exists:cities,id',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validación fallida',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        try {
+            $user = Auth::user();
+            $companyId = $request->input('company_id');
+
+            // Mismo aislamiento que el resto del reporte: el admin (rol 2) solo
+            // ve su empresa, sin importar el company_id que llegue.
+            if ($user->role_id == 2) {
+                $companyId = $user->company ? $user->company->id : -1;
+            }
+
+            $clientes = $this->liquidationService->getClientCreditStateDetail(
+                $request->input('end_date'),
+                $request->input('bucket'),
+                $companyId,
+                null,
+                $request->input('city_id')
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Detalle obtenido exitosamente',
+                'data' => [
+                    'bucket' => $request->input('bucket'),
+                    'total' => count($clientes),
+                    'clients' => $clientes,
+                ],
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al obtener el detalle de clientes',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
      * Descarga del resumen general en Excel o PDF, desde los mismos datos que
      * muestra la pantalla.
      */
