@@ -3590,25 +3590,55 @@ class LiquidationService
             // sin aplicar), no de credit_value*(1+interés) - pagos. La auditoría
             // que lo motiva está documentada en Credit::outstandingAmount().
             $remainingAmount = $credit->outstandingAmount();
-            // El día del pago es su día CONTABLE (business_date), no la hora
-            // UTC en que se insertó la fila. Con `created_at` el PDF de un
-            // cierre podía no coincidir con el cierre que dice imprimir: un
-            // pago cargado después de medianoche pertenece al día anterior por
-            // negocio, pero caía fuera de la ventana. Se vio en la liquidación
-            // 24679, que imprimía 0,00 habiendo cobrado 1.795,00.
+            // Dos arreglos distintos sobre el mismo bloque, y hacen falta los
+            // dos: uno decide QUE pagos entran, el otro QUE HORA se imprime.
             //
-            // Mismos filtros que calculateLiquidationMetrics, que es de donde
-            // sale liquidations.total_collected: si no filtran igual, el papel
-            // y el registro dicen números distintos.
+            // 1) La VENTANA sale del dia CONTABLE (business_date), no de la hora
+            // UTC en que se inserto la fila. Con `created_at` el PDF de un
+            // cierre podia no coincidir con el cierre que dice imprimir: un pago
+            // cargado despues de medianoche pertenece al dia anterior por
+            // negocio, pero caia fuera de la ventana. Se vio en la liquidacion
+            // 24679, que imprimia 0,00 habiendo cobrado 1.795,00. Los filtros
+            // son los mismos que calculateLiquidationMetrics, de donde sale
+            // liquidations.total_collected: si no filtran igual, el papel y el
+            // registro dicen numeros distintos.
             $dayPayments = $credit->payments()
                 ->where('payments.business_date', $dateOnly)
                 ->whereNull('payments.deleted_at')
                 ->whereIn('payments.status', ['Pagado', 'Aprobado', 'Abonado'])
                 ->get();
             $paidToday = $dayPayments->sum('amount');
-            $lastPayment = $dayPayments->isNotEmpty() ? $dayPayments->last() : null;
-            $paymentTime = $lastPayment ? $lastPayment->created_at->timezone(self::TIMEZONE)->format('H:i:s') : null;
-            $paymentDate = $lastPayment ? $lastPayment->created_at->timezone(self::TIMEZONE)->format('d/m/Y') : null;
+
+            // 2) La HORA sale del sello LOCAL del pago (business_timestamp), tal
+            // cual, sin convertir. Antes se convertia created_at --que se guarda
+            // en UTC-- a una zona fija, y esa cuenta depende del APP_TIMEZONE
+            // del proceso PHP: el mismo pago salia impreso a las 21:17 o a la
+            // 01:17 segun como estuviera configurado el servidor, y con el reloj
+            // corrido un cobro de la noche aparecia como de la madrugada en el
+            // papel que firma el cobrador. El sello local no admite conversion
+            // que salga mal: es la hora que el cobrador vio en su telefono.
+            //
+            // Fecha y hora salen del MISMO sello a proposito, para que no puedan
+            // divergir entre si. Los pagos viejos sin sello caen a la conversion
+            // de antes, pero con la zona del propio pago y no con una fija.
+            $paymentTime = null;
+            $paymentDate = null;
+            if ($dayPayments->isNotEmpty()) {
+                $ultimoPago = $dayPayments->last();
+                $sello = str_replace('T', ' ', (string) $ultimoPago->business_timestamp);
+                if (strlen($sello) >= 19) {
+                    // "YYYY-MM-DD HH:MM:SS" -> se parte a mano; parsearlo como
+                    // fecha lo volveria a exponer a la zona del proceso.
+                    [$anio, $mes, $dia] = explode('-', substr($sello, 0, 10));
+                    $paymentDate = "{$dia}/{$mes}/{$anio}";
+                    $paymentTime = substr($sello, 11, 8);
+                } else {
+                    $local = $ultimoPago->created_at
+                        ->timezone($ultimoPago->business_timezone ?: self::TIMEZONE);
+                    $paymentDate = $local->format('d/m/Y');
+                    $paymentTime = $local->format('H:i:s');
+                }
+            }
 
             if ($paidToday > 0) {
                 $withPayment++;

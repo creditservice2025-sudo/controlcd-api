@@ -31,19 +31,94 @@ class ExpenseService
         $this->metricsCacheService = $metricsCacheService;
     }
 
+    /**
+     * ¿El cobrador intentó mandar la foto del comprobante y no llegó?
+     *
+     * PHP puede descartar el archivo por su cuenta y seguir adelante con el
+     * resto del formulario. Pasa de dos maneras, las dos medidas en producción:
+     *
+     *  - la conexión se corta a mitad de la subida (UPLOAD_ERR_PARTIAL). El
+     *    cuerpo llega truncado: entra todo lo que viaja ANTES de la imagen
+     *    —monto, descripción, categoría, GPS— y nada de lo que viaja después.
+     *    Se ve en los datos: de 42.065 gastos con foto, ninguno perdió el
+     *    campo `timezone` (que va último); de los 63 gastos sin foto, 11 sí.
+     *  - el archivo pesa más que `upload_max_filesize` (UPLOAD_ERR_INI_SIZE).
+     *    Ahí llega el formulario completo y PHP tira solo el archivo.
+     *
+     * En los dos casos `hasFile('image')` daba false, la regla 'nullable' lo
+     * dejaba pasar, el gasto se creaba sin comprobante y la API contestaba
+     * 200 "Gasto creado con éxito". El cobrador no se enteraba: de los 63
+     * gastos mudos, apenas el 11% tiene un reintento cerca, contra un 5,3% de
+     * base. Nadie reintenta lo que no sabe que falló.
+     *
+     * Devuelve el motivo en castellano, o null si no hay intento fallido.
+     * UPLOAD_ERR_NO_FILE no cuenta: ahí el cobrador directamente no adjuntó
+     * nada, que es otro caso y lo resuelve la validación. Por eso este guard no
+     * puede romper ningún flujo que hoy funcione: solo se activa cuando PHP ya
+     * reportó un archivo roto.
+     */
+    private function motivoDeComprobantePerdido(Request $request): ?string
+    {
+        $archivo = $request->file('image');
+
+        if (!$archivo || $archivo->isValid()) {
+            return null;
+        }
+
+        $error = $archivo->getError();
+
+        Log::warning('[gasto.comprobante] la foto no llegó al servidor', [
+            'upload_error' => $error,
+            'user_id' => optional(Auth::user())->id,
+            'nombre' => $archivo->getClientOriginalName(),
+        ]);
+
+        return match ($error) {
+            UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE =>
+                'La foto del comprobante es más pesada de lo que acepta el servidor. '
+                . 'Tomá la foto de nuevo y volvé a intentar. El gasto NO se guardó.',
+            UPLOAD_ERR_PARTIAL =>
+                'La foto del comprobante no llegó completa: se cortó la conexión mientras subía. '
+                . 'Volvé a intentar donde tengas mejor señal. El gasto NO se guardó.',
+            default =>
+                'No se pudo recibir la foto del comprobante. Volvé a intentar en unos minutos. '
+                . 'El gasto NO se guardó.',
+        };
+    }
+
     public function create(Request $request)
     {
         try {
+            // Lo primero: si la foto se intentó mandar y no llegó entera, se corta
+            // acá. Crear el gasto y recién después descubrir que no hay
+            // comprobante deja un registro que nadie puede auditar.
+            if ($motivo = $this->motivoDeComprobantePerdido($request)) {
+                return $this->errorResponse($motivo, 422);
+            }
+
+            // La foto del comprobante es OBLIGATORIA. La pantalla ya la exigía,
+            // pero la API la aceptaba como opcional, y por ese hueco entraban
+            // los gastos mudos: sin comprobante no hay nada que auditar cuando
+            // la liquidación no cuadra. Medido antes de cerrarlo: de 42.128
+            // gastos en tres meses, TODOS los roles adjuntaban foto —incluidos
+            // administradores (375) y super admin (31)—, así que no había
+            // ningún flujo legítimo que dependiera de que fuera opcional.
             $validated = $request->validate([
                 'value' => 'required|numeric|min:0',
                 'description' => 'required|string',
                 'category_id' => 'required|numeric',
                 'user_id' => 'nullable|numeric',
-                'image' => 'nullable|image|max:2048',
+                'image' => 'required|image|max:2048',
                 'created_at' => 'nullable|date',
                 'latitude' => 'nullable',
                 'longitude' => 'nullable',
                 'timezone' => 'nullable|string',
+            ], [
+                // En castellano y diciendo qué hacer: el mensaje lo lee un
+                // cobrador en la calle, no un desarrollador.
+                'image.required' => 'El gasto necesita la foto del comprobante. Adjuntala y volvé a guardar.',
+                'image.image' => 'El comprobante tiene que ser una imagen (JPG o PNG).',
+                'image.max' => 'La foto del comprobante no puede pesar más de 2 MB. Tomala de nuevo con menos calidad.',
             ]);
 
             $user = Auth::user();
@@ -225,6 +300,12 @@ class ExpenseService
             ]);
         } catch (CashClosedException $e) {
             return $this->errorResponse($e->getMessage(), 422);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            // Se deja pasar para que Laravel la responda como 422 con SU mensaje.
+            // Antes caía en el catch de abajo y el cobrador recibía un 500
+            // "Error al crear el gasto": el motivo real —falta el comprobante,
+            // falta el monto— se perdía y no había forma de saber qué corregir.
+            throw $e;
         } catch (\Exception $e) {
             Log::error($e->getMessage());
             return $this->errorResponse('Error al crear el gasto', 500);
@@ -665,6 +746,12 @@ class ExpenseService
 
             if ($request->has('seller_id') && $request->seller_id) {
                 $expensesQuery->where('user_id', $request->seller_id);
+            }
+
+            // Filtro por categoría. Opcional: si no viene, la consulta queda
+            // igual que antes, así que no cambia nada para quien no lo use.
+            if ($request->filled('category_id')) {
+                $expensesQuery->where('category_id', $request->category_id);
             }
 
             if ($request->has('start_date') && $request->has('end_date')) {
