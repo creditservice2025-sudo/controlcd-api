@@ -2867,7 +2867,12 @@ class LiquidationService
             }
 
             return [
-                'generated_at' => now()->toDateTimeString(),
+                // ISO-8601 en UTC, con la 'Z' explícita. Antes salía
+                // `toDateTimeString()`, que devuelve la hora de APP_TIMEZONE sin
+                // ninguna marca de zona: la pantalla la mostraba cruda y se leía
+                // como hora local, con cinco horas de más. Con la marca, el
+                // navegador la convierte a la hora de quien mira.
+                'generated_at' => now()->utc()->toIso8601String(),
                 'rows' => array_map(fn ($r) => (array) $r, $q->get()->all()),
             ];
         });
@@ -2911,6 +2916,7 @@ class LiquidationService
             ->join('clients as cl', 'cl.id', '=', 'c.client_id')
             ->join('sellers as s', 's.id', '=', 'cl.seller_id')
             ->join('cities as ci', 'ci.id', '=', 's.city_id')
+            ->join('users as u', 'u.id', '=', 's.user_id')
             ->leftJoin('countries as co', 'co.id', '=', 'ci.country_id')
             ->leftJoinSub($deudaCuotas, 'iv', fn ($j) => $j->on('iv.credit_id', '=', 'c.id'))
             ->leftJoinSub($sinAplicar, 'pg', fn ($j) => $j->on('pg.credit_id', '=', 'c.id'))
@@ -2918,6 +2924,12 @@ class LiquidationService
                 's.company_id',
                 'ci.id as city_id',
                 'ci.name as city_name',
+                // Se baja el agrupamiento hasta el VENDEDOR para poder abrir la
+                // ruta y ver su desglose. Sale gratis: es el mismo recorrido, con
+                // una columna más en el GROUP BY. Las filas de ciudad se arman
+                // sumando sus vendedores, en memoria.
+                's.id as seller_id',
+                'u.name as seller_name',
                 DB::raw("COALESCE(co.currency, '') as currency"),
                 DB::raw('COUNT(*) as credits_count'),
                 DB::raw('COUNT(DISTINCT c.client_id) as clients_count'),
@@ -2929,17 +2941,39 @@ class LiquidationService
             ->whereNull('cl.deleted_at')
             ->whereNull('s.deleted_at')
             ->whereNotIn('c.status', ['Liquidado', 'Renovado', 'Unificado'])
-            ->groupBy('s.company_id', 'ci.id', 'ci.name', 'co.currency')
+            ->groupBy('s.company_id', 'ci.id', 'ci.name', 's.id', 'u.name', 'co.currency')
             ->get();
 
-        $generadoEn = now()->toDateTimeString();
+        // ISO-8601 en UTC: ver la nota en getPortfolioByCity(). Sin la marca de
+        // zona, la pantalla mostraba la hora corrida.
+        $generadoEn = now()->utc()->toIso8601String();
         $porEmpresa = [];
         $global = [];
 
+        // La consulta viene por VENDEDOR; acá se pliega en rutas. Cada fila de
+        // ruta lleva adentro sus vendedores (`sellers`), que es lo que abre el
+        // acordeón en pantalla. Los totales de la ruta salen de sumar a sus
+        // vendedores: así el desglose siempre cierra con el encabezado, sin
+        // depender de dos consultas que podrían discrepar.
+        $sumables = ['credits_count', 'clients_count', 'portfolio', 'irrecoverable', 'irrecoverable_credits'];
+
+        $acumular = function (array &$destino, $clave, array $fila) use ($sumables) {
+            if (!isset($destino[$clave])) {
+                $destino[$clave] = $fila;
+                $destino[$clave]['sellers'] = [];
+                return;
+            }
+            foreach ($sumables as $campo) {
+                $destino[$clave][$campo] += $fila[$campo];
+            }
+        };
+
+        $porEmpresaCiudad = [];
+
         foreach ($filas as $f) {
-            $fila = [
-                'city_id' => (int) $f->city_id,
-                'city_name' => $f->city_name,
+            $vendedor = [
+                'seller_id' => (int) $f->seller_id,
+                'seller_name' => $f->seller_name,
                 'currency' => $f->currency,
                 'credits_count' => (int) $f->credits_count,
                 'clients_count' => (int) $f->clients_count,
@@ -2948,17 +2982,35 @@ class LiquidationService
                 'irrecoverable_credits' => (int) $f->irrecoverable_credits,
             ];
 
-            $porEmpresa[$f->company_id][] = $fila;
+            $fila = [
+                'city_id' => (int) $f->city_id,
+                'city_name' => $f->city_name,
+                'currency' => $f->currency,
+            ] + $vendedor;
+            unset($fila['seller_id'], $fila['seller_name']);
+
+            // Por empresa: se agrupa por (empresa, ciudad).
+            $ke = $f->company_id . ':' . $f->city_id;
+            $acumular($porEmpresaCiudad, $ke, $fila);
+            $porEmpresaCiudad[$ke]['company_id'] = $f->company_id;
+            $porEmpresaCiudad[$ke]['sellers'][] = $vendedor;
 
             // Global: una fila por ciudad, sumando las empresas que la comparten.
-            $k = $fila['city_id'];
-            if (!isset($global[$k])) {
-                $global[$k] = $fila;
-            } else {
-                foreach (['credits_count', 'clients_count', 'portfolio', 'irrecoverable', 'irrecoverable_credits'] as $campo) {
-                    $global[$k][$campo] += $fila[$campo];
-                }
+            $acumular($global, $f->city_id, $fila);
+            $global[$f->city_id]['sellers'][] = $vendedor;
+        }
+
+        // Dentro de cada ruta, los vendedores alfabéticos: es como se los busca.
+        $ordenarVendedores = function (array &$rows) {
+            foreach ($rows as &$r) {
+                usort($r['sellers'], fn ($a, $b) => strcasecmp($a['seller_name'], $b['seller_name']));
             }
+        };
+        $ordenarVendedores($global);
+        $ordenarVendedores($porEmpresaCiudad);
+
+        foreach ($porEmpresaCiudad as $fila) {
+            $porEmpresa[$fila['company_id']][] = $fila;
         }
 
         $ordenar = function (array $rows) {
