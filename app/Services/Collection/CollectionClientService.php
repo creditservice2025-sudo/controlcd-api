@@ -617,13 +617,30 @@ class CollectionClientService
                 $creditModel = CollectionCredit::find($latestCredit->id);
                 $creditMeta = is_array($creditModel->metadata) ? $creditModel->metadata : [];
                 $this->creditService->generateInstallments($creditModel, $creditMeta['excluded_days'] ?? []);
+            } elseif ($latestCredit->status === 'active') {
+                // Devengo al abrir el credito. La cuota del periodo nace el dia
+                // del corte (ver generateNextOpenEndedInstallment), y el cron que
+                // la crea corre cada hora: sin esto, el cobrador que abre el
+                // credito a las 00:10 del dia de corte no encontraria que cobrar.
+                //
+                // Es barato y no puede duplicar: el metodo se planta solo si la
+                // fecha no llego, si queda alguna cuota abierta o si el credito
+                // no es de interes mensual abierto.
+                $this->creditService->generateNextOpenEndedInstallment($latestCredit);
             }
 
             $installments = CollectionInstallment::query()
                 ->where('company_id', $companyId)
                 ->where('credit_id', $latestCredit->id)
+                // withTrashed(): los cobros reversados VIAJAN. La reversa los
+                // marca borrados (ver deleteInstallment) y sin esto salían del
+                // payload, así que el extracto del crédito perdía el asiento
+                // original y el saldo daba un salto que ninguna fila explicaba.
+                // Se listan marcados, como en un core bancario; quien calcula
+                // plata debe filtrar por `deleted_at`.
                 ->with(['payments' => function ($q) use ($companyId, $latestCredit) {
-                    $q->where('company_id', $companyId)
+                    $q->withTrashed()
+                      ->where('company_id', $companyId)
                       ->where('credit_id', $latestCredit->id)
                       ->orderBy('recorded_at', 'asc');
                 }])
@@ -631,6 +648,14 @@ class CollectionClientService
                 ->get()
                 ->map(function ($inst) {
                     $deletingUser = $inst->deleted_by ? \App\Models\User::find($inst->deleted_by) : null;
+
+                    // Reversa de cobro. Ya no borra la cuota —el interés nace
+                    // con el crédito y sigue debiéndose—, así que quién y cuándo
+                    // la hizo viajan en `history.__reversal`.
+                    $reversal = is_array($inst->history) ? ($inst->history['__reversal'] ?? null) : null;
+                    $reversingUser = !empty($reversal['by'])
+                        ? \App\Models\User::find($reversal['by'])
+                        : null;
 
                     $principalAmount = (float) ($inst->principal_amount ?? ($inst->amount));
                     $interestAmount = (float) ($inst->interest_amount ?? 0);
@@ -667,8 +692,12 @@ class CollectionClientService
                         'notes' => $inst->notes,
                         'voucher_path' => $inst->voucher_path,
                         'history' => $inst->history,
+                        // `deleted_at` ya solo marca la cuota dada de baja con el
+                        // crédito entero; la reversa de un cobro va aparte.
                         'deleted_at' => \App\Helpers\CollectionClock::iso($inst->deleted_at),
                         'deleted_by_name' => $deletingUser ? $deletingUser->name : null,
+                        'reversed_at' => $reversal['at'] ?? null,
+                        'reversed_by_name' => $reversingUser?->name,
                         'payments' => $inst->payments->map(function($p) {
                             return [
                                 'id' => $p->id,
@@ -680,6 +709,10 @@ class CollectionClientService
                                 'notes' => $p->notes,
                                 'voucher_path' => $p->voucher_path,
                                 'recorded_at' => \App\Helpers\CollectionClock::iso($p->recorded_at),
+                                // Instante de la reversa. Quién la hizo no está
+                                // acá: la reversa es POR CUOTA, así que el autor
+                                // vive en `deleted_by_name` de la cuota.
+                                'deleted_at' => \App\Helpers\CollectionClock::iso($p->deleted_at),
                             ];
                         }),
                     ];

@@ -46,7 +46,13 @@ class CollectionCreditController extends Controller
             'excluded_days' => 'nullable|array',
             'excluded_days.*' => 'string|max:30',
             'images' => 'nullable|array',
-            'images.*.file' => 'nullable|file|image|max:4096',
+            // `mimes` y no `image`: la regla `image` de Laravel acepta SVG, y un
+            // SVG es un documento XML que puede traer <script> adentro. Como los
+            // comprobantes se guardan en el disco `public` y se sirven desde el
+            // MISMO dominio de la app, ese archivo se ejecutaría en la sesión de
+            // quien lo abre. Se listan los formatos de cámara y nada más; `mimes`
+            // mira el contenido real del archivo, no su extensión.
+            'images.*.file' => 'nullable|file|mimes:jpg,jpeg,png,webp|max:4096',
             'images.*.type' => 'nullable|string|max:80',
             // El par moneda/pais define la caja donde cae el credito. El front
             // siempre los manda (los toma de la wallet activa), pero al no estar
@@ -102,8 +108,8 @@ class CollectionCreditController extends Controller
             'description' => 'nullable|string|max:1000',
             'transfer_bank_name' => 'nullable|string|max:150',
             'transfer_reference_number' => 'nullable|string|max:120',
-            'transfer_voucher_photo' => 'nullable|file|image|max:4096',
-            'transfer_support_photo' => 'nullable|file|image|max:4096',
+            'transfer_voucher_photo' => 'nullable|file|mimes:jpg,jpeg,png,webp|max:4096',
+            'transfer_support_photo' => 'nullable|file|mimes:jpg,jpeg,png,webp|max:4096',
         ]);
         $validated['company_id'] = $companyId;
 
@@ -197,7 +203,7 @@ class CollectionCreditController extends Controller
             'reference_number' => 'nullable|string|max:120',
             'bank_name' => 'nullable|string|max:150',
             'notes' => 'nullable|string|max:1000',
-            'voucher_photo' => 'nullable|file|image|max:4096',
+            'voucher_photo' => 'nullable|file|mimes:jpg,jpeg,png,webp|max:4096',
         ]);
         $validated['company_id'] = $companyId;
 
@@ -233,10 +239,14 @@ class CollectionCreditController extends Controller
             'request_id' => $request->input('request_id'),
             'code' => $request->input('code'),
         ];
+        // `payment_id` acota la anulación a UN cobro. Sin él se deshace la cuota
+        // entera, que es lo que hacían las versiones anteriores del APK: se deja
+        // opcional para no romperlas mientras conviven en la calle.
         return $this->collectionCreditService->deleteInstallment(
             $id,
             $securityToken,
-            $companyId
+            $companyId,
+            $request->filled('payment_id') ? (int) $request->input('payment_id') : null
         );
     }
 
@@ -254,7 +264,7 @@ class CollectionCreditController extends Controller
             'notes' => 'nullable|string|max:500',
             'payment_date' => 'nullable|date',
             'timezone' => 'nullable|string|max:80',
-            'voucher' => 'nullable|file|image|max:4096',
+            'voucher' => 'nullable|file|mimes:jpg,jpeg,png,webp|max:4096',
         ]);
 
         if ($request->hasFile('voucher')) {
@@ -280,7 +290,7 @@ class CollectionCreditController extends Controller
             'reference_number' => 'nullable|string|max:120',
             'bank_name' => 'nullable|string|max:150',
             'notes' => 'nullable|string|max:500',
-            'voucher' => 'nullable|file|image|max:4096',
+            'voucher' => 'nullable|file|mimes:jpg,jpeg,png,webp|max:4096',
         ]);
 
         if ($request->hasFile('voucher')) {

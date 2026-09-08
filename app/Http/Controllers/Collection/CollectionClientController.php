@@ -93,8 +93,8 @@ class CollectionClientController extends Controller
             // el servicio caía al fallback 'CO': todos los clientes terminaban
             // en Colombia sin importar el territorio elegido.
             'country_code' => 'nullable|string|max:5',
-            'profile_photo' => 'nullable|file|image|max:4096',
-            'document_photo' => 'nullable|file|image|max:4096',
+            'profile_photo' => 'nullable|file|mimes:jpg,jpeg,png,webp|max:4096',
+            'document_photo' => 'nullable|file|mimes:jpg,jpeg,png,webp|max:4096',
         ], [
             'name.required' => 'El campo nombre completo es obligatorio',
         ]);
@@ -130,8 +130,8 @@ class CollectionClientController extends Controller
             // Idem store(): sin la regla el país nunca llegaba al servicio y el
             // selector del modal de edición no hacía nada.
             'country_code' => 'nullable|string|max:5',
-            'profile_photo' => 'nullable|file|image|max:4096',
-            'document_photo' => 'nullable|file|image|max:4096',
+            'profile_photo' => 'nullable|file|mimes:jpg,jpeg,png,webp|max:4096',
+            'document_photo' => 'nullable|file|mimes:jpg,jpeg,png,webp|max:4096',
         ]);
         $validated['company_id'] = $companyId;
 

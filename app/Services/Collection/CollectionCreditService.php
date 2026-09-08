@@ -1906,6 +1906,31 @@ class CollectionCreditService
             return;
         }
 
+        // LA CUOTA NACE EL DIA DEL CORTE, NO CUANDO SE COBRA LA ANTERIOR.
+        //
+        // El periodo de la proxima cuota arranca el dia en que vence la actual,
+        // asi que hasta esa fecha no hay nada devengado. Antes se creaba en el
+        // acto al terminar de cobrar, y eso traia dos problemas:
+        //
+        //  - al cliente que paga adelantado le aparecia la cuota del mes que
+        //    viene semanas antes de que empezara su periodo;
+        //  - peor, su interes quedaba congelado sobre el capital de ESE dia: si
+        //    despues abonaba capital, el mes siguiente seguia calculado sobre el
+        //    saldo viejo y se le cobraba de mas.
+        //
+        // Esperando al corte, el interes se calcula siempre sobre el capital que
+        // realmente hay al empezar el periodo. Mientras tanto el front ya muestra
+        // la proyeccion (ver showNextInterestHint), asi que el credito no queda
+        // mudo entre el pago y el corte.
+        $tz = \App\Helpers\TimezoneHelper::timezoneForCountryCode($credit->country_code)
+            ?: 'America/Bogota';
+        $today = Carbon::now($tz)->toDateString();
+        $cutoff = Carbon::parse($lastInstallment->due_date)->toDateString();
+
+        if ($cutoff > $today) {
+            return;
+        }
+
         $nextNumber = (int) $lastInstallment->installment_number + 1;
         $nextDue = Carbon::parse($lastInstallment->due_date)->addMonth()->toDateString();
         $interest = round(($remainingPrincipal * (float) $credit->interest_rate) / 100, 2);
@@ -1930,8 +1955,31 @@ class CollectionCreditService
         $credit->increment('total_installments');
     }
 
-    public function deleteInstallment(int $installmentId, array $securityToken = [], ?int $requestedCompanyId = null)
-    {
+    /**
+     * Reversa del COBRO de una cuota. Deshace la plata, no la deuda.
+     *
+     * REGLA DE NEGOCIO: el interés de la cuota NACE CON EL CRÉDITO —se devengó
+     * sobre el capital que había al inicio del período— y no depende de que el
+     * cliente haya pagado o no. Deshacer un cobro devuelve la cuota a
+     * "pendiente" con su interés intacto; NO la borra.
+     *
+     * Antes esta función marcaba la cuota con `deleted_at`, y como todos los
+     * cálculos de saldo filtran por esa columna, reversar un abono hacía
+     * desaparecer el interés del mes: el crédito quedaba vivo pero sin nada que
+     * cobrar. La baja de cuotas queda reservada para la anulación del crédito
+     * completo (ver destroy), que es el único caso en que la deuda deja de
+     * existir de verdad.
+     *
+     * La traza de la reversa vive en tres lugares: los pagos quedan marcados
+     * borrados, el snapshot previo se guarda en `history` junto con quién y
+     * cuándo la hizo, y el movimiento de caja se registra en el ledger.
+     */
+    public function deleteInstallment(
+        int $installmentId,
+        array $securityToken = [],
+        ?int $requestedCompanyId = null,
+        ?int $paymentId = null
+    ) {
         $companyId = $this->resolveCompanyId($requestedCompanyId);
         if (!$companyId) {
             return $this->errorResponse('No se pudo determinar la compañía para Collection', 422);
@@ -1955,10 +2003,44 @@ class CollectionCreditService
             return $this->errorNotFoundResponse('Cuota no encontrada');
         }
 
+        // Anulación de UN movimiento. El botón vive en la fila de un cobro
+        // concreto, así que anular tiene que deshacer ESE cobro y ninguno más:
+        // anular el abono a capital se llevaba puesto el pago de interés de la
+        // misma cuota, porque la baja era por cuota y no por movimiento.
+        if ($paymentId) {
+            // withTrashed: sin esto el cobro ya anulado no aparece —lo esconde el
+            // SoftDelete— y el segundo intento respondía "no encontrado", que hace
+            // pensar en un error del sistema en vez de en algo ya hecho.
+            $payment = \App\Models\Collection\CollectionPayment::query()
+                ->withTrashed()
+                ->where('company_id', $companyId)
+                ->where('credit_id', $installment->credit_id)
+                ->where('installment_number', $installment->installment_number)
+                ->where('id', $paymentId)
+                ->first();
+
+            if (!$payment) {
+                return $this->errorNotFoundResponse('Movimiento de cobro no encontrado en esta cuota');
+            }
+
+            if ($payment->deleted_at) {
+                return $this->errorResponse('Ese cobro ya está anulado.', 409);
+            }
+
+            return $this->reverseSinglePayment($installment, $payment, $companyId);
+        }
+
         return DB::connection(self::CONNECTION)->transaction(function () use ($installment, $companyId) {
             // Backup current state (with payment info) for audit
             $history = $installment->toArray();
-            
+            // Quién reversó y cuándo. Va acá dentro y no en `deleted_by` porque
+            // la cuota NO queda borrada: esa columna significaría otra cosa.
+            $history['__reversal'] = [
+                'at' => Carbon::now()->toISOString(),
+                'by' => Auth::id(),
+                'ip' => request()->ip(),
+            ];
+
             // Reversa física parcial de saldo: Marcamos los registros de la tabla de pagos como eliminados (Soft Delete manual)
             \App\Models\Collection\CollectionPayment::where('company_id', $installment->company_id)
                 ->where('credit_id', $installment->credit_id)
@@ -1966,27 +2048,55 @@ class CollectionCreditService
                 ->update(['deleted_at' => Carbon::now()]);
 
             $installment->update([
+                // Los tres importes vuelven a cero. `principal_paid` e
+                // `interest_paid` antes quedaban con el valor cobrado: no se
+                // notaba porque la cuota borrada no entraba en ninguna suma,
+                // pero con la cuota viva darían por amortizado un capital que
+                // volvió a deberse.
                 'paid_amount' => 0,
+                'principal_paid' => 0,
+                'interest_paid' => 0,
                 'status' => 'pendiente',
                 'payment_method' => null,
                 'notes' => null,
                 'voucher_path' => null,
                 'last_payment_at' => null,
-                // Audit the reversal action
-                'deleted_at' => Carbon::now(),
-                'deleted_by' => Auth::id(),
-                'deleted_ip' => request()->ip(),
                 'history' => $history,
+            ]);
+
+            // Si el crédito se había dado por saldado con ese cobro, vuelve a
+            // estar vivo: la deuda que lo cerró acaba de reaparecer.
+            $credit = CollectionCredit::find($installment->credit_id);
+            if ($credit && strtolower((string) $credit->status) === 'pagado') {
+                $credit->update(['status' => 'active']);
+            }
+
+            \App\Models\Collection\CollectionCreditAudit::query()->create([
+                'company_id' => $companyId,
+                'credit_id' => $installment->credit_id,
+                'action' => 'payment_reversed',
+                'user_id' => Auth::id(),
+                'ip_address' => request()->ip(),
+                'changes' => [
+                    'installment_number' => $installment->installment_number,
+                    'reversed_amount' => (float) ($history['paid_amount'] ?? 0),
+                    'old' => [
+                        'status' => $history['status'] ?? null,
+                        'paid_amount' => (float) ($history['paid_amount'] ?? 0),
+                        'principal_paid' => (float) ($history['principal_paid'] ?? 0),
+                        'interest_paid' => (float) ($history['interest_paid'] ?? 0),
+                    ],
+                    'new' => ['status' => 'pendiente'],
+                ],
             ]);
 
             // Sync with Centralized Wallet (Reversal: Substract what was previously added)
             $totalReversed = (float) ($history['paid_amount'] ?? 0);
             if ($totalReversed > 0) {
-                $credit = CollectionCredit::find($installment->credit_id);
                 app(\App\Services\Collection\CollectionWalletService::class)->recordMovement([
                     'company_id' => $companyId,
-                    'currency' => $credit->currency ?? 'COP',
-                    'country_code' => $credit->country_code ?? 'CO',
+                    'currency' => $credit?->currency ?? 'COP',
+                    'country_code' => $credit?->country_code ?? 'CO',
                     'amount' => $totalReversed,
                     'type' => 'debit', // Reversing an income
                     'action_type' => 'payment_reversal',
@@ -1999,6 +2109,131 @@ class CollectionCreditService
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Cobro/Abono eliminado correctamente. La cuota ahora está pendiente.'
+            ]);
+        });
+    }
+
+    /**
+     * Anula UN cobro y deja en pie los demás de la misma cuota.
+     *
+     * Una cuota puede tener varios cobros —el interés del mes y uno o más abonos
+     * a capital, cada uno su propio asiento— y el botón de anular vive en la fila
+     * de uno concreto. Deshacer la cuota entera devolvía a caja plata que nadie
+     * pidió devolver: anular el abono a capital arrastraba el pago de interés.
+     *
+     * Acá se resta de la cuota SOLO lo que aportaba este cobro y se recalcula su
+     * estado por componentes, que es como lo calcula el motor de pagos: el
+     * interés y el capital se saldan por separado y una cuota con el interés
+     * cobrado pero capital abonado de menos sigue abierta.
+     */
+    private function reverseSinglePayment(
+        \App\Models\Collection\CollectionInstallment $installment,
+        \App\Models\Collection\CollectionPayment $payment,
+        int $companyId
+    ) {
+        return DB::connection(self::CONNECTION)->transaction(function () use ($installment, $payment, $companyId) {
+            $montoAnulado = round((float) $payment->amount_paid, 2);
+            $interesAnulado = round((float) ($payment->interest_paid ?? 0), 2);
+            $capitalAnulado = round((float) ($payment->principal_paid ?? 0), 2);
+
+            $previo = [
+                'status' => $installment->status,
+                'paid_amount' => (float) $installment->paid_amount,
+                'principal_paid' => (float) ($installment->principal_paid ?? 0),
+                'interest_paid' => (float) ($installment->interest_paid ?? 0),
+            ];
+
+            // delete() y no update(['deleted_at' => ...]): `deleted_at` no está en
+            // el $fillable del modelo, así que un update lo descarta en silencio
+            // —el pago quedaba vivo mientras la cuota ya se había descontado—.
+            // El trait SoftDeletes no pasa por fillable.
+            $payment->delete();
+
+            // max(0): si un histórico quedó descuadrado, el saldo no se va en
+            // negativo y la cuota sigue siendo legible.
+            $nuevoPagado = max(0, round($previo['paid_amount'] - $montoAnulado, 2));
+            $nuevoInteres = max(0, round($previo['interest_paid'] - $interesAnulado, 2));
+            $nuevoCapital = max(0, round($previo['principal_paid'] - $capitalAnulado, 2));
+
+            $interesSaldado = $nuevoInteres >= round((float) $installment->interest_amount, 2);
+            $capitalSaldado = $nuevoCapital >= round((float) $installment->principal_amount, 2);
+
+            if ($nuevoPagado <= 0) {
+                $estado = 'pendiente';
+            } else {
+                $estado = ($interesSaldado && $capitalSaldado) ? 'pagado' : 'parcial';
+            }
+
+            // La traza va por cobro: `__reversals` guarda quién anuló cuál. Se
+            // mantiene `__reversal` con el último, que es lo que ya leía el front.
+            $history = is_array($installment->history) ? $installment->history : [];
+            $marca = [
+                'at' => Carbon::now()->toISOString(),
+                'by' => Auth::id(),
+                'ip' => request()->ip(),
+            ];
+            $history['__reversal'] = $marca;
+            $history['__reversals'] = array_merge(
+                $history['__reversals'] ?? [],
+                [(string) $payment->id => $marca + ['amount' => $montoAnulado]]
+            );
+
+            $installment->update([
+                'paid_amount' => $nuevoPagado,
+                'principal_paid' => $nuevoCapital,
+                'interest_paid' => $nuevoInteres,
+                'status' => $estado,
+                'last_payment_at' => $nuevoPagado > 0 ? $installment->last_payment_at : null,
+                'history' => $history,
+            ]);
+
+            // El crédito que se dio por saldado con este cobro vuelve a estar vivo.
+            $credit = CollectionCredit::find($installment->credit_id);
+            if ($credit && strtolower((string) $credit->status) === 'pagado') {
+                $credit->update(['status' => 'active']);
+            }
+
+            \App\Models\Collection\CollectionCreditAudit::query()->create([
+                'company_id' => $companyId,
+                'credit_id' => $installment->credit_id,
+                'action' => 'payment_reversed',
+                'user_id' => Auth::id(),
+                'ip_address' => request()->ip(),
+                'changes' => [
+                    'installment_number' => $installment->installment_number,
+                    'payment_id' => $payment->id,
+                    'reversed_amount' => $montoAnulado,
+                    'old' => $previo,
+                    'new' => [
+                        'status' => $estado,
+                        'paid_amount' => $nuevoPagado,
+                        'principal_paid' => $nuevoCapital,
+                        'interest_paid' => $nuevoInteres,
+                    ],
+                ],
+            ]);
+
+            // A caja sale SOLO lo de este cobro, no el total de la cuota.
+            if ($montoAnulado > 0) {
+                app(\App\Services\Collection\CollectionWalletService::class)->recordMovement([
+                    'company_id' => $companyId,
+                    'currency' => $credit?->currency ?? 'COP',
+                    'country_code' => $credit?->country_code ?? 'CO',
+                    'amount' => $montoAnulado,
+                    'type' => 'debit',
+                    'action_type' => 'payment_reversal',
+                    'reference_type' => 'credit',
+                    'reference_id' => $installment->credit_id,
+                    'description' => "Anulación de cobro PAG-{$payment->id} · cuota #{$installment->installment_number}"
+                        . " crédito #{$installment->credit_id}",
+                ]);
+            }
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Cobro anulado correctamente.',
+                'reversed_amount' => $montoAnulado,
+                'installment_status' => $estado,
             ]);
         });
     }

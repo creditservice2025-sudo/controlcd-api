@@ -1135,7 +1135,7 @@ class CollectionDailyRecordService
             'longitude' => 'nullable|numeric',
             // Hasta 3 evidencias por registro
             'evidence' => 'nullable|array|max:3',
-            'evidence.*' => 'image|max:5120',
+            'evidence.*' => 'mimes:jpg,jpeg,png,webp|max:5120',
             'recorded_at' => 'nullable|date',
             'transfer_from' => 'nullable|string|max:100',
             'transfer_to' => 'nullable|string|max:100',

@@ -33,7 +33,7 @@ class CollectionPaymentController extends Controller
                 'payment_method' => 'nullable|string',
                 'reference' => 'nullable|string',
                 'notes' => 'nullable|string',
-                'voucher' => 'nullable|image|max:5120',
+                'voucher' => 'nullable|mimes:jpg,jpeg,png,webp|max:5120',
             ]);
 
             // Handle Multipart file upload

@@ -158,6 +158,20 @@ return Application::configure(basePath: dirname(__DIR__))
             ->everyMinute()
             ->withoutOverlapping()
             ->emailOutputOnFailure('creditservice2025@gmail.com');
+
+        // Collection: devengo del interés mensual. La cuota del período nace el
+        // DÍA DEL CORTE, sobre el capital que hay ese día — antes se creaba al
+        // cobrar la anterior, y al que pagaba adelantado le quedaba el interés
+        // congelado sobre un capital que después bajaba.
+        //
+        // Cada hora alcanza: la cuota tiene granularidad de día, y el crédito
+        // que alguien abre o cobra la genera en el acto (ver el servicio). Esto
+        // es la red para los que nadie toca. Es idempotente: el servicio no crea
+        // nada si la fecha no llegó o si ya hay una cuota abierta.
+        $schedule->command('collection:accrue-interest')
+            ->hourly()
+            ->withoutOverlapping()
+            ->emailOutputOnFailure('creditservice2025@gmail.com');
         // Cartera viva por ruta, para la pantalla "Resumen de cartera". Se
         // precalcula acá porque dentro de una petición web no entra: recorre
         // 1,5 M de cuotas y tarda ~35 s contra el límite de 30 s de PHP.

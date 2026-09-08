@@ -122,8 +122,34 @@ class CollectionPaymentService
                     }
 
                     if ($installment->status === 'pagado') {
-                        $instNum++; // Try next one
-                        continue;
+                        // En un credito abierto el CAPITAL vive en el credito, no en
+                        // la cuota: la cuota solo lleva el interes del periodo. Desde
+                        // que el interes del periodo siguiente se devenga el dia del
+                        // corte (y no al cobrar el anterior), entre un pago y el corte
+                        // el credito queda sin ninguna cuota abierta. Sin esta salida
+                        // el bucle saltaba a una cuota que todavia no existe, cortaba
+                        // por el `break` de arriba y EL ABONO A CAPITAL SE PERDIA:
+                        // entraba a caja sin bajar la deuda.
+                        //
+                        // La ultima cuota generada sigue siendo el asiento donde se
+                        // imputa ese capital. Su estado no cambia —el interes ya esta
+                        // pagado y `principal_amount` es 0—, solo crece `principal_paid`,
+                        // que es de donde sale el capital vivo (openEndedRemainingPrincipal).
+                        $esUltimaGenerada = !CollectionInstallment::query()
+                            ->where('company_id', $companyId)
+                            ->where('credit_id', $creditId)
+                            ->where('installment_number', '>', $instNum)
+                            ->exists();
+
+                        $puedeRecibirCapital = $isOpenEnded
+                            && $esUltimaGenerada
+                            && $allocation !== 'interest'
+                            && (float) ($remainingPrincipal ?? 0) > 0;
+
+                        if (!$puedeRecibirCapital) {
+                            $instNum++; // Try next one
+                            continue;
+                        }
                     }
 
                     $pendingInterest = (float) $installment->interest_amount - (float) ($installment->interest_paid ?? 0);
@@ -188,7 +214,28 @@ class CollectionPaymentService
                     $interestSettled = round($newInterestPaid, 2) >= round((float) $installment->interest_amount, 2);
                     $principalSettled = round($newPrincipalPaid, 2) >= round((float) $installment->principal_amount, 2);
 
-                    $newStatus = ($interestSettled && $principalSettled) ? 'pagado' : 'parcial';
+                    // 'parcial' solo si se cobro algo DE LO QUE LA CUOTA DEBE.
+                    //
+                    // En el credito abierto la cuota lleva solo interes
+                    // (principal_amount = 0) y el capital vive en el credito, pero el
+                    // abono a capital se imputa igual a esta cuota. Sin esta cuenta
+                    // cualquier abono a capital la marcaba 'parcial' con el interes
+                    // intacto: la pantalla decia PARCIAL al lado de "Falta $1.108,30
+                    // de interes", que es el interes entero.
+                    //
+                    // Del capital abonado solo cuenta lo que corresponde a la cuota
+                    // (0 en este modelo); el resto baja el credito, no la cuota.
+                    $principalDeLaCuota = min(
+                        round($newPrincipalPaid, 2),
+                        round((float) $installment->principal_amount, 2)
+                    );
+                    $algoCobradoDeLaCuota = round($newInterestPaid, 2) > 0 || $principalDeLaCuota > 0;
+
+                    if ($interestSettled && $principalSettled) {
+                        $newStatus = 'pagado';
+                    } else {
+                        $newStatus = $algoCobradoDeLaCuota ? 'parcial' : 'pendiente';
+                    }
 
                     $tz = $payload['timezone'] ?? 'UTC';
                     $now = Carbon::now($tz);

@@ -88,7 +88,7 @@ class CollectionExpenseService
             'category' => 'required|string|max:50',
             'latitude' => 'nullable|numeric',
             'longitude' => 'nullable|numeric',
-            'evidence' => 'nullable|image|max:5120', // 5MB max
+            'evidence' => 'nullable|mimes:jpg,jpeg,png,webp|max:5120', // 5MB max
         ]);
 
         $metadata = [];
