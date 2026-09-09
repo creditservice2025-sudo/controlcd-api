@@ -756,8 +756,20 @@ class CollectionDailyRecordService
             $sign = $m->type === 'ingreso' ? '+' : ($m->type === 'gasto' ? '-' : '');
             $cls = $m->type === 'ingreso' ? 'pos' : ($m->type === 'gasto' ? 'neg' : 'transf');
             $movsByBucket[$bk][] = [
+                // La hora se convierte a la zona del PAIS del movimiento antes
+                // de formatearla. `recorded_at` es un instante UTC: formatearlo
+                // crudo imprimia la hora de Greenwich como si fuera la del
+                // cobrador (un cobro de las 20:54 en Lima salia 01:54).
                 'date' => Carbon::parse($bd)->format('d/m/Y')
-                    . ($m->recorded_at ? ' ' . Carbon::parse($m->recorded_at)->format('H:i:s') : ''),
+                    . ($m->recorded_at
+                        ? ' ' . $m->recorded_at
+                            ->copy()
+                            ->timezone(
+                                \App\Helpers\TimezoneHelper::timezoneForCountryCode($m->country_code)
+                                    ?: $this->companyTz($companyId)
+                            )
+                            ->format('H:i:s')
+                        : ''),
                 'type' => ($typeLabels[$m->type] ?? $m->type) . ($m->category ? ' · ' . $m->category : ''),
                 'desc' => $m->description ?: '—',
                 'author' => $m->user_id ? ($mNames[$m->user_id] ?? '—') : '—',

@@ -48,7 +48,10 @@ class CollectionDailyRecord extends Model
 
     protected $casts = [
         'amount' => 'decimal:2',
-        'recorded_at' => 'datetime',
+        // UTC explicito: el servicio la escribe con ->utc(). Con el cast
+        // 'datetime', Eloquent la leia como hora de la app y le sumaba el
+        // offset otra vez al serializar (20:54 de Lima salia como 06:54Z).
+        'recorded_at' => \App\Casts\UtcDateTime::class,
         'business_date' => 'date:Y-m-d',
         'metadata' => 'json',
         'latitude' => 'float',
