@@ -2,12 +2,14 @@
 
 namespace App\Services\Collection;
 
+use App\Helpers\TimezoneHelper;
 use App\Models\Collection\CollectionCapitalAddition;
 use App\Models\Collection\CollectionClient;
 use App\Models\Collection\CollectionClientAudit;
 use App\Models\Collection\CollectionCredit;
 use App\Models\Collection\CollectionInstallment;
 use App\Traits\ApiResponse;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -22,6 +24,31 @@ class CollectionClientService
         private readonly CollectionCreditService $creditService,
         private readonly CollectionPartitionService $partitionService
     ) {
+    }
+
+    /**
+     * Días de atraso de un vencimiento, medidos en la zona del PAÍS del cliente.
+     *
+     * Las dos fechas se leen en la MISMA zona a propósito. Comparar la fecha de
+     * la cuota —que sale de la base sin zona, o sea UTC— contra el día local
+     * daba decimales (5,2083 días) y, en las horas del borde, un día entero de
+     * diferencia: un cliente de Lima aparecía en mora porque en el servidor ya
+     * había cambiado el día.
+     *
+     * Devuelve negativo cuando todavía falta para vencer. Se manda así a
+     * propósito: la pantalla necesita distinguir "vence en 3 días" de "vencido
+     * hace 3", y un 0 para ambos casos los mezclaría.
+     */
+    private function diasDeMora(?string $vencimiento, ?string $countryCode): ?int
+    {
+        if (!$vencimiento) {
+            return null;
+        }
+
+        $tz = TimezoneHelper::timezoneForCountryCode($countryCode) ?: 'America/Bogota';
+
+        return (int) Carbon::parse($vencimiento, $tz)->startOfDay()
+            ->diffInDays(Carbon::now($tz)->startOfDay(), false);
     }
 
     public function list(array $filters = [])
@@ -98,7 +125,16 @@ class CollectionClientService
                     credit_id,
                     SUM(COALESCE(principal_paid, 0)) as principal_paid,
                     SUM(GREATEST(COALESCE(interest_amount, 0) - COALESCE(interest_paid, 0), 0)) as pending_interest,
-                    SUM(COALESCE(paid_amount, 0)) as total_paid
+                    SUM(COALESCE(paid_amount, 0)) as total_paid,
+                    -- Vencimiento a vigilar: la cuota ABIERTA más vieja. Se mide
+                    -- por saldo y no por `status`, igual que en la planilla de
+                    -- cobranza: una cuota puede quedar en cero por componentes
+                    -- antes de que el estado se actualice.
+                    MIN(CASE
+                        WHEN GREATEST(COALESCE(interest_amount, 0) - COALESCE(interest_paid, 0), 0)
+                           + GREATEST(COALESCE(principal_amount, 0) - COALESCE(principal_paid, 0), 0) > 0
+                        THEN due_date
+                    END) as next_due_date
                 ')
                 ->groupBy('credit_id')
                 ->get();
@@ -127,18 +163,23 @@ class CollectionClientService
             // créditos tiene una fecha de primera cuota POR CRÉDITO, y mostrar
             // solo la del último (que es lo que había) es arbitrario.
             $creditsSummary = [];
+            // Vencimiento más viejo sin pagar de TODA la cartera activa del
+            // cliente: es lo que define su mora. Un cliente con tres créditos
+            // está atrasado por el peor de los tres, no por el último que tomó.
+            $proximoVencimiento = null;
             foreach (($creditsByClient[$client->id] ?? []) as $c) {
                 if (!in_array(strtolower((string) $c->status), $activeStatuses, true)) {
                     continue;
                 }
                 $activeCount++;
-                $creditsSummary[] = [
-                    'id' => $c->id,
-                    'route_name' => $c->route_name ?? null,
-                    'first_installment_date' => $c->first_installment_date?->toDateString(),
-                    'amount' => (float) $c->amount,
-                    'currency' => $c->currency ?? null,
-                ];
+                $vencimientoCredito = $instByCredit[$c->id]->next_due_date ?? null;
+                $vencimientoCredito = $vencimientoCredito
+                    ? Carbon::parse($vencimientoCredito)->toDateString()
+                    : null;
+                if ($vencimientoCredito !== null
+                    && ($proximoVencimiento === null || $vencimientoCredito < $proximoVencimiento)) {
+                    $proximoVencimiento = $vencimientoCredito;
+                }
                 $amount = (float) $c->amount;
                 $rate = (float) $c->interest_rate;
                 $interest = $amount * $rate / 100;
@@ -147,6 +188,28 @@ class CollectionClientService
                 $pendingInterest = max(0, (float) ($ag->pending_interest ?? 0));
                 $paid = (float) ($ag->total_paid ?? 0);
                 $balance = max(0, $amount - $principalPaid) + $pendingInterest;
+
+                // El desglose lleva las mismas cifras que el total del cliente,
+                // crédito por crédito: es lo que se abre al tocar "N créditos"
+                // y tiene que poder explicar de dónde sale cada número de la
+                // fila. Sin esto el modal sería una lista de fechas sin plata.
+                $creditsSummary[] = [
+                    'id' => $c->id,
+                    'route_name' => $c->route_name ?? null,
+                    'first_installment_date' => $c->first_installment_date?->toDateString(),
+                    'interest_due_date' => $vencimientoCredito,
+                    'days_overdue' => $this->diasDeMora(
+                        $vencimientoCredito,
+                        $hasCountryCode ? $client->country_code : null
+                    ),
+                    'amount' => $amount,
+                    'interest_rate' => $rate,
+                    'remaining_principal' => round(max(0, $amount - $principalPaid), 2),
+                    'pending_interest' => round($pendingInterest, 2),
+                    'total_pending' => round($balance, 2),
+                    'total_paid' => round($paid, 2),
+                    'currency' => $c->currency ?? null,
+                ];
 
                 $totalCapital += $amount;
                 $totalInterest += $interest;
@@ -203,6 +266,21 @@ class CollectionClientService
                 // completo va en `credits_summary`.
                 'first_installment_date' => $firstDates[0] ?? null,
                 'first_installment_date_last' => count($firstDates) ? end($firstDates) : null,
+                // ── Mora ──
+                // `interest_due_date` es el vencimiento sin pagar más viejo de
+                // toda su cartera activa; `days_overdue` los días que pasaron
+                // desde entonces, medidos en la zona del PAÍS del cliente y no
+                // del servidor: un cliente de Lima no está en mora porque en
+                // Bogotá ya cambió el día.
+                //
+                // Negativo significa que todavía falta para vencer, y se manda
+                // así a propósito: la pantalla necesita distinguir "vence en 3
+                // días" de "vencido hace 3", y un 0 para ambos los mezclaría.
+                'interest_due_date' => $proximoVencimiento,
+                'days_overdue' => $this->diasDeMora(
+                    $proximoVencimiento,
+                    $hasCountryCode ? $client->country_code : null
+                ),
                 'credits_summary' => $creditsSummary,
                 'credit_status' => $latestCredit?->status,
                 'credit_route_name' => $latestCredit?->route_name ?? null,
@@ -493,7 +571,15 @@ class CollectionClientService
                 ->selectRaw('
                     SUM(COALESCE(principal_paid, 0)) as total_principal_paid,
                     SUM(COALESCE(interest_amount, 0) - COALESCE(interest_paid, 0)) as pending_interest,
-                    SUM(COALESCE(paid_amount, 0)) as total_paid_all
+                    SUM(COALESCE(paid_amount, 0)) as total_paid_all,
+                    -- Vencimiento a vigilar de ESTE crédito: la cuota abierta
+                    -- más vieja. Mismo criterio que el listado de clientes: se
+                    -- mide por saldo y no por `status`.
+                    MIN(CASE
+                        WHEN GREATEST(COALESCE(interest_amount, 0) - COALESCE(interest_paid, 0), 0)
+                           + GREATEST(COALESCE(principal_amount, 0) - COALESCE(principal_paid, 0), 0) > 0
+                        THEN due_date
+                    END) as next_due_date
                 ')
                 ->first();
                 
@@ -553,6 +639,18 @@ class CollectionClientService
                 'payment_frequency' => $credit->payment_frequency,
                 'first_installment_date' => $credit->first_installment_date?->toDateString(),
                 'status' => $credit->status,
+                // Mora de ESTE crédito, para poder marcarlo en su tarjeta: la
+                // cartera de un cliente puede tener uno al día y otro con tres
+                // meses, y la tarjeta no lo decía.
+                'interest_due_date' => $stats->next_due_date
+                    ? Carbon::parse($stats->next_due_date)->toDateString()
+                    : null,
+                'days_overdue' => $this->diasDeMora(
+                    $stats->next_due_date
+                        ? Carbon::parse($stats->next_due_date)->toDateString()
+                        : null,
+                    $credit->country_code ?? null
+                ),
                 // Baja del credito: la cartera lo lista igual que un core
                 // bancario -- la fila no desaparece, se muestra marcada y con
                 // el porque. `cancelled_at` es el instante UTC (convertir en
