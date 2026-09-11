@@ -107,6 +107,10 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
 
     Route::get('sellers/{sellerId}/cash-info', [SellerController::class, 'getCashInfo']);
     Route::get('sellers/{sellerId}/liquidations', [SellerController::class, 'getLiquidations']);
+    // Alta rápida del teléfono desde el reporte, sin abrir la ficha del vendedor.
+    // PUT y PATCH: el cliente HTTP del front solo expone put/post, y agregar
+    // un helper nuevo por un solo endpoint es más superficie que aceptar los dos.
+    Route::match(['put', 'patch'], 'sellers/{sellerId}/phone', [SellerController::class, 'updatePhone']);
     Route::get('sellers/{sellerId}/portfolio-summary', [SellerController::class, 'getPortfolioSummary']);
 
 
