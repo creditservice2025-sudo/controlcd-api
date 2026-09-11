@@ -2335,6 +2335,17 @@ class LiquidationService
             $rows[] = array_merge([$primera($fila), $moneda], array_values($valores));
         }
 
+        // Tono de recaudo por fila, SOLO en el nivel vendedor: la escala es una
+        // vara pensada para lo que recauda una persona. Aplicarla a una ruta
+        // —que suma varios vendedores— daría verde siempre y no diría nada.
+        $tonos = [];
+        if ($level === 'seller') {
+            foreach ($rows as $fila) {
+                // Índice 2 = Total Recaudado (0 es el nombre, 1 la moneda).
+                $tonos[] = \App\Support\EscalaRecaudo::tono($fila[2]);
+            }
+        }
+
         ksort($totales);
         $filasTotales = [];
         foreach ($totales as $moneda => $suma) {
@@ -2352,6 +2363,11 @@ class LiquidationService
             // Índices de las columnas que son dinero, para formatear sin
             // adivinar por el contenido.
             'money_columns' => [2, 3, 4, 5, 9],
+            // Color por fila y su referencia. Vacíos fuera del nivel vendedor,
+            // así el Excel y el PDF no necesitan preguntar de qué nivel vienen.
+            'row_tones' => $tonos,
+            'tone_legend' => $tonos ? \App\Support\EscalaRecaudo::leyenda() : [],
+            'tone_colors' => \App\Support\EscalaRecaudo::COLORES,
         ];
     }
 
@@ -2550,6 +2566,83 @@ class LiquidationService
                 'clients_with_active_credit' => $con,
                 // max(0) por defensa: si alguna vez las dos consultas dejaran de
                 // filtrar igual, es preferible un 0 que un negativo en pantalla.
+                'clients_without_credit' => max(0, (int) $total - $con),
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * Igual que getClientCreditStateByCity(), pero abierto por VENDEDOR.
+     *
+     * La tabla de vendedores de una ruta necesita el mismo corte que el resumen:
+     * cuántos de sus clientes activos tenían un crédito vivo el ÚLTIMO día del
+     * rango. El predicado sale de creditoVivoAlCorte(), el mismo que usan la
+     * versión por ciudad y el detalle que se abre al tocar el número, así que
+     * los vendedores de una ruta suman exactamente el número de la ruta. Si se
+     * escribiera aparte, cualquier ajuste futuro los haría divergir sin aviso.
+     *
+     * OJO con el origen de las filas: acá se parte de CLIENTES, no de
+     * liquidaciones. Un vendedor sin liquidación aprobada en el rango no
+     * aparece en la tabla —eso se decide en getAccumulatedBySellersInCity— pero
+     * sus clientes sí existen y se cuentan si llega a mostrarse.
+     *
+     * @return array<int, array{clients_with_active_credit:int, clients_without_credit:int}>
+     */
+    public function getClientCreditStateBySeller(
+        $endDate,
+        $companyId = null,
+        $sellerIds = null,
+        $cityId = null
+    ): array {
+        $cut = Carbon::parse($endDate)->format('Y-m-d');
+        $this->assertDateFormat($cut);
+
+        $conCredito = DB::table('credits as c')
+            ->join('clients as cl', 'cl.id', '=', 'c.client_id')
+            ->join('sellers as s', 's.id', '=', 'cl.seller_id')
+            ->select('s.id as seller_id', DB::raw('COUNT(DISTINCT c.client_id) as n'))
+            ->whereNull('cl.deleted_at')
+            ->whereNull('s.deleted_at')
+            ->where('cl.status', 'active')
+            ->groupBy('s.id');
+
+        $this->creditoVivoAlCorte($conCredito, $cut);
+
+        // Los "sin crédito" salen por diferencia contra el total de clientes
+        // activos, igual que en la versión por ciudad: contarlos con un NOT
+        // EXISTS sería una segunda pasada sobre créditos y pagos para llegar
+        // al mismo número.
+        $totales = DB::table('clients as cl')
+            ->join('sellers as s', 's.id', '=', 'cl.seller_id')
+            ->select('s.id as seller_id', DB::raw('COUNT(*) as n'))
+            ->whereNull('cl.deleted_at')
+            ->whereNull('s.deleted_at')
+            ->where('cl.status', 'active')
+            ->groupBy('s.id');
+
+        foreach ([$conCredito, $totales] as $q) {
+            if ($companyId !== null) {
+                $q->where('s.company_id', $companyId);
+            }
+            if ($sellerIds !== null) {
+                $q->whereIn('s.id', $sellerIds);
+            }
+            if ($cityId !== null) {
+                $q->where('s.city_id', $cityId);
+            }
+        }
+
+        $conPorVendedor = $conCredito->pluck('n', 'seller_id')->all();
+        $totalPorVendedor = $totales->pluck('n', 'seller_id')->all();
+
+        $out = [];
+        foreach ($totalPorVendedor as $sellerId => $total) {
+            $con = (int) ($conPorVendedor[$sellerId] ?? 0);
+            $out[$sellerId] = [
+                'clients_with_active_credit' => $con,
+                // max(0) por defensa, igual que la versión por ciudad.
                 'clients_without_credit' => max(0, (int) $total - $con),
             ];
         }
@@ -3285,8 +3378,13 @@ class LiquidationService
             ->select(
                 'sellers.id as seller_id',
                 'users.name as seller_name',
+                // Para el enlace de WhatsApp: el número del vendedor y el
+                // prefijo de su país. wa.me exige formato internacional, y el
+                // prefijo sale de la ruta, no se le pide a quien carga el dato.
+                'users.phone as seller_phone',
                 'cities.name as city_name',
                 DB::raw("COALESCE(countries.currency, '') as currency"),
+                DB::raw("COALESCE(countries.phone_code, '') as phone_code"),
                 DB::raw('SUM(liquidations.total_collected) as total_collected'),
                 DB::raw('SUM(liquidations.total_expenses) as total_expenses'),
                 DB::raw('SUM(liquidations.total_income) as total_income'),
@@ -3312,13 +3410,30 @@ class LiquidationService
             $query->whereIn('sellers.id', $sellerIds);
         }
 
-        $result = $query->groupBy('sellers.id', 'users.name', 'cities.name', 'countries.currency')
+        // users.phone y countries.phone_code van al GROUP BY aunque dependan de
+        // una fila única: con ONLY_FULL_GROUP_BY —el modo por defecto de MySQL 8—
+        // la dependencia funcional solo se reconoce sobre la clave del grupo, y
+        // acá se agrupa por sellers.id, no por users.id.
+        $result = $query->groupBy(
+                'sellers.id',
+                'users.name',
+                'users.phone',
+                'cities.name',
+                'countries.currency',
+                'countries.phone_code'
+            )
             ->orderBy('users.name')
             ->get();
 
         $counts = $this->getCreditCountsByGroup($startUTC, $endUTC, 'seller', $companyId, $sellerIds, $cityId);
+        $result = $this->attachCreditCounts($result, $counts, 'seller_id');
 
-        return $this->attachCreditCounts($result, $counts, 'seller_id');
+        // Estado de clientes al CIERRE del rango. Va aparte de attachCreditCounts
+        // porque no cuenta lo que pasó en el período —eso son las columnas de
+        // colocación— sino cómo quedó la cartera del vendedor el último día.
+        $clientState = $this->getClientCreditStateBySeller($endUTC, $companyId, $sellerIds, $cityId);
+
+        return $this->attachClientCreditState($result, $clientState, 'seller_id');
     }
 
     public function getSellerLiquidationsDetail($sellerId, $startDate, $endDate)

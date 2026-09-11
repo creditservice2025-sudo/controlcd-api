@@ -1338,6 +1338,9 @@ class LiquidationController extends Controller
             'end_date' => 'required|date',
             'bucket' => 'required|in:with_credit,without_credit',
             'city_id' => 'nullable|exists:cities,id',
+            // Permite abrir el mismo detalle desde la tabla de vendedores, no
+            // solo desde el resumen por ruta.
+            'seller_id' => 'nullable|exists:sellers,id',
         ]);
 
         if ($validator->fails()) {
@@ -1358,11 +1361,17 @@ class LiquidationController extends Controller
                 $companyId = $user->company ? $user->company->id : -1;
             }
 
+            // El servicio recibe una LISTA de vendedores; desde la tabla de
+            // vendedores llega uno solo. Sin seller_id queda en null y el
+            // detalle se resuelve por ruta, como antes.
+            $sellerId = $request->input('seller_id');
+            $sellerIds = $sellerId ? [(int) $sellerId] : null;
+
             $clientes = $this->liquidationService->getClientCreditStateDetail(
                 $request->input('end_date'),
                 $request->input('bucket'),
                 $companyId,
-                null,
+                $sellerIds,
                 $request->input('city_id')
             );
 

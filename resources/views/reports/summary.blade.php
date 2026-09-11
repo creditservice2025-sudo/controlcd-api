@@ -28,6 +28,15 @@
         }
 
         .leyenda { margin-top: 8px; color: #667085; font-size: 7px; line-height: 1.4; }
+
+        /* Referencia de la escala de recaudo. Impreso no hay pantalla al lado
+           para deducir qué significa cada color, así que viaja con el reporte. */
+        .escala { margin-bottom: 8px; font-size: 7.5px; }
+        .escala-titulo { color: #667085; margin-right: 3px; }
+        .escala-item {
+            display: inline-block; padding: 2px 6px; border-radius: 7px;
+            font-weight: bold; margin-right: 3px;
+        }
         .pie { position: fixed; bottom: -18px; left: 0; right: 0; color: #98a2b3; font-size: 7px; }
     </style>
 </head>
@@ -38,6 +47,16 @@
         <div class="sub">{{ $subtitle }} &middot; Generado el {{ $generated_at }}</div>
     </div>
 
+    @if (count($tone_legend))
+        <div class="escala">
+            <span class="escala-titulo">Recaudo del período:</span>
+            @foreach ($tone_legend as $tramo)
+                <span class="escala-item"
+                      style="background: #{{ $tramo['fondo'] }}; color: #{{ $tramo['texto'] }};">{{ $tramo['etiqueta'] }}</span>
+            @endforeach
+        </div>
+    @endif
+
     <table>
         <thead>
             <tr>
@@ -47,10 +66,17 @@
             </tr>
         </thead>
         <tbody>
-            @foreach ($rows as $fila)
+            @foreach ($rows as $indiceFila => $fila)
+                @php($tono = $row_tones[$indiceFila] ?? null)
                 <tr>
                     @foreach ($fila as $i => $celda)
-                        <td class="{{ $i === 0 ? 'izq' : ($i === 1 ? 'centro' : '') }}">
+                        {{-- La banda cubre Vendedor, Moneda y Total Recaudado, igual
+                             que en pantalla. De la cuarta columna en adelante hay
+                             datos que no dependen del recaudo; teñirlos sugeriría
+                             que sí. El estilo va inline porque es el único que
+                             gana sobre el rayado de filas pares. --}}
+                        <td class="{{ $i === 0 ? 'izq' : ($i === 1 ? 'centro' : '') }}"
+                            @if ($tono && $i <= 2) style="background: #{{ $tone_colors[$tono]['fondo'] }}; color: #{{ $tone_colors[$tono]['texto'] }}; font-weight: bold;" @endif>
                             {{ in_array($i, $money_columns, true) ? number_format((float) $celda, 2, ',', '.') : $celda }}
                         </td>
                     @endforeach
