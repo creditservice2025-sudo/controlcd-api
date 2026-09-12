@@ -1082,12 +1082,24 @@ class CreditService
 
             // Registrar movimiento en el flujo del crédito (Payment)
             // Solo si el crédito NO fue creado hoy. Si fue creado hoy, el reporte ajustará automáticamente el rubro "Nuevos Créditos".
+            $cashMovementDate = null;
             if ($newCreditValue && $newCreditValue != $oldValue['credit_value']) {
                 $createdAt = Carbon::now($tz);
                 $creditDate = Carbon::parse($credit->created_at)->setTimezone($tz)->format('Y-m-d');
 
                 if ($creditDate !== $createdAt->format('Y-m-d')) {
                     $capDiff = $newCreditValue - $oldValue['credit_value'];
+
+                    // Fecha contable de los movimientos de caja que genera el
+                    // ajuste. Sin esto quedaban con business_date NULL y los
+                    // totales de la liquidacion —que filtran por igualdad sobre
+                    // esa columna— nunca los sumaban: el ingreso salia en el
+                    // listado del dia pero la caja lo ignoraba.
+                    $credit->loadMissing('seller');
+                    $bizTz = \App\Helpers\TimezoneHelper::getSellerTimezone($credit->seller);
+                    $bizTimestamp = Carbon::now($bizTz);
+                    $bizDate = $bizTimestamp->toDateString();
+                    $cashMovementDate = $bizDate;
 
                     // Calcular impacto del seguro
                     $newInsPct = $newInsurance ?? $credit->micro_insurance_percentage;
@@ -1113,6 +1125,9 @@ class CreditService
                                 'description' => $desc,
                                 'user_id' => $sellerUserId,
                                 'created_at' => $createdAt,
+                                'business_timestamp' => $bizTimestamp->format('Y-m-d H:i:s'),
+                                'business_date' => $bizDate,
+                                'business_timezone' => $bizTz,
                                 'status' => 'Aprobado'
                             ]);
                         } else {
@@ -1123,6 +1138,9 @@ class CreditService
                                 'description' => $desc,
                                 'user_id' => $sellerUserId,
                                 'created_at' => $createdAt,
+                                'business_timestamp' => $bizTimestamp->format('Y-m-d H:i:s'),
+                                'business_date' => $bizDate,
+                                'business_timezone' => $bizTz,
                                 'status' => 'Aprobado'
                             ]);
                         }
@@ -1143,6 +1161,9 @@ class CreditService
                                 'description' => $desc,
                                 'user_id' => $sellerUserId,
                                 'created_at' => $createdAt,
+                                'business_timestamp' => $bizTimestamp->format('Y-m-d H:i:s'),
+                                'business_date' => $bizDate,
+                                'business_timezone' => $bizTz,
                                 'status' => 'Aprobado'
                             ]);
                         } else {
@@ -1153,6 +1174,9 @@ class CreditService
                                 'description' => $desc,
                                 'user_id' => $sellerUserId,
                                 'created_at' => $createdAt,
+                                'business_timestamp' => $bizTimestamp->format('Y-m-d H:i:s'),
+                                'business_date' => $bizDate,
+                                'business_timezone' => $bizTz,
                                 'status' => 'Aprobado'
                             ]);
                         }
@@ -1182,6 +1206,21 @@ class CreditService
             ]);
 
             DB::commit();
+
+            // El ajuste mueve caja (ingreso/gasto por capital y póliza), así que
+            // la liquidación de ese día hay que recalcularla igual que hace
+            // IncomeService al registrar un ingreso. Va DESPUÉS del commit y en
+            // try/catch: un fallo del recálculo no debe revertir la modificación
+            // del crédito, que ya está confirmada.
+            if ($cashMovementDate) {
+                try {
+                    $liquidationService = app(\App\Services\LiquidationService::class);
+                    $liquidationService->recalculateLiquidation($credit->seller_id, $cashMovementDate);
+                    $liquidationService->recalculateNextLiquidations($credit->seller_id, $cashMovementDate);
+                } catch (\Exception $e) {
+                    \Log::error("Error recalculando liquidación tras ajuste del crédito {$credit->id}: " . $e->getMessage());
+                }
+            }
 
             return $this->successResponse([
                 'success' => true,
