@@ -14,6 +14,30 @@ class CollectionWalletService
 {
     use ApiResponse;
 
+    /**
+     * Movimientos del ledger que NO cuentan para el balance ni para la lista
+     * del dashboard: transferencias entre cajas (mueven plata de sitio, no la
+     * crean ni la destruyen) y gastos (tienen su propio bloque en la pantalla).
+     *
+     * Es una lista de EXCLUSIONES y no de inclusiones a propósito. Antes eran
+     * tres action_type permitidos —loan_issue, payment, capital_injection— y
+     * cualquier tipo nuevo quedaba fuera del cálculo sin que nadie se enterara:
+     * así se colaron `loan_cancellation` y `payment_reversal`, y un crédito
+     * anulado seguía descontando de la caja porque la devolución no se sumaba.
+     * Con exclusiones, un action_type nuevo entra al balance por defecto, que
+     * es el comportamiento seguro para un cálculo de dinero.
+     *
+     * Una sola definición para las dos consultas: la lista de movimientos tiene
+     * que cuadrar con el balance, y tenerlo escrito dos veces era justo lo que
+     * permitía que se separaran.
+     */
+    public const EXCLUDED_FROM_DASHBOARD = [
+        'expense',
+        'transfer_out',
+        'transfer_out_adjustment',
+        'transfer_out_reversal',
+    ];
+
     public function __construct(private readonly CollectionPartitionService $partitionService)
     {
     }
@@ -140,11 +164,11 @@ class CollectionWalletService
     {
         $query = CollectionLedger::with('wallet')
             ->where('company_id', $companyId)
-            // El dashboard refleja créditos entregados (loan_issue), pagos
-            // recibidos (payment) e inyecciones de capital (capital_injection),
-            // para que la lista cuadre con el balance. Transferencias, gastos y
-            // adiciones quedan fuera de la lista de movimientos.
-            ->whereIn('action_type', ['loan_issue', 'payment', 'capital_injection']);
+            // Mismo criterio que el balance del dashboard, para que la lista
+            // cuadre con el número de arriba: entra todo salvo transferencias
+            // y gastos. Incluye las anulaciones y reversas, que antes faltaban
+            // y hacían que un crédito anulado se viera descontado para siempre.
+            ->whereNotIn('action_type', self::EXCLUDED_FROM_DASHBOARD);
 
         if (!empty($filters['action_type'])) {
             $query->where('action_type', $filters['action_type']);

@@ -200,15 +200,20 @@ class CollectionDashboardService
 
         // ── WALLETS + AUTH ──
         $wallets = $isAdmin ? app(CollectionWalletService::class)->getBalances($companyId) : [];
-        // El balance del dashboard refleja: inyecciones de capital (entra caja),
-        // créditos entregados (loan_issue, sale caja) y pagos recibidos (payment,
-        // entra caja). Se recalcula desde el ledger con esos action_types; NO
-        // altera el saldo real de la wallet (que sí incluye transferencias/gastos).
-        // Las transferencias siguen SIN afectar el balance del dashboard.
+        // El balance del dashboard se recalcula desde el ledger tomando TODO el
+        // movimiento de caja salvo transferencias y gastos (ver
+        // CollectionWalletService::EXCLUDED_FROM_DASHBOARD). NO altera el saldo
+        // real de la wallet, que sí los incluye.
+        //
+        // Antes esto era una lista de tres action_type permitidos y dejaba fuera
+        // `loan_cancellation` y `payment_reversal`: al anular un crédito, la
+        // salida seguía contando pero la devolución no, y el balance quedaba en
+        // negativo para siempre. Con 300 prestados, 100 cobrados y todo anulado,
+        // la wallet decía 0.00 y la pantalla -500.
         foreach ($wallets as $w) {
             $w->balance = (float) CollectionLedger::where('company_id', $companyId)
                 ->where('wallet_id', $w->id)
-                ->whereIn('action_type', ['payment', 'loan_issue', 'capital_injection'])
+                ->whereNotIn('action_type', CollectionWalletService::EXCLUDED_FROM_DASHBOARD)
                 ->selectRaw("COALESCE(SUM(CASE WHEN type = 'credit' THEN amount ELSE -amount END), 0) as bal")
                 ->value('bal');
         }
