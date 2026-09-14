@@ -32,6 +32,39 @@ class TimezoneHelper
     ];
 
     /**
+     * Mapa de zonas horarias por código de país ISO 3166-1 alpha-2.
+     * Usado por el módulo Collection, que ancla la fecha contable
+     * (business_date) a la zona del país del movimiento (guardado como
+     * country_code, ej. "CO", "VE"). Collection vive en una BD aislada y no
+     * puede hacer join a la tabla countries del núcleo, por eso el mapa es
+     * explícito. Ver timezoneForCountryCode().
+     */
+    const COUNTRY_CODE_TIMEZONES = [
+        'CO' => 'America/Bogota',
+        'PE' => 'America/Lima',
+        'VE' => 'America/Caracas',
+        'EC' => 'America/Guayaquil',
+        'BO' => 'America/La_Paz',
+        'CL' => 'America/Santiago',
+        'AR' => 'America/Argentina/Buenos_Aires',
+        'MX' => 'America/Mexico_City',
+        'ES' => 'Europe/Madrid',
+    ];
+
+    /**
+     * Resuelve la zona horaria IANA para un código de país ISO alpha-2.
+     * Devuelve null si el código es desconocido, para que el llamador decida
+     * el fallback (típicamente la zona de la empresa).
+     */
+    public static function timezoneForCountryCode(?string $code): ?string
+    {
+        if (!$code) {
+            return null;
+        }
+        return self::COUNTRY_CODE_TIMEZONES[strtoupper(trim($code))] ?? null;
+    }
+
+    /**
      * Resuelve la zona horaria de negocio para un vendedor.
      * 
      * @param Seller|null $seller
@@ -47,19 +80,38 @@ class TimezoneHelper
             // Intentar obtener país a través de la relación
             // Seller -> City -> Country
             $seller->loadMissing('city.country');
-            
+
             if ($seller->city && $seller->city->country) {
-                $countryName = $seller->city->country->name;
-                
-                if (isset(self::COUNTRY_TIMEZONES[$countryName])) {
-                    return self::COUNTRY_TIMEZONES[$countryName];
-                }
+                return self::getCountryTimezone($seller->city->country->name);
             }
         } catch (\Exception $e) {
             Log::warning("Error resolving timezone for seller {$seller->id}: " . $e->getMessage());
         }
 
         return self::COUNTRY_TIMEZONES['default'];
+    }
+
+    /**
+     * Resuelve la zona de negocio a partir del NOMBRE del país.
+     *
+     * Existe para que los caminos que no tienen un vendedor a mano —el
+     * dashboard, que resuelve por la empresa del usuario, o el recálculo de
+     * una liquidación— salgan del mismo mapa que todo lo demás.
+     *
+     * Antes esos puntos leían `countries.timezone`, y esa columna tenía cinco
+     * países como 'America/Lima' sin serlo: Argentina, Bolivia, Chile, México
+     * y Venezuela. Así convivían dos verdades distintas sobre la misma zona,
+     * según qué parte del sistema preguntara.
+     *
+     * @param  string|null  $countryName  Nombre tal como figura en countries.name
+     */
+    public static function getCountryTimezone(?string $countryName): string
+    {
+        if ($countryName === null) {
+            return self::COUNTRY_TIMEZONES['default'];
+        }
+
+        return self::COUNTRY_TIMEZONES[$countryName] ?? self::COUNTRY_TIMEZONES['default'];
     }
 
     /**

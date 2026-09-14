@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use App\Models\User;
+use App\Models\Company;
 use App\Mail\ResetPassword;
 use App\Models\Liquidation;
 use Hash;
@@ -29,6 +30,19 @@ class LoginService
      * como cliente web.
      */
     private const MOBILE_ALLOWED_ROLES = [5, 6]; // 5=Cobrador, 6=Supervisor
+
+    /**
+     * Rol que entra al APK por MÓDULO y no por rol: el administrador de una
+     * empresa con Deuda & Abono habilitado. Ese módulo se opera en la calle y
+     * en el APK es de administradores, así que quedaba en un absurdo: la
+     * empresa tenía el módulo contratado y su admin no podía abrirlo desde el
+     * teléfono.
+     *
+     * Es una puerta acotada a propósito. Control CD en el APK sigue siendo de
+     * cobrador y supervisor: un admin que entra por esta vía entra a Deuda &
+     * Abono, no a operar créditos.
+     */
+    private const MOBILE_COLLECTION_ROLE = 2; // Administrador de empresa
 
     /**
      * Código que el frontend usa para distinguir un 401 normal de uno
@@ -57,6 +71,25 @@ class LoginService
         return "liquidation_closed:cobrador:{$cobradorUserId}";
     }
 
+    /**
+     * ¿Este usuario entra al APK por tener Deuda & Abono, aunque su rol no
+     * esté en MOBILE_ALLOWED_ROLES?
+     *
+     * Solo el administrador de una empresa, y solo si esa empresa tiene el
+     * módulo habilitado. `company` es la empresa que el usuario ENCABEZA
+     * (hasOne por user_id), la misma relación con la que el frontend decide
+     * mostrar el módulo en el menú: si las dos no miraran lo mismo, se podría
+     * entrar al APK y quedar sin nada para abrir.
+     */
+    private function puedeEntrarAlApkPorCollection(?User $user): bool
+    {
+        if (!$user || (int) $user->role_id !== self::MOBILE_COLLECTION_ROLE) {
+            return false;
+        }
+
+        return (bool) ($user->company->is_collection_enabled ?? false);
+    }
+
     public function login($credentials)
     {
         try {
@@ -72,7 +105,7 @@ class LoginService
             \Log::info('Intento de inicio de sesión: ' . $credentials['email']);
 
             $user = User::where('email', 'LIKE', $credentials['email'] . '%')
-                ->with('city', 'seller')
+                ->with('city', 'seller', 'company')
                 ->first();
 
                 \Log::info('Usuario encontrado: ' . ($user ? $user->email : 'Ninguno'));
@@ -88,7 +121,11 @@ class LoginService
             // pueden entrar al APK.
             // ============================================================
             $clientType = request()->header('X-Client-Type', 'web');
-            if ($clientType === 'mobile' && !in_array((int) $user->role_id, self::MOBILE_ALLOWED_ROLES, true)) {
+            if (
+                $clientType === 'mobile'
+                && !in_array((int) $user->role_id, self::MOBILE_ALLOWED_ROLES, true)
+                && !$this->puedeEntrarAlApkPorCollection($user)
+            ) {
                 return $this->errorResponse([
                     'Esta aplicación móvil está disponible únicamente para Cobradores y Supervisores de campo. Para acceder a sus funciones administrativas, ingrese al portal web con sus credenciales habituales.'
                 ], 403);
@@ -227,11 +264,80 @@ class LoginService
                 }
             }
 
+            $company = $user->company instanceof Company
+                ? $user->company
+                : null;
+
+            // Si el usuario no tiene empresa directa, buscar via seller o perfil Collection
+            if (!$company && $user->seller) {
+                $company = Company::find($user->seller->company_id);
+            }
+            if (!$company && $user->is_collection_user) {
+                $collectionProfile = \DB::connection('collection_pgsql')
+                    ->table('collection_user_profiles')
+                    ->where('user_id', $user->id)
+                    ->first();
+                if ($collectionProfile) {
+                    $company = Company::find($collectionProfile->company_id);
+                }
+            }
+
+            $roles = $user->getRoleNames();
+
+            if ($roles->isEmpty() && !empty($user->role_id)) {
+                $roleModel = \Spatie\Permission\Models\Role::find($user->role_id);
+                if ($roleModel) {
+                    $roles = collect([$roleModel->name]);
+                } else {
+                    $roleFromTable = \DB::table('roles')->where('id', $user->role_id)->value('name');
+                    if ($roleFromTable) {
+                        $roles = collect([$roleFromTable]);
+                    }
+                }
+            }
+
+            // Un usuario con is_collection_user siempre ve el módulo Collection
+            // aunque la empresa no lo tenga habilitado globalmente (ya tiene perfil)
+            $hasCollectionAccess = $company ? (bool) $company->is_collection_enabled : false;
+            if (!$hasCollectionAccess && $user->is_collection_user) {
+                $hasCollectionAccess = true;
+            }
+
+            $availableModules = [
+                'controlcd' => $company ? (bool) $company->is_financing_enabled : false,
+                'collection' => $hasCollectionAccess,
+            ];
+
+            // Rol Collection del usuario (admin, manager, analyst, collector)
+            $collectionRole = 'collector';
+            $collectionPermissions = [];
+            if (in_array((int) $user->role_id, [1, 2])) {
+                $collectionRole = 'admin';
+                $collectionPermissions = ['*'];
+            } elseif ($hasCollectionAccess) {
+                $profile = \DB::connection('collection_pgsql')
+                    ->table('collection_user_profiles')
+                    ->where('user_id', $user->id)
+                    ->first();
+                if ($profile) {
+                    $collectionRole = $profile->role;
+                    // permissions es una columna json/array en pgsql; normalizar a array.
+                    $collectionPermissions = is_array($profile->permissions)
+                        ? $profile->permissions
+                        : (json_decode($profile->permissions ?? '[]', true) ?: []);
+                }
+            }
+
             return $this->successResponse([
                 'success' => true,
                 'access_token' => $token,
                 'token_type' => 'Bearer',
                 'user' => $user,
+                'company' => $company,
+                'roles' => $roles,
+                'modules' => $availableModules,
+                'collection_role' => $collectionRole,
+                'collection_permissions' => $collectionPermissions,
                 'permissions' => $user->getAllPermissions()->pluck('name'),
                 // 'is_liquidated_today' = la caja de HOY del vendedor está
                 // CERRADA. Usa la MISMA zona del vendedor ($businessToday) y los

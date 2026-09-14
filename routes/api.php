@@ -26,6 +26,9 @@ use App\Http\Controllers\CountriesController;
 use App\Http\Controllers\IncomeController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\ReportExportController;
+use App\Http\Controllers\Collection\CollectionClientController;
+use App\Http\Controllers\Collection\CollectionCreditController;
+use App\Http\Controllers\Collection\CollectionPaymentController;
 
 use App\Http\Controllers\FrontendErrorController;
 use App\Http\Controllers\DiagnosticsController;
@@ -54,6 +57,12 @@ Route::get('mobile/version-check', [\App\Http\Controllers\Api\MobileVersionContr
 Route::post('telegram/webhook', [TelegramWebhookController::class, 'handle'])
     ->middleware('throttle:60,1')
     ->name('telegram.webhook');
+
+// Webhook del bot DEDICADO de Collection (cobrador carga gastos por Telegram).
+// Público (Telegram no manda Bearer); se valida con el secreto en el controller.
+Route::post('collection/telegram/webhook', [\App\Http\Controllers\Collection\CollectionTelegramBotController::class, 'webhook'])
+    ->middleware('throttle:120,1')
+    ->name('collection.telegram.webhook');
 
 
 // Logout y cierre de sesiones: SOLO requieren auth:api. NO deben pasar por
@@ -98,6 +107,10 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
 
     Route::get('sellers/{sellerId}/cash-info', [SellerController::class, 'getCashInfo']);
     Route::get('sellers/{sellerId}/liquidations', [SellerController::class, 'getLiquidations']);
+    // Alta rápida del teléfono desde el reporte, sin abrir la ficha del vendedor.
+    // PUT y PATCH: el cliente HTTP del front solo expone put/post, y agregar
+    // un helper nuevo por un solo endpoint es más superficie que aceptar los dos.
+    Route::match(['put', 'patch'], 'sellers/{sellerId}/phone', [SellerController::class, 'updatePhone']);
     Route::get('sellers/{sellerId}/portfolio-summary', [SellerController::class, 'getPortfolioSummary']);
 
 
@@ -351,6 +364,15 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         Route::get('history', [LiquidationController::class, 'getLiquidationHistory']);
 
         Route::get('accumulated-by-city', [LiquidationController::class, 'getAccumulatedByCity']);
+        // Clientes detrás de cada conteo del resumen (el modal de verificación).
+        Route::get('credit-classification-detail', [LiquidationController::class, 'getCreditClassificationDetail']);
+        Route::get('client-credit-state-detail', [LiquidationController::class, 'getClientCreditStateDetail']);
+        Route::get('portfolio-by-city', [LiquidationController::class, 'getPortfolioByCity']);
+        // Créditos anteriores de un cliente: el acordeón de ese modal, pedido
+        // al desplegar cada fila para no cargar el listado con subconsultas.
+        Route::get('credits/{creditId}/previous', [LiquidationController::class, 'getPreviousCredits']);
+        // Descarga del resumen (Excel o PDF) desde los mismos datos de pantalla.
+        Route::get('summary-download', [LiquidationController::class, 'downloadSummary']);
         Route::get('accumulated-by-city-with-sellers', [LiquidationController::class, 'getAccumulatedByCityWithSellers']);
         Route::get('sellers-summary-by-city', [LiquidationController::class, 'getSellersSummaryByCity']);
         Route::get('seller/{sellerId}/liquidations-detail', [LiquidationController::class, 'getSellerLiquidationsDetail']);
@@ -394,6 +416,7 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         Route::get('/my-company', [CompanyController::class, 'getMyCompany']);
         Route::get('/{companyId}', [CompanyController::class, 'show']);
         Route::put('/{companyId}', [CompanyController::class, 'update']);
+        Route::patch('/{companyId}/toggle-module', [CompanyController::class, 'toggleModule']);
         Route::delete('/{companyId}', [CompanyController::class, 'delete']);
         Route::post('/validate-code', [CompanyController::class, 'validateCompanyCode']);
         Route::post('/validate-ruc', [CompanyController::class, 'validateCompanyRuc']);
@@ -457,6 +480,129 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
     // Verification Routes
     Route::post('verification/send-otp', [VerificationController::class, 'sendOtp']);
     Route::post('verification/verify-otp', [VerificationController::class, 'verifyOtp']);
+
+    // Isolated Collection module (Deuda & Abono)
+    Route::prefix('collection/v1')->group(function () {
+        Route::get('clients', [CollectionClientController::class, 'index']);
+        // Antes de clients/{clientId} no hay conflicto (rutas distintas), pero se
+        // declara junto para que la traza del cliente quede a la vista.
+        Route::get('clients/{clientId}/history', [CollectionClientController::class, 'history']);
+        Route::get('clients/{clientId}', [CollectionClientController::class, 'show']);
+        Route::post('clients', [CollectionClientController::class, 'store']);
+        Route::match(['post', 'put'], 'clients/{clientId}', [CollectionClientController::class, 'update']);
+        Route::delete('clients/{clientId}', [CollectionClientController::class, 'destroy'])
+            ->middleware('collection.permission:clients.delete');
+        Route::post('credits', [CollectionCreditController::class, 'store']);
+        // Edición del mismo día (el servicio corta si la ventana ya se cerró).
+        Route::match(['post', 'put'], 'credits/{creditId}', [CollectionCreditController::class, 'update']);
+        // Anulación del mismo día: marca el crédito, reintegra caja y audita.
+        Route::delete('credits/{creditId}', [CollectionCreditController::class, 'destroy'])
+            ->middleware('collection.permission:credits.delete');
+        Route::post('credits/{creditId}/settle', [CollectionCreditController::class, 'settle']);
+        Route::post('credits/{creditId}/add-capital', [CollectionCreditController::class, 'addCapital']);
+        Route::get('credits/{creditId}/capital-additions', [CollectionCreditController::class, 'listCapitalAdditions']);
+        Route::get('credits/{creditId}/history', [CollectionCreditController::class, 'history']);
+        // Cartón digital: datos para la pantalla/imagen, y el mismo cartón en PDF.
+        Route::get('credits/{creditId}/cardboard', [CollectionCreditController::class, 'cardboard']);
+        Route::get('credits/{creditId}/cardboard-pdf', [CollectionCreditController::class, 'cardboardPdf']);
+        // Corrección de una adición dentro de la ventana del mismo día.
+        Route::match(['post', 'put'], 'capital-additions/{additionId}', [CollectionCreditController::class, 'updateCapitalAddition']);
+        // Anulación de una adición, en la misma ventana del mismo día.
+        Route::delete('capital-additions/{additionId}', [CollectionCreditController::class, 'destroyCapitalAddition']);
+        Route::delete('installments/{id}', [CollectionCreditController::class, 'destroyInstallment']);
+        Route::post('payments', [CollectionPaymentController::class, 'store']);
+        Route::get('expenses', [\App\Http\Controllers\Collection\CollectionExpenseController::class, 'index']);
+        Route::post('expenses', [\App\Http\Controllers\Collection\CollectionExpenseController::class, 'store']);
+
+        // Cajas (multi-caja): contenedores de la bit\u00e1cora, cada uno con su saldo.
+        Route::get('cashboxes', [\App\Http\Controllers\Collection\CollectionCashboxController::class, 'index']);
+        // Antes de cashboxes/{id} para que 'history' no se coma como un id.
+        Route::get('cashboxes/history', [\App\Http\Controllers\Collection\CollectionCashboxController::class, 'history']);
+        Route::post('cashboxes', [\App\Http\Controllers\Collection\CollectionCashboxController::class, 'store']);
+        Route::put('cashboxes/{id}', [\App\Http\Controllers\Collection\CollectionCashboxController::class, 'update']);
+        Route::delete('cashboxes/{id}', [\App\Http\Controllers\Collection\CollectionCashboxController::class, 'destroy']);
+        Route::get('cashboxes/{id}/statement', [\App\Http\Controllers\Collection\CollectionCashboxController::class, 'statement']);
+        Route::patch('cashboxes/{id}/active', [\App\Http\Controllers\Collection\CollectionCashboxController::class, 'setActive']);
+
+        // Registros diarios (bit\u00e1cora manual: ingreso | gasto | transferencia | ajuste)
+        // Independiente de wallet/ledger.
+        Route::get('daily-records', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'index']);
+        Route::post('daily-records', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'store']);
+        Route::delete('daily-records/{id}', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'destroy']);
+        Route::get('daily-records/trend', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'trend']);
+        Route::get('daily-records/period-summary', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'periodSummary']);
+        Route::get('daily-records/period-summary/pdf', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'periodSummaryPdf']);
+        Route::get('daily-records/range', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'rangeDetail']);
+        Route::get('daily-records/expenses-by-category', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'expensesByCategory']);
+        Route::get('daily-records/search', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'search']);
+        Route::get('daily-records/comparison', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'periodComparison']);
+        // Presupuestos por categoría
+        Route::get('daily-records/budgets', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'listBudgets']);
+        Route::get('daily-records/budgets/status', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'budgetStatus']);
+        Route::post('daily-records/budgets', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'upsertBudget']);
+        Route::delete('daily-records/budgets/{id}', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'deleteBudget']);
+        // Edición con observación obligatoria + auditoría (correcciones del día).
+        Route::put('daily-records/{id}', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'update']);
+        Route::get('daily-records/{id}/audits', [\App\Http\Controllers\Collection\CollectionDailyRecordController::class, 'auditHistory']);
+
+        // Cierre de caja diario. El corte es AUTOMÁTICO (23:59:59 hora local de
+        // la empresa, vía comando collection:check-pending-closures). Ya no hay
+        // cierre manual ni reapertura: solo consulta del resumen/historial.
+        Route::get('cash-closures', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'show']);
+        Route::get('cash-closures/history', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'index']);
+        Route::get('cash-closures/pending-validation', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'pendingValidation']);
+        Route::post('cash-closures/{closureId}/validate', [\App\Http\Controllers\Collection\CollectionCashClosureController::class, 'validateClosure']);
+
+        // Configuración Telegram por empresa
+        Route::get('telegram-config', [\App\Http\Controllers\Collection\CollectionTelegramConfigController::class, 'show']);
+        Route::put('telegram-config', [\App\Http\Controllers\Collection\CollectionTelegramConfigController::class, 'update']);
+
+        // Vinculación del bot de gastos por Telegram (enlace de un solo uso)
+        Route::get('telegram/link-status', [\App\Http\Controllers\Collection\CollectionTelegramLinkController::class, 'status']);
+        Route::post('telegram/link-token', [\App\Http\Controllers\Collection\CollectionTelegramLinkController::class, 'token']);
+        Route::delete('telegram/link', [\App\Http\Controllers\Collection\CollectionTelegramLinkController::class, 'unlink']);
+
+        Route::get('dashboard/summary', [\App\Http\Controllers\Collection\CollectionDashboardController::class, 'index']);
+        Route::get('dashboard/portfolio-breakdown', [\App\Http\Controllers\Collection\CollectionDashboardController::class, 'portfolioBreakdown']);
+        
+        // WhatsApp Based Security Flow
+        Route::post('security/request-deletion', [\App\Http\Controllers\Collection\CollectionSecurityController::class, 'requestDeletionToken']);
+        Route::get('security/pending-codes', [\App\Http\Controllers\Collection\CollectionSecurityController::class, 'getPendingTokens']);
+
+        // Centralized Wallet & Ledger Flow
+        Route::get('wallets/balances', [\App\Http\Controllers\Collection\CollectionWalletController::class, 'getBalances']);
+        Route::post('wallets/inject', [\App\Http\Controllers\Collection\CollectionWalletController::class, 'inject'])
+            ->middleware('collection.permission:wallet.inject');
+        Route::get('wallets/ledger', [\App\Http\Controllers\Collection\CollectionWalletController::class, 'indexLedger']);
+
+        // Company Config (currencies, settings)
+        Route::get('config', [\App\Http\Controllers\Collection\CollectionConfigController::class, 'index']);
+        Route::put('config/currencies', [\App\Http\Controllers\Collection\CollectionConfigController::class, 'updateCurrencies']);
+
+        // Reports
+        Route::get('reports/caja-diaria', [\App\Http\Controllers\Collection\CollectionReportsController::class, 'cajaDiaria']);
+        Route::get('reports/morosidad', [\App\Http\Controllers\Collection\CollectionReportsController::class, 'morosidad']);
+        Route::get('reports/recaudo', [\App\Http\Controllers\Collection\CollectionReportsController::class, 'recaudo']);
+        Route::get('reports/gastos', [\App\Http\Controllers\Collection\CollectionReportsController::class, 'gastos']);
+        Route::get('reports/cartera', [\App\Http\Controllers\Collection\CollectionReportsController::class, 'cartera']);
+        Route::get('reports/estado-cuenta/{clientId}', [\App\Http\Controllers\Collection\CollectionReportsController::class, 'estadoCuenta']);
+
+        // Recordatorios de pago (WhatsApp)
+        Route::get('reminders/upcoming', [\App\Http\Controllers\Collection\CollectionRemindersController::class, 'upcoming']);
+        Route::post('reminders/{installmentId}/mark-sent', [\App\Http\Controllers\Collection\CollectionRemindersController::class, 'markSent']);
+        Route::get('reminders/history', [\App\Http\Controllers\Collection\CollectionRemindersController::class, 'history']);
+
+        // User Management
+        Route::get('users', [\App\Http\Controllers\Collection\CollectionUserController::class, 'index']);
+        Route::post('users', [\App\Http\Controllers\Collection\CollectionUserController::class, 'store']);
+        Route::post('users/{userId}/toggle', [\App\Http\Controllers\Collection\CollectionUserController::class, 'toggleAccess']);
+        Route::put('users/{userId}/role', [\App\Http\Controllers\Collection\CollectionUserController::class, 'updateRole']);
+        Route::put('users/{userId}/permissions', [\App\Http\Controllers\Collection\CollectionUserController::class, 'updatePermissions']);
+        Route::get('users-permissions/available', [\App\Http\Controllers\Collection\CollectionUserController::class, 'availablePermissions']);
+        Route::post('users/{userId}/reset-password', [\App\Http\Controllers\Collection\CollectionUserController::class, 'resetPassword']);
+        Route::get('users/{userId}/activity', [\App\Http\Controllers\Collection\CollectionUserController::class, 'activity']);
+        Route::get('users/roles', [\App\Http\Controllers\Collection\CollectionUserController::class, 'roles']);
+    });
 
     // Telegram Logs
     Route::get('/telegram-logs', [\App\Http\Controllers\TelegramLogController::class, 'index']);

@@ -102,6 +102,7 @@ rsync -avzP --delete \
   --exclude='storage/framework/sessions/*' \
   --exclude='storage/framework/views/*' \
   --exclude='public/images' \
+  --exclude='public/storage' \
   --exclude='tests' \
   --exclude='.phpunit.result.cache' \
   --exclude='database/seeds' \
@@ -171,6 +172,12 @@ composer install --optimize-autoloader --no-dev --no-interaction
 
 echo "→ Ejecutando migraciones..."
 php artisan migrate --force
+
+echo "→ Recreando enlace public/storage..."
+# Sin este enlace, /storage/... devuelve 404 y NINGUNA imagen subida se ve
+# (fotos de perfil, documentos, comprobantes). Va con --force para rehacerlo si
+# quedó roto o apuntando a otra ruta.
+php artisan storage:link --force
 
 echo "→ Limpiando cache..."
 php artisan config:clear

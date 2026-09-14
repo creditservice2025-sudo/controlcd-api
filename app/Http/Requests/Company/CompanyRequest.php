@@ -59,6 +59,12 @@ class CompanyRequest extends FormRequest
             'company_email' => 'nullable|email|max:255',
             'logo' => 'nullable|image|mimes:jpeg,png,jpg,gif,svg|max:2048',
             'timezone' => 'nullable|string',
+            // Zona horaria IANA de la EMPRESA (distinta del 'timezone' de arriba,
+            // que es la del navegador del creador para los timestamps). Obligatoria:
+            // se usa para el corte de caja automático de Collection.
+            'company_timezone' => 'required|string|max:64',
+            'is_financing_enabled' => 'nullable|boolean',
+            'is_collection_enabled' => 'nullable|boolean',
         ];
     }
 
@@ -66,6 +72,14 @@ class CompanyRequest extends FormRequest
     {
         if ($this->route('companyId') && !$this->password) {
             $this->request->remove('password');
+        }
+
+        // Convert strings "0"/"1" to true/false for boolean validation and persistence
+        if ($this->has('is_financing_enabled')) {
+            $this->merge(['is_financing_enabled' => filter_var($this->is_financing_enabled, FILTER_VALIDATE_BOOLEAN)]);
+        }
+        if ($this->has('is_collection_enabled')) {
+            $this->merge(['is_collection_enabled' => filter_var($this->is_collection_enabled, FILTER_VALIDATE_BOOLEAN)]);
         }
     }
 
@@ -88,6 +102,7 @@ class CompanyRequest extends FormRequest
             'password.required' => 'La contraseña es requerida',
             'dni.required' => 'El Documento es requerido',
             'code.required' => 'El código es requerido',
+            'company_timezone.required' => 'La zona horaria de la empresa es requerida',
         ];
     }
 }

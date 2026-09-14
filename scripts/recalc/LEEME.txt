@@ -1,0 +1,25 @@
+RESINCRONIZAR remaining_amount + status, UNA RUTA POR VEZ
+=========================================================
+
+Cada archivo tiene UNA SOLA sentencia SQL. Abrilo, seleccionalo entero,
+Ctrl+Enter. No hay forma de que de error 1064 por juntar sentencias.
+
+ORDEN:
+
+  0_ranking_rutas.sql        Que ruta esta peor. Solo lee. Correr una vez.
+  1_crear_tabla_auditoria.sql  Crea el respaldo. UNA VEZ EN LA BASE, y listo.
+
+  --- de aca en adelante, una vuelta por cada vendedor ---
+
+  2_calcular_ruta.sql        EDITAR EL ID DEL VENDEDOR ACA (marcado con <<<).
+                             Solo lee credits/installments/payments.
+  3_previa_resumen.sql       Cuanto se mueve en total. REVISAR.
+  4_previa_detalle.sql       Credito por credito. REVISAR.
+  5_aplicar.sql              Recien aca se escribe en credits.
+  6_verificar.sql            Tiene que dar 0 filas.
+
+  7_reversa.sql              Solo si algo salio mal. Editar el id de la ruta.
+
+REGLA: no correr el 2 de la ruta siguiente sin haber corrido el 5 de la
+anterior. Los pasos 3, 4, 5 y 6 trabajan sobre "lo pendiente" (aplicado = 0),
+por eso no hay que repetir el id del vendedor en cada archivo.

@@ -10,7 +10,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 class Seller extends Model
 {
-
+    protected $connection = 'mysql';
     use HasFactory, Notifiable, SoftDeletes;
 
     protected $fillable = [

@@ -96,6 +96,7 @@ rsync -avzP --delete \
   --exclude='storage/app/public/*' \
   --exclude='storage/oauth-*.key' \
   --exclude='public/images' \
+  --exclude='public/storage' \
   --exclude='.env' \
   --exclude='.env.example' \
   --exclude='.env.staging.example' \
@@ -162,6 +163,12 @@ export COMPOSER_ALLOW_SUPERUSER=1
 
 echo "→ Ejecutando migraciones..."
 /opt/cpanel/ea-php83/root/usr/bin/php artisan migrate --force
+
+echo "→ Recreando enlace public/storage..."
+# Sin este enlace, /storage/... devuelve 404 y NINGUNA imagen subida se ve
+# (fotos de perfil, documentos, comprobantes). Va con --force para rehacerlo si
+# quedó roto o apuntando a otra ruta.
+/opt/cpanel/ea-php83/root/usr/bin/php artisan storage:link --force
 
 echo "→ Limpiando cache..."
 /opt/cpanel/ea-php83/root/usr/bin/php artisan config:clear

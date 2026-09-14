@@ -1,0 +1,1117 @@
+<?php
+
+namespace App\Services\Collection;
+
+use App\Helpers\TimezoneHelper;
+use App\Models\Collection\CollectionCapitalAddition;
+use App\Models\Collection\CollectionClient;
+use App\Models\Collection\CollectionClientAudit;
+use App\Models\Collection\CollectionCredit;
+use App\Models\Collection\CollectionInstallment;
+use App\Traits\ApiResponse;
+use Carbon\Carbon;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+
+class CollectionClientService
+{
+    use ApiResponse;
+
+    private const CONNECTION = 'collection_pgsql';
+
+    public function __construct(
+        private readonly CollectionCreditService $creditService,
+        private readonly CollectionPartitionService $partitionService
+    ) {
+    }
+
+    /**
+     * Días de atraso de un vencimiento, medidos en la zona del PAÍS del cliente.
+     *
+     * Las dos fechas se leen en la MISMA zona a propósito. Comparar la fecha de
+     * la cuota —que sale de la base sin zona, o sea UTC— contra el día local
+     * daba decimales (5,2083 días) y, en las horas del borde, un día entero de
+     * diferencia: un cliente de Lima aparecía en mora porque en el servidor ya
+     * había cambiado el día.
+     *
+     * Devuelve negativo cuando todavía falta para vencer. Se manda así a
+     * propósito: la pantalla necesita distinguir "vence en 3 días" de "vencido
+     * hace 3", y un 0 para ambos casos los mezclaría.
+     */
+    private function diasDeMora(?string $vencimiento, ?string $countryCode): ?int
+    {
+        if (!$vencimiento) {
+            return null;
+        }
+
+        $tz = TimezoneHelper::timezoneForCountryCode($countryCode) ?: 'America/Bogota';
+
+        return (int) Carbon::parse($vencimiento, $tz)->startOfDay()
+            ->diffInDays(Carbon::now($tz)->startOfDay(), false);
+    }
+
+    public function list(array $filters = [])
+    {
+        $companyId = $this->resolveCompanyId($filters['company_id'] ?? null);
+        if (!$companyId) {
+            return $this->errorResponse('No se pudo determinar la compañía para Collection', 422);
+        }
+
+        $search = trim((string) ($filters['search'] ?? ''));
+        $perPage = (int) ($filters['per_page'] ?? 10);
+
+        $query = CollectionClient::query()
+            ->orderByDesc('updated_at');
+
+        if ($this->hasClientCompanyColumn()) {
+            $query->where('company_id', $companyId);
+        }
+
+        if (!empty($filters['country_code']) && $this->hasClientCountryCodeColumn()) {
+            $query->where('country_code', $filters['country_code']);
+        }
+
+        if ($search !== '') {
+            $query->where(function ($builder) use ($search) {
+                $builder->where('name', 'ilike', "%{$search}%")
+                    ->orWhere('dni', 'ilike', "%{$search}%")
+                    ->orWhere('phone', 'ilike', "%{$search}%");
+            });
+        }
+
+        $paginator = $query->paginate($perPage);
+
+        $hasCountryCode = $this->hasClientCountryCodeColumn();
+        $hasCreditCompany = $this->hasCreditCompanyColumn();
+        $pageClients = $paginator->getCollection();
+        $clientIds = $pageClients->pluck('id')->filter()->values()->all();
+
+        // === Carga por LOTE para evitar N+1 en el listado paginado ===
+        // 1) Todos los créditos de los clientes de la página.
+        $allCredits = collect();
+        $creditsByClient = [];
+        $latestByClient = [];
+        if (!empty($clientIds)) {
+            // Los créditos dados de baja no entran en el listado: su capital ya
+            // volvió a la caja y sus cuotas están anuladas, así que sumarlos
+            // inflaría la cartera del cliente con deuda que no existe.
+            $allCredits = CollectionCredit::query()
+                ->notCancelled()
+                ->whereIn('client_id', $clientIds)
+                ->when($hasCreditCompany, function ($creditQuery) use ($companyId) {
+                    $creditQuery->where('company_id', $companyId);
+                })
+                ->orderByDesc('id')
+                ->get();
+            foreach ($allCredits as $c) {
+                $creditsByClient[$c->client_id][] = $c;
+                if (!isset($latestByClient[$c->client_id])) {
+                    $latestByClient[$c->client_id] = $c; // el primero = mayor id (orderByDesc)
+                }
+            }
+        }
+
+        // 2) Agregados de cuotas por crédito (SIEMPRE desde installments, nunca
+        //    desde remaining_amount). Un solo query agrupado por credit_id.
+        $instByCredit = [];
+        $creditIds = $allCredits->pluck('id')->all();
+        if (!empty($creditIds)) {
+            $aggRows = CollectionInstallment::query()
+                ->whereIn('credit_id', $creditIds)
+                ->where('company_id', $companyId)
+                ->whereNull('deleted_at')
+                ->selectRaw('
+                    credit_id,
+                    SUM(COALESCE(principal_paid, 0)) as principal_paid,
+                    SUM(GREATEST(COALESCE(interest_amount, 0) - COALESCE(interest_paid, 0), 0)) as pending_interest,
+                    SUM(COALESCE(paid_amount, 0)) as total_paid,
+                    -- Vencimiento a vigilar: la cuota ABIERTA más vieja. Se mide
+                    -- por saldo y no por `status`, igual que en la planilla de
+                    -- cobranza: una cuota puede quedar en cero por componentes
+                    -- antes de que el estado se actualice.
+                    MIN(CASE
+                        WHEN GREATEST(COALESCE(interest_amount, 0) - COALESCE(interest_paid, 0), 0)
+                           + GREATEST(COALESCE(principal_amount, 0) - COALESCE(principal_paid, 0), 0) > 0
+                        THEN due_date
+                    END) as next_due_date
+                ')
+                ->groupBy('credit_id')
+                ->get();
+            foreach ($aggRows as $r) {
+                $instByCredit[$r->credit_id] = $r;
+            }
+        }
+
+        $activeStatuses = ['active', 'activo', 'vigente'];
+
+        $rows = $pageClients->map(function (CollectionClient $client) use ($hasCountryCode, $creditsByClient, $latestByClient, $instByCredit, $activeStatuses) {
+            $meta = $this->hasClientMetadataColumn() ? ($client->metadata ?? []) : [];
+            $latestCredit = $latestByClient[$client->id] ?? null;
+
+            // Agregados de la CARTERA ACTIVA del cliente (suma de todos sus créditos
+            // activos). Monto total = capital + interés del período; Por pagar =
+            // capital pendiente + interés pendiente; Abonado = pagos reales.
+            $totalAmount = 0.0;
+            $totalInterest = 0.0;
+            $totalCapital = 0.0;
+            $totalPaid = 0.0;
+            $totalPending = 0.0;
+            $activeCount = 0;
+            $aggCurrency = $latestCredit?->currency ?? 'COP';
+            // Desglose por crédito activo para el listado: un cliente con varios
+            // créditos tiene una fecha de primera cuota POR CRÉDITO, y mostrar
+            // solo la del último (que es lo que había) es arbitrario.
+            $creditsSummary = [];
+            // Vencimiento más viejo sin pagar de TODA la cartera activa del
+            // cliente: es lo que define su mora. Un cliente con tres créditos
+            // está atrasado por el peor de los tres, no por el último que tomó.
+            $proximoVencimiento = null;
+            foreach (($creditsByClient[$client->id] ?? []) as $c) {
+                if (!in_array(strtolower((string) $c->status), $activeStatuses, true)) {
+                    continue;
+                }
+                $activeCount++;
+                $vencimientoCredito = $instByCredit[$c->id]->next_due_date ?? null;
+                $vencimientoCredito = $vencimientoCredito
+                    ? Carbon::parse($vencimientoCredito)->toDateString()
+                    : null;
+                if ($vencimientoCredito !== null
+                    && ($proximoVencimiento === null || $vencimientoCredito < $proximoVencimiento)) {
+                    $proximoVencimiento = $vencimientoCredito;
+                }
+                $amount = (float) $c->amount;
+                $rate = (float) $c->interest_rate;
+                $interest = $amount * $rate / 100;
+                $ag = $instByCredit[$c->id] ?? null;
+                $principalPaid = (float) ($ag->principal_paid ?? 0);
+                $pendingInterest = max(0, (float) ($ag->pending_interest ?? 0));
+                $paid = (float) ($ag->total_paid ?? 0);
+                $balance = max(0, $amount - $principalPaid) + $pendingInterest;
+
+                // El desglose lleva las mismas cifras que el total del cliente,
+                // crédito por crédito: es lo que se abre al tocar "N créditos"
+                // y tiene que poder explicar de dónde sale cada número de la
+                // fila. Sin esto el modal sería una lista de fechas sin plata.
+                $creditsSummary[] = [
+                    'id' => $c->id,
+                    'route_name' => $c->route_name ?? null,
+                    'first_installment_date' => $c->first_installment_date?->toDateString(),
+                    'interest_due_date' => $vencimientoCredito,
+                    'days_overdue' => $this->diasDeMora(
+                        $vencimientoCredito,
+                        $hasCountryCode ? $client->country_code : null
+                    ),
+                    'amount' => $amount,
+                    'interest_rate' => $rate,
+                    'remaining_principal' => round(max(0, $amount - $principalPaid), 2),
+                    'pending_interest' => round($pendingInterest, 2),
+                    'total_pending' => round($balance, 2),
+                    'total_paid' => round($paid, 2),
+                    'currency' => $c->currency ?? null,
+                ];
+
+                $totalCapital += $amount;
+                $totalInterest += $interest;
+                $totalAmount += $amount + $interest;
+                $totalPaid += $paid;
+                $totalPending += $balance;
+                $aggCurrency = $c->currency ?? $aggCurrency;
+            }
+
+            // Orden cronológico: la primera cuota más vieja arriba. Los créditos
+            // sin fecha van al final para no encabezar la lista con un guion.
+            usort($creditsSummary, function ($a, $b) {
+                $x = $a['first_installment_date'] ?? '9999-12-31';
+                $y = $b['first_installment_date'] ?? '9999-12-31';
+                return $x <=> $y;
+            });
+
+            $firstDates = array_values(array_filter(
+                array_column($creditsSummary, 'first_installment_date')
+            ));
+
+            $creditMeta = is_array($latestCredit?->metadata) ? $latestCredit->metadata : [];
+
+            return [
+                'id' => $client->id,
+                'uuid' => (string) $client->id,
+                'name' => $client->name,
+                'dni' => $client->dni,
+                'phone' => $client->phone,
+                'email' => $meta['email'] ?? null,
+                'address' => $client->address,
+                'country_code' => $hasCountryCode ? $client->country_code : null,
+                'reference' => $meta['reference'] ?? null,
+                'company_name' => $meta['company_name'] ?? null,
+                'status' => $meta['status'] ?? 'Activo',
+                'profile_photo' => $meta['profile_photo'] ?? null,
+                'document_photo' => $meta['document_photo'] ?? null,
+                'credit_id' => $latestCredit?->id,
+                'credit_amount' => $latestCredit?->amount,
+                'credit_currency' => $aggCurrency,
+                'credit_interest_rate' => $latestCredit?->interest_rate,
+                // Agregados de la cartera activa del cliente.
+                'total_amount' => round($totalAmount, 2),
+                'total_capital' => round($totalCapital, 2),
+                'total_interest' => round($totalInterest, 2),
+                'total_paid' => round($totalPaid, 2),
+                'total_pending' => round($totalPending, 2),
+                'credits_count' => $activeCount,
+                'credit_total_installments' => $latestCredit?->total_installments,
+                'credit_payment_frequency' => $latestCredit?->payment_frequency,
+                'credit_first_installment_date' => $latestCredit?->first_installment_date?->toDateString(),
+                // Primera cuota de la cartera: la más antigua entre los créditos
+                // activos. Es el valor que encabeza la columna; el desglose
+                // completo va en `credits_summary`.
+                'first_installment_date' => $firstDates[0] ?? null,
+                'first_installment_date_last' => count($firstDates) ? end($firstDates) : null,
+                // ── Mora ──
+                // `interest_due_date` es el vencimiento sin pagar más viejo de
+                // toda su cartera activa; `days_overdue` los días que pasaron
+                // desde entonces, medidos en la zona del PAÍS del cliente y no
+                // del servidor: un cliente de Lima no está en mora porque en
+                // Bogotá ya cambió el día.
+                //
+                // Negativo significa que todavía falta para vencer, y se manda
+                // así a propósito: la pantalla necesita distinguir "vence en 3
+                // días" de "vencido hace 3", y un 0 para ambos los mezclaría.
+                'interest_due_date' => $proximoVencimiento,
+                'days_overdue' => $this->diasDeMora(
+                    $proximoVencimiento,
+                    $hasCountryCode ? $client->country_code : null
+                ),
+                'credits_summary' => $creditsSummary,
+                'credit_status' => $latestCredit?->status,
+                'credit_route_name' => $latestCredit?->route_name ?? null,
+                'credit_description' => $latestCredit?->description ?? null,
+                'transfer_voucher_photo' => $creditMeta['transfer_voucher_photo'] ?? null,
+                'transfer_support_photo' => $creditMeta['transfer_support_photo'] ?? null,
+                'transfer_bank_name' => $creditMeta['transfer_bank_name'] ?? null,
+                'transfer_reference_number' => $creditMeta['transfer_reference_number'] ?? null,
+                'created_at' => \App\Helpers\CollectionClock::iso($client->created_at),
+            ];
+        })->values();
+
+        return $this->successResponse([
+            'success' => true,
+            'data' => [
+                'data' => $rows,
+                'pagination' => [
+                    'current_page' => $paginator->currentPage(),
+                    'last_page' => $paginator->lastPage(),
+                    'per_page' => $paginator->perPage(),
+                    'total' => $paginator->total(),
+                ],
+            ],
+        ]);
+    }
+
+    public function create(array $payload)
+    {
+        $companyId = $this->resolveCompanyId($payload['company_id'] ?? null);
+        if (!$companyId) {
+            return $this->errorResponse('No se pudo determinar la compañía para Collection', 422);
+        }
+
+        $dni = trim((string) ($payload['dni'] ?? ''));
+        // El documento dejo de ser obligatorio, asi que puede llegar vacio. Sin
+        // esta guarda, el segundo cliente sin documento chocaba contra el primero
+        // ('' == '') y el alta se rechazaba por "documento duplicado".
+        $existsDni = false;
+        if ($dni !== '') {
+            $existsDniQuery = CollectionClient::query()->where('dni', $dni);
+            if ($this->hasClientCompanyColumn()) {
+                $existsDniQuery->where('company_id', $companyId);
+            }
+            $existsDni = $existsDniQuery->exists();
+        }
+
+        if ($existsDni) {
+            return $this->errorResponse('El documento ya existe en Collection', 422);
+        }
+
+        $this->partitionService->ensurePartitions($companyId);
+        
+        return DB::connection(self::CONNECTION)->transaction(function () use ($payload, $companyId, $dni) {
+            // id generado por la secuencia de PostgreSQL.
+            $metadata = [
+                'email' => $payload['email'] ?? null,
+                'reference' => $payload['reference'] ?? null,
+                'company_name' => $payload['company_name'] ?? null,
+                'profile_photo' => $payload['profile_photo'] ?? null,
+                'document_photo' => $payload['document_photo'] ?? null,
+                'status' => 'Activo',
+            ];
+
+            $createData = [
+                'dni' => $dni,
+                'name' => trim((string) ($payload['name'] ?? '')),
+                'phone' => trim((string) ($payload['phone'] ?? '')),
+                'address' => trim((string) ($payload['address'] ?? '')),
+            ];
+
+            if ($this->hasClientCountryCodeColumn()) {
+                // Fallback: si el payload no envia country_code, usar 'CO' (Colombia) por defecto.
+                // Evita que clientes queden con NULL y desaparezcan del listado filtrado por territorio.
+                $countryCode = trim((string) ($payload['country_code'] ?? ''));
+                $createData['country_code'] = $countryCode !== '' ? $countryCode : 'CO';
+            }
+
+            if ($this->hasClientCompanyColumn()) {
+                $createData['company_id'] = $companyId;
+            }
+
+            if ($this->hasClientMetadataColumn()) {
+                $createData['metadata'] = $metadata;
+            }
+
+            if ($this->hasClientIsActiveColumn()) {
+                $createData['is_active'] = true;
+            }
+
+            $client = CollectionClient::query()->create($createData);
+
+            $this->audit($companyId, $client->id, 'created', [
+                'new' => [
+                    'name' => $client->name,
+                    'dni' => $client->dni,
+                ],
+            ]);
+
+            return $this->successCreatedResponse([
+                'success' => true,
+                'message' => 'Cliente Collection creado',
+                'data' => [
+                    'id' => $client->id,
+                    'uuid' => (string) $client->id,
+                ],
+            ]);
+        });
+    }
+
+    public function update(int $clientId, array $payload)
+    {
+        $companyId = $this->resolveCompanyId($payload['company_id'] ?? null);
+        if (!$companyId) {
+            return $this->errorResponse('No se pudo determinar la compañía para Collection', 422);
+        }
+
+        $client = CollectionClient::query()
+            ->where('id', $clientId)
+            ->first();
+
+        if ($client && $this->hasClientCompanyColumn() && (int) $client->company_id !== $companyId) {
+            $client = null;
+        }
+
+        if (!$client) {
+            return $this->errorNotFoundResponse('Cliente Collection no encontrado');
+        }
+
+        $incomingDni = trim((string) ($payload['dni'] ?? $client->dni));
+        // Idem create(): sin documento no hay duplicado que controlar.
+        $duplicateDni = false;
+        if ($incomingDni !== '') {
+            $duplicateDniQuery = CollectionClient::query()
+                ->where('dni', $incomingDni)
+                ->where('id', '!=', $clientId);
+            if ($this->hasClientCompanyColumn()) {
+                $duplicateDniQuery->where('company_id', $companyId);
+            }
+            $duplicateDni = $duplicateDniQuery->exists();
+        }
+
+        if ($duplicateDni) {
+            return $this->errorResponse('El documento ya existe en Collection', 422);
+        }
+
+        return DB::connection(self::CONNECTION)->transaction(function () use ($client, $payload, $incomingDni, $companyId) {
+            $hasMetadataColumn = $this->hasClientMetadataColumn();
+            $hasCountryColumn = $this->hasClientCountryCodeColumn();
+            $oldSnapshot = [
+                'name' => $client->name,
+                'dni' => $client->dni,
+                'phone' => $client->phone,
+                'address' => $client->address,
+                'metadata' => $hasMetadataColumn ? ($client->metadata ?? []) : [],
+            ];
+            if ($hasCountryColumn) {
+                $oldSnapshot['country_code'] = $client->country_code;
+            }
+
+            $metadata = [];
+            if ($hasMetadataColumn) {
+                $metadata = $client->metadata ?? [];
+                $metadata['email'] = $payload['email'] ?? ($metadata['email'] ?? null);
+                $metadata['reference'] = $payload['reference'] ?? ($metadata['reference'] ?? null);
+                $metadata['company_name'] = $payload['company_name'] ?? ($metadata['company_name'] ?? null);
+                $metadata['profile_photo'] = $payload['profile_photo'] ?? ($metadata['profile_photo'] ?? null);
+                $metadata['document_photo'] = $payload['document_photo'] ?? ($metadata['document_photo'] ?? null);
+                $metadata['status'] = $metadata['status'] ?? 'Activo';
+            }
+
+            $updateData = [
+                'name' => trim((string) ($payload['name'] ?? $client->name)),
+                'dni' => $incomingDni,
+                'phone' => trim((string) ($payload['phone'] ?? $client->phone)),
+                'address' => trim((string) ($payload['address'] ?? $client->address)),
+            ];
+
+            if ($hasCountryColumn) {
+                // Un país vacío no debe borrar el actual: el cliente quedaría
+                // fuera del listado filtrado por territorio.
+                $incomingCountry = trim((string) ($payload['country_code'] ?? ''));
+                $updateData['country_code'] = $incomingCountry !== ''
+                    ? $incomingCountry
+                    : $client->country_code;
+            }
+
+            if ($hasMetadataColumn) {
+                $updateData['metadata'] = $metadata;
+            }
+
+            $client->fill($updateData);
+            $client->save();
+
+            $newSnapshot = [
+                'name' => $client->name,
+                'dni' => $client->dni,
+                'phone' => $client->phone,
+                'address' => $client->address,
+                'metadata' => $hasMetadataColumn ? $metadata : [],
+            ];
+            if ($hasCountryColumn) {
+                $newSnapshot['country_code'] = $client->country_code;
+            }
+
+            $this->audit($companyId, $client->id, 'updated', [
+                'old' => $oldSnapshot,
+                'new' => $newSnapshot,
+            ]);
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Cliente Collection actualizado',
+                'data' => [
+                    'id' => $client->id,
+                    'uuid' => (string) $client->id,
+                ],
+            ]);
+        });
+    }
+
+    /**
+     * @param bool $includeCancelled Incluye los créditos dados de baja. Fuera de
+     *        la auditoría no se piden: la operación diaria solo ve los vigentes.
+     */
+    public function get(
+        int $clientId,
+        ?int $requestedCompanyId = null,
+        ?int $requestedCreditId = null,
+        bool $includeCancelled = false
+    )
+    {
+        $companyId = $this->resolveCompanyId($requestedCompanyId);
+        if (!$companyId) {
+            return $this->errorResponse('No se pudo determinar la compañía para Collection', 422);
+        }
+
+        $client = CollectionClient::query()
+            ->where('id', $clientId)
+            ->first();
+
+        if ($client && $this->hasClientCompanyColumn() && (int) $client->company_id !== $companyId) {
+            $client = null;
+        }
+
+        if (!$client) {
+            return $this->errorNotFoundResponse('Cliente Collection no encontrado');
+        }
+
+        $meta = $this->hasClientMetadataColumn() ? ($client->metadata ?? []) : [];
+
+        // La cartera muestra los créditos vigentes. Los dados de baja quedan
+        // fuera de la vista diaria pero NO se borran: se piden aparte con
+        // `include_cancelled` para poder auditarlos cuando haga falta.
+        $allCredits = CollectionCredit::query()
+            ->where('client_id', $client->id)
+            ->when(!$includeCancelled, fn ($q) => $q->notCancelled())
+            ->when($this->hasCreditCompanyColumn(), function ($creditQuery) use ($companyId) {
+                $creditQuery->where('company_id', $companyId);
+            })
+            ->orderByDesc('id')
+            ->get();
+
+        // Cuántos quedaron fuera: la UI ofrece verlos sin tener que adivinar
+        // que existen.
+        $cancelledCount = $includeCancelled ? 0 : CollectionCredit::query()
+            ->where('client_id', $client->id)
+            ->where('status', CollectionCredit::STATUS_CANCELLED)
+            ->when($this->hasCreditCompanyColumn(), function ($q) use ($companyId) {
+                $q->where('company_id', $companyId);
+            })
+            ->count();
+
+        // Nombres de quienes anularon, en UNA consulta. Resolverlos dentro del
+        // map disparaba un SELECT por credito.
+        $cancelledByNames = \App\Models\User::whereIn(
+            'id',
+            $allCredits->pluck('metadata.cancelled_by')->filter()->map(fn ($v) => (int) $v)->unique()->all()
+        )->pluck('name', 'id');
+
+        $creditsData = $allCredits->map(function ($credit) use ($companyId, $cancelledByNames) {
+            $meta = is_array($credit->metadata) ? $credit->metadata : [];
+            
+            // Calculate balance for each credit (Total Principal Remaining + Pending Interest)
+            $stats = CollectionInstallment::query()
+                ->where('company_id', $companyId)
+                ->where('credit_id', $credit->id)
+                ->whereNull('deleted_at')
+                ->selectRaw('
+                    SUM(COALESCE(principal_paid, 0)) as total_principal_paid,
+                    SUM(COALESCE(interest_amount, 0) - COALESCE(interest_paid, 0)) as pending_interest,
+                    SUM(COALESCE(paid_amount, 0)) as total_paid_all,
+                    -- Vencimiento a vigilar de ESTE crédito: la cuota abierta
+                    -- más vieja. Mismo criterio que el listado de clientes: se
+                    -- mide por saldo y no por `status`.
+                    MIN(CASE
+                        WHEN GREATEST(COALESCE(interest_amount, 0) - COALESCE(interest_paid, 0), 0)
+                           + GREATEST(COALESCE(principal_amount, 0) - COALESCE(principal_paid, 0), 0) > 0
+                        THEN due_date
+                    END) as next_due_date
+                ')
+                ->first();
+                
+            $remainingPrincipal = max(0, (float)($credit->amount) - (float)($stats->total_principal_paid ?? 0));
+            $pendingInterest = max(0, (float)($stats->pending_interest ?? 0));
+            $realBalance = $remainingPrincipal + $pendingInterest;
+
+            // Permisos de edición. Son TRES cosas distintas y mezclarlas en un
+            // solo booleano escondía el botón de editar en créditos que el
+            // backend sí dejaba corregir:
+            //
+            //   can_edit         → la ventana del día está abierta. Habilita los
+            //                      campos no financieros (ruta, descripción,
+            //                      banco, comprobantes), que no mueven plata.
+            //   can_edit_amounts → además, el crédito está intacto (sin abonos ni
+            //                      adiciones), así que se pueden tocar monto,
+            //                      tasa y fechas.
+            //   can_cancel       → se puede anular: ventana abierta y sin abonos.
+            //                      Las adiciones no lo impiden: la reversa
+            //                      devuelve el capital completo.
+            $registeredDate = $this->creditService->creditRegistrationDate($credit);
+            [$canEdit, $editReason] = $this->creditService->creditEditability($credit);
+
+            $hasPayments = (float) ($stats->total_paid_all ?? 0) > 0;
+            $hasAdditions = CollectionCapitalAddition::query()
+                ->where('company_id', $companyId)
+                ->where('credit_id', $credit->id)
+                ->exists();
+
+            $canEditAmounts = $canEdit;
+            $amountsReason = $editReason;
+            if ($canEditAmounts) {
+                if ($hasPayments) {
+                    $canEditAmounts = false;
+                    $amountsReason = 'El crédito ya tiene abonos registrados.';
+                } elseif ($hasAdditions) {
+                    $canEditAmounts = false;
+                    $amountsReason = 'El crédito ya tiene adiciones de capital.';
+                }
+            }
+
+            $canCancel = $canEdit && !$hasPayments;
+            $cancelReason = $canCancel
+                ? null
+                : ($hasPayments ? 'El crédito ya tiene abonos registrados.' : $editReason);
+
+            return [
+                'id' => $credit->id,
+                'amount' => (float) $credit->amount,
+                // Moneda y país del crédito: la cartera de un cliente puede
+                // tener créditos en países distintos, y sin estos campos el
+                // front formateaba TODO en pesos colombianos.
+                'currency' => $credit->currency ?? null,
+                'country_code' => $credit->country_code ?? null,
+                'interest_rate' => (float) $credit->interest_rate,
+                'total_installments' => $credit->total_installments,
+                'payment_frequency' => $credit->payment_frequency,
+                'first_installment_date' => $credit->first_installment_date?->toDateString(),
+                'status' => $credit->status,
+                // Mora de ESTE crédito, para poder marcarlo en su tarjeta: la
+                // cartera de un cliente puede tener uno al día y otro con tres
+                // meses, y la tarjeta no lo decía.
+                'interest_due_date' => $stats->next_due_date
+                    ? Carbon::parse($stats->next_due_date)->toDateString()
+                    : null,
+                'days_overdue' => $this->diasDeMora(
+                    $stats->next_due_date
+                        ? Carbon::parse($stats->next_due_date)->toDateString()
+                        : null,
+                    $credit->country_code ?? null
+                ),
+                // Baja del credito: la cartera lo lista igual que un core
+                // bancario -- la fila no desaparece, se muestra marcada y con
+                // el porque. `cancelled_at` es el instante UTC (convertir en
+                // pantalla a `cancelled_timezone`); `cancelled_business_date`
+                // es la jornada de caja a la que pertenece el reintegro.
+                'is_cancelled' => $credit->isCancelled(),
+                'cancelled_at' => $meta['cancelled_at'] ?? null,
+                'cancelled_business_date' => $meta['cancelled_business_date'] ?? null,
+                'cancelled_timezone' => $meta['cancelled_timezone'] ?? null,
+                'cancelled_by' => isset($meta['cancelled_by']) ? (int) $meta['cancelled_by'] : null,
+                'cancelled_by_name' => isset($meta['cancelled_by'])
+                    ? ($cancelledByNames[(int) $meta['cancelled_by']] ?? null)
+                    : null,
+                'cancelled_reason' => $meta['cancelled_reason'] ?? null,
+                'balance' => $realBalance,
+                // Las dos patas del saldo, explícitas. El front las mostraba
+                // restando (balance − capital) y esa resta se desalinea con los
+                // redondeos; además es la cifra que el cliente quiere leer tal cual.
+                'remaining_principal' => round($remainingPrincipal, 2),
+                'pending_interest' => round($pendingInterest, 2),
+                'total_paid' => (float) ($stats->total_paid_all ?? 0),
+                'total_principal_paid' => (float) ($stats->total_principal_paid ?? 0),
+                'total_interest_paid' => (float) ($stats->total_paid_all ?? 0) - (float) ($stats->total_principal_paid ?? 0),
+                // Hora real del registro: los timestamps de Collection se guardan
+                // corridos por la zona de la conexión. Ver App\Helpers\CollectionClock.
+                'created_at' => \App\Helpers\CollectionClock::iso($credit->created_at),
+                'transfer_bank_name' => $meta['transfer_bank_name'] ?? null,
+                'transfer_reference_number' => $meta['transfer_reference_number'] ?? null,
+                'transfer_voucher_photo' => $meta['transfer_voucher_photo'] ?? null,
+                'transfer_support_photo' => $meta['transfer_support_photo'] ?? null,
+                'route_name' => $credit->route_name ?? null,
+                'description' => $credit->description ?? null,
+                'business_date' => $credit->business_date?->toDateString(),
+                // Día real de carga. Coincide con business_date salvo que se
+                // haya retrofechado el desembolso; la UI señala ese caso.
+                'registered_date' => $registeredDate,
+                'is_backdated' => $registeredDate !== null
+                    && $credit->business_date?->toDateString() !== $registeredDate,
+                'can_edit' => $canEdit,
+                'edit_blocked_reason' => $editReason,
+                'can_edit_amounts' => $canEditAmounts,
+                'amounts_blocked_reason' => $amountsReason,
+                'can_cancel' => $canCancel,
+                'cancel_blocked_reason' => $cancelReason,
+            ];
+        });
+
+        $latestCredit = $requestedCreditId 
+            ? $allCredits->firstWhere('id', $requestedCreditId) 
+            : $allCredits->first();
+
+        $installments = [];
+        
+        if ($latestCredit) {
+            $existingInstallmentsCount = CollectionInstallment::query()
+                ->where('company_id', $companyId)
+                ->where('credit_id', $latestCredit->id)
+                ->count();
+
+            if ($existingInstallmentsCount === 0 && $latestCredit->total_installments > 0) {
+                // Fetch the actual model to get metadata correctly for generation
+                $creditModel = CollectionCredit::find($latestCredit->id);
+                $creditMeta = is_array($creditModel->metadata) ? $creditModel->metadata : [];
+                $this->creditService->generateInstallments($creditModel, $creditMeta['excluded_days'] ?? []);
+            } elseif ($latestCredit->status === 'active') {
+                // Devengo al abrir el credito. La cuota del periodo nace el dia
+                // del corte (ver generateNextOpenEndedInstallment), y el cron que
+                // la crea corre cada hora: sin esto, el cobrador que abre el
+                // credito a las 00:10 del dia de corte no encontraria que cobrar.
+                //
+                // Es barato y no puede duplicar: el metodo se planta solo si la
+                // fecha no llego, si queda alguna cuota abierta o si el credito
+                // no es de interes mensual abierto.
+                $this->creditService->generateNextOpenEndedInstallment($latestCredit);
+            }
+
+            $installments = CollectionInstallment::query()
+                ->where('company_id', $companyId)
+                ->where('credit_id', $latestCredit->id)
+                // withTrashed(): los cobros reversados VIAJAN. La reversa los
+                // marca borrados (ver deleteInstallment) y sin esto salían del
+                // payload, así que el extracto del crédito perdía el asiento
+                // original y el saldo daba un salto que ninguna fila explicaba.
+                // Se listan marcados, como en un core bancario; quien calcula
+                // plata debe filtrar por `deleted_at`.
+                ->with(['payments' => function ($q) use ($companyId, $latestCredit) {
+                    $q->withTrashed()
+                      ->where('company_id', $companyId)
+                      ->where('credit_id', $latestCredit->id)
+                      ->orderBy('recorded_at', 'asc');
+                }])
+                ->orderBy('installment_number')
+                ->get()
+                ->map(function ($inst) {
+                    $deletingUser = $inst->deleted_by ? \App\Models\User::find($inst->deleted_by) : null;
+
+                    // Reversa de cobro. Ya no borra la cuota —el interés nace
+                    // con el crédito y sigue debiéndose—, así que quién y cuándo
+                    // la hizo viajan en `history.__reversal`.
+                    $reversal = is_array($inst->history) ? ($inst->history['__reversal'] ?? null) : null;
+                    $reversingUser = !empty($reversal['by'])
+                        ? \App\Models\User::find($reversal['by'])
+                        : null;
+
+                    $principalAmount = (float) ($inst->principal_amount ?? ($inst->amount));
+                    $interestAmount = (float) ($inst->interest_amount ?? 0);
+                    // Saldo por componentes: un abono dirigido solo a capital puede
+                    // superar el monto de la cuota sin saldar el interés del período,
+                    // así que `amount − paid_amount` no sirve como pendiente.
+                    $pendingInterest = max(0, round($interestAmount - (float) ($inst->interest_paid ?? 0), 2));
+                    $pendingPrincipal = max(0, round($principalAmount - (float) ($inst->principal_paid ?? 0), 2));
+
+                    return [
+                        'id' => $inst->id,
+                        'installment_number' => $inst->installment_number,
+                        'due_date' => $inst->due_date?->toDateString(),
+                        'amount' => (float) $inst->amount,
+                        'principal_amount' => $principalAmount,
+                        'interest_amount' => $interestAmount,
+                        // Capital sobre el que se devengó este interés. NULL en
+                        // cuotas antiguas cuyo origen no se pudo reconstruir.
+                        'principal_base' => $inst->principal_base !== null
+                            ? (float) $inst->principal_base
+                            : null,
+                        // Instante en que se generó la cuota: permite reconstruir
+                        // de qué movimientos se compone su capital base.
+                        'recorded_at' => \App\Helpers\CollectionClock::iso($inst->recorded_at),
+                        'paid_amount' => (float) $inst->paid_amount,
+                        'principal_paid' => (float) ($inst->principal_paid ?? 0),
+                        'interest_paid' => (float) ($inst->interest_paid ?? 0),
+                        'pending_interest' => $pendingInterest,
+                        'pending_principal' => $pendingPrincipal,
+                        'pending_amount' => round($pendingInterest + $pendingPrincipal, 2),
+                        'status' => $inst->status,
+                        'last_payment_at' => \App\Helpers\CollectionClock::iso($inst->last_payment_at),
+                        'payment_method' => $inst->payment_method,
+                        'notes' => $inst->notes,
+                        'voucher_path' => $inst->voucher_path,
+                        'history' => $inst->history,
+                        // `deleted_at` ya solo marca la cuota dada de baja con el
+                        // crédito entero; la reversa de un cobro va aparte.
+                        'deleted_at' => \App\Helpers\CollectionClock::iso($inst->deleted_at),
+                        'deleted_by_name' => $deletingUser ? $deletingUser->name : null,
+                        'reversed_at' => $reversal['at'] ?? null,
+                        'reversed_by_name' => $reversingUser?->name,
+                        'payments' => $inst->payments->map(function($p) {
+                            return [
+                                'id' => $p->id,
+                                'amount_paid' => (float) $p->amount_paid,
+                                'interest_paid' => (float) ($p->interest_paid ?? 0),
+                                'principal_paid' => (float) ($p->principal_paid ?? 0),
+                                'payment_date' => $p->payment_date?->toDateString(),
+                                'payment_method' => $p->payment_method,
+                                'notes' => $p->notes,
+                                'voucher_path' => $p->voucher_path,
+                                'recorded_at' => \App\Helpers\CollectionClock::iso($p->recorded_at),
+                                // Instante de la reversa. Quién la hizo no está
+                                // acá: la reversa es POR CUOTA, así que el autor
+                                // vive en `deleted_by_name` de la cuota.
+                                'deleted_at' => \App\Helpers\CollectionClock::iso($p->deleted_at),
+                            ];
+                        }),
+                    ];
+                });
+        }
+
+        $data = [
+            'id' => $client->id,
+            'uuid' => (string) $client->id,
+            'name' => $client->name,
+            'dni' => $client->dni,
+            'phone' => $client->phone,
+            'country_code' => $this->hasClientCountryCodeColumn() ? $client->country_code : null,
+            'email' => $meta['email'] ?? null,
+            'address' => $client->address,
+            'reference' => $meta['reference'] ?? null,
+            'company_name' => $meta['company_name'] ?? null,
+            'status' => $meta['status'] ?? 'Activo',
+            'profile_photo' => $meta['profile_photo'] ?? null,
+            'document_photo' => $meta['document_photo'] ?? null,
+            'credits' => $creditsData,
+            // Keep keys for compatibility with single-credit UI if needed
+            'credit_id' => $latestCredit?->id,
+            'credit_amount' => $latestCredit?->amount,
+            'credit_status' => $latestCredit?->status,
+            'installments' => $installments,
+            // Créditos dados de baja que quedaron fuera de la cartera visible.
+            'cancelled_credits_count' => $cancelledCount,
+            'created_at' => \App\Helpers\CollectionClock::iso($client->created_at),
+        ];
+
+        return $this->successResponse([
+            'success' => true,
+            'data' => $data
+        ]);
+    }
+
+    public function delete(int $clientId, ?int $requestedCompanyId = null)
+    {
+        $companyId = $this->resolveCompanyId($requestedCompanyId);
+        if (!$companyId) {
+            return $this->errorResponse('No se pudo determinar la compañía para Collection', 422);
+        }
+
+        $client = CollectionClient::query()
+            ->where('id', $clientId)
+            ->first();
+
+        if ($client && $this->hasClientCompanyColumn() && (int) $client->company_id !== $companyId) {
+            $client = null;
+        }
+
+        if (!$client) {
+            return $this->errorNotFoundResponse('Cliente Collection no encontrado');
+        }
+
+        $hasActiveCredit = CollectionCredit::query()
+            ->where('client_id', $client->id)
+            ->whereIn(DB::raw('LOWER(status)'), ['activo', 'active', 'vigente'])
+            ->when($this->hasCreditCompanyColumn(), function ($query) use ($companyId) {
+                $query->where('company_id', $companyId);
+            })
+            ->exists();
+
+        if ($hasActiveCredit) {
+            return $this->errorResponse('No se puede eliminar: el cliente tiene crédito activo en Collection', 422);
+        }
+
+        return DB::connection(self::CONNECTION)->transaction(function () use ($client, $companyId) {
+            $this->audit($companyId, $client->id, 'deleted', [
+                'old' => [
+                    'name' => $client->name,
+                    'dni' => $client->dni,
+                    'phone' => $client->phone,
+                    'address' => $client->address,
+                    'metadata' => $client->metadata ?? [],
+                ],
+            ]);
+
+            $client->delete();
+
+            return $this->successResponse([
+                'success' => true,
+                'message' => 'Cliente Collection eliminado',
+            ]);
+        });
+    }
+
+    private function resolveCompanyId($requestedCompanyId): int
+    {
+        if (!empty($requestedCompanyId)) {
+            return (int) $requestedCompanyId;
+        }
+
+        $user = Auth::user();
+        $companyId = null;
+        if ($user && $user->company && !empty($user->company->id)) {
+            $companyId = (int) $user->company->id;
+        } elseif ($user && $user->seller && !empty($user->seller->company_id)) {
+            $companyId = (int) $user->seller->company_id;
+        }
+
+        // Fail-closed: Collection es multi-tenant estricto por empresa. Si no hay
+        // empresa resoluble, cortamos con 422 en lugar de devolver null (que
+        // degradaría a WHERE company_id IS NULL y podría filtrar datos si un
+        // caller futuro olvidara validar). El caso normal nunca llega aquí: el
+        // trait ResolvesCollectionCompany ya inyectó un company_id válido.
+        abort_if($companyId === null, 422, 'No se pudo resolver la empresa para la operación de Collection.');
+
+        return $companyId;
+    }
+
+    /**
+     * Etiquetas legibles de los campos auditados del cliente. La clave es el
+     * nombre plano del campo: las de `metadata` se aplanan al mismo nivel que
+     * las columnas, porque para el usuario "Correo" es un dato del cliente y no
+     * le importa dónde lo guardamos.
+     */
+    private const AUDIT_FIELD_LABELS = [
+        'name' => 'Nombre completo',
+        'dni' => 'Documento',
+        'phone' => 'Teléfono',
+        'address' => 'Dirección',
+        'country_code' => 'País',
+        'email' => 'Correo',
+        'reference' => 'Punto de referencia',
+        'company_name' => 'Empresa o referencia comercial',
+        'profile_photo' => 'Foto de perfil',
+        'document_photo' => 'Foto del documento',
+        'status' => 'Estado',
+    ];
+
+    /**
+     * Cómo debe renderizarse cada campo en el historial. 'image' guarda una
+     * ruta de archivo (el front arma la miniatura), 'country' un código ISO
+     * (el front lo traduce a bandera + nombre). El resto es texto plano.
+     */
+    private const AUDIT_FIELD_TYPES = [
+        'profile_photo' => 'image',
+        'document_photo' => 'image',
+        'country_code' => 'country',
+    ];
+
+    /**
+     * Historial de cambios de un cliente (trazabilidad).
+     *
+     * Lee `collection_client_audits` —que ya se escribía en create/update/delete—
+     * y devuelve, por cada evento, SOLO los campos que efectivamente cambiaron,
+     * con su valor anterior y el nuevo. Los nombres de usuario viven en MySQL
+     * (core), no en collection_pgsql, así que se resuelven aparte.
+     */
+    public function history(int $clientId, ?int $requestedCompanyId = null, int $limit = 200)
+    {
+        $companyId = $this->resolveCompanyId($requestedCompanyId);
+        if (!$companyId) {
+            return $this->errorResponse('No se pudo determinar la compañía para Collection', 422);
+        }
+
+        // Validar pertenencia antes de exponer el historial: sin esto, cualquier
+        // usuario autenticado podría leer la traza de clientes de otra empresa.
+        $client = CollectionClient::query()->where('id', $clientId)->first();
+        if ($client && $this->hasClientCompanyColumn() && (int) $client->company_id !== $companyId) {
+            $client = null;
+        }
+        if (!$client) {
+            return $this->errorNotFoundResponse('Cliente Collection no encontrado');
+        }
+
+        $audits = CollectionClientAudit::query()
+            ->where('company_id', $companyId)
+            ->where('client_id', $clientId)
+            ->orderByDesc('id')
+            ->limit($limit)
+            ->get();
+
+        $userIds = $audits->pluck('user_id')->filter()->unique()->all();
+        $names = empty($userIds)
+            ? collect()
+            : \App\Models\User::whereIn('id', $userIds)->pluck('name', 'id');
+
+        $data = $audits->map(function ($audit) use ($names) {
+            return [
+                'id' => $audit->id,
+                'action' => $audit->action,
+                'user_id' => $audit->user_id,
+                'user_name' => $names[$audit->user_id] ?? null,
+                'ip_address' => $audit->ip_address,
+                'created_at' => \App\Helpers\CollectionClock::iso($audit->created_at),
+                'fields' => $this->describeAuditChanges(
+                    (string) $audit->action,
+                    is_array($audit->changes) ? $audit->changes : []
+                ),
+            ];
+        })->values();
+
+        return $this->successResponse([
+            'success' => true,
+            'data' => $data,
+        ]);
+    }
+
+    /**
+     * Convierte el JSON crudo {old:{...}, new:{...}} en una lista de campos
+     * modificados. Devuelve [] cuando el evento no trae comparación (por
+     * ejemplo 'created', que solo guarda el estado inicial).
+     */
+    private function describeAuditChanges(string $action, array $changes): array
+    {
+        if ($action !== 'updated') {
+            return [];
+        }
+
+        $old = $this->flattenAuditSnapshot($changes['old'] ?? []);
+        $new = $this->flattenAuditSnapshot($changes['new'] ?? []);
+
+        $fields = [];
+        foreach (array_keys(self::AUDIT_FIELD_LABELS) as $field) {
+            // Un campo ausente en ambos lados nunca formó parte del snapshot
+            // (p. ej. country_code en auditorías viejas): no se reporta.
+            if (!array_key_exists($field, $old) && !array_key_exists($field, $new)) {
+                continue;
+            }
+
+            $oldValue = $this->normalizeAuditValue($old[$field] ?? null);
+            $newValue = $this->normalizeAuditValue($new[$field] ?? null);
+
+            if ($oldValue === $newValue) {
+                continue;
+            }
+
+            $fields[] = [
+                'field' => $field,
+                'label' => self::AUDIT_FIELD_LABELS[$field],
+                'type' => self::AUDIT_FIELD_TYPES[$field] ?? 'text',
+                'old' => $oldValue,
+                'new' => $newValue,
+            ];
+        }
+
+        return $fields;
+    }
+
+    /** Sube las claves de `metadata` al nivel raíz del snapshot. */
+    private function flattenAuditSnapshot($snapshot): array
+    {
+        if (!is_array($snapshot)) {
+            return [];
+        }
+
+        $metadata = is_array($snapshot['metadata'] ?? null) ? $snapshot['metadata'] : [];
+        unset($snapshot['metadata']);
+
+        return array_merge($snapshot, $metadata);
+    }
+
+    /** Normaliza a string|null para que "" y null no cuenten como cambio. */
+    private function normalizeAuditValue($value): ?string
+    {
+        if ($value === null || is_array($value)) {
+            return $value === null ? null : json_encode($value);
+        }
+
+        $normalized = trim((string) $value);
+
+        return $normalized === '' ? null : $normalized;
+    }
+
+    private function audit(int $companyId, int $clientId, string $action, array $changes = []): void
+    {
+        CollectionClientAudit::query()->create([
+            'company_id' => $companyId,
+            'client_id' => $clientId,
+            'action' => $action,
+            'user_id' => Auth::id(),
+            'ip_address' => request()->ip(),
+            'changes' => $changes,
+        ]);
+    }
+
+    private function hasClientCompanyColumn(): bool
+    {
+        return Schema::connection(self::CONNECTION)->hasColumn('collection_clients', 'company_id');
+    }
+
+    private function hasCreditCompanyColumn(): bool
+    {
+        return Schema::connection(self::CONNECTION)->hasColumn('collection_credits', 'company_id');
+    }
+
+    private function hasClientMetadataColumn(): bool
+    {
+        return Schema::connection(self::CONNECTION)->hasColumn('collection_clients', 'metadata');
+    }
+
+    private function hasClientCountryCodeColumn(): bool
+    {
+        return Schema::connection(self::CONNECTION)->hasColumn('collection_clients', 'country_code');
+    }
+
+    private function hasClientIsActiveColumn(): bool
+    {
+        return Schema::connection(self::CONNECTION)->hasColumn('collection_clients', 'is_active');
+    }
+}

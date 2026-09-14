@@ -576,9 +576,11 @@ class LiquidationController extends Controller
     public function recalculateLiquidation($sellerId, $date)
     {
         // Obtener timezone del vendedor dinámicamente
+        // Zona del vendedor por el helper, igual que en storeLiquidation. Leerla
+        // de countries.timezone hacía que el recálculo cortara el día con otra
+        // zona que la del cierre que estaba recalculando.
         $seller = Seller::with('city.country')->find($sellerId);
-        $country = $seller?->city?->country ?? null;
-        $timezone = $country?->timezone ?? config('app.timezone', 'America/Lima');
+        $timezone = \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
         
         $startUTC = Carbon::parse($date, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC = Carbon::parse($date, $timezone)->endOfDay()->setTimezone('UTC');
@@ -1219,6 +1221,287 @@ class LiquidationController extends Controller
         $result = $this->liquidationService->getLiquidationHistory($sellerId, $request->start_date, $request->end_date);
         return response()->json(['success' => true, 'data' => $result]);
     }
+    /**
+     * Lista los clientes detrás de uno de los conteos del reporte.
+     *
+     * Es lo que abre el modal al tocar el número: sale de la MISMA
+     * clasificación que produce ese número, así que la cantidad de filas tiene
+     * que coincidir con lo que muestra la pantalla. Sirve para auditar el
+     * reporte sin salir de él.
+     */
+    public function getCreditClassificationDetail(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'start_date' => 'required|date',
+            'end_date' => 'required|date|after_or_equal:start_date',
+            'bucket' => 'required|in:new,settled,additional',
+            'city_id' => 'nullable|exists:cities,id',
+            'seller_id' => 'nullable|exists:sellers,id',
+            'day' => 'nullable|date',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validación fallida',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        try {
+            $user = Auth::user();
+            $companyId = $request->input('company_id');
+
+            // Mismo aislamiento que el resto del reporte: el admin (rol 2) solo
+            // ve su empresa, sin importar el company_id que llegue.
+            if ($user->role_id == 2) {
+                $companyId = $user->company ? $user->company->id : -1;
+            }
+
+            $clientes = $this->liquidationService->getCreditClassificationDetail(
+                $request->input('start_date'),
+                $request->input('end_date'),
+                $request->input('bucket'),
+                $companyId,
+                null,
+                $request->input('city_id'),
+                $request->input('seller_id'),
+                $request->input('day')
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Detalle obtenido exitosamente',
+                'data' => [
+                    'bucket' => $request->input('bucket'),
+                    'total' => count($clientes),
+                    'clients' => $clientes,
+                ],
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al obtener el detalle de clientes',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Cartera viva por ruta. Alimenta la pantalla "Resumen de Cartera".
+     *
+     * No recibe rango de fechas a propósito: la cartera es un saldo, no un flujo
+     * — es lo que se debe HOY, no lo que pasó en un período. El resultado viene
+     * cacheado; `refresh=1` fuerza el recálculo.
+     */
+    public function getPortfolioByCity(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            $companyId = $request->input('company_id');
+
+            // Mismo aislamiento que el resto del reporte: el admin (rol 2) solo
+            // ve su empresa, sin importar el company_id que llegue.
+            if ($user->role_id == 2) {
+                $companyId = $user->company ? $user->company->id : -1;
+            }
+
+            // SOLO lectura del cache. El cálculo vive en `cartera:calcular`,
+            // que corre por CLI: acá tardaría ~35 s y el servidor lo cortaría a
+            // los 30, dejando la pantalla colgada sin llegar nunca a cachear.
+            $data = $this->liquidationService->getPortfolioByCityCached($companyId, null);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Cartera obtenida exitosamente',
+                'data' => $data,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al obtener la cartera por ruta',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Los clientes detrás de "Con Crédito Activo" / "Sin Crédito".
+     *
+     * Solo recibe `end_date`: esas dos columnas son una foto del cierre del
+     * rango, no un acumulado del período, así que la fecha de inicio no
+     * interviene en el cálculo.
+     */
+    public function getClientCreditStateDetail(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'end_date' => 'required|date',
+            'bucket' => 'required|in:with_credit,without_credit',
+            'city_id' => 'nullable|exists:cities,id',
+            // Permite abrir el mismo detalle desde la tabla de vendedores, no
+            // solo desde el resumen por ruta.
+            'seller_id' => 'nullable|exists:sellers,id',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validación fallida',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        try {
+            $user = Auth::user();
+            $companyId = $request->input('company_id');
+
+            // Mismo aislamiento que el resto del reporte: el admin (rol 2) solo
+            // ve su empresa, sin importar el company_id que llegue.
+            if ($user->role_id == 2) {
+                $companyId = $user->company ? $user->company->id : -1;
+            }
+
+            // El servicio recibe una LISTA de vendedores; desde la tabla de
+            // vendedores llega uno solo. Sin seller_id queda en null y el
+            // detalle se resuelve por ruta, como antes.
+            $sellerId = $request->input('seller_id');
+            $sellerIds = $sellerId ? [(int) $sellerId] : null;
+
+            $clientes = $this->liquidationService->getClientCreditStateDetail(
+                $request->input('end_date'),
+                $request->input('bucket'),
+                $companyId,
+                $sellerIds,
+                $request->input('city_id')
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Detalle obtenido exitosamente',
+                'data' => [
+                    'bucket' => $request->input('bucket'),
+                    'total' => count($clientes),
+                    'clients' => $clientes,
+                ],
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al obtener el detalle de clientes',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Descarga del resumen general en Excel o PDF, desde los mismos datos que
+     * muestra la pantalla.
+     */
+    public function downloadSummary(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'start_date' => 'required|date',
+            'end_date' => 'required|date|after_or_equal:start_date',
+            'format' => 'required|in:excel,pdf',
+            'level' => 'required|in:city,seller,day',
+            'city_id' => 'required_if:level,seller|nullable|exists:cities,id',
+            'seller_id' => 'required_if:level,day|nullable|exists:sellers,id',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validación fallida',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        try {
+            $user = Auth::user();
+            $companyId = $request->input('company_id');
+
+            if ($user->role_id == 2) {
+                $companyId = $user->company ? $user->company->id : -1;
+            }
+
+            $datos = $this->liquidationService->buildSummaryExport(
+                $request->input('level'),
+                $request->input('start_date'),
+                $request->input('end_date'),
+                $companyId,
+                null,
+                $request->input('city_id'),
+                $request->input('seller_id')
+            );
+
+            $nombre = 'resumen_' . $request->input('level') . '_'
+                . Carbon::parse($request->input('start_date'))->format('Ymd') . '-'
+                . Carbon::parse($request->input('end_date'))->format('Ymd');
+
+            if ($request->input('format') === 'pdf') {
+                $pdf = app('dompdf.wrapper');
+                // Apaisado: con diez columnas, en vertical la tabla se parte y
+                // el reporte deja de servir para leerlo impreso.
+                $pdf->setPaper('a4', 'landscape');
+                $pdf->loadView('reports.summary', $datos);
+
+                return response()->make($pdf->output(), 200, [
+                    'Content-Type' => 'application/pdf',
+                    'Content-Disposition' => 'attachment; filename="' . $nombre . '.pdf"',
+                ]);
+            }
+
+            return \Maatwebsite\Excel\Facades\Excel::download(
+                new \App\Exports\SummaryReportExport($datos),
+                $nombre . '.xlsx'
+            );
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al generar la descarga',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Créditos anteriores de un cliente respecto de uno dado. Alimenta el
+     * acordeón del modal: se pide al desplegar la fila, no con el listado.
+     */
+    public function getPreviousCredits(Request $request, $creditId)
+    {
+        try {
+            $user = Auth::user();
+
+            // Aislamiento: el admin solo puede mirar créditos de su empresa.
+            if ($user->role_id == 2) {
+                $companyId = $user->company ? $user->company->id : -1;
+                $esDeSuEmpresa = \App\Models\Credit::where('credits.id', $creditId)
+                    ->whereHas('client.seller', fn ($q) => $q->where('company_id', $companyId))
+                    ->exists();
+
+                if (!$esDeSuEmpresa) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'No tienes permisos para ver este crédito',
+                    ], 403);
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Historial obtenido exitosamente',
+                'data' => $this->liquidationService->getPreviousCreditsOfCredit((int) $creditId),
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al obtener el historial del cliente',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
     public function getAccumulatedByCity(Request $request)
     {
         $validator = Validator::make($request->all(), [
@@ -1380,11 +1663,14 @@ class LiquidationController extends Controller
                 return response()->json(['success' => false, 'message' => 'No tienes permisos para ver este vendedor'], 403);
             }
 
-            $liquidations = Liquidation::with(['seller', 'seller.user'])
-                ->where('seller_id', $sellerId)
-                ->whereBetween('date', [$startDate, $endDate])
-                ->orderBy('date', 'asc')
-                ->get();
+            // Delegado al servicio: es la MISMA consulta que ya vivía acá
+            // duplicada, y así la pantalla recibe los conteos de colocación y la
+            // moneda igual que el Excel, que siempre usó el servicio.
+            $liquidations = $this->liquidationService->getSellerLiquidationsDetail(
+                $sellerId,
+                $startDate,
+                $endDate
+            );
 
             return response()->json([
                 'success' => true,

@@ -83,4 +83,22 @@ return [
         'diag_enabled' => env('TELEGRAM_DIAG_ENABLED', false),
     ],
 
+    // Bot DEDICADO al módulo Collection (Deuda & Abono): el cobrador vincula su
+    // Telegram y carga gastos por una plantilla guiada. Es un bot aparte del de
+    // notificaciones (se crea con @BotFather). Su webhook se protege con un
+    // secreto propio (header X-Telegram-Bot-Api-Secret-Token).
+    'telegram_collection' => [
+        'bot_token' => env('TELEGRAM_COLLECTION_BOT_TOKEN'),
+        'bot_username' => env('TELEGRAM_COLLECTION_BOT_USERNAME'),
+        'webhook_secret' => env('TELEGRAM_COLLECTION_WEBHOOK_SECRET'),
+
+        // Bot OPCIONAL solo para los reportes de cobranza ("Reporte de Cobranza
+        // Diario"). Si se define, los reportes salen por acá y el bot de carga
+        // de gastos queda para la operación del cobrador. Si se deja vacío, los
+        // reportes usan el bot de Deuda & Abono de arriba — nunca el de
+        // Control CD.
+        'report_bot_token' => env('TELEGRAM_COLLECTION_REPORT_BOT_TOKEN'),
+        'report_bot_username' => env('TELEGRAM_COLLECTION_REPORT_BOT_USERNAME'),
+    ],
+
 ];

@@ -1706,7 +1706,11 @@ class PaymentService
             ], 404);
         }
 
-        $timezone = $seller->city->country->timezone ?? 'America/Lima';
+        // Misma fuente que usa este servicio para ESCRIBIR business_date. Antes
+        // acá se leía countries.timezone, columna que tiene cinco países como
+        // 'America/Lima' sin serlo: el listado filtraba el día con una zona y
+        // los pagos se habían fechado con otra.
+        $timezone = \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
         $flatStructure = $request->get('flat', 'false') === 'true';
         $includeDeleted = $request->get('include_deleted', 'false') === 'true';
         

@@ -56,11 +56,14 @@ class CountriesService
                     ->whereHas('cities', function ($cityQuery) {
                         $cityQuery->whereHas('sellers');
                     })
-                    ->select('id', 'name')
+                    ->select('id', 'name', 'phone_code')
                     ->get();
             } else {
                 /* \Log::info('Fetching all countries without filtering by seller cities.'); */
-                $countries = Country::where('status', 'ACTIVE')->select('id', 'name')->get();
+                // phone_code viaja con el país: lo usa el enlace de WhatsApp para
+                // armar el número internacional. Es aditivo, quien solo pedía
+                // id/name lo ignora.
+                $countries = Country::where('status', 'ACTIVE')->select('id', 'name', 'phone_code')->get();
             }
             return $this->successResponse($countries);
         } catch (\Exception $e) {

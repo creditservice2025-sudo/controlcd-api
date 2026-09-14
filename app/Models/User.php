@@ -15,6 +15,7 @@ use App\Notifications\ResetPasswordNotification;
 
 class User extends Authenticatable
 {
+    protected $connection = 'mysql';
     /** @use HasFactory<\Database\Factories\UserFactory> */
     use HasFactory, Notifiable, HasRoles, HasApiTokens, SoftDeletes;
 
@@ -37,6 +38,7 @@ class User extends Authenticatable
         'must_change_password',
         'updated_by',
         'token_revoked',
+        'is_collection_user',
     ];
 
     /**
@@ -60,6 +62,7 @@ class User extends Authenticatable
             'email_verified_at'    => 'datetime',
             'password'             => 'hashed',
             'must_change_password' => 'boolean',
+            'is_collection_user'  => 'boolean',
         ];
     }
 

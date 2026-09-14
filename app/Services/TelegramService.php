@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Helpers\TimezoneHelper;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -325,7 +326,7 @@ class TelegramService
     {
         try {
             $seller = $company->sellers()->with('city.country')->first();
-            $tz = $seller?->city?->country?->timezone;
+            $tz = TimezoneHelper::getSellerTimezone($seller);
             return $tz ?: 'America/Lima';
         } catch (\Throwable $e) {
             return 'America/Lima';
@@ -376,7 +377,7 @@ class TelegramService
     {
         $vendedor   = $seller->user->name ?? 'N/D';
         $editorName = $editor->name ?? 'N/D';
-        $tz         = $seller->city->country->timezone ?? 'America/Lima';
+        $tz         = TimezoneHelper::getSellerTimezone($seller);
         $fecha      = \Carbon\Carbon::now($tz)->format('d/m/Y H:i');
 
         $m  = "✏️ *Cliente actualizado*\n\n";
@@ -448,7 +449,7 @@ class TelegramService
     private function buildNewClientMessage(\App\Models\Client $client, \App\Models\Seller $seller, \App\Models\Company $company, ?\App\Models\Credit $credit = null): string
     {
         $vendedor = $seller->user->name ?? 'N/D';
-        $tz       = $seller->city->country->timezone ?? 'America/Lima';
+        $tz       = TimezoneHelper::getSellerTimezone($seller);
         $fecha    = \Carbon\Carbon::now($tz)->format('d/m/Y H:i');
 
         $m  = "👤 *Cliente nuevo registrado*\n\n";
@@ -710,7 +711,7 @@ class TelegramService
         $cliente    = $credit?->client->name ?? 'N/D';
         $currency   = $seller->city->country->currency ?? '';
         $monto      = number_format((float) $payment->amount, 2);
-        $tz         = $seller->city->country->timezone ?? 'America/Lima';
+        $tz         = TimezoneHelper::getSellerTimezone($seller);
         $fecha      = \Carbon\Carbon::now($tz)->format('d/m/Y H:i');
 
         $icon   = $accion === 'eliminado' ? '🗑️' : '💵';
@@ -735,7 +736,7 @@ class TelegramService
         $currency = $seller->city->country->currency ?? '';
         $valor    = number_format((float) $expense->value, 2);
         $desc     = $expense->description ?? 's/d';
-        $tz       = $seller->city->country->timezone ?? 'America/Lima';
+        $tz       = TimezoneHelper::getSellerTimezone($seller);
         $fecha    = \Carbon\Carbon::now($tz)->format('d/m/Y H:i');
 
         $m  = "💸 *Gasto registrado*\n\n";
@@ -754,7 +755,7 @@ class TelegramService
         $currency = $seller->city->country->currency ?? '';
         $valor    = number_format((float) $expense->value, 2);
         $desc     = $expense->description ?? 's/d';
-        $tz       = $seller->city->country->timezone ?? 'America/Lima';
+        $tz       = TimezoneHelper::getSellerTimezone($seller);
         $fecha    = \Carbon\Carbon::now($tz)->format('d/m/Y H:i');
 
         $m  = "🗑️ *Gasto eliminado*\n\n";
@@ -773,7 +774,7 @@ class TelegramService
         $cliente  = $credit->client->name ?? 'N/D';
         $currency = $seller->city->country->currency ?? '';
         $valor    = number_format((float) $credit->credit_value, 2);
-        $tz       = $seller->city->country->timezone ?? 'America/Lima';
+        $tz       = TimezoneHelper::getSellerTimezone($seller);
         $fecha    = \Carbon\Carbon::now($tz)->format('d/m/Y H:i');
 
         $m  = "🗑️ *Crédito eliminado*\n\n";

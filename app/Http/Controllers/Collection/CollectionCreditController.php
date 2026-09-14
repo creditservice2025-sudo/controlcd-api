@@ -1,0 +1,315 @@
+<?php
+
+namespace App\Http\Controllers\Collection;
+
+use App\Http\Controllers\Controller;
+use App\Services\Collection\CollectionCreditService;
+use App\Traits\ApiResponse;
+use App\Traits\ResolvesCollectionCompany;
+use Illuminate\Http\Request;
+
+class CollectionCreditController extends Controller
+{
+    use ApiResponse;
+    use ResolvesCollectionCompany;
+
+    public function __construct(private readonly CollectionCreditService $collectionCreditService)
+    {
+    }
+
+    public function store(Request $request)
+    {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
+        $validated = $request->validate([
+            'client_id' => 'required|integer|min:1',
+            // Monto e interes son los dos unicos campos obligatorios del
+            // formulario: sin monto no hay credito y sin tasa no se calcula la
+            // cuota. El resto quedo opcional y solo se valida el formato de lo
+            // que venga cargado.
+            'credit_value' => 'required|numeric|min:0.01',
+            'interest_rate' => 'required|numeric|min:0',
+            // Fecha contable del crédito (desembolso). Se valida no-futura en el
+            // servicio según la zona horaria del país del crédito.
+            'credit_date' => 'nullable|date',
+            'route_name' => 'nullable|string|max:150',
+            'description' => 'nullable|string|max:1000',
+            // Credito abierto: N no aplica; se genera 1 cuota y las siguientes al pagar.
+            // Se deja nullable para soportar el unico modo actual (monthly_interest_open).
+            'number_installments' => 'nullable|integer|min:1|max:1000',
+            'payment_frequency' => 'nullable|string|max:50',
+            'first_installment_date' => 'nullable|date',
+            'installment_distribution_mode' => 'nullable|in:monthly_interest_open',
+            'transfer_bank_name' => 'nullable|string|max:150',
+            'transfer_reference_number' => 'nullable|string|max:120',
+            'excluded_days' => 'nullable|array',
+            'excluded_days.*' => 'string|max:30',
+            'images' => 'nullable|array',
+            // `mimes` y no `image`: la regla `image` de Laravel acepta SVG, y un
+            // SVG es un documento XML que puede traer <script> adentro. Como los
+            // comprobantes se guardan en el disco `public` y se sirven desde el
+            // MISMO dominio de la app, ese archivo se ejecutaría en la sesión de
+            // quien lo abre. Se listan los formatos de cámara y nada más; `mimes`
+            // mira el contenido real del archivo, no su extensión.
+            'images.*.file' => 'nullable|file|mimes:jpg,jpeg,png,webp|max:4096',
+            'images.*.type' => 'nullable|string|max:80',
+            // El par moneda/pais define la caja donde cae el credito. El front
+            // siempre los manda (los toma de la wallet activa), pero al no estar
+            // declarados aca validate() los descartaba y el servicio caia a su
+            // default COP/CO: un credito de Peru terminaba en la caja de Colombia
+            // y no aparecia nunca en el balance PEN.
+            'currency' => 'nullable|string|size:3',
+            'country_code' => 'nullable|string|size:2',
+        ], [
+            'route_name.max' => 'El nombre de la ruta no puede superar los 150 caracteres.',
+            'description.max' => 'La descripción no puede superar los 1000 caracteres.',
+        ]);
+
+        if ($request->hasFile('images.0.file')) {
+            $validated['transfer_voucher_photo'] = $request->file('images.0.file')->store('collection/credits/voucher', 'public');
+        }
+
+        if ($request->hasFile('images.1.file')) {
+            $validated['transfer_support_photo'] = $request->file('images.1.file')->store('collection/credits/support', 'public');
+        }
+
+        $validated['company_id'] = $companyId;
+
+        // Normalizacion: la wallet se busca por par exacto en mayusculas.
+        if (!empty($validated['currency'])) {
+            $validated['currency'] = strtoupper($validated['currency']);
+        }
+        if (!empty($validated['country_code'])) {
+            $validated['country_code'] = strtoupper($validated['country_code']);
+        }
+
+        return $this->collectionCreditService->create($validated);
+    }
+
+    /**
+     * Corrección de un crédito dentro de la ventana del mismo día.
+     * Las reglas duras (día contable, cierre de caja, abonos, adiciones) las
+     * aplica el servicio: acá solo se valida la forma de los datos.
+     */
+    public function update(Request $request, int $creditId)
+    {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
+        $validated = $request->validate([
+            'credit_value' => 'nullable|numeric|min:0.01',
+            'interest_rate' => 'nullable|numeric|min:0',
+            'first_installment_date' => 'nullable|date',
+            // Fecha contable del desembolso. El servicio valida que no sea
+            // futura ni caiga en un día con la caja cerrada.
+            'credit_date' => 'nullable|date',
+            'route_name' => 'nullable|string|max:150',
+            'description' => 'nullable|string|max:1000',
+            'transfer_bank_name' => 'nullable|string|max:150',
+            'transfer_reference_number' => 'nullable|string|max:120',
+            'transfer_voucher_photo' => 'nullable|file|mimes:jpg,jpeg,png,webp|max:4096',
+            'transfer_support_photo' => 'nullable|file|mimes:jpg,jpeg,png,webp|max:4096',
+        ]);
+        $validated['company_id'] = $companyId;
+
+        // Las imágenes anteriores no se borran: la auditoría guarda su ruta y
+        // el historial las sigue mostrando.
+        if ($request->hasFile('transfer_voucher_photo')) {
+            $validated['transfer_voucher_photo'] = $request->file('transfer_voucher_photo')
+                ->store('collection/credits/voucher', 'public');
+        }
+
+        if ($request->hasFile('transfer_support_photo')) {
+            $validated['transfer_support_photo'] = $request->file('transfer_support_photo')
+                ->store('collection/credits/support', 'public');
+        }
+
+        return $this->collectionCreditService->update($creditId, $validated);
+    }
+
+    /**
+     * Historial de cambios del crédito y de sus adiciones de capital.
+     */
+    public function history(Request $request, int $creditId)
+    {
+        try {
+            $companyId = $this->resolveOwnCompanyId($request);
+            if (!is_int($companyId)) return $companyId;
+
+            return $this->collectionCreditService->history($creditId, $companyId);
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error en el servidor: ' . $e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Anula un crédito dentro de la ventana del mismo día. No borra la fila:
+     * la marca como anulada, reintegra la caja y deja traza.
+     */
+    public function destroy(Request $request, int $creditId)
+    {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
+        $validated = $request->validate([
+            'reason' => 'required|string|max:500',
+        ], [
+            'reason.required' => 'Indicá el motivo de la anulación.',
+        ]);
+        $validated['company_id'] = $companyId;
+
+        return $this->collectionCreditService->destroy($creditId, $validated);
+    }
+
+    /** Datos del cartón digital del crédito (pantalla e imagen). */
+    public function cardboard(Request $request, int $creditId)
+    {
+        try {
+            $companyId = $this->resolveOwnCompanyId($request);
+            if (!is_int($companyId)) return $companyId;
+
+            return $this->collectionCreditService->cardboard($creditId, $companyId);
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error en el servidor: ' . $e->getMessage(), 500);
+        }
+    }
+
+    /** El mismo cartón, en PDF. */
+    public function cardboardPdf(Request $request, int $creditId)
+    {
+        try {
+            $companyId = $this->resolveOwnCompanyId($request);
+            if (!is_int($companyId)) return $companyId;
+
+            return $this->collectionCreditService->cardboardPdf($creditId, $companyId);
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error en el servidor: ' . $e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Corrección de una adición de capital dentro de la ventana del mismo día.
+     */
+    public function updateCapitalAddition(Request $request, int $additionId)
+    {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
+        $validated = $request->validate([
+            'amount' => 'nullable|numeric|min:0.01',
+            'business_date' => 'nullable|date',
+            'payment_method' => 'nullable|string|max:60',
+            'reference_number' => 'nullable|string|max:120',
+            'bank_name' => 'nullable|string|max:150',
+            'notes' => 'nullable|string|max:1000',
+            'voucher_photo' => 'nullable|file|mimes:jpg,jpeg,png,webp|max:4096',
+        ]);
+        $validated['company_id'] = $companyId;
+
+        if ($request->hasFile('voucher_photo')) {
+            $validated['voucher_photo'] = $request->file('voucher_photo')
+                ->store('collection/credits/capital-additions', 'public');
+        }
+
+        return $this->collectionCreditService->updateCapitalAddition($additionId, $validated);
+    }
+
+    public function destroyCapitalAddition(Request $request, int $additionId)
+    {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
+        // El motivo es obligatorio: la anulacion mueve caja y el historial tiene
+        // que decir por que, no solo que paso.
+        $validated = $request->validate([
+            'reason' => 'required|string|min:3|max:1000',
+        ]);
+        $validated['company_id'] = $companyId;
+
+        return $this->collectionCreditService->destroyCapitalAddition($additionId, $validated);
+    }
+
+    public function destroyInstallment(Request $request, int $id)
+    {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
+        $securityToken = [
+            'request_id' => $request->input('request_id'),
+            'code' => $request->input('code'),
+        ];
+        // `payment_id` acota la anulación a UN cobro. Sin él se deshace la cuota
+        // entera, que es lo que hacían las versiones anteriores del APK: se deja
+        // opcional para no romperlas mientras conviven en la calle.
+        return $this->collectionCreditService->deleteInstallment(
+            $id,
+            $securityToken,
+            $companyId,
+            $request->filled('payment_id') ? (int) $request->input('payment_id') : null
+        );
+    }
+
+    /**
+     * Liquida un credito abierto: cobra interes pendiente + capital restante,
+     * cierra la cuota actual y marca el credito como pagado.
+     */
+    public function settle(Request $request, int $creditId)
+    {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
+        $validated = $request->validate([
+            'payment_method' => 'nullable|string|max:50',
+            'notes' => 'nullable|string|max:500',
+            'payment_date' => 'nullable|date',
+            'timezone' => 'nullable|string|max:80',
+            'voucher' => 'nullable|file|mimes:jpg,jpeg,png,webp|max:4096',
+        ]);
+
+        if ($request->hasFile('voucher')) {
+            $validated['voucher_path'] = $request->file('voucher')->store('collection/payments/voucher', 'public');
+        }
+
+        return $this->collectionCreditService->settle($companyId, $creditId, $validated);
+    }
+
+    /**
+     * Agrega capital a un credito existente (modo monthly_interest_open).
+     * La cuota vigente no se toca; las siguientes usan el nuevo principal.
+     */
+    public function addCapital(Request $request, int $creditId)
+    {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
+        $validated = $request->validate([
+            'amount' => 'required|numeric|min:0.01',
+            'business_date' => 'nullable|date',
+            'payment_method' => 'nullable|string|max:50',
+            'reference_number' => 'nullable|string|max:120',
+            'bank_name' => 'nullable|string|max:150',
+            'notes' => 'nullable|string|max:500',
+            'voucher' => 'nullable|file|mimes:jpg,jpeg,png,webp|max:4096',
+        ]);
+
+        if ($request->hasFile('voucher')) {
+            $validated['voucher_photo'] = $request->file('voucher')->store('collection/capital_additions/voucher', 'public');
+        }
+
+        $validated['company_id'] = $companyId;
+
+        return $this->collectionCreditService->addCapital($creditId, $validated);
+    }
+
+    /**
+     * Historial de adiciones de capital sobre un credito.
+     */
+    public function listCapitalAdditions(Request $request, int $creditId)
+    {
+        $companyId = $this->resolveOwnCompanyId($request);
+        if (!is_int($companyId)) return $companyId;
+
+        return $this->collectionCreditService->listCapitalAdditions($creditId, $companyId);
+    }
+}

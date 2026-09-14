@@ -121,7 +121,11 @@ class FixBrokenCreditTotalsTest extends TestCase
         $credit->refresh();
         $sumPaid = (float) $credit->installments()->whereNull('deleted_at')->sum('paid_amount');
         $this->assertEqualsWithDelta(120.0, $sumPaid, 0.01, 'Cubre cuota 1, se detiene en cuota 2 por falta de stack');
-        $this->assertEqualsWithDelta(240.0, (float) $credit->remaining_amount, 0.01);
+        // El cliente puso 140 (120 + 20) sobre una deuda de 360, así que debe 220.
+        // Los 20 quedan en unapplied_amount porque no alcanzan a cubrir la cuota
+        // de 120, pero son plata recibida y bajan el saldo igual. Este assert
+        // esperaba 240, que era cobrarle de nuevo el abono que ya había hecho.
+        $this->assertEqualsWithDelta(220.0, (float) $credit->remaining_amount, 0.01);
     }
 
     public function test_promueve_a_liquidado_cuando_pagos_cubren_todo(): void

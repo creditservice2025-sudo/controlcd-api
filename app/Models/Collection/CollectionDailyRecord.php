@@ -1,0 +1,75 @@
+<?php
+
+namespace App\Models\Collection;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
+
+/**
+ * Registro diario independiente (ingreso | gasto | transferencia).
+ * No afecta wallet ni ledger: es una bitácora manual paralela al módulo.
+ */
+class CollectionDailyRecord extends Model
+{
+    use HasFactory, SoftDeletes;
+
+    protected $connection = 'collection_pgsql';
+    protected $table = 'collection_daily_records';
+
+    public const TYPE_INGRESO = 'ingreso';
+    public const TYPE_GASTO = 'gasto';
+    public const TYPE_TRANSFERENCIA = 'transferencia';
+
+    public const TYPES = [
+        self::TYPE_INGRESO,
+        self::TYPE_GASTO,
+        self::TYPE_TRANSFERENCIA,
+    ];
+
+    protected $fillable = [
+        'company_id',
+        'cashbox_id',
+        'cashbox_to_id',
+        'user_id',
+        'type',
+        'category',
+        'amount',
+        'currency',
+        'country_code',
+        'description',
+        'recorded_at',
+        'business_date',
+        'deleted_by',
+        'latitude',
+        'longitude',
+        'metadata',
+    ];
+
+    protected $casts = [
+        'amount' => 'decimal:2',
+        // UTC explicito: el servicio la escribe con ->utc(). Con el cast
+        // 'datetime', Eloquent la leia como hora de la app y le sumaba el
+        // offset otra vez al serializar (20:54 de Lima salia como 06:54Z).
+        'recorded_at' => \App\Casts\UtcDateTime::class,
+        'business_date' => 'date:Y-m-d',
+        'metadata' => 'json',
+        'latitude' => 'float',
+        'longitude' => 'float',
+    ];
+
+    public function user()
+    {
+        return $this->belongsTo(\App\Models\User::class, 'user_id');
+    }
+
+    public function cashbox()
+    {
+        return $this->belongsTo(CollectionCashbox::class, 'cashbox_id');
+    }
+
+    public function cashboxTo()
+    {
+        return $this->belongsTo(CollectionCashbox::class, 'cashbox_to_id');
+    }
+}

@@ -11,6 +11,7 @@ class Credit extends Model
 {
 
     use HasFactory, Notifiable, SoftDeletes;
+    protected $connection = 'mysql';
 
     protected static function boot()
     {

@@ -52,6 +52,10 @@ return Application::configure(basePath: dirname(__DIR__))
             // su ruta (hoy: domingo, según seller_configs.works_sundays). Expulsa
             // también sesiones abiertas de un día anterior. Corre después de auth:api.
             'seller.workingday'  => \App\Http\Middleware\CheckSellerWorkingDay::class,
+            // Permisos granulares del módulo Collection (Deuda & Abono), leídos
+            // de collection_user_profiles.permissions. Fail-safe: admin pasa,
+            // sin perfil permite, solo deniega a perfiles que carecen del permiso.
+            'collection.permission' => \App\Http\Middleware\EnsureCollectionPermission::class,
         ]);
 
         $middleware->validateCsrfTokens(except: [
@@ -137,4 +141,45 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->command('credits:notify-renewal-pending')->dailyAt('21:00');
         $schedule->command('credits:notify-new-credit-amount-limit')->dailyAt('21:05');
         $schedule->command('credits:notify-new-credit-limit')->dailyAt('21:10');
+
+        // Collection (Deuda & Abono): corte de caja automático. everyMinute para
+        // clavar las 23:59 en la zona horaria local de CADA empresa (los países
+        // difieren) y para recuperar días previos que se quedaron sin cierre.
+        $schedule->command('collection:check-pending-closures')
+            ->everyMinute()
+            ->withoutOverlapping()
+            ->emailOutputOnFailure('creditservice2025@gmail.com');
+
+        // Collection: reporte diario de cobranza por Telegram (quién debe pagar
+        // hoy y quién pagó). everyMinute por la misma razón que el corte: la
+        // hora de envío es LOCAL de cada empresa y los países difieren. El
+        // comando decide a quién le toca y es idempotente por empresa+día.
+        $schedule->command('collection:telegram-daily-report')
+            ->everyMinute()
+            ->withoutOverlapping()
+            ->emailOutputOnFailure('creditservice2025@gmail.com');
+
+        // Collection: devengo del interés mensual. La cuota del período nace el
+        // DÍA DEL CORTE, sobre el capital que hay ese día — antes se creaba al
+        // cobrar la anterior, y al que pagaba adelantado le quedaba el interés
+        // congelado sobre un capital que después bajaba.
+        //
+        // Cada hora alcanza: la cuota tiene granularidad de día, y el crédito
+        // que alguien abre o cobra la genera en el acto (ver el servicio). Esto
+        // es la red para los que nadie toca. Es idempotente: el servicio no crea
+        // nada si la fecha no llegó o si ya hay una cuota abierta.
+        $schedule->command('collection:accrue-interest')
+            ->hourly()
+            ->withoutOverlapping()
+            ->emailOutputOnFailure('creditservice2025@gmail.com');
+        // Cartera viva por ruta, para la pantalla "Resumen de cartera". Se
+        // precalcula acá porque dentro de una petición web no entra: recorre
+        // 1,5 M de cuotas y tarda ~35 s contra el límite de 30 s de PHP.
+        //
+        // Cada 30 minutos: la cartera se mueve de a poco y el cálculo es caro
+        // (~35 s por empresa). withoutOverlapping para que una corrida lenta no
+        // se pise con la siguiente.
+        $schedule->command('cartera:calcular')
+            ->everyThirtyMinutes()
+            ->withoutOverlapping();
     })->create();
