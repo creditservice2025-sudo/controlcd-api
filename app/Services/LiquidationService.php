@@ -1165,13 +1165,26 @@ class LiquidationService
             return;
         }
 
+        // Los CONTEOS se escriben por su cuenta, con query builder: no pasan
+        // por update($metrics), no despiertan observers y no mueven updated_at.
+        // Lo importante es lo que NO hacen: un conteo distinto ya no puede ser
+        // el disparador de una reescritura de montos. Antes sí lo era, y sobre
+        // una liquidación cuyos montos grabados no coinciden con sus propios
+        // movimientos —hay 121 así, $75,8M— eso le corría la caja sola.
+        // Medido: ensuciando SOLO el conteo de la liquidación 370, su
+        // real_to_deliver saltaba de -220,00 a 0,00.
+        if ($cambianConteos) {
+            DB::table('liquidations')
+                ->where('id', $liquidation->id)
+                ->update(array_intersect_key($metrics, array_flip($camposConteo)));
+            $liquidation->refresh();
+        }
+
+        // Los MONTOS solo se tocan cuando cambian ELLOS. Es exactamente el
+        // comportamiento de siempre para pagos, gastos e ingresos: no se
+        // agrega ni se quita ninguna escritura de caja.
         if ($cambianMontos) {
-            // Camino de siempre: la caja cambió de verdad, se persiste todo.
             $liquidation->update($metrics);
-        } else {
-            // Solo conteos. Se escriben esos campos y nada más: ni un monto se
-            // toca, aunque el recálculo diera valores distintos a los grabados.
-            $liquidation->update(array_intersect_key($metrics, array_flip($camposConteo)));
         }
         // Invalida el caché después de recalcular (formatea a Y-m-d)
         $dateStr = ($date instanceof \Carbon\Carbon) ? $date->toDateString() : (string) $date;
