@@ -2621,8 +2621,15 @@ class LiquidationService
         $endDate,
         $companyId = null,
         $sellerIds = null,
-        $cityId = null
+        $cityId = null,
+        bool $incluirVendedoresDeBaja = false
     ): array {
+        // $incluirVendedoresDeBaja: el RESUMEN agrega rutas activas y deja
+        // fuera a los vendedores dados de baja (default false, comportamiento
+        // de siempre). La ficha individual de un vendedor SÍ tiene que mostrar
+        // su historia aunque esté de baja: si no, sus 934 liquidaciones
+        // quedarían en 0/0. Es el mismo problema que calculateLiquidationMetrics
+        // ya resuelve con withTrashed() para gastos e ingresos.
         $cut = Carbon::parse($endDate)->format('Y-m-d');
         $this->assertDateFormat($cut);
 
@@ -2631,7 +2638,7 @@ class LiquidationService
             ->join('sellers as s', 's.id', '=', 'cl.seller_id')
             ->select('s.id as seller_id', DB::raw('COUNT(DISTINCT c.client_id) as n'))
             ->whereNull('cl.deleted_at')
-            ->whereNull('s.deleted_at')
+            ->when(!$incluirVendedoresDeBaja, fn ($q) => $q->whereNull('s.deleted_at'))
             ->where('cl.status', 'active')
             ->groupBy('s.id');
 
@@ -2645,7 +2652,7 @@ class LiquidationService
             ->join('sellers as s', 's.id', '=', 'cl.seller_id')
             ->select('s.id as seller_id', DB::raw('COUNT(*) as n'))
             ->whereNull('cl.deleted_at')
-            ->whereNull('s.deleted_at')
+            ->when(!$incluirVendedoresDeBaja, fn ($q) => $q->whereNull('s.deleted_at'))
             ->where('cl.status', 'active')
             ->groupBy('s.id');
 
@@ -2842,7 +2849,9 @@ class LiquidationService
     {
         $cut = $date instanceof Carbon ? $date->toDateString() : substr((string) $date, 0, 10);
 
-        $estado = $this->getClientCreditStateBySeller($cut, null, [$sellerId]);
+        // true: la ficha de un vendedor de baja tiene que seguir mostrando su
+        // historia. El resumen lo sigue excluyendo de los agregados.
+        $estado = $this->getClientCreditStateBySeller($cut, null, [$sellerId], null, true);
         $fila = $estado[$sellerId] ?? null;
 
         return [

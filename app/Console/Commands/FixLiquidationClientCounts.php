@@ -125,7 +125,14 @@ class FixLiquidationClientCounts extends Command
         foreach ($grupos as $porFecha) {
             foreach ($porFecha as $fecha => $filas) {
                 $sellerIds = $filas->pluck('seller_id')->unique()->values()->all();
-                $estado = $service->getClientCreditStateBySeller($fecha, null, $sellerIds);
+                // El `true` final incluye a los vendedores DADOS DE BAJA. Sin
+                // él, sus 934 liquidaciones se quedaban en 0/0: el método
+                // filtra los borrados porque el resumen agrega rutas activas,
+                // pero la ficha individual tiene que conservar la historia.
+                // Es la misma llamada que hace clientCreditCountsForDate: si
+                // difirieran, el comando repararía con un criterio y el
+                // sistema recalcularía con otro.
+                $estado = $service->getClientCreditStateBySeller($fecha, null, $sellerIds, null, true);
 
                 foreach ($filas as $f) {
                     $e = $estado[$f->seller_id] ?? null;

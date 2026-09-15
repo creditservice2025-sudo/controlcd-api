@@ -274,6 +274,58 @@ class LiquidationClientCountsTest extends TestCase
         $this->assertEqualsWithDelta(41, (float) $liq->total_expenses, 0.01);
     }
 
+    /**
+     * La ficha de un vendedor DADO DE BAJA tiene que seguir mostrando su
+     * historia.
+     *
+     * getClientCreditStateBySeller filtra los vendedores borrados —correcto
+     * para el resumen, que agrega rutas activas—, y al reusarlo sin más la
+     * liquidación individual pasaba a mostrar 0/0 en las 934 liquidaciones de
+     * los 58 vendedores de baja del sistema. Es el mismo problema que
+     * calculateLiquidationMetrics ya resuelve con withTrashed() para gastos e
+     * ingresos: "un vendedor dado de baja seguía resolviendo a null y sus
+     * gastos e ingresos históricos se calculaban en CERO".
+     */
+    public function test_un_vendedor_dado_de_baja_conserva_sus_conteos(): void
+    {
+        $seller = $this->makeSeller();
+        $this->makeCredit($seller, $this->makeClient($seller), '2026-09-01');
+        $this->makeClient($seller); // sin crédito
+
+        $antes = $this->counts($seller, '2026-09-12');
+        $this->assertSame(1, $antes['active_clients_with_credit_count']);
+        $this->assertSame(1, $antes['clients_without_credit_count']);
+
+        // Se da de baja al vendedor: su historia no cambia.
+        DB::table('sellers')->where('id', $seller->id)
+            ->update(['deleted_at' => '2026-09-13 10:00:00']);
+
+        $despues = $this->counts($seller, '2026-09-12');
+        $this->assertSame(1, $despues['active_clients_with_credit_count'], 'Un vendedor de baja no puede quedar en 0.');
+        $this->assertSame(1, $despues['clients_without_credit_count']);
+    }
+
+    /**
+     * La contracara: el RESUMEN sigue dejando fuera a los vendedores de baja.
+     * El parámetro nuevo es opt-in y no puede cambiar lo que ya mostraba.
+     */
+    public function test_el_resumen_sigue_excluyendo_a_los_vendedores_de_baja(): void
+    {
+        $seller = $this->makeSeller();
+        $this->makeCredit($seller, $this->makeClient($seller), '2026-09-01');
+
+        $svc = app(LiquidationService::class);
+        $this->assertArrayHasKey($seller->id, $svc->getClientCreditStateBySeller('2026-09-12', null, [$seller->id]));
+
+        DB::table('sellers')->where('id', $seller->id)
+            ->update(['deleted_at' => '2026-09-13 10:00:00']);
+
+        $this->assertArrayNotHasKey(
+            $seller->id,
+            $svc->getClientCreditStateBySeller('2026-09-12', null, [$seller->id]),
+            'El resumen agrega rutas activas: un vendedor de baja no debe aparecer.'
+        );
+    }
     public function test_la_liquidacion_graba_los_conteos_corregidos(): void
     {
         $seller = $this->makeSeller();

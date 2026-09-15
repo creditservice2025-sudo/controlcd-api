@@ -302,6 +302,45 @@ class FixLiquidationClientCountsTest extends TestCase
         $this->assertSame(1, (int) $despues['active_clients_with_credit_count']);
     }
 
+    /**
+     * El comando tiene que reparar con EL MISMO criterio con el que el sistema
+     * recalcula.
+     *
+     * Este caso se escapó en producción: clientCreditCountsForDate pasó a pedir
+     * los vendedores de baja, pero el comando seguía llamando al método sin ese
+     * parámetro. Resultado: para los 58 vendedores dados de baja el sistema
+     * calculaba un número y el comando "reparaba" a 0/0, y encima informaba
+     * "todos los conteos ya están correctos". Ningún test lo vio porque
+     * ninguno pasaba por el COMANDO con un vendedor de baja.
+     */
+    public function test_repara_igual_que_el_sistema_a_un_vendedor_de_baja(): void
+    {
+        $seller = $this->escenario();
+        $liq = $this->liquidacionCon($seller, '2026-09-12', 0, 0);
+
+        DB::table('sellers')->where('id', $seller->id)
+            ->update(['deleted_at' => '2026-09-13 10:00:00']);
+
+        $esperado = app(LiquidationService::class)
+            ->clientCreditCountsForDate($seller->id, '2026-09-12');
+
+        $this->artisan(self::COMANDO, ['--seller' => [$seller->id], '--apply' => true])
+            ->assertSuccessful();
+
+        $liq->refresh();
+
+        $this->assertSame(
+            $esperado['active_clients_with_credit_count'],
+            (int) $liq->active_clients_with_credit_count,
+            'El comando debe dejar el mismo número que calcula el sistema.'
+        );
+        $this->assertSame(
+            $esperado['clients_without_credit_count'],
+            (int) $liq->clients_without_credit_count
+        );
+        // Y no puede ser 0/0: el vendedor tenía cartera ese día.
+        $this->assertGreaterThan(0, (int) $liq->active_clients_with_credit_count);
+    }
     public function test_el_filtro_por_vendedor_acota_el_alcance(): void
     {
         $unoA = $this->escenario();
