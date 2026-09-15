@@ -1104,35 +1104,75 @@ class LiquidationService
         // Obtener métricas calculadas (con autocorrección de initial_cash si es necesario)
         $metrics = $this->calculateLiquidationMetrics($sellerId, $date, null, $timezone);
 
-        // Verificar si hay cambios reales comparando el modelo con las métricas
-        $hasChanges = !(
-            $liquidation->initial_cash == $metrics['initial_cash'] &&
-            $liquidation->total_expenses == $metrics['total_expenses'] &&
-            $liquidation->new_credits == $metrics['new_credits'] &&
-            $liquidation->total_income == $metrics['total_income'] &&
-            $liquidation->total_collected == $metrics['total_collected'] &&
-            $liquidation->real_to_deliver == $metrics['real_to_deliver'] &&
-            $liquidation->shortage == $metrics['shortage'] &&
-            $liquidation->surplus == $metrics['surplus'] &&
-            $liquidation->poliza == $metrics['poliza'] &&
-            $liquidation->renewal_disbursed_total == $metrics['renewal_disbursed_total'] &&
-            $liquidation->total_pending_absorbed == $metrics['total_pending_absorbed'] &&
-            $liquidation->clients_paid_count == $metrics['clients_paid_count'] &&
-            $liquidation->clients_without_credit_count == $metrics['clients_without_credit_count'] &&
-            $liquidation->new_clients_count == $metrics['new_clients_count'] &&
-            $liquidation->active_clients_with_credit_count == $metrics['active_clients_with_credit_count'] &&
-            $liquidation->clients_liquidated_count == $metrics['clients_liquidated_count'] &&
-            $liquidation->clients_full_payment_count == $metrics['clients_full_payment_count'] &&
-            $liquidation->clients_partial_payment_count == $metrics['clients_partial_payment_count'] &&
-            $liquidation->clients_liquidated_and_renewed_count == $metrics['clients_liquidated_and_renewed_count']
-        );
+        // ── Qué se escribe: montos y conteos van por caminos separados ──────
+        //
+        // Antes esto era un solo `if`: si CUALQUIER métrica cambiaba —incluido
+        // un simple conteo de clientes— se hacía update() con TODAS, montos
+        // incluidos. Eso convierte cualquier ajuste de conteo en un riesgo
+        // sobre la caja: medido sobre producción, 121 de las 915 liquidaciones
+        // no aprobadas tienen montos grabados que ya no coinciden con sus
+        // propios movimientos ($75,8M en diferencias absolutas). Tocarles el
+        // conteo las reescribía y les corría la plata.
+        //
+        // Ahora un cambio de conteo SOLO escribe los conteos. Los montos se
+        // reescriben únicamente cuando son ELLOS los que cambiaron, que es el
+        // comportamiento de siempre para pagos, gastos e ingresos.
+        $camposConteo = [
+            'clients_paid_count',
+            'clients_without_credit_count',
+            'new_clients_count',
+            'active_clients_with_credit_count',
+            'clients_liquidated_count',
+            'clients_full_payment_count',
+            'clients_partial_payment_count',
+            'clients_liquidated_and_renewed_count',
+        ];
 
-        if (!$hasChanges) {
+        $camposMonto = [
+            'initial_cash',
+            'total_expenses',
+            'new_credits',
+            'total_income',
+            'total_collected',
+            'real_to_deliver',
+            'shortage',
+            'surplus',
+            'poliza',
+            'renewal_disbursed_total',
+            'total_pending_absorbed',
+        ];
+
+        // La comparación floja (==) se conserva a propósito: los montos vienen
+        // como decimal de la BD y como float del cálculo, y === los daría
+        // siempre distintos.
+        $difiere = function (array $campos) use ($liquidation, $metrics): bool {
+            foreach ($campos as $campo) {
+                if (!array_key_exists($campo, $metrics)) {
+                    continue;
+                }
+                if ($liquidation->{$campo} != $metrics[$campo]) {
+                    return true;
+                }
+            }
+
+            return false;
+        };
+
+        $cambianMontos = $difiere($camposMonto);
+        $cambianConteos = $difiere($camposConteo);
+
+        if (!$cambianMontos && !$cambianConteos) {
             return;
         }
 
-        $liquidation->update($metrics);
-
+        if ($cambianMontos) {
+            // Camino de siempre: la caja cambió de verdad, se persiste todo.
+            $liquidation->update($metrics);
+        } else {
+            // Solo conteos. Se escriben esos campos y nada más: ni un monto se
+            // toca, aunque el recálculo diera valores distintos a los grabados.
+            $liquidation->update(array_intersect_key($metrics, array_flip($camposConteo)));
+        }
         // Invalida el caché después de recalcular (formatea a Y-m-d)
         $dateStr = ($date instanceof \Carbon\Carbon) ? $date->toDateString() : (string) $date;
         $this->metricsCacheService->invalidateLiquidationMetrics($sellerId, $dateStr);
@@ -1593,16 +1633,12 @@ class LiquidationService
             ->count('credits.client_id');
 
         // 2. Cuantos clientes sin créditos
-        $totals['clients_without_credit_count'] = (int) DB::table('clients')
-            ->where('seller_id', $sellerId)
-            ->whereNull('deleted_at')
-            ->whereNotExists(function ($query) {
-                $query->select(DB::raw(1))
-                    ->from('credits')
-                    ->whereColumn('credits.client_id', 'clients.id')
-                    ->whereNotIn('credits.status', ['Liquidado', 'Rechazado', 'Anulado', 'Finalizado']);
-            })
-            ->count();
+        // 2 y 4. Clientes con crédito vivo y sin crédito, al cierre de ESTE día.
+        // Los dos salen de una sola llamada: el método los calcula juntos.
+        // Ver clientCreditCountsForDate() para qué arregla y por qué comparte
+        // la fuente con el resumen general.
+        $clientCounts = $this->clientCreditCountsForDate($sellerId, $date);
+        $totals['clients_without_credit_count'] = $clientCounts['clients_without_credit_count'];
 
         // 3. Cantidad de clientes nuevos
         $totals['new_clients_count'] = (int) DB::table('clients')
@@ -1611,17 +1647,8 @@ class LiquidationService
             ->whereNull('deleted_at')
             ->count();
 
-        // 4. Cantidad de clientes activos con créditos (Vigentes/Atrasados/etc, NO Liquidados)
-        $totals['active_clients_with_credit_count'] = (int) DB::table('clients')
-            ->where('seller_id', $sellerId)
-            ->whereNull('deleted_at')
-            ->whereExists(function ($query) {
-                $query->select(DB::raw(1))
-                    ->from('credits')
-                    ->whereColumn('credits.client_id', 'clients.id')
-                    ->whereIn('credits.status', ['Vigente', 'Atrasado', 'Mora', 'Renovado']);
-            })
-            ->count();
+        // 4. (viene de la misma llamada del bloque 2)
+        $totals['active_clients_with_credit_count'] = $clientCounts['active_clients_with_credit_count'];
 
         // 5. Cantidad de clientes que liquidaron hoy (L)
         // Clientes que hicieron un pago hoy y su crédito quedó en estado 'Liquidado'
@@ -2775,6 +2802,53 @@ class LiquidationService
                 : [];
             return $a;
         })->all();
+    }
+
+    /**
+     * Los conteos de clientes de una liquidación: "con crédito" y "sin crédito"
+     * al cierre de ESE día.
+     *
+     * Delega en getClientCreditStateBySeller —el mismo método que alimenta el
+     * resumen general— en vez de escribir su propia consulta. No es prolijidad:
+     * las dos pantallas mostraban números distintos para el mismo vendedor y el
+     * mismo día (vendedor 21 al 2026-09-12: 121/83 en la liquidación contra
+     * 117/87 en el resumen) porque cada una tenía su versión. Compartiendo el
+     * método no pueden volver a divergir.
+     *
+     * Qué arregla respecto de la consulta anterior:
+     *
+     *  1. Los créditos BORRADOS ya no cuentan como cartera. Un crédito que se
+     *     cargó mal, se borró y se rehizo queda con deleted_at puesto pero
+     *     status 'Vigente' —al borrarlo nadie le cambia el estado—, y la
+     *     consulta vieja no filtraba deleted_at. Son 2.345 créditos así, que
+     *     mal-clasificaban a 888 clientes de 160 vendedores.
+     *
+     *  2. El número deja de ser una foto de HOY. La consulta vieja no recibía
+     *     la fecha, así que TODAS las filas históricas mostraban el estado
+     *     actual de la ruta: dos días distintos de la misma ruta daban siempre
+     *     el mismo par de números. Peor, el valor quedaba congelado con la foto
+     *     del último recálculo, y las liquidaciones de diciembre 2025 del
+     *     vendedor 21 decían 10 clientes con crédito cuando ese vendedor no
+     *     tuvo su primer crédito hasta el 2026-01-26. Ahora cada día
+     *     reconstruye su propio corte.
+     *
+     * Hereda las dos limitaciones documentadas del resumen: `clients.status` no
+     * tiene historial, y 'Cartera Irrecuperable' se evalúa con el estado de hoy
+     * porque la base no registra cuándo se marcó.
+     *
+     * @return array{active_clients_with_credit_count:int, clients_without_credit_count:int}
+     */
+    public function clientCreditCountsForDate($sellerId, $date): array
+    {
+        $cut = $date instanceof Carbon ? $date->toDateString() : substr((string) $date, 0, 10);
+
+        $estado = $this->getClientCreditStateBySeller($cut, null, [$sellerId]);
+        $fila = $estado[$sellerId] ?? null;
+
+        return [
+            'active_clients_with_credit_count' => (int) ($fila['clients_with_active_credit'] ?? 0),
+            'clients_without_credit_count' => (int) ($fila['clients_without_credit'] ?? 0),
+        ];
     }
 
     /**
