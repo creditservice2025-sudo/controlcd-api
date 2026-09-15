@@ -2343,12 +2343,32 @@ class LiquidationService
             'Clientes Nuevos',
             'Liquidó y Tomó Otro',
             'Crédito Adicional',
-            'Caja Inicial',
         ];
 
         $campos = [
             'total_collected', 'total_income', 'total_expenses', 'new_credits',
-            'new_clients', 'settled_clients', 'additional_clients', 'initial_cash',
+            'new_clients', 'settled_clients', 'additional_clients',
+        ];
+
+        // Estado de la cartera al CIERRE del rango. Va en el mismo lugar que en
+        // pantalla —entre "Crédito Adicional" y "Caja Inicial"— y solo en los
+        // niveles donde la pantalla lo muestra: getAccumulatedByCity y
+        // getAccumulatedBySellersInCity adjuntan estos conteos, el detalle por
+        // día no los tiene y saldrían siempre en cero.
+        if ($level !== 'day') {
+            $columnas[] = 'Con Crédito Activo';
+            $columnas[] = 'Sin Crédito';
+            $campos[] = 'clients_with_active_credit';
+            $campos[] = 'clients_without_credit';
+        }
+
+        $columnas[] = 'Caja Inicial';
+        $campos[] = 'initial_cash';
+
+        // Los conteos son enteros, no dinero: se redondean y no llevan símbolo.
+        $camposEnteros = [
+            'new_clients', 'settled_clients', 'additional_clients',
+            'clients_with_active_credit', 'clients_without_credit',
         ];
 
         $rows = [];
@@ -2360,7 +2380,7 @@ class LiquidationService
 
             foreach ($campos as $campo) {
                 $valor = $fila->{$campo} ?? 0;
-                $valores[$campo] = in_array($campo, ['new_clients', 'settled_clients', 'additional_clients'], true)
+                $valores[$campo] = in_array($campo, $camposEnteros, true)
                     ? (int) $valor
                     : (float) $valor;
             }
@@ -2386,6 +2406,15 @@ class LiquidationService
             }
         }
 
+        // +2 porque las dos primeras columnas (etiqueta y moneda) no salen de $campos.
+        $indicesMoneda = [];
+        foreach (['total_collected', 'total_income', 'total_expenses', 'new_credits', 'initial_cash'] as $campo) {
+            $pos = array_search($campo, $campos, true);
+            if ($pos !== false) {
+                $indicesMoneda[] = $pos + 2;
+            }
+        }
+
         ksort($totales);
         $filasTotales = [];
         foreach ($totales as $moneda => $suma) {
@@ -2401,8 +2430,11 @@ class LiquidationService
             'rows' => $rows,
             'totals' => $filasTotales,
             // Índices de las columnas que son dinero, para formatear sin
-            // adivinar por el contenido.
-            'money_columns' => [2, 3, 4, 5, 9],
+            // adivinar por el contenido. Se calculan desde $campos en vez de
+            // fijarlos a mano: al insertar el estado de cartera antes de "Caja
+            // Inicial" los índices se corren, y una lista fija formateaba como
+            // moneda la columna equivocada.
+            'money_columns' => $indicesMoneda,
             // Color por fila y su referencia. Vacíos fuera del nivel vendedor,
             // así el Excel y el PDF no necesitan preguntar de qué nivel vienen.
             'row_tones' => $tonos,
