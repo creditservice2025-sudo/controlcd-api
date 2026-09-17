@@ -615,8 +615,18 @@ class CollectionCreditService
         $totalPaid = (float) $installments->sum('paid_amount');
 
         $livePrincipal = max(0, round((float) $credit->amount - $principalPaid, 2));
+
+        // Interes EXIGIBLE: solo el de cuotas ya vencidas. El del periodo en curso
+        // no se devengo todavia y su monto puede cambiar si se mueve el capital
+        // antes del corte, asi que no forma parte de lo que hay que pagar hoy.
+        $hoyCredito = Carbon::now($tz)->toDateString();
         $pendingInterest = max(0, round(
-            (float) $installments->sum('interest_amount') - $interestPaid,
+            $installments
+                ->filter(fn ($i) => optional($i->due_date)->toDateString() <= $hoyCredito)
+                ->sum(fn ($i) => max(
+                    0,
+                    (float) $i->interest_amount - (float) ($i->interest_paid ?? 0)
+                )),
             2
         ));
 
@@ -1860,9 +1870,28 @@ class CollectionCreditService
     }
 
     /**
-     * Credito abierto: cuando todas las cuotas existentes estan pagadas, crea la siguiente
-     * cuota mensual de interes sobre el capital pendiente. Si el capital ya se pago totalmente,
-     * cierra el credito.
+     * Credito abierto: emite la cuota de interes de CADA periodo cumplido.
+     *
+     * EL INTERES SE DEVENGA PAGUE O NO PAGUE EL CLIENTE.
+     *
+     * Antes se exigia que no quedara ninguna cuota abierta para emitir la
+     * siguiente, y eso congelaba la deuda del moroso: un credito de abril impago
+     * mostraba UNA sola cuota de interes en septiembre, como si los cinco meses
+     * no hubieran corrido. El cliente que no paga terminaba debiendo menos que
+     * el que paga puntual, que si acumulaba una cuota por mes.
+     *
+     * Ahora el metodo avanza mientras el corte de la ultima cuota ya haya
+     * pasado, emitiendo una cuota por periodo hasta ponerse al dia. Cada cuota
+     * queda como cualquier otra: se puede marcar, cobrar y abonar.
+     *
+     * LA CUOTA SIGUE NACIENDO EL DIA DEL CORTE, NO ANTES. El periodo en curso no
+     * se emite hasta que vence: al que paga adelantado no puede aparecerle la
+     * cuota del mes que viene con el interes congelado sobre el capital de hoy
+     * (si despues abona capital, se le cobraria de mas).
+     *
+     * El interes de cada cuota se calcula sobre el capital VIVO al momento de
+     * emitirla: para las cuotas atrasadas que se emiten juntas eso es el capital
+     * de hoy, que es el que el cliente efectivamente debio todo ese tiempo.
      */
     public function generateNextOpenEndedInstallment(CollectionCredit $credit): void
     {
@@ -1871,9 +1900,74 @@ class CollectionCreditService
             return;
         }
 
-        // Solo se avanza de periodo cuando no queda ninguna cuota abierta. Mientras
-        // haya una cuota vigente (aunque el capital ya este saldado) el credito sigue
-        // vivo: el interes devengado de ese periodo aun debe cobrarse.
+        $tz = \App\Helpers\TimezoneHelper::timezoneForCountryCode($credit->country_code)
+            ?: 'America/Bogota';
+        $today = Carbon::now($tz)->toDateString();
+
+        // Tope defensivo: un credito viejisimo o con una fecha corrupta no debe
+        // generar cuotas sin fin. 240 = 20 años de cuotas mensuales.
+        for ($vuelta = 0; $vuelta < 240; $vuelta++) {
+            $lastInstallment = DB::connection(self::CONNECTION)
+                ->table('collection_installments')
+                ->where('company_id', $credit->company_id)
+                ->where('credit_id', $credit->id)
+                ->orderByDesc('installment_number')
+                ->first();
+
+            if (!$lastInstallment) {
+                break;
+            }
+
+            $nextDue = Carbon::parse($lastInstallment->due_date)->addMonth()->toDateString();
+
+            // UNA CUOTA NACE CUANDO VENCE, NO ANTES.
+            //
+            // Se compara el vencimiento de la cuota NUEVA contra hoy, no el de la
+            // anterior. Emitirla apenas vencia la anterior la creaba con un mes de
+            // anticipacion y su interes quedaba congelado sobre el capital de ese
+            // dia: si el cliente abonaba capital —o se le agregaba— durante el
+            // periodo, la cuota ya emitida no se recalcula (es la regla del
+            // modelo, ver recalculateFutureInstallments y addCapital) y se le
+            // cobraba un interes que no correspondia al saldo real.
+            //
+            // Mientras el periodo esta en curso no hay cuota: la pantalla muestra
+            // la proyeccion del proximo interes, que sigue el capital vivo.
+            if ($nextDue > $today) {
+                break;
+            }
+
+            // Capital pendiente = credit.amount - suma(principal_paid).
+            $remainingPrincipal = $this->openEndedRemainingPrincipal($credit);
+
+            if ($remainingPrincipal <= 0) {
+                break;
+            }
+
+            $interest = round(($remainingPrincipal * (float) $credit->interest_rate) / 100, 2);
+
+            DB::connection(self::CONNECTION)->table('collection_installments')->insert([
+                'company_id' => $credit->company_id,
+                'credit_id' => $credit->id,
+                'installment_number' => (int) $lastInstallment->installment_number + 1,
+                'due_date' => $nextDue,
+                'amount' => $interest,
+                'principal_amount' => 0,
+                'interest_amount' => $interest,
+                // El capital vivo del momento: es lo que explica este interés.
+                'principal_base' => $remainingPrincipal,
+                'paid_amount' => 0,
+                'principal_paid' => 0,
+                'interest_paid' => 0,
+                'status' => 'pendiente',
+                'recorded_at' => Carbon::now(),
+            ]);
+
+            $credit->increment('total_installments');
+        }
+
+        // Cierre del credito: sin capital vivo y sin ninguna cuota abierta no
+        // queda nada que cobrar. Va al final porque recien despues del bucle se
+        // sabe si quedo alguna cuota emitida sin pagar.
         $hasPending = DB::connection(self::CONNECTION)
             ->table('collection_installments')
             ->where('company_id', $credit->company_id)
@@ -1882,77 +1976,9 @@ class CollectionCreditService
             ->whereIn(DB::raw('LOWER(status)'), ['pendiente', 'parcial'])
             ->exists();
 
-        if ($hasPending) {
-            return;
-        }
-
-        // Capital pendiente = credit.amount - suma(principal_paid).
-        $remainingPrincipal = $this->openEndedRemainingPrincipal($credit);
-
-        if ($remainingPrincipal <= 0) {
-            // Sin capital y sin cuotas abiertas: no hay nada mas que cobrar.
+        if (!$hasPending && $this->openEndedRemainingPrincipal($credit) <= 0) {
             $credit->update(['status' => 'pagado']);
-            return;
         }
-
-        $lastInstallment = DB::connection(self::CONNECTION)
-            ->table('collection_installments')
-            ->where('company_id', $credit->company_id)
-            ->where('credit_id', $credit->id)
-            ->orderByDesc('installment_number')
-            ->first();
-
-        if (!$lastInstallment) {
-            return;
-        }
-
-        // LA CUOTA NACE EL DIA DEL CORTE, NO CUANDO SE COBRA LA ANTERIOR.
-        //
-        // El periodo de la proxima cuota arranca el dia en que vence la actual,
-        // asi que hasta esa fecha no hay nada devengado. Antes se creaba en el
-        // acto al terminar de cobrar, y eso traia dos problemas:
-        //
-        //  - al cliente que paga adelantado le aparecia la cuota del mes que
-        //    viene semanas antes de que empezara su periodo;
-        //  - peor, su interes quedaba congelado sobre el capital de ESE dia: si
-        //    despues abonaba capital, el mes siguiente seguia calculado sobre el
-        //    saldo viejo y se le cobraba de mas.
-        //
-        // Esperando al corte, el interes se calcula siempre sobre el capital que
-        // realmente hay al empezar el periodo. Mientras tanto el front ya muestra
-        // la proyeccion (ver showNextInterestHint), asi que el credito no queda
-        // mudo entre el pago y el corte.
-        $tz = \App\Helpers\TimezoneHelper::timezoneForCountryCode($credit->country_code)
-            ?: 'America/Bogota';
-        $today = Carbon::now($tz)->toDateString();
-        $cutoff = Carbon::parse($lastInstallment->due_date)->toDateString();
-
-        if ($cutoff > $today) {
-            return;
-        }
-
-        $nextNumber = (int) $lastInstallment->installment_number + 1;
-        $nextDue = Carbon::parse($lastInstallment->due_date)->addMonth()->toDateString();
-        $interest = round(($remainingPrincipal * (float) $credit->interest_rate) / 100, 2);
-
-        DB::connection(self::CONNECTION)->table('collection_installments')->insert([
-            'company_id' => $credit->company_id,
-            'credit_id' => $credit->id,
-            'installment_number' => $nextNumber,
-            'due_date' => $nextDue,
-            'amount' => $interest,
-            'principal_amount' => 0,
-            'interest_amount' => $interest,
-            // El capital vivo del momento: es lo que explica este interés.
-            'principal_base' => $remainingPrincipal,
-            'paid_amount' => 0,
-            'principal_paid' => 0,
-            'interest_paid' => 0,
-            'status' => 'pendiente',
-            'recorded_at' => Carbon::now(),
-        ]);
-
-        $credit->increment('total_installments');
     }
 
     /**

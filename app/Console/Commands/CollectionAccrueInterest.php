@@ -22,9 +22,13 @@ use Illuminate\Support\Facades\DB;
  * de corte, y el interes sale del capital que hay ESE dia. Este comando es quien
  * lo dispara para los creditos que nadie abre ni cobra.
  *
+ * El interes se devenga PAGUE O NO PAGUE el cliente: el servicio emite una cuota
+ * por cada periodo cumplido hasta ponerse al dia, aunque las anteriores sigan
+ * impagas. Un credito atrasado varios meses genera varias cuotas en una corrida.
+ *
  * No duplica nada: el metodo del servicio se planta solo si el credito no es de
- * interes mensual abierto, si queda alguna cuota abierta, si el capital ya esta
- * saldado o si la fecha de corte todavia no llego. Correrlo de mas es inocuo.
+ * interes mensual abierto, si el capital ya esta saldado o si la fecha de corte
+ * todavia no llego. Correrlo de mas es inocuo.
  *
  * Uso:
  *   php artisan collection:accrue-interest --dry-run
@@ -54,16 +58,11 @@ class CollectionAccrueInterest extends Command
         $candidatos = CollectionCredit::query()
             ->where('status', 'active')
             ->when($creditIds, fn ($q) => $q->whereIn('id', $creditIds))
-            // Sin cuotas abiertas: mientras haya uno pendiente el periodo no avanza.
-            ->whereNotExists(function ($q) {
-                $q->select(DB::raw(1))
-                  ->from('collection_installments as i')
-                  ->whereColumn('i.credit_id', 'collection_credits.id')
-                  ->whereColumn('i.company_id', 'collection_credits.company_id')
-                  ->whereNull('i.deleted_at')
-                  ->whereIn(DB::raw('LOWER(i.status)'), ['pendiente', 'parcial']);
-            })
-            // Y con la fecha de corte ya alcanzada (con el margen de zona horaria).
+            // Ya NO se excluyen los creditos con cuotas abiertas: el interes se
+            // devenga pague o no pague el cliente, y el moroso es justamente el
+            // que necesita que se le emitan los periodos cumplidos. Filtrarlos
+            // era lo que dejaba su deuda congelada en una sola cuota.
+            // Con la fecha de corte ya alcanzada (con el margen de zona horaria).
             ->whereExists(function ($q) use ($limite) {
                 $q->select(DB::raw(1))
                   ->from('collection_installments as i')
@@ -100,16 +99,23 @@ class CollectionAccrueInterest extends Command
             $creditService->generateNextOpenEndedInstallment($credit);
 
             $despues = $this->ultimaCuota($credit);
-            $creo = $despues && (!$antes || $despues->installment_number > $antes->installment_number);
+            // Un credito atrasado emite VARIAS cuotas en una sola pasada: se
+            // cuentan todas, no la ultima, o el resumen diria "1" tras generar 5.
+            $nuevas = $despues
+                ? (int) $despues->installment_number - (int) ($antes->installment_number ?? 0)
+                : 0;
 
-            if ($creo) {
-                $generadas++;
+            if ($nuevas > 0) {
+                $generadas += $nuevas;
                 $filas[] = [
                     $credit->id,
-                    '#' . $despues->installment_number,
+                    $nuevas > 1
+                        ? '#' . ((int) $antes->installment_number + 1) . '-#' . $despues->installment_number
+                        : '#' . $despues->installment_number,
                     (string) $despues->due_date,
                     number_format((float) $despues->interest_amount, 2)
-                        . ' sobre capital ' . number_format((float) $despues->principal_base, 2),
+                        . ' sobre capital ' . number_format((float) $despues->principal_base, 2)
+                        . ($nuevas > 1 ? " · {$nuevas} periodos" : ''),
                 ];
             }
         }

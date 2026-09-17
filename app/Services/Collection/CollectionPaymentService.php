@@ -135,14 +135,11 @@ class CollectionPaymentService
                         // imputa ese capital. Su estado no cambia —el interes ya esta
                         // pagado y `principal_amount` es 0—, solo crece `principal_paid`,
                         // que es de donde sale el capital vivo (openEndedRemainingPrincipal).
-                        $esUltimaGenerada = !CollectionInstallment::query()
-                            ->where('company_id', $companyId)
-                            ->where('credit_id', $creditId)
-                            ->where('installment_number', '>', $instNum)
-                            ->exists();
-
+                        // Ya NO se exige que sea la ultima cuota generada: desde que
+                        // el sistema emite una cuota por cada mes vencido, el credito
+                        // atrasado tiene varias abiertas y el capital se puede imputar
+                        // contra cualquiera. El capital vive en el CREDITO.
                         $puedeRecibirCapital = $isOpenEnded
-                            && $esUltimaGenerada
                             && $allocation !== 'interest'
                             && (float) ($remainingPrincipal ?? 0) > 0;
 
@@ -156,18 +153,15 @@ class CollectionPaymentService
                     $pendingPrincipal = (float) $installment->principal_amount - (float) ($installment->principal_paid ?? 0);
                     $pendingTotal = $pendingInterest + $pendingPrincipal;
 
-                    // If it's the last available installment of an open-ended credit,
-                    // we allow "overpaying" it to reduce principal directly.
-                    $isLastGenerated = !CollectionInstallment::query()
-                        ->where('company_id', $companyId)
-                        ->where('credit_id', $creditId)
-                        ->where('installment_number', '>', $instNum)
-                        ->exists();
-
                     // Cuanto puede irse a capital en esta cuota. En credito abierto el
-                    // capital vive en el credito, no en la cuota: el tope es el capital
+                    // capital vive en el CREDITO, no en la cuota: el tope es el capital
                     // pendiente, no `principal_amount` (que es 0 en cuotas de interes).
-                    $principalRoom = ($isOpenEnded && $isLastGenerated)
+                    //
+                    // Antes esto exigia ademas que fuera la ULTIMA cuota generada, y eso
+                    // se rompio al emitir una cuota por cada mes vencido: abonando
+                    // capital sobre una cuota vieja el tope daba 0, el abono se recortaba
+                    // a 0 y se perdia entero —entraba a caja sin bajar la deuda—.
+                    $principalRoom = $isOpenEnded
                         ? max(0.0, (float) ($remainingPrincipal ?? 0))
                         : $pendingPrincipal;
 
@@ -183,7 +177,7 @@ class CollectionPaymentService
                         $payPrincipal = min($amountToDistribute, $principalRoom);
                         $appliedToThisInstallment = $payPrincipal;
                     } else {
-                        $appliedToThisInstallment = ($isOpenEnded && $isLastGenerated)
+                        $appliedToThisInstallment = $isOpenEnded
                             ? min($amountToDistribute, $pendingInterest + $principalRoom)
                             : min($amountToDistribute, $pendingTotal);
 
@@ -289,12 +283,21 @@ class CollectionPaymentService
                 }
             }
 
-            // Sync with Centralized Wallet. Si el front no envio amount_total se usa
-            // lo realmente aplicado, para que el cobro nunca deje de entrar a caja.
-            $totalAmountCollected = (float) ($payload['amount_total'] ?? 0);
-            if ($totalAmountCollected <= 0) {
-                $totalAmountCollected = round($totalApplied, 2);
+            // NADA APLICADO = NO HUBO COBRO.
+            //
+            // Antes se respondia "Pagos registrados con exito" con cero pagos y, peor,
+            // se registraba igual el ingreso en caja. Asi se perdio un abono a capital
+            // de 100: no toco ninguna cuota y quedo solo como movimiento de caja.
+            if (round($totalApplied, 2) <= 0) {
+                return $this->errorResponse(
+                    'El abono no se pudo aplicar a ninguna cuota. Revisá el destino elegido y el monto.',
+                    422
+                );
             }
+
+            // A caja entra lo que REALMENTE se imputo, nunca lo que dijo el front:
+            // la caja y la deuda tienen que moverse por el mismo numero.
+            $totalAmountCollected = round($totalApplied, 2);
 
             if ($credit && $principalWasReduced) {
                 app(\App\Services\Collection\CollectionCreditService::class)->recalculateFutureInstallments($credit);
