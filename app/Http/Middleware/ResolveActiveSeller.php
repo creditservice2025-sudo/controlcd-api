@@ -33,7 +33,22 @@ class ResolveActiveSeller
         $user = $request->user();
         if (!$user) return $next($request);
 
-        if ((int) ($user->role_id ?? 0) !== 6) return $next($request);
+        // Roles con VENDEDORES ASIGNADOS en `user_routes`: supervisor (6),
+        // secretaria y cualquier rol de oficina al que se le asignen rutas.
+        //
+        // Antes esto cortaba en el rol 6 y el header se ignoraba para el resto,
+        // así que un rol de oficina no tenía forma de decir sobre qué vendedor
+        // está operando: ninguna pantalla podía resolver su `seller_id`.
+        //
+        // Super-Admin (1), Admin (2) y Cobrador (5) siguen ignorando el header:
+        // su alcance ya se resuelve por empresa o por su propio seller.
+        // Solo el Supervisor (regla de siempre) y los roles parametrizables
+        // (Secretaria y roles nuevos). Todos los demás ignoran el header, igual
+        // que antes.
+        $rolUsuario = (int) ($user->role_id ?? 0);
+        if (!($rolUsuario === 6 || \App\Support\Roles::esParametrizable($rolUsuario))) {
+            return $next($request);
+        }
 
         $sellerId = $request->header('X-Active-Seller-Id');
         if (!$sellerId || !is_numeric($sellerId)) return $next($request);
@@ -48,7 +63,10 @@ class ResolveActiveSeller
         if (!$allowed) {
             return response()->json([
                 'success' => false,
-                'message' => 'La ruta seleccionada no está asignada a este supervisor.',
+                // El supervisor conserva su mensaje de siempre.
+                'message' => (int) $user->role_id === 6
+                    ? 'La ruta seleccionada no está asignada a este supervisor.'
+                    : 'La ruta seleccionada no está asignada a este usuario.',
             ], 403);
         }
 
@@ -60,14 +78,22 @@ class ResolveActiveSeller
         // a la ruta activa, así los demás vendedores del supervisor siguen
         // operando. FAIL-OPEN: el lock es operativo, no crítico — si falla, no
         // bloqueamos (peor caso: el cobrador supervisado opera unos segundos).
-        try {
-            app(SupervisorLockService::class)->syncActiveRoute((int) $user->id, $sellerId);
-        } catch (\Throwable $e) {
-            Log::warning('[supervisor.lock] no se pudo sincronizar lock de ruta activa', [
-                'supervisor_id' => $user->id,
-                'seller_id'     => $sellerId,
-                'error'         => $e->getMessage(),
-            ]);
+        //
+        // EL LOCK ES EXCLUSIVO DEL SUPERVISOR (rol 6). Bloquea al cobrador
+        // mientras su ruta está siendo supervisada, y eso tiene sentido entre
+        // supervisor y cobrador: no pueden operar la misma caja a la vez. Una
+        // secretaria que consulta la misma ruta desde la oficina NO debe dejar
+        // al cobrador sin poder trabajar, así que no lo dispara.
+        if ((int) $user->role_id === 6) {
+            try {
+                app(SupervisorLockService::class)->syncActiveRoute((int) $user->id, $sellerId);
+            } catch (\Throwable $e) {
+                Log::warning('[supervisor.lock] no se pudo sincronizar lock de ruta activa', [
+                    'supervisor_id' => $user->id,
+                    'seller_id'     => $sellerId,
+                    'error'         => $e->getMessage(),
+                ]);
+            }
         }
 
         return $next($request);

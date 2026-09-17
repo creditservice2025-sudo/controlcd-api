@@ -333,8 +333,45 @@ public function me()
                         });
                     }
                     break;
-                default: // Otros roles: no ven nada
-                    $usersQuery->whereRaw('0 = 1');
+                default:
+                    // Roles fijos (3 a 10): no ven nada, regla original.
+                    if (!\App\Support\Roles::esParametrizable($roleId)) {
+                        $usersQuery->whereRaw('0 = 1');
+                        break;
+                    }
+
+                    /*
+                     * Secretaria (11) y roles nuevos: los usuarios de la empresa
+                     * a la que están vinculados.
+                     *
+                     * La Secretaria NO tiene empresa propia: cuelga de su
+                     * administrador por `parent_id` (su `company_id` es null).
+                     * Por eso caía en el `default` y no veía ningún usuario.
+                     *
+                     * Se resuelve la empresa por el administrador padre y se
+                     * aplica el mismo criterio que el rol 2: los usuarios
+                     * asignados a los vendedores de esa empresa, más los que
+                     * creó ese administrador.
+                     */
+                    $adminId = $user->parent_id;
+                    $empresa = $company;
+                    if (!$empresa && $adminId) {
+                        $empresa = optional(User::find($adminId))->company;
+                    }
+
+                    if ($empresa) {
+                        $sellerIds = Seller::where('company_id', $empresa->id)->pluck('id')->toArray();
+                        $userIds = UserRoute::whereIn('seller_id', $sellerIds)->pluck('user_id')->toArray();
+
+                        $usersQuery->where(function ($q) use ($userIds, $adminId) {
+                            $q->whereIn('users.id', $userIds);
+                            if ($adminId) {
+                                $q->orWhere('users.parent_id', $adminId);
+                            }
+                        });
+                    } else {
+                        $usersQuery->whereRaw('0 = 1');
+                    }
                     break;
             }
     

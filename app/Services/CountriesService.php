@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Traits\ApiResponse;
 use App\Models\Country;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 
@@ -44,17 +45,44 @@ class CountriesService
     }
 
 
-    public function getCountries($withSellerCities = false)
+    /**
+     * Países activos. Con `$withSellerCities` solo los que tienen RUTAS
+     * HABILITADAS PARA LA EMPRESA de quien pregunta.
+     *
+     * Antes el filtro era "países con alguna ciudad con algún vendedor", sin
+     * mirar de qué empresa era ese vendedor: al dar de alta un usuario, el
+     * selector "País de la ruta" ofrecía países donde la empresa no tiene una
+     * sola ruta. Medido: seis países para todos, cuando una de las empresas no
+     * tenía ningún vendedor. Quien elegía uno de esos países se encontraba
+     * después con la lista de ciudades vacía y sin entender por qué.
+     *
+     * El Super-Admin sin empresa en contexto sigue viendo todos: es el único
+     * que trabaja sobre varias empresas a la vez. Si está impersonando una
+     * empresa, se filtra por esa (`$companyId`), igual que en el resto de las
+     * pantallas.
+     */
+    public function getCountries($withSellerCities = false, $companyId = null)
     {
         try {
             $withSellerCities = filter_var($withSellerCities, FILTER_VALIDATE_BOOLEAN);
 
-            /*  \Log::info('Fetching countries with cities.', ['withSellerCities' => $withSellerCities]); */
             if ($withSellerCities) {
-                /*  \Log::info('Fetching countries with cities that have sellers.'); */
+                $user = Auth::user();
+
+                // Empresa a la que pertenecen las rutas que se pueden elegir:
+                // la impersonada si viene, si no la del propio usuario. Para el
+                // Super-Admin sin contexto de empresa queda null = sin filtro.
+                $empresaId = $companyId ?: (($user && $user->role_id !== 1 && $user->company)
+                    ? $user->company->id
+                    : null);
+
                 $countries = Country::where('status', 'ACTIVE')
-                    ->whereHas('cities', function ($cityQuery) {
-                        $cityQuery->whereHas('sellers');
+                    ->whereHas('cities', function ($cityQuery) use ($empresaId) {
+                        $cityQuery->whereHas('sellers', function ($sellerQuery) use ($empresaId) {
+                            if ($empresaId) {
+                                $sellerQuery->where('company_id', $empresaId);
+                            }
+                        });
                     })
                     ->select('id', 'name', 'phone_code')
                     ->get();

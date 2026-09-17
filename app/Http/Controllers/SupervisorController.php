@@ -27,7 +27,23 @@ class SupervisorController extends Controller
     public function activeSellers()
     {
         $user = Auth::user();
-        if (!$user || (int) $user->role_id !== 6) {
+        if (!$user) {
+            return $this->errorResponse('No autenticado.', 401);
+        }
+
+        // Cualquier rol con VENDEDORES ASIGNADOS puede pedir su lista, no solo
+        // el Supervisor: una secretaria a la que se le asignan rutas al crearla
+        // necesita saber sobre qué vendedor trabaja para dar de alta clientes y
+        // créditos. Antes esto devolvía 403 "Solo disponible para Supervisores"
+        // y el rol quedaba sin forma de resolver su vendedor, aunque lo tuviera
+        // asignado en `user_routes`.
+        //
+        // Super-Admin (1), Admin (2) y Cobrador (5) quedan fuera: su alcance ya
+        // se resuelve por empresa o por su propio seller, y esta pantalla no es
+        // para ellos.
+        // Solo el Supervisor y los roles parametrizables (Secretaria y roles
+        // nuevos). Los demás roles reciben la respuesta de siempre.
+        if (!((int) $user->role_id === 6 || \App\Support\Roles::esParametrizable($user->role_id))) {
             return $this->errorResponse('Solo disponible para Supervisores.', 403);
         }
 

@@ -838,11 +838,25 @@ class LiquidationController extends Controller
             return $seller && $seller->id == $sellerId;
         }
 
-        // Supervisores (Role 6) acceden a los sellers asignados via
-        // user_routes. El frontend ya filtra al seller activo via header
-        // X-Active-Seller-Id; acá validamos que efectivamente ese seller
-        // esté entre los supervisados para evitar accesos cruzados.
-        if ($user->role_id == 6) {
+        // Roles con VENDEDORES ASIGNADOS via user_routes: supervisor (6),
+        // secretaria y cualquier rol de oficina al que se le asignen rutas al
+        // crearlo. Se valida que ese seller esté entre los suyos, para evitar
+        // accesos cruzados. El frontend ya filtra al seller activo via header
+        // X-Active-Seller-Id.
+        //
+        // Antes esta rama era SOLO del rol 6 y todo lo demás caía en el
+        // `return false` de abajo: una secretaria con su vendedor asignado
+        // recibía 403 en las seis pantallas que usan este control (movimientos
+        // del día, datos de liquidación, historial, detalle del vendedor…).
+        // En pantalla se veía como "Ocurrió un error al obtener los movimientos
+        // diarios", sin decir que era un problema de permisos.
+        //
+        // Mismo criterio que App\Support\Tenant, para que las dos formas de
+        // controlar alcance respondan igual ante el mismo usuario.
+        //
+        // Solo el Supervisor (regla de siempre) y los roles parametrizables; los
+        // demás roles fijos conservan el `false` original.
+        if ((int) $user->role_id === 6 || \App\Support\Roles::esParametrizable($user->role_id)) {
             return \App\Models\UserRoute::where('user_id', $user->id)
                 ->where('seller_id', $sellerId)
                 ->exists();

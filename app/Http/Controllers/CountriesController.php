@@ -20,7 +20,10 @@ class CountriesController extends Controller
     {
         try {
             $withSellerCities = $request->query('withSellerCities', false);
-            return $this->countriesService->getCountries($withSellerCities);
+            // Empresa impersonada por el Super-Admin, si viene. El servicio cae
+            // a la empresa del propio usuario cuando no llega.
+            $companyId = $request->query('company_id');
+            return $this->countriesService->getCountries($withSellerCities, $companyId);
         } catch (\Exception $e) {
             return $this->errorResponse($e->getMessage(), 500);
         }
