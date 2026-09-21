@@ -11,6 +11,7 @@ use Maatwebsite\Excel\Facades\Excel;
 use App\Exports\AccumulatedByCityExport;
 use App\Exports\SellersSummaryByCityExport;
 use App\Http\Requests\Report\ExportDateRangeRequest;
+use App\Support\Tenant;
 use Illuminate\Support\Facades\Auth;
 
 class ReportExportController extends Controller
@@ -60,7 +61,15 @@ class ReportExportController extends Controller
         try {
             $fileName = 'Reporte_Acumulado_Ciudad_' . $safeStartDate . '_' . $safeEndDate . '.xlsx';
             return \Maatwebsite\Excel\Facades\Excel::download(
-                new \App\Exports\AccumulatedByCityExport($startDate, $endDate, $this->liquidationService, $companyId),
+                // Mismo recorte que la pantalla: quien solo ve sus vendedores no
+                // puede bajarse la empresa entera desde el botón de descarga.
+                new \App\Exports\AccumulatedByCityExport(
+                    $startDate,
+                    $endDate,
+                    $this->liquidationService,
+                    $companyId,
+                    Tenant::restrictedSellerIds()
+                ),
                 $fileName
             );
         } catch (\Exception $e) {

@@ -29,6 +29,7 @@ use App\Http\Requests\Liquidation\UpdateLiquidationRequest;
 use App\Http\Requests\Liquidation\ReopenRouteRequest;
 use App\Http\Requests\Liquidation\LiquidationHistoryRequest;
 use App\Exports\LiquidationExport;
+use App\Support\Tenant;
 
 class LiquidationController extends Controller
 {
@@ -1262,6 +1263,14 @@ class LiquidationController extends Controller
             ], 422);
         }
 
+        // FUERA del try: Tenant aborta con HttpException, que es una \Exception
+        // y el catch de abajo la convertiría en un 500 "Error al obtener el
+        // detalle" en vez del 403 que corresponde.
+        if ($request->input('seller_id')) {
+            Tenant::assertSellerInScope((int) $request->input('seller_id'));
+        }
+        $sellerIdsPermitidos = Tenant::restrictedSellerIds();
+
         try {
             $user = Auth::user();
             $companyId = $request->input('company_id');
@@ -1277,7 +1286,7 @@ class LiquidationController extends Controller
                 $request->input('end_date'),
                 $request->input('bucket'),
                 $companyId,
-                null,
+                $sellerIdsPermitidos,
                 $request->input('city_id'),
                 $request->input('seller_id'),
                 $request->input('day')
@@ -1325,6 +1334,14 @@ class LiquidationController extends Controller
             // los 30, dejando la pantalla colgada sin llegar nunca a cachear.
             $data = $this->liquidationService->getPortfolioByCityCached($companyId, null);
 
+            // El recorte por vendedor se hace SOBRE lo cacheado, no pidiendo
+            // otra clave de cache: la única que alguien escribe es la de la
+            // empresa entera. Ver filterPortfolioBySellers().
+            $sellerIds = Tenant::restrictedSellerIds();
+            if ($sellerIds !== null) {
+                $data = $this->liquidationService->filterPortfolioBySellers($data, $sellerIds);
+            }
+
             return response()->json([
                 'success' => true,
                 'message' => 'Cartera obtenida exitosamente',
@@ -1365,6 +1382,17 @@ class LiquidationController extends Controller
             ], 422);
         }
 
+        // FUERA del try, por lo mismo que en getCreditClassificationDetail: un
+        // 403 de Tenant atrapado por el catch saldría como 500.
+        $sellerId = $request->input('seller_id');
+        if ($sellerId) {
+            // El id llega del front: sin validarlo, cualquiera con acceso al
+            // resumen podía pedir el detalle de un vendedor ajeno cambiándolo
+            // en la URL.
+            Tenant::assertSellerInScope((int) $sellerId);
+        }
+        $sellerIdsPermitidos = $sellerId ? [(int) $sellerId] : Tenant::restrictedSellerIds();
+
         try {
             $user = Auth::user();
             $companyId = $request->input('company_id');
@@ -1376,16 +1404,14 @@ class LiquidationController extends Controller
             }
 
             // El servicio recibe una LISTA de vendedores; desde la tabla de
-            // vendedores llega uno solo. Sin seller_id queda en null y el
-            // detalle se resuelve por ruta, como antes.
-            $sellerId = $request->input('seller_id');
-            $sellerIds = $sellerId ? [(int) $sellerId] : null;
-
+            // vendedores llega uno solo. Sin seller_id se recorta a los
+            // asignados, y si el usuario no está acotado queda en null: el
+            // detalle sale por ruta, como antes.
             $clientes = $this->liquidationService->getClientCreditStateDetail(
                 $request->input('end_date'),
                 $request->input('bucket'),
                 $companyId,
-                $sellerIds,
+                $sellerIdsPermitidos,
                 $request->input('city_id')
             );
 
@@ -1430,6 +1456,15 @@ class LiquidationController extends Controller
             ], 422);
         }
 
+        // La descarga sale de los mismos datos que la pantalla, así que lleva el
+        // mismo recorte: sin esto, el Excel del supervisor traía la empresa
+        // entera aunque en pantalla viera una sola ruta. Va FUERA del try: el
+        // 403 de Tenant es una \Exception y el catch lo volvería un 500.
+        if ($request->input('seller_id')) {
+            Tenant::assertSellerInScope((int) $request->input('seller_id'));
+        }
+        $sellerIdsPermitidos = Tenant::restrictedSellerIds();
+
         try {
             $user = Auth::user();
             $companyId = $request->input('company_id');
@@ -1443,7 +1478,7 @@ class LiquidationController extends Controller
                 $request->input('start_date'),
                 $request->input('end_date'),
                 $companyId,
-                null,
+                $sellerIdsPermitidos,
                 $request->input('city_id'),
                 $request->input('seller_id')
             );
@@ -1536,7 +1571,10 @@ class LiquidationController extends Controller
             $endDate = $request->input('end_date');
             $user = Auth::user();
             $companyId = $request->input('company_id');
-            $sellerIds = null;
+            // Quien tiene vendedores asignados (supervisor, secretaria, cobrador)
+            // ve el resumen SOLO de los suyos; para el resto queda en null y el
+            // reporte sale completo, como siempre.
+            $sellerIds = Tenant::restrictedSellerIds();
 
             // Aislamiento: Role 2 solo ve su empresa
             if ($user->role_id == 2) {
@@ -1581,7 +1619,8 @@ class LiquidationController extends Controller
             $endDate = $request->input('end_date');
             $user = Auth::user();
             $companyId = $request->input('company_id');
-            $sellerIds = null;
+            // Mismo recorte por vendedor asignado que el resumen por ruta.
+            $sellerIds = Tenant::restrictedSellerIds();
 
             // Aislamiento: Role 2 solo ve su empresa y sus vinculados
             if ($user->role_id == 2) {
@@ -1629,7 +1668,10 @@ class LiquidationController extends Controller
             $endDate = $request->input('end_date');
             $user = Auth::user();
             $companyId = $request->input('company_id');
-            $sellerIds = null;
+            // Sin esto, al abrir una ruta se veía la tabla con TODOS sus
+            // vendedores, no solo el propio: el recorte del nivel de arriba no
+            // se heredaba a este.
+            $sellerIds = Tenant::restrictedSellerIds();
 
             // Aislamiento: Role 2 solo ve su empresa
             if ($user->role_id == 2) {

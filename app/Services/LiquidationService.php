@@ -1898,19 +1898,29 @@ class LiquidationService
         return $lastLiquidation ? $this->formatLiquidationDetails($lastLiquidation) : null;
     }
 
-    public function getReportByCity($startDate, $endDate, $companyId = null)
+    /**
+     * @param array|null $sellerIds Recorta el reporte a estos vendedores. Lo usa
+     *        quien solo puede ver los suyos (supervisor, secretaria, cobrador);
+     *        null deja el reporte completo, como siempre.
+     */
+    public function getReportByCity($startDate, $endDate, $companyId = null, $sellerIds = null)
     {
         $timezone = 'America/Lima';
         $startUTC = Carbon::parse($startDate, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC = Carbon::parse($endDate, $timezone)->endOfDay()->setTimezone('UTC');
 
         $citiesQuery = DB::table('cities');
-        if ($companyId !== null) {
-            $citiesQuery->whereExists(function ($query) use ($companyId) {
+        if ($companyId !== null || $sellerIds !== null) {
+            $citiesQuery->whereExists(function ($query) use ($companyId, $sellerIds) {
                 $query->select(DB::raw(1))
                     ->from('sellers')
-                    ->whereColumn('sellers.city_id', 'cities.id')
-                    ->where('sellers.company_id', $companyId);
+                    ->whereColumn('sellers.city_id', 'cities.id');
+                if ($companyId !== null) {
+                    $query->where('sellers.company_id', $companyId);
+                }
+                if ($sellerIds !== null) {
+                    $query->whereIn('sellers.id', $sellerIds);
+                }
             });
         }
         $cities = $citiesQuery->get();
@@ -1922,28 +1932,37 @@ class LiquidationService
             Carbon::parse($startDate)->format('Y-m-d'),
             Carbon::parse($endDate)->format('Y-m-d'),
             'city',
-            $companyId
+            $companyId,
+            $sellerIds
         );
         $currencies = DB::table('cities')
             ->leftJoin('countries', 'countries.id', '=', 'cities.country_id')
             ->pluck('countries.currency', 'cities.id');
 
+        // Mismo recorte para las tres consultas de la ruta: si una filtrara por
+        // vendedor y otra no, la caja anterior o el recaudo saldrían de una
+        // población distinta a la del resto de la fila.
+        $deLaRuta = function ($q) use ($companyId, $sellerIds) {
+            if ($companyId !== null) {
+                $q->where('company_id', $companyId);
+            }
+            if ($sellerIds !== null) {
+                $q->whereIn('id', $sellerIds);
+            }
+        };
+
         foreach ($cities as $city) {
-            $liquidations = Liquidation::whereHas('seller', function ($q) use ($city, $companyId) {
+            $liquidations = Liquidation::whereHas('seller', function ($q) use ($city, $deLaRuta) {
                 $q->where('city_id', $city->id);
-                if ($companyId !== null) {
-                    $q->where('company_id', $companyId);
-                }
+                $deLaRuta($q);
             })
                 ->whereBetween('date', [$startUTC, $endUTC])
                 ->get();
 
             if ($liquidations->count() > 0) {
-                $previous_cash = Liquidation::whereHas('seller', function ($q) use ($city, $companyId) {
+                $previous_cash = Liquidation::whereHas('seller', function ($q) use ($city, $deLaRuta) {
                     $q->where('city_id', $city->id);
-                    if ($companyId !== null) {
-                        $q->where('company_id', $companyId);
-                    }
+                    $deLaRuta($q);
                 })
                     ->where('status', 'approved')
                     ->where('date', '<', $startUTC)
@@ -1974,10 +1993,15 @@ class LiquidationService
                 }
 
                 $income = Income::whereBetween('created_at', [$startUTC, $endUTC])
-                    ->whereHas('user', function ($q) use ($city, $companyId) {
+                    ->whereHas('user', function ($q) use ($city, $companyId, $sellerIds) {
                         $q->where('city_id', $city->id);
                         if ($companyId !== null) {
                             $q->where('company_id', $companyId);
+                        }
+                        // El ingreso cuelga del USUARIO, no del vendedor: se
+                        // baja a los usuarios de los vendedores permitidos.
+                        if ($sellerIds !== null) {
+                            $q->whereIn('id', Seller::whereIn('id', $sellerIds)->pluck('user_id'));
                         }
                     })->sum('value');
 
@@ -3289,6 +3313,69 @@ class LiquidationService
         }
 
         return $data + ['pending' => false];
+    }
+
+    /**
+     * Recorta una cartera YA CACHEADA a un conjunto de vendedores.
+     *
+     * Se filtra en memoria y no se recalcula nada, a propósito: el cache lo
+     * escribe `cartera:calcular` con la clave de la empresa entera
+     * (clavePortfolio($companyId, null)), así que pedir la clave de un
+     * subconjunto de vendedores devolvería "pendiente" para siempre —nadie la
+     * escribe nunca— y la pantalla del supervisor o de la secretaria quedaría
+     * vacía sin explicación.
+     *
+     * Cada fila de ruta ya trae su desglose por vendedor (`sellers`), y los
+     * totales se recomponen sumando los que quedan: así el encabezado de la
+     * ruta sigue cuadrando con el acordeón, que es de donde salen los números
+     * que el usuario compara. Las rutas sin ningún vendedor propio se caen.
+     *
+     * @param array $data  Lo que devuelve getPortfolioByCityCached().
+     * @param array $sellerIds  Vendedores permitidos (ids).
+     */
+    public function filterPortfolioBySellers(array $data, array $sellerIds): array
+    {
+        $permitidos = array_map('intval', $sellerIds);
+        $sumables = ['credits_count', 'clients_count', 'portfolio', 'irrecoverable', 'irrecoverable_credits'];
+
+        $filas = [];
+        $conDesglose = false;
+
+        foreach ($data['rows'] ?? [] as $fila) {
+            if (!isset($fila['sellers'])) {
+                // Fila sin desglose: no hay con qué recortarla y mostrarla
+                // entera sería filtrar la cartera de vendedores ajenos. Se
+                // descarta y más abajo se avisa que el dato no está listo.
+                continue;
+            }
+            $conDesglose = true;
+
+            $vendedores = array_values(array_filter(
+                $fila['sellers'],
+                fn ($v) => in_array((int) ($v['seller_id'] ?? 0), $permitidos, true)
+            ));
+
+            if (empty($vendedores)) {
+                continue;
+            }
+
+            foreach ($sumables as $campo) {
+                $fila[$campo] = array_sum(array_column($vendedores, $campo));
+            }
+            $fila['sellers'] = $vendedores;
+
+            $filas[] = $fila;
+        }
+
+        // Cache viejo, escrito por getPortfolioByCity() —que agrupa por ruta sin
+        // abrir los vendedores—: no se puede recortar. Se responde "pendiente",
+        // que la pantalla ya sabe mostrar, en vez de una cartera vacía que se
+        // leería como "no debe nada".
+        if (!empty($data['rows']) && !$conDesglose) {
+            return ['rows' => [], 'pending' => true] + $data;
+        }
+
+        return ['rows' => $filas] + $data;
     }
 
     public function getAccumulatedByCity($startDate, $endDate, $companyId = null, $sellerIds = null)

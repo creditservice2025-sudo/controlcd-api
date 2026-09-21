@@ -367,7 +367,11 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         // Clientes detrás de cada conteo del resumen (el modal de verificación).
         Route::get('credit-classification-detail', [LiquidationController::class, 'getCreditClassificationDetail']);
         Route::get('client-credit-state-detail', [LiquidationController::class, 'getClientCreditStateDetail']);
-        Route::get('portfolio-by-city', [LiquidationController::class, 'getPortfolioByCity']);
+        // La cartera tiene su propio permiso: es el saldo vivo, no el recaudo
+        // del período, y hay roles que ven uno y no el otro. Los roles 1 y 2
+        // pasan igual por el Gate::before que les concede todo.
+        Route::get('portfolio-by-city', [LiquidationController::class, 'getPortfolioByCity'])
+            ->middleware('permission:ver_resumen_cartera');
         // Créditos anteriores de un cliente: el acordeón de ese modal, pedido
         // al desplegar cada fila para no cargar el listado con subconsultas.
         Route::get('credits/{creditId}/previous', [LiquidationController::class, 'getPreviousCredits']);
