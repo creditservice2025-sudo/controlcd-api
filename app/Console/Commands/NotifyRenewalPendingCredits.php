@@ -60,7 +60,8 @@ class NotifyRenewalPendingCredits extends Command
                     $notified++;
                 }
                 // Notificar a los administradores
-                $admins = \App\Models\User::where('role_id', 1)->get();
+                // Super-Admin todo; el Admin, solo los vendedores de su empresa.
+                $admins = \App\Support\Notificables::adminsDe($seller->company_id);
                 foreach ($admins as $admin) {
                     $admin->notify(new GeneralNotification(
                         'Aviso de renovación de crédito',
