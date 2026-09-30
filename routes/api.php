@@ -318,12 +318,14 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         // la suya (scope en el controlador). Edición individual + masiva.
         Route::get('admin/sunday-schedule', [\App\Http\Controllers\SundayScheduleController::class, 'index']);
         Route::post('admin/sunday-schedule/bulk', [\App\Http\Controllers\SundayScheduleController::class, 'bulkUpdate']);
-        // Bloqueo de apertura de nuevos créditos. La validación adicional
-        // (Admin solo su empresa) se hace en el service usando company_id
-        // del seller del cliente.
-        Route::post('clients/{clientId}/block-credit', [ClientController::class, 'blockCreditCreation']);
-        Route::post('clients/{clientId}/unblock-credit', [ClientController::class, 'unblockCreditCreation']);
     });
+
+    // Bloqueo de apertura de nuevos créditos. Fuera del middleware role: a
+    // propósito: ese middleware consulta Spatie y hay admins con role_id=2 sin
+    // rol Spatie asignado (daba "User does not have the right roles"). El
+    // service valida por role_id (solo 1 y 2) y Admin solo su empresa.
+    Route::post('clients/{clientId}/block-credit', [ClientController::class, 'blockCreditCreation']);
+    Route::post('clients/{clientId}/unblock-credit', [ClientController::class, 'unblockCreditCreation']);
 
     //route expense
     Route::get('expenses', [ExpenseController::class, 'index']);
