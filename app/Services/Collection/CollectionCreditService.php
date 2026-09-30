@@ -435,6 +435,10 @@ class CollectionCreditService
                         'amount' => $interest,
                         'interest_amount' => $interest,
                         'principal_amount' => 0,
+                        // Capital sobre el que se calculó el interés. Sin esto la
+                        // cuota seguía mostrando el monto viejo ("3% de $ 22.000"
+                        // con un interés de 22.000.000).
+                        'principal_base' => $newAmount,
                         'due_date' => $newFirstDate,
                     ]);
 
