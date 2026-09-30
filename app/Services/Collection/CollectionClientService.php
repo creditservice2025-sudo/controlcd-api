@@ -62,7 +62,18 @@ class CollectionClientService
         $perPage = (int) ($filters['per_page'] ?? 10);
 
         $query = CollectionClient::query()
-            ->orderByDesc('updated_at');
+            // ALFABETICO por nombre: es como se busca a una persona en una lista.
+            //
+            // Antes era `updated_at DESC`, y eso reordenaba la pantalla sola: cada
+            // cobro o edicion subia al cliente al tope, asi que barrer la lista de
+            // arriba abajo era imposible y el mismo cliente podia aparecer en dos
+            // paginas distintas entre una carga y la siguiente.
+            //
+            // El id desempata para que el orden sea estable entre paginas cuando
+            // hay homonimos; NULLS LAST deja al final los registros viejos sin
+            // nombre en vez de encabezar la lista con ellos.
+            ->orderByRaw('LOWER(name) ASC NULLS LAST')
+            ->orderBy('id');
 
         if ($this->hasClientCompanyColumn()) {
             $query->where('company_id', $companyId);
@@ -116,6 +127,12 @@ class CollectionClientService
         //    desde remaining_amount). Un solo query agrupado por credit_id.
         $instByCredit = [];
         $creditIds = $allCredits->pluck('id')->all();
+        // "Hoy" en la zona de la EMPRESA, no la del servidor: define qué cuota ya
+        // venció y por lo tanto qué interés se debe. Mismo criterio que el
+        // dashboard (CollectionDashboardService).
+        $hoyEmpresa = Carbon::now(
+            \App\Models\Company::find($companyId)?->timezone ?: 'America/Bogota'
+        )->toDateString();
         if (!empty($creditIds)) {
             $aggRows = CollectionInstallment::query()
                 ->whereIn('credit_id', $creditIds)
@@ -124,7 +141,21 @@ class CollectionClientService
                 ->selectRaw('
                     credit_id,
                     SUM(COALESCE(principal_paid, 0)) as principal_paid,
-                    SUM(GREATEST(COALESCE(interest_amount, 0) - COALESCE(interest_paid, 0), 0)) as pending_interest,
+                    -- Interes EXIGIBLE: solo el de cuotas YA VENCIDAS.
+                    --
+                    -- El del periodo en curso no se devengo todavia, y ademas su
+                    -- monto no es definitivo: si el cliente abona capital —o se le
+                    -- agrega— antes del corte, ese interes se calcula sobre el saldo
+                    -- que quede. Sumarlo mostraba como deuda algo que el cobrador no
+                    -- puede cobrar y que encima puede cambiar.
+                    SUM(CASE WHEN due_date <= ?
+                        THEN GREATEST(COALESCE(interest_amount, 0) - COALESCE(interest_paid, 0), 0)
+                        ELSE 0 END) as pending_interest,
+                    -- El del periodo en curso, por separado: se puede mostrar como
+                    -- proyeccion sin mezclarlo con lo que se debe hoy.
+                    SUM(CASE WHEN due_date > ?
+                        THEN GREATEST(COALESCE(interest_amount, 0) - COALESCE(interest_paid, 0), 0)
+                        ELSE 0 END) as upcoming_interest,
                     SUM(COALESCE(paid_amount, 0)) as total_paid,
                     -- Vencimiento a vigilar: la cuota ABIERTA más vieja. Se mide
                     -- por saldo y no por `status`, igual que en la planilla de
@@ -135,7 +166,7 @@ class CollectionClientService
                            + GREATEST(COALESCE(principal_amount, 0) - COALESCE(principal_paid, 0), 0) > 0
                         THEN due_date
                     END) as next_due_date
-                ')
+                ', [$hoyEmpresa, $hoyEmpresa])
                 ->groupBy('credit_id')
                 ->get();
             foreach ($aggRows as $r) {
@@ -553,6 +584,49 @@ class CollectionClientService
             })
             ->count();
 
+        $latestCredit = $requestedCreditId
+            ? $allCredits->firstWhere('id', $requestedCreditId)
+            : $allCredits->first();
+
+        // ── EL DEVENGO VA ANTES DE CALCULAR NINGUN TOTAL ────────────────────
+        //
+        // Esto corria DESPUES de armar los saldos, y la respuesta salia con el
+        // total viejo y las cuotas nuevas: un credito atrasado mostraba cinco
+        // cuotas vencidas en la tabla y el interes de UNA sola en el panel
+        // (S/ 6,00 en vez de S/ 30,00), hasta que el cobrador recargaba.
+        //
+        // Se devengan TODOS los creditos activos del cliente, no solo el que se
+        // esta mirando: las tarjetas del carrusel muestran el saldo de cada uno.
+        if ($latestCredit) {
+            $existingInstallmentsCount = CollectionInstallment::query()
+                ->where('company_id', $companyId)
+                ->where('credit_id', $latestCredit->id)
+                ->count();
+
+            if ($existingInstallmentsCount === 0 && $latestCredit->total_installments > 0) {
+                // El credito recien creado todavia no tiene su primera cuota.
+                $creditModel = CollectionCredit::find($latestCredit->id);
+                $creditMeta = is_array($creditModel->metadata) ? $creditModel->metadata : [];
+                $this->creditService->generateInstallments($creditModel, $creditMeta['excluded_days'] ?? []);
+            }
+        }
+
+        foreach ($allCredits as $credit) {
+            if (strtolower((string) $credit->status) !== 'active') {
+                continue;
+            }
+            // Se planta solo si el credito no es de interes mensual abierto, si el
+            // capital ya esta saldado o si el corte todavia no llego.
+            $this->creditService->generateNextOpenEndedInstallment($credit);
+        }
+
+        // Los totales se calculan sobre lo que quedo en base, no sobre la copia
+        // que se leyo antes de emitir (`total_installments` acaba de cambiar).
+        $allCredits = $allCredits->map(fn ($c) => $c->refresh());
+        $latestCredit = $requestedCreditId
+            ? $allCredits->firstWhere('id', $requestedCreditId)
+            : $allCredits->first();
+
         // Nombres de quienes anularon, en UNA consulta. Resolverlos dentro del
         // map disparaba un SELECT por credito.
         $cancelledByNames = \App\Models\User::whereIn(
@@ -562,7 +636,12 @@ class CollectionClientService
 
         $creditsData = $allCredits->map(function ($credit) use ($companyId, $cancelledByNames) {
             $meta = is_array($credit->metadata) ? $credit->metadata : [];
-            
+
+            // "Hoy" en la zona del PAIS del credito: define que cuota ya vencio.
+            $hoyCredito = Carbon::now(
+                TimezoneHelper::timezoneForCountryCode($credit->country_code) ?: 'America/Bogota'
+            )->toDateString();
+
             // Calculate balance for each credit (Total Principal Remaining + Pending Interest)
             $stats = CollectionInstallment::query()
                 ->where('company_id', $companyId)
@@ -570,7 +649,15 @@ class CollectionClientService
                 ->whereNull('deleted_at')
                 ->selectRaw('
                     SUM(COALESCE(principal_paid, 0)) as total_principal_paid,
-                    SUM(COALESCE(interest_amount, 0) - COALESCE(interest_paid, 0)) as pending_interest,
+                    -- Solo el interes YA VENCIDO se debe: el del periodo en curso
+                    -- todavia no se devengo y su monto puede cambiar si se mueve el
+                    -- capital antes del corte. Ver la nota del agregado del listado.
+                    SUM(CASE WHEN due_date <= ?
+                        THEN GREATEST(COALESCE(interest_amount, 0) - COALESCE(interest_paid, 0), 0)
+                        ELSE 0 END) as pending_interest,
+                    SUM(CASE WHEN due_date > ?
+                        THEN GREATEST(COALESCE(interest_amount, 0) - COALESCE(interest_paid, 0), 0)
+                        ELSE 0 END) as upcoming_interest,
                     SUM(COALESCE(paid_amount, 0)) as total_paid_all,
                     -- Vencimiento a vigilar de ESTE crédito: la cuota abierta
                     -- más vieja. Mismo criterio que el listado de clientes: se
@@ -580,11 +667,12 @@ class CollectionClientService
                            + GREATEST(COALESCE(principal_amount, 0) - COALESCE(principal_paid, 0), 0) > 0
                         THEN due_date
                     END) as next_due_date
-                ')
+                ', [$hoyCredito, $hoyCredito])
                 ->first();
-                
+
             $remainingPrincipal = max(0, (float)($credit->amount) - (float)($stats->total_principal_paid ?? 0));
             $pendingInterest = max(0, (float)($stats->pending_interest ?? 0));
+            $upcomingInterest = max(0, (float)($stats->upcoming_interest ?? 0));
             $realBalance = $remainingPrincipal + $pendingInterest;
 
             // Permisos de edición. Son TRES cosas distintas y mezclarlas en un
@@ -671,6 +759,10 @@ class CollectionClientService
                 // redondeos; además es la cifra que el cliente quiere leer tal cual.
                 'remaining_principal' => round($remainingPrincipal, 2),
                 'pending_interest' => round($pendingInterest, 2),
+                // Interes del periodo en curso: existe la cuota pero su corte no
+                // llego. No entra en `balance` —no se debe todavia— y la pantalla
+                // lo muestra aparte, como lo que se va a cobrar el dia del corte.
+                'upcoming_interest' => round($upcomingInterest, 2),
                 'total_paid' => (float) ($stats->total_paid_all ?? 0),
                 'total_principal_paid' => (float) ($stats->total_principal_paid ?? 0),
                 'total_interest_paid' => (float) ($stats->total_paid_all ?? 0) - (float) ($stats->total_principal_paid ?? 0),
@@ -698,35 +790,11 @@ class CollectionClientService
             ];
         });
 
-        $latestCredit = $requestedCreditId 
-            ? $allCredits->firstWhere('id', $requestedCreditId) 
-            : $allCredits->first();
-
         $installments = [];
-        
+
+        // El devengo ya corrio mas arriba, ANTES de calcular los saldos: aca solo
+        // se leen las cuotas que quedaron.
         if ($latestCredit) {
-            $existingInstallmentsCount = CollectionInstallment::query()
-                ->where('company_id', $companyId)
-                ->where('credit_id', $latestCredit->id)
-                ->count();
-
-            if ($existingInstallmentsCount === 0 && $latestCredit->total_installments > 0) {
-                // Fetch the actual model to get metadata correctly for generation
-                $creditModel = CollectionCredit::find($latestCredit->id);
-                $creditMeta = is_array($creditModel->metadata) ? $creditModel->metadata : [];
-                $this->creditService->generateInstallments($creditModel, $creditMeta['excluded_days'] ?? []);
-            } elseif ($latestCredit->status === 'active') {
-                // Devengo al abrir el credito. La cuota del periodo nace el dia
-                // del corte (ver generateNextOpenEndedInstallment), y el cron que
-                // la crea corre cada hora: sin esto, el cobrador que abre el
-                // credito a las 00:10 del dia de corte no encontraria que cobrar.
-                //
-                // Es barato y no puede duplicar: el metodo se planta solo si la
-                // fecha no llego, si queda alguna cuota abierta o si el credito
-                // no es de interes mensual abierto.
-                $this->creditService->generateNextOpenEndedInstallment($latestCredit);
-            }
-
             $installments = CollectionInstallment::query()
                 ->where('company_id', $companyId)
                 ->where('credit_id', $latestCredit->id)

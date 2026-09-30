@@ -731,16 +731,40 @@ class ExpenseService
                 //   2) seller asociado (cobradores promovidos)
                 //   3) parent_id->company (subordinados de un admin)
                 // Si nada se puede resolver, fail-closed.
-                $resolvedCompanyId = $user->company?->id
-                    ?? optional(Seller::where('user_id', $user->id)->first())->company_id
-                    ?? optional(User::find($user->parent_id))?->company?->id;
-                if ($resolvedCompanyId) {
-                    $userIds = User::whereHas('seller', function ($query) use ($resolvedCompanyId) {
-                        $query->where('company_id', $resolvedCompanyId);
-                    })->pluck('id');
-                    $expensesQuery->whereIn('user_id', $userIds);
+                /*
+                 * Secretaria (11) CON rutas asignadas: ve solo los gastos de
+                 * SUS vendedores, no los de toda la empresa. Atiende rutas
+                 * concretas; el resto de la cartera no es asunto suyo y el
+                 * volumen lo vuelve inmanejable (una empresa puede tener
+                 * decenas de miles de gastos frente a unos cientos de su ruta).
+                 *
+                 * Si no tiene ninguna ruta asignada cae al aislamiento por
+                 * empresa de siempre, que es el comportamiento del resto de los
+                 * roles intermedios y no se toca.
+                 */
+                $sellerIdsAsignados = \App\Support\Roles::esParametrizable($user->role_id)
+                    ? \App\Models\UserRoute::where('user_id', $user->id)
+                        ->pluck('seller_id')->unique()->values()->all()
+                    : [];
+
+                if (!empty($sellerIdsAsignados)) {
+                    $userIds = Seller::whereIn('id', $sellerIdsAsignados)
+                        ->whereNotNull('user_id')
+                        ->pluck('user_id')
+                        ->all();
+                    $expensesQuery->whereIn('user_id', $userIds ?: [0]);
                 } else {
-                    $expensesQuery->whereRaw('1=0');
+                    $resolvedCompanyId = $user->company?->id
+                        ?? optional(Seller::where('user_id', $user->id)->first())->company_id
+                        ?? optional(User::find($user->parent_id))?->company?->id;
+                    if ($resolvedCompanyId) {
+                        $userIds = User::whereHas('seller', function ($query) use ($resolvedCompanyId) {
+                            $query->where('company_id', $resolvedCompanyId);
+                        })->pluck('id');
+                        $expensesQuery->whereIn('user_id', $userIds);
+                    } else {
+                        $expensesQuery->whereRaw('1=0');
+                    }
                 }
             }
 

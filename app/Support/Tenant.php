@@ -91,13 +91,31 @@ class Tenant
             return;
         }
 
-        // Supervisor: sellers asignados en sus rutas.
-        if ($role === 6) {
-            $allowed = UserRoute::where('user_id', $user->id)
-                ->pluck('seller_id')
-                ->map(fn ($id) => (int) $id)
-                ->all();
-            if (!in_array((int) $sellerId, $allowed, true)) {
+        // Roles con VENDEDORES ASIGNADOS en `user_routes`: supervisor (6),
+        // secretaria y cualquier rol de oficina al que se le asignen rutas al
+        // crearlo. Ve exactamente los vendedores que le asignaron, ni uno más.
+        //
+        // Antes esta rama era SOLO del rol 6 y el resto caía al aislamiento por
+        // empresa de abajo. Una secretaria no tiene empresa propia —cuelga de su
+        // admin por `parent_id`—, así que `optional($user->company)->id` daba
+        // null y cualquier pantalla de vendedor le respondía 403, aunque tuviera
+        // ese vendedor asignado en sus rutas. Se veía como "No tiene acceso a
+        // este recurso" apenas abría el detalle de un cobrador.
+        //
+        // Super-Admin (1), Admin (2) y Cobrador (5) quedan fuera a propósito: su
+        // alcance ya está definido arriba o por empresa, y unas rutas sueltas no
+        // deben restringirlos.
+        $assignedSellerIds = UserRoute::where('user_id', $user->id)
+            ->pluck('seller_id')
+            ->map(fn ($id) => (int) $id)
+            ->all();
+
+        // Supervisor (6) por su regla de siempre; Secretaria y roles nuevos por
+        // ser parametrizables. Los demás roles fijos siguen como estaban.
+        $usaRutasAsignadas = Roles::esParametrizable($role);
+
+        if ($role === 6 || ($usaRutasAsignadas && !empty($assignedSellerIds))) {
+            if (!in_array((int) $sellerId, $assignedSellerIds, true)) {
                 abort(403, 'No tiene acceso a este recurso.');
             }
             return;
@@ -199,6 +217,69 @@ class Tenant
     }
 
     /**
+     * Vendedores a los que el usuario está ACOTADO, o null si no lo está.
+     *
+     * Pensado para los REPORTES AGREGADOS (resumen de liquidaciones, resumen de
+     * cartera), que no reciben un id de vendedor contra el cual validar: ahí no
+     * hay nada que autorizar, hay que recortar lo que se muestra.
+     *
+     * Se diferencia de allowedSellerIds() en que "sin restricción" se dice con
+     * null y no con la lista entera de la empresa: esos reportes ya filtran por
+     * `company_id`, y agregarles un IN con todos los vendedores no suma
+     * seguridad y sí cuesta en consultas que recorren millones de cuotas.
+     *
+     * Quien debería estar acotado pero no tiene vendedores asignados recibe
+     * [-1] —una lista imposible— y no []: el vacío es ambiguo y en más de un
+     * servicio se lee como "sin filtro", que es exactamente lo contrario.
+     *
+     * Criterio de roles: el MISMO de assertSellerInScope() y de
+     * LiquidationController::checkAuthorization(), para que las tres formas de
+     * acotar respondan igual ante el mismo usuario.
+     */
+    public static function restrictedSellerIds(): ?array
+    {
+        $user = Auth::user();
+        if (!$user) {
+            abort(401, 'No autenticado.');
+        }
+
+        $role = (int) $user->role_id;
+
+        // Super-Admin ve todo; el Admin ya queda acotado por empresa en cada
+        // reporte, y unas rutas sueltas no deben recortarle su propia empresa.
+        if ($role === 1 || $role === 2) {
+            return null;
+        }
+
+        // Cobrador: su propio vendedor y nada más.
+        if ($role === 5) {
+            $propios = Seller::where('user_id', $user->id)
+                ->pluck('id')
+                ->map(fn ($i) => (int) $i)
+                ->all();
+            return $propios ?: [-1];
+        }
+
+        $asignados = UserRoute::where('user_id', $user->id)
+            ->pluck('seller_id')
+            ->map(fn ($i) => (int) $i)
+            ->all();
+
+        // Supervisor, por su regla de siempre.
+        if ($role === 6) {
+            return $asignados ?: [-1];
+        }
+
+        // Secretaria y roles nuevos: se rigen por las rutas que les asignaron.
+        // Sin rutas caen al aislamiento por empresa del propio reporte.
+        if (Roles::esParametrizable($role) && !empty($asignados)) {
+            return $asignados;
+        }
+
+        return null;
+    }
+
+    /**
      * Sellers visibles para el usuario autenticado. null = todos (super-admin).
      */
     private static function allowedSellerIds(): ?array
@@ -215,10 +296,23 @@ class Tenant
             return Seller::where('user_id', $user->id)->pluck('id')
                 ->map(fn ($i) => (int) $i)->all();
         }
-        if ($role === 6) {
-            return UserRoute::where('user_id', $user->id)->pluck('seller_id')
-                ->map(fn ($i) => (int) $i)->all();
+        // Mismo criterio que assertSellerInScope: quien tiene vendedores
+        // asignados en `user_routes` ve exactamente esos. Sin esto, un rol de
+        // oficina sin empresa propia recibía una lista vacía y ninguna pantalla
+        // le mostraba datos.
+        $assignedSellerIds = UserRoute::where('user_id', $user->id)
+            ->pluck('seller_id')
+            ->map(fn ($i) => (int) $i)
+            ->all();
+
+        // Supervisor (6) por su regla de siempre; Secretaria y roles nuevos por
+        // ser parametrizables. Los demás roles fijos siguen como estaban.
+        $usaRutasAsignadas = Roles::esParametrizable($role);
+
+        if ($role === 6 || ($usaRutasAsignadas && !empty($assignedSellerIds))) {
+            return $assignedSellerIds;
         }
+
         $companyId = optional($user->company)->id;
         if (!$companyId) {
             return [];

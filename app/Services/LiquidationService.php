@@ -1104,35 +1104,88 @@ class LiquidationService
         // Obtener métricas calculadas (con autocorrección de initial_cash si es necesario)
         $metrics = $this->calculateLiquidationMetrics($sellerId, $date, null, $timezone);
 
-        // Verificar si hay cambios reales comparando el modelo con las métricas
-        $hasChanges = !(
-            $liquidation->initial_cash == $metrics['initial_cash'] &&
-            $liquidation->total_expenses == $metrics['total_expenses'] &&
-            $liquidation->new_credits == $metrics['new_credits'] &&
-            $liquidation->total_income == $metrics['total_income'] &&
-            $liquidation->total_collected == $metrics['total_collected'] &&
-            $liquidation->real_to_deliver == $metrics['real_to_deliver'] &&
-            $liquidation->shortage == $metrics['shortage'] &&
-            $liquidation->surplus == $metrics['surplus'] &&
-            $liquidation->poliza == $metrics['poliza'] &&
-            $liquidation->renewal_disbursed_total == $metrics['renewal_disbursed_total'] &&
-            $liquidation->total_pending_absorbed == $metrics['total_pending_absorbed'] &&
-            $liquidation->clients_paid_count == $metrics['clients_paid_count'] &&
-            $liquidation->clients_without_credit_count == $metrics['clients_without_credit_count'] &&
-            $liquidation->new_clients_count == $metrics['new_clients_count'] &&
-            $liquidation->active_clients_with_credit_count == $metrics['active_clients_with_credit_count'] &&
-            $liquidation->clients_liquidated_count == $metrics['clients_liquidated_count'] &&
-            $liquidation->clients_full_payment_count == $metrics['clients_full_payment_count'] &&
-            $liquidation->clients_partial_payment_count == $metrics['clients_partial_payment_count'] &&
-            $liquidation->clients_liquidated_and_renewed_count == $metrics['clients_liquidated_and_renewed_count']
-        );
+        // ── Qué se escribe: montos y conteos van por caminos separados ──────
+        //
+        // Antes esto era un solo `if`: si CUALQUIER métrica cambiaba —incluido
+        // un simple conteo de clientes— se hacía update() con TODAS, montos
+        // incluidos. Eso convierte cualquier ajuste de conteo en un riesgo
+        // sobre la caja: medido sobre producción, 121 de las 915 liquidaciones
+        // no aprobadas tienen montos grabados que ya no coinciden con sus
+        // propios movimientos ($75,8M en diferencias absolutas). Tocarles el
+        // conteo las reescribía y les corría la plata.
+        //
+        // Ahora un cambio de conteo SOLO escribe los conteos. Los montos se
+        // reescriben únicamente cuando son ELLOS los que cambiaron, que es el
+        // comportamiento de siempre para pagos, gastos e ingresos.
+        $camposConteo = [
+            'clients_paid_count',
+            'clients_without_credit_count',
+            'new_clients_count',
+            'active_clients_with_credit_count',
+            'clients_liquidated_count',
+            'clients_full_payment_count',
+            'clients_partial_payment_count',
+            'clients_liquidated_and_renewed_count',
+        ];
 
-        if (!$hasChanges) {
+        $camposMonto = [
+            'initial_cash',
+            'total_expenses',
+            'new_credits',
+            'total_income',
+            'total_collected',
+            'real_to_deliver',
+            'shortage',
+            'surplus',
+            'poliza',
+            'renewal_disbursed_total',
+            'total_pending_absorbed',
+        ];
+
+        // La comparación floja (==) se conserva a propósito: los montos vienen
+        // como decimal de la BD y como float del cálculo, y === los daría
+        // siempre distintos.
+        $difiere = function (array $campos) use ($liquidation, $metrics): bool {
+            foreach ($campos as $campo) {
+                if (!array_key_exists($campo, $metrics)) {
+                    continue;
+                }
+                if ($liquidation->{$campo} != $metrics[$campo]) {
+                    return true;
+                }
+            }
+
+            return false;
+        };
+
+        $cambianMontos = $difiere($camposMonto);
+        $cambianConteos = $difiere($camposConteo);
+
+        if (!$cambianMontos && !$cambianConteos) {
             return;
         }
 
-        $liquidation->update($metrics);
+        // Los CONTEOS se escriben por su cuenta, con query builder: no pasan
+        // por update($metrics), no despiertan observers y no mueven updated_at.
+        // Lo importante es lo que NO hacen: un conteo distinto ya no puede ser
+        // el disparador de una reescritura de montos. Antes sí lo era, y sobre
+        // una liquidación cuyos montos grabados no coinciden con sus propios
+        // movimientos —hay 121 así, $75,8M— eso le corría la caja sola.
+        // Medido: ensuciando SOLO el conteo de la liquidación 370, su
+        // real_to_deliver saltaba de -220,00 a 0,00.
+        if ($cambianConteos) {
+            DB::table('liquidations')
+                ->where('id', $liquidation->id)
+                ->update(array_intersect_key($metrics, array_flip($camposConteo)));
+            $liquidation->refresh();
+        }
 
+        // Los MONTOS solo se tocan cuando cambian ELLOS. Es exactamente el
+        // comportamiento de siempre para pagos, gastos e ingresos: no se
+        // agrega ni se quita ninguna escritura de caja.
+        if ($cambianMontos) {
+            $liquidation->update($metrics);
+        }
         // Invalida el caché después de recalcular (formatea a Y-m-d)
         $dateStr = ($date instanceof \Carbon\Carbon) ? $date->toDateString() : (string) $date;
         $this->metricsCacheService->invalidateLiquidationMetrics($sellerId, $dateStr);
@@ -1593,16 +1646,12 @@ class LiquidationService
             ->count('credits.client_id');
 
         // 2. Cuantos clientes sin créditos
-        $totals['clients_without_credit_count'] = (int) DB::table('clients')
-            ->where('seller_id', $sellerId)
-            ->whereNull('deleted_at')
-            ->whereNotExists(function ($query) {
-                $query->select(DB::raw(1))
-                    ->from('credits')
-                    ->whereColumn('credits.client_id', 'clients.id')
-                    ->whereNotIn('credits.status', ['Liquidado', 'Rechazado', 'Anulado', 'Finalizado']);
-            })
-            ->count();
+        // 2 y 4. Clientes con crédito vivo y sin crédito, al cierre de ESTE día.
+        // Los dos salen de una sola llamada: el método los calcula juntos.
+        // Ver clientCreditCountsForDate() para qué arregla y por qué comparte
+        // la fuente con el resumen general.
+        $clientCounts = $this->clientCreditCountsForDate($sellerId, $date);
+        $totals['clients_without_credit_count'] = $clientCounts['clients_without_credit_count'];
 
         // 3. Cantidad de clientes nuevos
         $totals['new_clients_count'] = (int) DB::table('clients')
@@ -1611,17 +1660,8 @@ class LiquidationService
             ->whereNull('deleted_at')
             ->count();
 
-        // 4. Cantidad de clientes activos con créditos (Vigentes/Atrasados/etc, NO Liquidados)
-        $totals['active_clients_with_credit_count'] = (int) DB::table('clients')
-            ->where('seller_id', $sellerId)
-            ->whereNull('deleted_at')
-            ->whereExists(function ($query) {
-                $query->select(DB::raw(1))
-                    ->from('credits')
-                    ->whereColumn('credits.client_id', 'clients.id')
-                    ->whereIn('credits.status', ['Vigente', 'Atrasado', 'Mora', 'Renovado']);
-            })
-            ->count();
+        // 4. (viene de la misma llamada del bloque 2)
+        $totals['active_clients_with_credit_count'] = $clientCounts['active_clients_with_credit_count'];
 
         // 5. Cantidad de clientes que liquidaron hoy (L)
         // Clientes que hicieron un pago hoy y su crédito quedó en estado 'Liquidado'
@@ -1858,19 +1898,29 @@ class LiquidationService
         return $lastLiquidation ? $this->formatLiquidationDetails($lastLiquidation) : null;
     }
 
-    public function getReportByCity($startDate, $endDate, $companyId = null)
+    /**
+     * @param array|null $sellerIds Recorta el reporte a estos vendedores. Lo usa
+     *        quien solo puede ver los suyos (supervisor, secretaria, cobrador);
+     *        null deja el reporte completo, como siempre.
+     */
+    public function getReportByCity($startDate, $endDate, $companyId = null, $sellerIds = null)
     {
         $timezone = 'America/Lima';
         $startUTC = Carbon::parse($startDate, $timezone)->startOfDay()->setTimezone('UTC');
         $endUTC = Carbon::parse($endDate, $timezone)->endOfDay()->setTimezone('UTC');
 
         $citiesQuery = DB::table('cities');
-        if ($companyId !== null) {
-            $citiesQuery->whereExists(function ($query) use ($companyId) {
+        if ($companyId !== null || $sellerIds !== null) {
+            $citiesQuery->whereExists(function ($query) use ($companyId, $sellerIds) {
                 $query->select(DB::raw(1))
                     ->from('sellers')
-                    ->whereColumn('sellers.city_id', 'cities.id')
-                    ->where('sellers.company_id', $companyId);
+                    ->whereColumn('sellers.city_id', 'cities.id');
+                if ($companyId !== null) {
+                    $query->where('sellers.company_id', $companyId);
+                }
+                if ($sellerIds !== null) {
+                    $query->whereIn('sellers.id', $sellerIds);
+                }
             });
         }
         $cities = $citiesQuery->get();
@@ -1882,28 +1932,37 @@ class LiquidationService
             Carbon::parse($startDate)->format('Y-m-d'),
             Carbon::parse($endDate)->format('Y-m-d'),
             'city',
-            $companyId
+            $companyId,
+            $sellerIds
         );
         $currencies = DB::table('cities')
             ->leftJoin('countries', 'countries.id', '=', 'cities.country_id')
             ->pluck('countries.currency', 'cities.id');
 
+        // Mismo recorte para las tres consultas de la ruta: si una filtrara por
+        // vendedor y otra no, la caja anterior o el recaudo saldrían de una
+        // población distinta a la del resto de la fila.
+        $deLaRuta = function ($q) use ($companyId, $sellerIds) {
+            if ($companyId !== null) {
+                $q->where('company_id', $companyId);
+            }
+            if ($sellerIds !== null) {
+                $q->whereIn('id', $sellerIds);
+            }
+        };
+
         foreach ($cities as $city) {
-            $liquidations = Liquidation::whereHas('seller', function ($q) use ($city, $companyId) {
+            $liquidations = Liquidation::whereHas('seller', function ($q) use ($city, $deLaRuta) {
                 $q->where('city_id', $city->id);
-                if ($companyId !== null) {
-                    $q->where('company_id', $companyId);
-                }
+                $deLaRuta($q);
             })
                 ->whereBetween('date', [$startUTC, $endUTC])
                 ->get();
 
             if ($liquidations->count() > 0) {
-                $previous_cash = Liquidation::whereHas('seller', function ($q) use ($city, $companyId) {
+                $previous_cash = Liquidation::whereHas('seller', function ($q) use ($city, $deLaRuta) {
                     $q->where('city_id', $city->id);
-                    if ($companyId !== null) {
-                        $q->where('company_id', $companyId);
-                    }
+                    $deLaRuta($q);
                 })
                     ->where('status', 'approved')
                     ->where('date', '<', $startUTC)
@@ -1934,10 +1993,15 @@ class LiquidationService
                 }
 
                 $income = Income::whereBetween('created_at', [$startUTC, $endUTC])
-                    ->whereHas('user', function ($q) use ($city, $companyId) {
+                    ->whereHas('user', function ($q) use ($city, $companyId, $sellerIds) {
                         $q->where('city_id', $city->id);
                         if ($companyId !== null) {
                             $q->where('company_id', $companyId);
+                        }
+                        // El ingreso cuelga del USUARIO, no del vendedor: se
+                        // baja a los usuarios de los vendedores permitidos.
+                        if ($sellerIds !== null) {
+                            $q->whereIn('id', Seller::whereIn('id', $sellerIds)->pluck('user_id'));
                         }
                     })->sum('value');
 
@@ -2303,12 +2367,32 @@ class LiquidationService
             'Clientes Nuevos',
             'Liquidó y Tomó Otro',
             'Crédito Adicional',
-            'Caja Inicial',
         ];
 
         $campos = [
             'total_collected', 'total_income', 'total_expenses', 'new_credits',
-            'new_clients', 'settled_clients', 'additional_clients', 'initial_cash',
+            'new_clients', 'settled_clients', 'additional_clients',
+        ];
+
+        // Estado de la cartera al CIERRE del rango. Va en el mismo lugar que en
+        // pantalla —entre "Crédito Adicional" y "Caja Inicial"— y solo en los
+        // niveles donde la pantalla lo muestra: getAccumulatedByCity y
+        // getAccumulatedBySellersInCity adjuntan estos conteos, el detalle por
+        // día no los tiene y saldrían siempre en cero.
+        if ($level !== 'day') {
+            $columnas[] = 'Con Crédito Activo';
+            $columnas[] = 'Sin Crédito';
+            $campos[] = 'clients_with_active_credit';
+            $campos[] = 'clients_without_credit';
+        }
+
+        $columnas[] = 'Caja Inicial';
+        $campos[] = 'initial_cash';
+
+        // Los conteos son enteros, no dinero: se redondean y no llevan símbolo.
+        $camposEnteros = [
+            'new_clients', 'settled_clients', 'additional_clients',
+            'clients_with_active_credit', 'clients_without_credit',
         ];
 
         $rows = [];
@@ -2320,7 +2404,7 @@ class LiquidationService
 
             foreach ($campos as $campo) {
                 $valor = $fila->{$campo} ?? 0;
-                $valores[$campo] = in_array($campo, ['new_clients', 'settled_clients', 'additional_clients'], true)
+                $valores[$campo] = in_array($campo, $camposEnteros, true)
                     ? (int) $valor
                     : (float) $valor;
             }
@@ -2346,6 +2430,15 @@ class LiquidationService
             }
         }
 
+        // +2 porque las dos primeras columnas (etiqueta y moneda) no salen de $campos.
+        $indicesMoneda = [];
+        foreach (['total_collected', 'total_income', 'total_expenses', 'new_credits', 'initial_cash'] as $campo) {
+            $pos = array_search($campo, $campos, true);
+            if ($pos !== false) {
+                $indicesMoneda[] = $pos + 2;
+            }
+        }
+
         ksort($totales);
         $filasTotales = [];
         foreach ($totales as $moneda => $suma) {
@@ -2361,8 +2454,11 @@ class LiquidationService
             'rows' => $rows,
             'totals' => $filasTotales,
             // Índices de las columnas que son dinero, para formatear sin
-            // adivinar por el contenido.
-            'money_columns' => [2, 3, 4, 5, 9],
+            // adivinar por el contenido. Se calculan desde $campos en vez de
+            // fijarlos a mano: al insertar el estado de cartera antes de "Caja
+            // Inicial" los índices se corren, y una lista fija formateaba como
+            // moneda la columna equivocada.
+            'money_columns' => $indicesMoneda,
             // Color por fila y su referencia. Vacíos fuera del nivel vendedor,
             // así el Excel y el PDF no necesitan preguntar de qué nivel vienen.
             'row_tones' => $tonos,
@@ -2594,8 +2690,15 @@ class LiquidationService
         $endDate,
         $companyId = null,
         $sellerIds = null,
-        $cityId = null
+        $cityId = null,
+        bool $incluirVendedoresDeBaja = false
     ): array {
+        // $incluirVendedoresDeBaja: el RESUMEN agrega rutas activas y deja
+        // fuera a los vendedores dados de baja (default false, comportamiento
+        // de siempre). La ficha individual de un vendedor SÍ tiene que mostrar
+        // su historia aunque esté de baja: si no, sus 934 liquidaciones
+        // quedarían en 0/0. Es el mismo problema que calculateLiquidationMetrics
+        // ya resuelve con withTrashed() para gastos e ingresos.
         $cut = Carbon::parse($endDate)->format('Y-m-d');
         $this->assertDateFormat($cut);
 
@@ -2604,7 +2707,7 @@ class LiquidationService
             ->join('sellers as s', 's.id', '=', 'cl.seller_id')
             ->select('s.id as seller_id', DB::raw('COUNT(DISTINCT c.client_id) as n'))
             ->whereNull('cl.deleted_at')
-            ->whereNull('s.deleted_at')
+            ->when(!$incluirVendedoresDeBaja, fn ($q) => $q->whereNull('s.deleted_at'))
             ->where('cl.status', 'active')
             ->groupBy('s.id');
 
@@ -2618,7 +2721,7 @@ class LiquidationService
             ->join('sellers as s', 's.id', '=', 'cl.seller_id')
             ->select('s.id as seller_id', DB::raw('COUNT(*) as n'))
             ->whereNull('cl.deleted_at')
-            ->whereNull('s.deleted_at')
+            ->when(!$incluirVendedoresDeBaja, fn ($q) => $q->whereNull('s.deleted_at'))
             ->where('cl.status', 'active')
             ->groupBy('s.id');
 
@@ -2775,6 +2878,55 @@ class LiquidationService
                 : [];
             return $a;
         })->all();
+    }
+
+    /**
+     * Los conteos de clientes de una liquidación: "con crédito" y "sin crédito"
+     * al cierre de ESE día.
+     *
+     * Delega en getClientCreditStateBySeller —el mismo método que alimenta el
+     * resumen general— en vez de escribir su propia consulta. No es prolijidad:
+     * las dos pantallas mostraban números distintos para el mismo vendedor y el
+     * mismo día (vendedor 21 al 2026-09-12: 121/83 en la liquidación contra
+     * 117/87 en el resumen) porque cada una tenía su versión. Compartiendo el
+     * método no pueden volver a divergir.
+     *
+     * Qué arregla respecto de la consulta anterior:
+     *
+     *  1. Los créditos BORRADOS ya no cuentan como cartera. Un crédito que se
+     *     cargó mal, se borró y se rehizo queda con deleted_at puesto pero
+     *     status 'Vigente' —al borrarlo nadie le cambia el estado—, y la
+     *     consulta vieja no filtraba deleted_at. Son 2.345 créditos así, que
+     *     mal-clasificaban a 888 clientes de 160 vendedores.
+     *
+     *  2. El número deja de ser una foto de HOY. La consulta vieja no recibía
+     *     la fecha, así que TODAS las filas históricas mostraban el estado
+     *     actual de la ruta: dos días distintos de la misma ruta daban siempre
+     *     el mismo par de números. Peor, el valor quedaba congelado con la foto
+     *     del último recálculo, y las liquidaciones de diciembre 2025 del
+     *     vendedor 21 decían 10 clientes con crédito cuando ese vendedor no
+     *     tuvo su primer crédito hasta el 2026-01-26. Ahora cada día
+     *     reconstruye su propio corte.
+     *
+     * Hereda las dos limitaciones documentadas del resumen: `clients.status` no
+     * tiene historial, y 'Cartera Irrecuperable' se evalúa con el estado de hoy
+     * porque la base no registra cuándo se marcó.
+     *
+     * @return array{active_clients_with_credit_count:int, clients_without_credit_count:int}
+     */
+    public function clientCreditCountsForDate($sellerId, $date): array
+    {
+        $cut = $date instanceof Carbon ? $date->toDateString() : substr((string) $date, 0, 10);
+
+        // true: la ficha de un vendedor de baja tiene que seguir mostrando su
+        // historia. El resumen lo sigue excluyendo de los agregados.
+        $estado = $this->getClientCreditStateBySeller($cut, null, [$sellerId], null, true);
+        $fila = $estado[$sellerId] ?? null;
+
+        return [
+            'active_clients_with_credit_count' => (int) ($fila['clients_with_active_credit'] ?? 0),
+            'clients_without_credit_count' => (int) ($fila['clients_without_credit'] ?? 0),
+        ];
     }
 
     /**
@@ -3161,6 +3313,69 @@ class LiquidationService
         }
 
         return $data + ['pending' => false];
+    }
+
+    /**
+     * Recorta una cartera YA CACHEADA a un conjunto de vendedores.
+     *
+     * Se filtra en memoria y no se recalcula nada, a propósito: el cache lo
+     * escribe `cartera:calcular` con la clave de la empresa entera
+     * (clavePortfolio($companyId, null)), así que pedir la clave de un
+     * subconjunto de vendedores devolvería "pendiente" para siempre —nadie la
+     * escribe nunca— y la pantalla del supervisor o de la secretaria quedaría
+     * vacía sin explicación.
+     *
+     * Cada fila de ruta ya trae su desglose por vendedor (`sellers`), y los
+     * totales se recomponen sumando los que quedan: así el encabezado de la
+     * ruta sigue cuadrando con el acordeón, que es de donde salen los números
+     * que el usuario compara. Las rutas sin ningún vendedor propio se caen.
+     *
+     * @param array $data  Lo que devuelve getPortfolioByCityCached().
+     * @param array $sellerIds  Vendedores permitidos (ids).
+     */
+    public function filterPortfolioBySellers(array $data, array $sellerIds): array
+    {
+        $permitidos = array_map('intval', $sellerIds);
+        $sumables = ['credits_count', 'clients_count', 'portfolio', 'irrecoverable', 'irrecoverable_credits'];
+
+        $filas = [];
+        $conDesglose = false;
+
+        foreach ($data['rows'] ?? [] as $fila) {
+            if (!isset($fila['sellers'])) {
+                // Fila sin desglose: no hay con qué recortarla y mostrarla
+                // entera sería filtrar la cartera de vendedores ajenos. Se
+                // descarta y más abajo se avisa que el dato no está listo.
+                continue;
+            }
+            $conDesglose = true;
+
+            $vendedores = array_values(array_filter(
+                $fila['sellers'],
+                fn ($v) => in_array((int) ($v['seller_id'] ?? 0), $permitidos, true)
+            ));
+
+            if (empty($vendedores)) {
+                continue;
+            }
+
+            foreach ($sumables as $campo) {
+                $fila[$campo] = array_sum(array_column($vendedores, $campo));
+            }
+            $fila['sellers'] = $vendedores;
+
+            $filas[] = $fila;
+        }
+
+        // Cache viejo, escrito por getPortfolioByCity() —que agrupa por ruta sin
+        // abrir los vendedores—: no se puede recortar. Se responde "pendiente",
+        // que la pantalla ya sabe mostrar, en vez de una cartera vacía que se
+        // leería como "no debe nada".
+        if (!empty($data['rows']) && !$conDesglose) {
+            return ['rows' => [], 'pending' => true] + $data;
+        }
+
+        return ['rows' => $filas] + $data;
     }
 
     public function getAccumulatedByCity($startDate, $endDate, $companyId = null, $sellerIds = null)

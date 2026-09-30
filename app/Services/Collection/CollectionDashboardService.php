@@ -87,7 +87,16 @@ class CollectionDashboardService
                 DB::raw('COALESCE(SUM(amount), 0) as total_amount'),
                 DB::raw('COALESCE(SUM(principal_paid), 0) as paid_principal'),
                 DB::raw('COALESCE(SUM(interest_paid), 0) as paid_interest'),
-                DB::raw('COALESCE(SUM(paid_amount), 0) as paid_total')
+                DB::raw('COALESCE(SUM(paid_amount), 0) as paid_total'),
+                // Interes ya DEVENGADO y sin cobrar: el de cuotas vencidas. El del
+                // periodo en curso no se debe todavia (y su monto puede cambiar si
+                // se mueve el capital antes del corte), asi que no entra en la
+                // cartera pendiente. `total_interest` sigue completo porque de el
+                // salen los porcentajes de rentabilidad, que si miran todo el
+                // interes generado.
+                DB::raw("COALESCE(SUM(CASE WHEN due_date <= '{$today}'
+                    THEN GREATEST(COALESCE(interest_amount, 0) - COALESCE(interest_paid, 0), 0)
+                    ELSE 0 END), 0) as accrued_pending_interest")
             )->first();
 
         // Capital real desembolsado (suma de montos de créditos activos)
@@ -100,9 +109,10 @@ class CollectionDashboardService
         $paidInterest = (float) ($portfolioTotals->paid_interest ?? 0);
         $paidTotal = (float) ($portfolioTotals->paid_total ?? 0);
 
-        // Pendiente por cobrar
+        // Pendiente por cobrar. El interes es SOLO el devengado (cuotas vencidas):
+        // el del periodo en curso todavia no se debe.
         $pendingPrincipal = max(0, $totalPrincipal - $paidPrincipal);
-        $pendingInterest = max(0, $totalInterest - $paidInterest);
+        $pendingInterest = max(0, (float) ($portfolioTotals->accrued_pending_interest ?? 0));
         $pendingTotal = $pendingPrincipal + $pendingInterest;
 
         // % recuperacion de capital (sobre capital real desembolsado)
