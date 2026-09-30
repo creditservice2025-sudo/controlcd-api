@@ -303,7 +303,10 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
     // del cliente). Restringido a Super-Admin y Admin. Reversible vía restore.
     Route::get('clients/{clientId}/uncollectible-summary', [CreditController::class, 'clientUncollectibleSummary']);
     Route::get('clients/{clientId}/credits/{creditId}/uncollectible-detail', [CreditController::class, 'clientCreditUncollectibleDetail']);
-    Route::middleware('role:Super-Admin|Admin')->group(function () {
+    // role.id (users.role_id) en vez de role: de Spatie: hay admins con
+    // role_id=2 sin rol Spatie asignado y recibían "User does not have the
+    // right roles". 1 = Super-Admin, 2 = Admin.
+    Route::middleware('role.id:1,2')->group(function () {
         Route::post('clients/{clientId}/mark-uncollectible', [CreditController::class, 'markClientAsUncollectible']);
         Route::post('clients/{clientId}/restore-from-uncollectible', [CreditController::class, 'restoreClientFromUncollectible']);
 
