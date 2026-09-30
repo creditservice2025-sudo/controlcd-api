@@ -36,7 +36,12 @@ class NotifyPendingLiquidationSellers extends Command
             if (!$exists) {
 
                 $notifiedSellers[] = $seller;
-                $adminUsers = User::whereIn('role_id', [1])->get();
+
+                // Antes: User::whereIn('role_id', [1]) — solo el Super-Admin. El
+                // admin de la empresa del vendedor, que es quien tiene que
+                // llamarlo, no se enteraba. Ahora recibe lo de SUS vendedores y
+                // nada de las otras empresas; el Super-Admin sigue igual.
+                $adminUsers = \App\Support\Notificables::adminsDe($seller->company_id);
 
                 foreach ($adminUsers as $adminUser) {
                     $adminUser->notify(new GeneralNotification(

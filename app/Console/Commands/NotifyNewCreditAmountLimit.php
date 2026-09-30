@@ -51,7 +51,8 @@ class NotifyNewCreditAmountLimit extends Command
                     ));
                     $notified++;
                 }
-                $admins = User::where('role_id', 1)->get();
+                // Super-Admin todo; el Admin, solo los vendedores de su empresa.
+                $admins = \App\Support\Notificables::adminsDe($seller->company_id);
                 foreach ($admins as $admin) {
                     $admin->notify(new GeneralNotification(
                         'Monto de créditos nuevos creados hoy',

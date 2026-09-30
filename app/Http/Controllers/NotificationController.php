@@ -54,7 +54,24 @@ class NotificationController extends Controller
     public function markAllAsRead()
     {
         $user = Auth::user();
-        $user->unreadNotifications->markAsRead();
+
+        // Antes: $user->unreadNotifications->markAsRead(), que trae TODAS las
+        // filas sin leer a memoria y las actualiza de a una. Con 81.899 sin leer
+        // —el caso real del Super-Admin en esta base— son 81.899 consultas: el
+        // botón se quedaba colgado hasta morir por tiempo y el contador seguía
+        // intacto.
+        //
+        // Un solo UPDATE. Se probó también por tandas de 2.000 y resultó mucho
+        // más lento: cada tanda vuelve a buscar las que siguen sin leer.
+        // Bloquear no es problema: InnoDB toma las filas, no la tabla, y son las
+        // de este usuario.
+        //
+        // Medido por HTTP con 81.899 sin leer: 1,3 s. El set_time_limit queda
+        // por si alguna cuenta crece mucho más; lo que habría que revisar es que
+        // una sola acumule 91.083 notificaciones.
+        @set_time_limit(120);
+
+        $user->unreadNotifications()->update(['read_at' => now()]);
 
         // Invalidate cache
         \Cache::forget("notifications_user_{$user->id}");
