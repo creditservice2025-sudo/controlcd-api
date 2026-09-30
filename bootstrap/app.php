@@ -24,6 +24,9 @@ return Application::configure(basePath: dirname(__DIR__))
             'role'               => \Spatie\Permission\Middleware\RoleMiddleware::class,
             'permission'         => \Spatie\Permission\Middleware\PermissionMiddleware::class,
             'role_or_permission' => \Spatie\Permission\Middleware\RoleOrPermissionMiddleware::class,
+            // Restricción por users.role_id (no depende de que el usuario
+            // tenga el rol asignado en Spatie). Uso: role.id:1,2
+            'role.id'            => \App\Http\Middleware\EnsureRoleId::class,
             // Bloquea Cobrador (rol 5) cuando su Supervisor (rol 6) tiene
             // sesión activa. Aplicado al grupo `auth:api` en routes/api.php.
             'supervisor.lock'    => \App\Http\Middleware\CheckSupervisorLock::class,
