@@ -347,6 +347,7 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
     //route income
     Route::get('income', [IncomeController::class, 'index']);
     Route::post('income/create', [IncomeController::class, 'store']);
+    Route::get('income/report/pdf', [IncomeController::class, 'downloadReport']);
     Route::get('income/{id}', [IncomeController::class, 'show']);
     Route::put('income/update/{id}', [IncomeController::class, 'update']);
     Route::delete('income/delete/{id}', [IncomeController::class, 'destroy']);

@@ -29,10 +29,15 @@ class IncomeController extends Controller
     public function index(Request $request)
     {
         $companyId = $request->input('company_id');
+        // perpage=0 significa "Todos" (opción del paginador de la pantalla).
+        $perPage = (int) $request->query('perpage', 10);
+        if ($perPage <= 0) {
+            $perPage = IncomeService::ALL_ROWS;
+        }
         return $this->incomeService->index(
             $request,
             $request->query('search', ''),
-            $request->query('perpage', 10),
+            $perPage,
             $request->query('orderBy', 'created_at'),
             $request->query('orderDirection', 'desc'),
             $companyId
@@ -42,6 +47,11 @@ class IncomeController extends Controller
     public function store(Request $request)
     {
         return $this->incomeService->create($request);
+    }
+
+    public function downloadReport(Request $request)
+    {
+        return $this->incomeService->downloadIncomeReport($request);
     }
 
     public function show($id)

@@ -23,6 +23,9 @@ class IncomeService
 
     const TIMEZONE = 'America/Lima';
 
+    // Tamaño de página para "Todos" (listado y PDF): sin paginar en la práctica.
+    const ALL_ROWS = 100000;
+
     public function create(Request $request)
     {
         try {
@@ -303,6 +306,14 @@ class IncomeService
 
         $validated = $request->validate($rules);
 
+        // El monto de un ingreso NO se edita: mueve la caja y las liquidaciones
+        // ya calculadas. Se acepta que el cliente lo reenvíe igual (el
+        // formulario manda todos los campos), pero cualquier cambio se rechaza.
+        if (isset($validated['value']) && abs((float) $validated['value'] - (float) $income->value) > 0.0001) {
+            return $this->errorResponse('El monto del ingreso no se puede modificar.', 422);
+        }
+        unset($validated['value']);
+
         // Buscar seller como antes (tu lógica)
         $seller = null;
         if ($income->user_id) {
@@ -314,6 +325,19 @@ class IncomeService
             if ($authUser) {
                 $seller = Seller::where('user_id', $authUser->id)->first();
             }
+        }
+
+        // Solo se editan ingresos del día (día de negocio del vendedor), para
+        // TODOS los roles: los días anteriores ya pertenecen a liquidaciones
+        // procesadas. Mismo cálculo de "hoy" que delete().
+        $incomeDay = $income->business_date
+            ? $income->business_date->format('Y-m-d')
+            : Carbon::parse($income->created_at)->timezone(self::TIMEZONE)->format('Y-m-d');
+        $todayBusiness = $seller
+            ? \App\Helpers\TimezoneHelper::getBusinessNow($seller)->format('Y-m-d')
+            : Carbon::now(self::TIMEZONE)->format('Y-m-d');
+        if ($incomeDay !== $todayBusiness) {
+            return $this->errorResponse('No se pueden modificar ingresos de días anteriores.', 422);
         }
 
         // El admin/superadmin (rol 1 y 2) puede ajustar el ingreso aunque la
@@ -347,9 +371,6 @@ class IncomeService
 
         // Preparar datos para update (solo los campos permitidos)
         $updateData = [];
-        if (array_key_exists('value', $validated) && $validated['value'] !== null) {
-            $updateData['value'] = $validated['value'];
-        }
         if (array_key_exists('description', $validated)) {
             $updateData['description'] = $validated['description'];
         }
@@ -421,17 +442,9 @@ class IncomeService
 
         // Refrescar modelo para devolver data actualizada
         $income->refresh();
-        
-        // RECALCULAR LIQUIDACION SI HUBO CAMBIOS DE VALOR
-        if ($seller && isset($updateData['value'])) {
-             $liquidationService = app(\App\Services\LiquidationService::class);
-             $incomeDateRecalc = $income->business_date 
-                 ? $income->business_date->format('Y-m-d') 
-                 : ($income->created_at ? Carbon::parse($income->created_at)->toDateString() : date('Y-m-d'));
-             
-             $liquidationService->recalculateLiquidation($seller->id, $incomeDateRecalc);
-             $liquidationService->recalculateNextLiquidations($seller->id, $incomeDateRecalc);
-        }
+
+        // Sin recálculo de liquidación: el monto ya no se edita (ver arriba),
+        // y era lo único que lo disparaba.
 
         return $this->successResponse([
             'success' => true,
@@ -681,6 +694,92 @@ class IncomeService
             Log::error($e->getMessage());
             return $this->errorResponse('Error al obtener los ingresos', 500);
         }
+    }
+
+    /**
+     * PDF (dompdf) del listado de Ingresos con los mismos filtros de la
+     * pantalla (vendedor y rango de fechas). Reutiliza index() —mismo alcance
+     * por empresa/rol— trayendo todo sin paginar. A diferencia del de gastos,
+     * el vendedor es opcional: sin él sale el reporte de todas las rutas.
+     */
+    public function downloadIncomeReport(Request $request)
+    {
+        $user = Auth::user();
+        if (!in_array((int) $user->role_id, [1, 2], true) && !$user->can('exportar_reportes')) {
+            return $this->errorResponse('No tiene permiso para exportar reportes.', 403);
+        }
+
+        // Medido con 1.722 ingresos (todas las empresas): ~10 s y ~270 MB.
+        // Mismo criterio que el reporte de clientes (ClientService).
+        @ini_set('memory_limit', '512M');
+        @set_time_limit(120);
+
+        $resp = $this->index($request, '', self::ALL_ROWS, 'created_at', 'desc', $request->input('company_id'));
+        if ($resp->getStatusCode() !== 200) {
+            return $resp;
+        }
+        $payload = json_decode($resp->getContent(), true) ?: [];
+        $items = $payload['data']['data'] ?? [];
+
+        $sellerUserId = $request->input('seller_id');
+        $sellerName = $sellerUserId
+            ? (User::find($sellerUserId)->name ?? 'Vendedor')
+            : 'Todos los vendedores';
+
+        // Fecha del reporte en la zona del vendedor; sin vendedor, la del
+        // navegador que lo pide (no la del servidor, que corre en UTC).
+        $seller = $sellerUserId
+            ? Seller::with('city.country')->where('user_id', $sellerUserId)->first()
+            : null;
+        $tz = $seller
+            ? \App\Helpers\TimezoneHelper::getSellerTimezone($seller)
+            : ($request->input('timezone') ?: config('app.timezone'));
+        try {
+            $nowTz = now($tz);
+        } catch (\Throwable $e) {
+            $nowTz = now(self::TIMEZONE);
+        }
+
+        $start = $request->input('start_date');
+        $end = $request->input('end_date');
+        $rangeLabel = ($start && $end) ? ($start . ' a ' . $end) : 'Todas las fechas';
+
+        $money = fn ($v) => number_format((float) $v, 2, ',', '.');
+
+        $rows = [];
+        $total = 0.0;
+        foreach ($items as $i) {
+            $total += (float) ($i['value'] ?? 0);
+            // business_timestamp está en hora local del vendedor (etiquetada
+            // UTC): se muestra tal cual, igual que la pantalla.
+            $ts = $i['business_timestamp'] ?? $i['created_at'] ?? null;
+            $rows[] = [
+                'fecha'         => $ts ? Carbon::parse($ts)->format('d-m-Y H:i') : '',
+                'vendedor'      => $i['user']['name'] ?? '—',
+                'realizado_por' => $i['created_by_user']['name'] ?? '—',
+                'descripcion'   => $i['description'] ?? '',
+                'valor_fmt'     => $money($i['value'] ?? 0),
+            ];
+        }
+
+        $pdf = app('dompdf.wrapper');
+        $pdf->loadView('reports.income-report', [
+            'sellerName' => $sellerName,
+            'rangeLabel' => $rangeLabel,
+            'reportDate' => $nowTz->format('d/m/Y H:i:s'),
+            'rows'       => $rows,
+            'totalCount' => count($rows),
+            'totalFmt'   => $money($total),
+        ]);
+        $pdf->setPaper('a4', 'landscape');
+
+        $safe = fn ($s) => preg_replace('/[^A-Za-z0-9_\-]/', '_', trim((string) $s));
+        $fileName = 'ingresos_' . $safe($sellerName) . '_' . $nowTz->format('Y-m-d') . '.pdf';
+
+        return response()->make($pdf->output(), 200, [
+            'Content-Type'        => 'application/pdf',
+            'Content-Disposition' => 'attachment; filename="' . $fileName . '"',
+        ]);
     }
 
     public function show($expenseId)
