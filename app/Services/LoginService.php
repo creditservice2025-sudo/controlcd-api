@@ -114,6 +114,13 @@ class LoginService
                 return $this->errorResponse(['Los datos introducidos son inválidos, verifica e intenta nuevamente'], 401);
             }
 
+            // Usuario inactivado desde Usuarios (users.status). Se valida
+            // después de la contraseña para no revelar el estado de la cuenta
+            // a quien no conoce las credenciales.
+            if (strtolower((string) $user->status) === 'inactive') {
+                return $this->errorResponse(['Su usuario se encuentra inactivo. Comuníquese con el administrador.'], 403);
+            }
+
             // ============================================================
             // RESTRICCIÓN DE PLATAFORMA (APK vs Web)
             // El frontend Capacitor envía X-Client-Type: mobile en cada

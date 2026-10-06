@@ -563,6 +563,25 @@ public function me()
             $user->status = $status;
             $user->save();
 
+            // Al inactivar se cierran las sesiones abiertas (web y APK): se
+            // revocan sus tokens Passport y el siguiente request da 401.
+            if (strtolower((string) $status) === 'inactive') {
+                $user->tokens()->where('revoked', false)->update(['revoked' => true]);
+
+                // Un supervisor inactivado no debe dejar bloqueado al cobrador
+                // de la ruta que estaba revisando (mismo criterio que logout).
+                if ((int) $user->role_id === 6) {
+                    try {
+                        app(\App\Services\SupervisorLockService::class)->releaseAll((int) $user->id);
+                    } catch (\Throwable $e) {
+                        \Log::warning('[supervisor.lock] no se pudo liberar lock al inactivar', [
+                            'supervisor_id' => $user->id,
+                            'error' => $e->getMessage(),
+                        ]);
+                    }
+                }
+            }
+
             return $this->successResponse([
                 'success' => true,
                 'message' => "Estado del miembro actualizado con éxito",
