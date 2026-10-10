@@ -192,6 +192,17 @@ class AutoLiquidateSellers extends Command
             $existingLiquidation = $liquidationService->getOrCreateLiquidation($seller->id, $date, $timezone);
         }
 
+        // Nómina: si este día es el último laborable del período del cobrador,
+        // su pago de nómina entra como gasto antes de calcular el cierre. Un
+        // fallo acá no debe dejar la caja sin cerrar.
+        try {
+            app(\App\Services\Payroll\PayrollService::class)->syncCashClose((int) $seller->id, (string) $date, true);
+        } catch (\Throwable $e) {
+            \Log::warning('[payroll.cash-close] no se pudo sincronizar en el cierre automático', [
+                'seller_id' => $seller->id, 'date' => $date, 'error' => $e->getMessage(),
+            ]);
+        }
+
         // Usamos el servicio para calcular las métricas finales correctamente
         $metrics = $liquidationService->calculateLiquidationMetrics($seller->id, $date, null, $timezone);
 

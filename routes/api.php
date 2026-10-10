@@ -299,6 +299,56 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
     Route::post('credits/toggle-massively', [CreditController::class, 'toggleCreditsStatusMassively']);
     Route::post('credits/unify', [CreditController::class, 'unifyCredits']);
 
+    // Nómina semanal de cobradores. Un permiso por acción; los roles 1 y 2
+    // pasan por el Gate::before. El alcance por empresa lo resuelve
+    // PayrollService::resolveCompanyId.
+    Route::prefix('payroll')->group(function () {
+        $c = \App\Http\Controllers\PayrollController::class;
+
+        Route::middleware('permission:ver_nomina')->group(function () use ($c) {
+            Route::get('settings', [$c, 'settings']);
+            Route::get('rules', [$c, 'rules']);
+            Route::get('sellers', [$c, 'sellers']);
+            Route::get('week', [$c, 'week']);
+            Route::get('current', [$c, 'current']);
+            Route::get('overview', [$c, 'overview']);
+            Route::get('periods', [$c, 'periods']);
+            Route::get('by-date', [$c, 'byDate']);
+            Route::get('/', [$c, 'index']);
+            Route::get('{id}', [$c, 'show'])->whereNumber('id');
+            Route::get('{id}/deleted-payments', [$c, 'deletedPayments'])->whereNumber('id');
+            Route::get('{id}/day', [$c, 'day'])->whereNumber('id');
+            Route::get('{id}/grid', [$c, 'grid'])->whereNumber('id');
+            Route::get('items/{itemId}/payments', [$c, 'itemPayments'])->whereNumber('itemId');
+            Route::get('items/{itemId}/close-preview', [$c, 'closePreview'])->whereNumber('itemId');
+        });
+        Route::middleware('permission:configurar_nomina')->group(function () use ($c) {
+            Route::put('settings', [$c, 'updateSettings']);
+            Route::post('rules', [$c, 'storeRule']);
+            Route::put('rules/{id}', [$c, 'updateRule'])->whereNumber('id');
+            Route::delete('rules/{id}', [$c, 'destroyRule'])->whereNumber('id');
+        });
+        Route::middleware('permission:crear_nomina')->group(function () use ($c) {
+            Route::post('/', [$c, 'store']);
+            Route::post('{id}/recalculate', [$c, 'recalculate'])->whereNumber('id');
+            Route::post('items/{itemId}/adjustments', [$c, 'storeAdjustment'])->whereNumber('itemId');
+            Route::delete('adjustments/{adjustmentId}', [$c, 'destroyAdjustment'])->whereNumber('adjustmentId');
+        });
+        Route::middleware('permission:aprobar_nomina')->group(function () use ($c) {
+            Route::post('{id}/approve', [$c, 'approve'])->whereNumber('id');
+            Route::post('{id}/approve-closed', [$c, 'approveClosed'])->whereNumber('id');
+            Route::post('items/{itemId}/approve', [$c, 'approveItem'])->whereNumber('itemId');
+            Route::post('{id}/void', [$c, 'void'])->whereNumber('id');
+        });
+        Route::middleware('permission:pagar_nomina')->group(function () use ($c) {
+            Route::post('{id}/pay', [$c, 'payAll'])->whereNumber('id');
+            Route::post('items/{itemId}/pay', [$c, 'payItem'])->whereNumber('itemId');
+            Route::post('items/{itemId}/unpay', [$c, 'unpayItem'])->whereNumber('itemId');
+        });
+        Route::get('{id}/export', [$c, 'export'])->whereNumber('id')
+            ->middleware('permission:exportar_nomina');
+    });
+
     // Cartera irrecuperable a nivel cliente (mueve TODOS los créditos vigentes
     // del cliente). Restringido a Super-Admin y Admin. Reversible vía restore.
     Route::get('clients/{clientId}/uncollectible-summary', [CreditController::class, 'clientUncollectibleSummary']);

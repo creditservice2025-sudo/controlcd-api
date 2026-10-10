@@ -189,6 +189,30 @@ class LiquidationController extends Controller
                 ], 422);
             }
 
+            // Nómina: el cierre usa el "Total Gastos" que manda la pantalla. Si el
+            // pago de nómina se creó o cambió de monto después de que el cobrador
+            // la cargó (entró un cobro más), ese total quedó viejo: se le pide
+            // revisar de nuevo en vez de cerrar con un número que ya no es.
+            // Solo aplica al cierre del día de hoy; fallo => se cierra normal.
+            try {
+                if ($request->date === $todayDate && (!$existingLiquidation || $existingLiquidation->status === 'En curso')) {
+                    $nomina = app(\App\Services\Payroll\PayrollService::class)
+                        ->syncCashClose((int) $request->seller_id, (string) $request->date);
+                    if ($nomina['changed']) {
+                        return response()->json([
+                            'success' => false,
+                            'code' => 'PAYROLL_UPDATED',
+                            'message' => 'Se actualizó el pago de nómina del período en los gastos de hoy. '
+                                . 'Vuelva a abrir el cierre, revise el total y confirme de nuevo.',
+                        ], 422);
+                    }
+                }
+            } catch (\Throwable $e) {
+                Log::warning('[payroll.cash-close] no se pudo sincronizar al cerrar', [
+                    'seller_id' => $request->seller_id, 'date' => $request->date, 'error' => $e->getMessage(),
+                ]);
+            }
+
             // === TRANSACCIÓN ATÓMICA: Todo o nada ===
             $liquidation = DB::transaction(function () use ($request, $user, $timezone, $currency, $existingLiquidation) {
                 // === Calcular créditos irrecuperables ===
@@ -916,6 +940,19 @@ class LiquidationController extends Controller
     {
         $timezone = $request->query('timezone', 'America/Lima');
         $user = Auth::user();
+
+        // Nómina: el último día laborable del período, el pago de nómina del
+        // cobrador se registra como gasto de su caja ANTES de armar los datos
+        // del cierre, para que lo vea en "Gastos del día" y salga descontado.
+        // Nunca debe impedir que se cargue el cierre.
+        try {
+            app(\App\Services\Payroll\PayrollService::class)->syncCashClose((int) $sellerId, (string) $date);
+        } catch (\Throwable $e) {
+            Log::warning('[payroll.cash-close] no se pudo sincronizar al cargar el cierre', [
+                'seller_id' => $sellerId, 'date' => $date, 'error' => $e->getMessage(),
+            ]);
+        }
+
         return $this->liquidationService->getLiquidationData($sellerId, $date, $user->id, $timezone);
     }
 
