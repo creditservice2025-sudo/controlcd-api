@@ -82,6 +82,24 @@ class PayrollController extends Controller
         )]);
     }
 
+    /** Reglas eliminadas: quién y cuándo, la última primero. */
+    public function deletedRules(Request $request)
+    {
+        return $this->run(fn () => ['data' => $this->payroll->deletedRules(
+            $this->payroll->resolveCompanyId($request),
+            max(5, min(100, (int) $request->input('per_page', 15)))
+        )]);
+    }
+
+    /** Historial (línea de tiempo) de una regla, también si fue eliminada. */
+    public function ruleHistory(Request $request, $id)
+    {
+        return $this->run(fn () => ['data' => $this->payroll->ruleHistory(
+            $this->payroll->resolveCompanyId($request),
+            (int) $id
+        )]);
+    }
+
     public function storeRule(Request $request)
     {
         return $this->run(function () use ($request) {

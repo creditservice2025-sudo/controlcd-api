@@ -2,8 +2,10 @@
 
 namespace App\Providers;
 
+use App\Models\PayrollRule;
 use App\Models\SellerConfig;
 use App\Models\User;
+use App\Observers\PayrollRuleObserver;
 use App\Observers\SellerConfigObserver;
 use App\Observers\UserRoleSyncObserver;
 use Illuminate\Auth\Notifications\ResetPassword;
@@ -40,6 +42,10 @@ class AppServiceProvider extends ServiceProvider
         // vendedor: registra usuario, timestamp y diff de campos modificados
         // en seller_config_audits.
         SellerConfig::observe(SellerConfigObserver::class);
+
+        // Historial (línea de tiempo) de las reglas de comisión de nómina:
+        // quién creó, editó o eliminó cada regla y qué cambió.
+        PayrollRule::observe(PayrollRuleObserver::class);
 
         // El rol vive en dos lados: `users.role_id` y la tabla de Spatie. El alta
         // solo escribía la columna, así que el usuario quedaba sin los permisos

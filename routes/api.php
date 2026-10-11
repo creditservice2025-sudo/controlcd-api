@@ -309,6 +309,8 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
             Route::get('settings', [$c, 'settings']);
             Route::get('rules', [$c, 'rules']);
             Route::get('rules/exceptions', [$c, 'ruleExceptions']);
+            Route::get('rules/deleted', [$c, 'deletedRules']);
+            Route::get('rules/{id}/history', [$c, 'ruleHistory'])->whereNumber('id');
             Route::get('sellers', [$c, 'sellers']);
             Route::get('week', [$c, 'week']);
             Route::get('current', [$c, 'current']);

@@ -18,7 +18,7 @@ class PayrollRule extends Model
         'collection_mode', 'collection_percentage', 'collection_tiers',
         'placement_mode', 'placement_percentage',
         'fixed_salary', 'allowance', 'fixed_deductions',
-        'created_by', 'updated_by',
+        'created_by', 'updated_by', 'deleted_by',
     ];
 
     protected $casts = [
@@ -35,5 +35,22 @@ class PayrollRule extends Model
     public function seller()
     {
         return $this->belongsTo(Seller::class)->withTrashed();
+    }
+
+    // Trazabilidad: quién creó, editó y eliminó la regla. withTrashed para que
+    // el nombre siga apareciendo aunque el usuario se haya dado de baja.
+    public function creator()
+    {
+        return $this->belongsTo(User::class, 'created_by')->withTrashed();
+    }
+
+    public function editor()
+    {
+        return $this->belongsTo(User::class, 'updated_by')->withTrashed();
+    }
+
+    public function remover()
+    {
+        return $this->belongsTo(User::class, 'deleted_by')->withTrashed();
     }
 }

@@ -10,6 +10,7 @@ use App\Models\Payroll;
 use App\Models\PayrollItem;
 use App\Models\PayrollItemAdjustment;
 use App\Models\PayrollRule;
+use App\Models\PayrollRuleAudit;
 use App\Models\PayrollSetting;
 use App\Models\Seller;
 use App\Models\User;
@@ -246,7 +247,7 @@ class PayrollService
     {
         return PayrollRule::where('company_id', $companyId)
             ->when($onlyGeneral, fn ($q) => $q->whereNull('seller_id'))
-            ->with(['seller.user:id,name'])
+            ->with(self::RULE_RELATIONS)
             ->orderByRaw('seller_id IS NOT NULL')
             ->orderBy('currency')
             ->get()
@@ -278,7 +279,7 @@ class PayrollService
             ))
             ->orderBy('users.name')->orderBy('payroll_rules.id')
             ->select('payroll_rules.*')
-            ->with(['seller.user:id,name'])
+            ->with(self::RULE_RELATIONS)
             ->paginate($perPage);
 
         return [
@@ -290,8 +291,76 @@ class PayrollService
         ];
     }
 
+    /** Relaciones que necesita presentRule(): cobrador y autores de cada cambio. */
+    private const RULE_RELATIONS = [
+        'seller.user:id,name',
+        'creator:id,name',
+        'editor:id,name',
+        'remover:id,name',
+    ];
+
+    /**
+     * Reglas eliminadas de la empresa, la última borrada primero, con quién y
+     * cuándo la eliminó. El borrado es suave: la regla sigue en la tabla.
+     */
+    public function deletedRules(int $companyId, int $perPage = 15): array
+    {
+        $page = PayrollRule::onlyTrashed()
+            ->where('company_id', $companyId)
+            ->with(self::RULE_RELATIONS)
+            ->orderByDesc('deleted_at')
+            ->orderByDesc('id')
+            ->paginate($perPage);
+
+        return [
+            'data' => collect($page->items())->map(fn (PayrollRule $r) => $this->presentRule($r))->all(),
+            'current_page' => $page->currentPage(),
+            'last_page' => $page->lastPage(),
+            'per_page' => $page->perPage(),
+            'total' => $page->total(),
+        ];
+    }
+
+    /**
+     * Línea de tiempo de una regla (también de una eliminada), el evento más
+     * reciente primero. Los campos van crudos: el front los traduce a lenguaje
+     * de negocio con las mismas etiquetas que usa el formulario de la regla.
+     */
+    public function ruleHistory(int $companyId, int $ruleId): array
+    {
+        $rule = PayrollRule::withTrashed()->where('company_id', $companyId)
+            ->with(self::RULE_RELATIONS)->find($ruleId);
+        if (!$rule) {
+            throw new PayrollException('Regla no encontrada.', 404);
+        }
+
+        $events = PayrollRuleAudit::where('payroll_rule_id', $rule->id)
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->get()
+            ->map(fn (PayrollRuleAudit $a) => [
+                'id' => $a->id,
+                'event' => $a->event,
+                'user_name' => $a->user_name,
+                'at' => optional($a->created_at)->toIso8601String(),
+                // null = edición antigua sin detalle (anterior al historial).
+                'changes' => $a->changes,
+            ])
+            ->all();
+
+        return ['rule' => $this->presentRule($rule), 'events' => $events];
+    }
+
     private function presentRule(PayrollRule $r): array
     {
+        // Las reglas creadas antes de este cambio guardaban updated_by también al
+        // crearlas: sin una edición posterior (updated_at == created_at) no se
+        // muestra como editada.
+        $edited = $r->updated_by
+            && $r->updated_at
+            && $r->created_at
+            && $r->updated_at->gt($r->created_at);
+
         return array_merge($this->ruleSnapshot($r), [
             'id' => $r->id,
             'company_id' => $r->company_id,
@@ -299,6 +368,14 @@ class PayrollService
             'seller_id' => $r->seller_id,
             'seller_name' => optional(optional($r->seller)->user)->name,
             'active' => (bool) $r->active,
+            // Trazabilidad. Fechas en ISO-8601 con su desfase: el navegador las
+            // muestra en la hora local de quien mira.
+            'created_by_name' => optional($r->creator)->name,
+            'created_at' => optional($r->created_at)->toIso8601String(),
+            'updated_by_name' => $edited ? optional($r->editor)->name : null,
+            'updated_at' => $edited ? $r->updated_at->toIso8601String() : null,
+            'deleted_by_name' => optional($r->remover)->name,
+            'deleted_at' => optional($r->deleted_at)->toIso8601String(),
         ]);
     }
 
@@ -450,7 +527,6 @@ class PayrollService
             'fixed_salary' => PayrollCalculator::round($fixedSalary, $currency),
             'allowance' => PayrollCalculator::round($allowance, $currency),
             'fixed_deductions' => $deductions,
-            'updated_by' => Auth::id(),
         ];
 
         if ($ruleId) {
@@ -458,14 +534,16 @@ class PayrollService
             if (!$rule) {
                 throw new PayrollException('Regla no encontrada.', 404);
             }
-            $rule->update($attrs);
+            // updated_by solo en una edición: así "Editó" no aparece en una
+            // regla que nadie tocó después de crearla.
+            $rule->update($attrs + ['updated_by' => Auth::id()]);
         } else {
             $rule = PayrollRule::create($attrs + ['created_by' => Auth::id()]);
         }
 
         $this->markDraftsStale($companyId);
 
-        return $this->presentRule($rule->fresh(['seller.user:id,name']));
+        return $this->presentRule($rule->fresh(self::RULE_RELATIONS));
     }
 
     private function cleanTiers(array $tiers): array
@@ -497,7 +575,12 @@ class PayrollService
         if (!$rule) {
             throw new PayrollException('Regla no encontrada.', 404);
         }
-        $rule->delete();
+        // El borrado suave solo escribe deleted_at: quién la eliminó se guarda
+        // antes, en la misma transacción.
+        DB::transaction(function () use ($rule) {
+            $rule->forceFill(['deleted_by' => Auth::id()])->save();
+            $rule->delete();
+        });
         $this->markDraftsStale($companyId);
     }
 
