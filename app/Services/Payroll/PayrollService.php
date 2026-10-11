@@ -55,6 +55,45 @@ class PayrollService
 
     public const EXPENSE_CATEGORY = 'NOMINA';
 
+    /**
+     * Detalle de nómina de un grupo de gastos, para mostrarlo en "Gastos del
+     * día": de qué período es, cómo se calculó y en qué estado está. Devuelve
+     * solo los gastos que SON un pago de nómina, indexados por id de gasto.
+     *
+     * @param  array<int> $expenseIds
+     * @return array<int, array<string, mixed>>
+     */
+    public static function expenseInfo(array $expenseIds): array
+    {
+        if (empty($expenseIds)) {
+            return [];
+        }
+
+        $out = [];
+        foreach (PayrollItem::with('payroll')->whereIn('expense_id', $expenseIds)->get() as $item) {
+            $payroll = $item->payroll;
+            if (!$payroll) {
+                continue;
+            }
+            $state = $item->status !== PayrollItem::PAID
+                ? 'closing'                                   // se descuenta en el cierre de hoy
+                : ($item->approved_at ? 'approved' : 'awaiting'); // cerró caja: aprobada / por aprobar
+
+            $out[$item->expense_id] = [
+                'period_type' => $payroll->period_type ?: 'weekly',
+                'week_start' => $payroll->week_start->toDateString(),
+                'week_end' => $payroll->week_end->toDateString(),
+                'currency' => $item->currency,
+                'collection_base' => $item->collection_base,
+                'placement_capital' => $item->placement_capital,
+                'rule_label' => self::describeRule($item->rule_snapshot),
+                'net' => $item->net,
+                'state' => $state,
+            ];
+        }
+        return $out;
+    }
+
     /** Texto del gasto con el que la nómina sale de la caja del cobrador. */
     public static function expenseDescription(Payroll $payroll): string
     {
@@ -198,15 +237,57 @@ class PayrollService
         return $currency ? strtoupper($currency) : 'PEN';
     }
 
-    public function listRules(int $companyId): array
+    /**
+     * @param bool $onlyGeneral Solo las reglas generales (una por moneda: pocas).
+     *                          Las excepciones por cobrador pueden ser miles y
+     *                          se piden aparte, paginadas (ver exceptions()).
+     */
+    public function listRules(int $companyId, bool $onlyGeneral = false): array
     {
         return PayrollRule::where('company_id', $companyId)
+            ->when($onlyGeneral, fn ($q) => $q->whereNull('seller_id'))
             ->with(['seller.user:id,name'])
             ->orderByRaw('seller_id IS NOT NULL')
             ->orderBy('currency')
             ->get()
             ->map(fn (PayrollRule $r) => $this->presentRule($r))
             ->all();
+    }
+
+    /**
+     * Excepciones por cobrador, paginadas y ordenadas por nombre, con buscador
+     * y filtros. Pensado para miles: al navegador solo llega la página visible.
+     *
+     * @param array{search?: string, currency?: string, period_type?: string, active?: string} $filters
+     */
+    public function exceptions(int $companyId, array $filters = [], int $perPage = 15): array
+    {
+        $search = trim((string) ($filters['search'] ?? ''));
+
+        $page = PayrollRule::query()
+            ->join('sellers', 'sellers.id', '=', 'payroll_rules.seller_id')
+            ->leftJoin('users', 'users.id', '=', 'sellers.user_id')
+            ->where('payroll_rules.company_id', $companyId)
+            ->whereNotNull('payroll_rules.seller_id')
+            ->when($search !== '', fn ($q) => $q->where('users.name', 'like', '%' . $search . '%'))
+            ->when(!empty($filters['currency']), fn ($q) => $q->where('payroll_rules.currency', strtoupper((string) $filters['currency'])))
+            ->when(!empty($filters['period_type']), fn ($q) => $q->where('payroll_rules.period_type', $filters['period_type']))
+            ->when(isset($filters['active']) && $filters['active'] !== '', fn ($q) => $q->where(
+                'payroll_rules.active',
+                filter_var($filters['active'], FILTER_VALIDATE_BOOLEAN)
+            ))
+            ->orderBy('users.name')->orderBy('payroll_rules.id')
+            ->select('payroll_rules.*')
+            ->with(['seller.user:id,name'])
+            ->paginate($perPage);
+
+        return [
+            'data' => collect($page->items())->map(fn (PayrollRule $r) => $this->presentRule($r))->all(),
+            'current_page' => $page->currentPage(),
+            'last_page' => $page->lastPage(),
+            'per_page' => $page->perPage(),
+            'total' => $page->total(),
+        ];
     }
 
     private function presentRule(PayrollRule $r): array
@@ -236,6 +317,45 @@ class PayrollService
             'allowance' => (float) $r->allowance,
             'fixed_deductions' => array_values($r->fixed_deductions ?? []),
         ];
+    }
+
+    /**
+     * Crea la MISMA regla general para varias monedas de una vez (o todas).
+     * Queda una regla por moneda, así después cada una se ajusta por separado.
+     * Todo o nada: si alguna moneda ya tiene regla general, no se crea ninguna.
+     *
+     * @param  array<int, string> $currencies
+     * @return array<int, array<string, mixed>>
+     */
+    public function saveRulesForCurrencies(int $companyId, array $data, array $currencies): array
+    {
+        $currencies = array_values(array_unique(array_filter(array_map(
+            fn ($c) => strtoupper(trim((string) $c)),
+            $currencies
+        ))));
+        if (empty($currencies)) {
+            throw new PayrollException('Elija al menos una moneda.');
+        }
+
+        $taken = PayrollRule::where('company_id', $companyId)->whereNull('seller_id')
+            ->whereIn('currency', $currencies)->pluck('currency')->all();
+        if (!empty($taken)) {
+            throw new PayrollException(
+                'Ya existe una regla general para: ' . implode(', ', $taken)
+                . '. Quítela de la selección o edite esa regla.'
+            );
+        }
+
+        return DB::transaction(function () use ($companyId, $data, $currencies) {
+            $created = [];
+            foreach ($currencies as $currency) {
+                $created[] = $this->saveRule($companyId, array_merge($data, [
+                    'currency' => $currency,
+                    'seller_id' => null,
+                ]));
+            }
+            return $created;
+        });
     }
 
     public function saveRule(int $companyId, array $data, ?int $ruleId = null): array
@@ -569,7 +689,8 @@ class PayrollService
     {
         $this->syncAutomatic($companyId);
 
-        $rules = $this->listRules($companyId);
+        // Solo las reglas generales: las excepciones se piden aparte, paginadas.
+        $rules = $this->listRules($companyId, true);
         $periods = $this->periods($companyId);
         // Puede haber varios períodos corriendo a la vez (uno por tipo de nómina).
         $currents = collect($periods)->where('current', true)
@@ -579,7 +700,8 @@ class PayrollService
         return [
             'settings' => $this->getSettings($companyId),
             'rules' => $rules,
-            'has_rules' => collect($rules)->contains('active', true),
+            'exceptions_count' => PayrollRule::where('company_id', $companyId)->whereNotNull('seller_id')->count(),
+            'has_rules' => PayrollRule::where('company_id', $companyId)->where('active', true)->exists(),
             'periods' => $periods,
             'list' => $this->list($companyId, $perPage, false),
             'currents' => $currents,

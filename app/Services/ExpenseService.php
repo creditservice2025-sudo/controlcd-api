@@ -1063,10 +1063,24 @@ class ExpenseService
 
             $expenses = $expensesQuery->paginate($perpage);
 
-            $expenses->getCollection()->transform(function ($expense) use ($seller) {
+            // Nómina: si alguno de estos gastos es un pago de nómina, se le
+            // adjunta su detalle (período, cómo se calculó, estado) para que la
+            // pantalla lo resalte y lo explique. Es solo informativo: si falla,
+            // el listado de gastos sale igual.
+            $payrollInfo = [];
+            try {
+                $payrollInfo = \App\Services\Payroll\PayrollService::expenseInfo(
+                    $expenses->getCollection()->pluck('id')->all()
+                );
+            } catch (\Throwable $e) {
+                Log::warning('[payroll] no se pudo adjuntar el detalle de nómina a los gastos', ['error' => $e->getMessage()]);
+            }
+
+            $expenses->getCollection()->transform(function ($expense) use ($seller, $payrollInfo) {
                 if (!$expense->business_timezone) {
                     $expense->business_timezone = \App\Helpers\TimezoneHelper::getSellerTimezone($seller);
                 }
+                $expense->payroll_info = $payrollInfo[$expense->id] ?? null;
                 return $expense;
             });
 

@@ -308,6 +308,7 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         Route::middleware('permission:ver_nomina')->group(function () use ($c) {
             Route::get('settings', [$c, 'settings']);
             Route::get('rules', [$c, 'rules']);
+            Route::get('rules/exceptions', [$c, 'ruleExceptions']);
             Route::get('sellers', [$c, 'sellers']);
             Route::get('week', [$c, 'week']);
             Route::get('current', [$c, 'current']);

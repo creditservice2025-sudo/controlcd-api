@@ -72,12 +72,38 @@ class PayrollController extends Controller
         return $this->run(fn () => ['data' => $this->payroll->listRules($this->payroll->resolveCompanyId($request))]);
     }
 
+    /** Excepciones por cobrador: paginadas, con buscador y filtros. */
+    public function ruleExceptions(Request $request)
+    {
+        return $this->run(fn () => ['data' => $this->payroll->exceptions(
+            $this->payroll->resolveCompanyId($request),
+            $request->only(['search', 'currency', 'period_type', 'active']),
+            max(5, min(100, (int) $request->input('per_page', 15)))
+        )]);
+    }
+
     public function storeRule(Request $request)
     {
-        return $this->run(fn () => [
-            'message' => 'Regla de comisión creada.',
-            'data' => $this->payroll->saveRule($this->payroll->resolveCompanyId($request), $request->all()),
-        ]);
+        return $this->run(function () use ($request) {
+            $companyId = $this->payroll->resolveCompanyId($request);
+            $currencies = $request->input('currencies');
+
+            // Varias monedas (o todas) a la vez: una regla por moneda.
+            if (is_array($currencies) && count($currencies) > 0 && !$request->filled('seller_id')) {
+                $created = $this->payroll->saveRulesForCurrencies($companyId, $request->except('currencies'), $currencies);
+                return [
+                    'message' => count($created) === 1
+                        ? 'Regla de comisión creada.'
+                        : count($created) . ' reglas creadas, una por moneda.',
+                    'data' => $created,
+                ];
+            }
+
+            return [
+                'message' => 'Regla de comisión creada.',
+                'data' => $this->payroll->saveRule($companyId, $request->all()),
+            ];
+        });
     }
 
     public function updateRule(Request $request, $id)
