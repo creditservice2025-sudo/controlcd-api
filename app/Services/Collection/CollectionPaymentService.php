@@ -45,6 +45,15 @@ class CollectionPaymentService
             return $this->errorResponse('Información de pago incompleta', 422);
         }
 
+        // Cada abono debe apuntar a una cuota. Una fila sin cuota (p. ej. el
+        // desembolso marcado con la casilla "todos" de la tabla) rompía el cobro
+        // con "Undefined array key installment_number".
+        foreach ($payments as $pData) {
+            if (!is_array($pData) || empty($pData['installment_number'])) {
+                return $this->errorResponse('Solo se pueden cobrar cuotas: uno de los movimientos seleccionados no es una cuota.', 422);
+            }
+        }
+
         // Bloquear si el día del pago tiene cierre de caja activo.
         $tz = $payload['timezone'] ?? 'America/Bogota';
         $paymentDate = $payload['payment_date'] ?? Carbon::now($tz)->toDateString();
