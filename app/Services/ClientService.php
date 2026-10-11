@@ -1321,12 +1321,18 @@ class ClientService
                     $clientsQuery->where('status', 'active');
                 }
 
-                // Ocultar clientes cuyos créditos son TODOS irrecuperables
-                // (no tienen ningún crédito con otro estado). Esto sigue
-                // permitiendo clientes nuevos sin créditos.
+                // Ocultar clientes que están en Cartera Irrecuperable: tienen
+                // algún crédito irrecuperable y NINGÚN crédito vivo. Los
+                // créditos ya cerrados (Liquidado/Renovado/Unificado) no
+                // cuentan: antes bastaba un liquidado viejo para que el
+                // cliente se quedara en "Clientes" después de moverlo (350
+                // casos). Siguen visibles los clientes sin créditos, los que
+                // solo tienen cerrados y los que tienen otro crédito vivo.
                 $clientsQuery->where(function ($q) {
-                    $q->whereDoesntHave('credits') // sin créditos: OK
-                      ->orWhereHas('credits', fn($cq) => $cq->where('status', '<>', 'Cartera Irrecuperable'));
+                    $q->whereDoesntHave('credits', fn($cq) => $cq->where('status', 'Cartera Irrecuperable'))
+                      ->orWhereHas('credits', fn($cq) => $cq->whereNotIn('status', [
+                          'Cartera Irrecuperable', 'Liquidado', 'Renovado', 'Unificado',
+                      ]));
                 });
             }
 
