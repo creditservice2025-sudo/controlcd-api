@@ -2382,8 +2382,10 @@ class LiquidationService
         if ($level !== 'day') {
             $columnas[] = 'Con Crédito Activo';
             $columnas[] = 'Sin Crédito';
+            $columnas[] = 'Morosos';
             $campos[] = 'clients_with_active_credit';
             $campos[] = 'clients_without_credit';
+            $campos[] = 'delinquent_clients';
         }
 
         $columnas[] = 'Caja Inicial';
@@ -2392,7 +2394,7 @@ class LiquidationService
         // Los conteos son enteros, no dinero: se redondean y no llevan símbolo.
         $camposEnteros = [
             'new_clients', 'settled_clients', 'additional_clients',
-            'clients_with_active_credit', 'clients_without_credit',
+            'clients_with_active_credit', 'clients_without_credit', 'delinquent_clients',
         ];
 
         $rows = [];
@@ -2968,6 +2970,362 @@ class LiquidationService
     }
 
     /**
+     * Crédito EN MORA al corte: vivo al corte (creditoVivoAlCorte) y con al
+     * menos una cuota que, a esa fecha, llevaba MÁS DE 1 DÍA vencida sin
+     * pagarse completa. Es el mismo umbral que el reporte de Morosos
+     * (ClientService::getDebtorCredits: días de mora > 1).
+     *
+     * Se reconstruye a la fecha de corte, no con el estado de hoy: lo pagado de
+     * cada cuota sale de payment_installments filtrando los pagos con
+     * business_date <= corte. installments.status / paid_amount son el estado de
+     * HOY y harían que un cliente que pagó después del corte desaparezca de un
+     * rango pasado. (Medido: en las cuotas vivas, lo aplicado en
+     * payment_installments coincide con paid_amount salvo 1 de 192.781.)
+     *
+     * Cómo se calcula lo pagado de una cuota AL CORTE sin sumar todo el
+     * historial de pagos (eso tardaba 51 s para todas las empresas):
+     *
+     *   pagado al corte = paid_amount (hoy) − lo aplicado DESPUÉS del corte
+     *
+     * Una cuota estaba impaga al corte si hoy sigue impaga, o si recibió algo
+     * después del corte y descontándolo quedaba saldo.
+     *
+     * Va en DOS PASOS y por conjuntos, por rendimiento:
+     *  1. Créditos del alcance con alguna cuota vencida impaga al corte. Lo
+     *     aplicado después del corte se agrupa por cuota en una sola pasada
+     *     (índice de payments.business_date). Son pocos: ~9 mil en todo el
+     *     sistema, segundos.
+     *  2. Recién sobre ESOS ids se aplica creditoVivoAlCorte(). Ese filtro, el
+     *     mismo de "Con Crédito Activo", es caro con cortes viejos (133 s para
+     *     todas las empresas un mes atrás) porque recorre todos los créditos;
+     *     restringido a los candidatos deja de serlo.
+     * Todo junto en una consulta, o correlacionado por cuota, tardaba de 51 a
+     * 184 s.
+     *
+     * OJO: las listas de ids van con whereIntegerInRaw, no whereIn. Con miles
+     * de ids como parámetros enlazados MySQL descarta la clave primaria y
+     * recorre la tabla (medido: 26 s contra 0,16 s para 5.000 ids). Es seguro:
+     * los ids son enteros que salen de la propia base.
+     *
+     * Vive en un solo lugar porque lo usan el conteo y el detalle.
+     *
+     * @return array<int, int> ids de créditos en mora al corte
+     */
+    private function idsCreditosEnMoraAlCorte(string $cut, $companyId = null, $sellerIds = null, $cityId = null): array
+    {
+        // "Más de 1 día vencida" = vencimiento como mucho dos días antes del
+        // corte. El corte ya es fecha de negocio (zona del vendedor).
+        $vencidaHasta = Carbon::parse($cut)->subDays(2)->format('Y-m-d');
+
+        // Paso 1: candidatos, ya recortados al alcance (empresa / vendedores /
+        // ruta) desde el principio, para que el reporte de un vendedor no mire
+        // todo el sistema. Son dos casos y cada uno es una consulta barata:
+        $alcance = function ($q) use ($companyId, $sellerIds, $cityId) {
+            $q->join('clients as cl2', 'cl2.id', '=', 'cc.client_id')
+              ->join('sellers as s2', 's2.id', '=', 'cl2.seller_id')
+              ->whereNull('cc.deleted_at')
+              // Estados que creditoVivoAlCorte() descarta siempre: filtrarlos
+              // acá achica el conjunto sin cambiar el resultado.
+              ->whereNotIn('cc.status', ['Renovado', 'Unificado', 'Cartera Irrecuperable'])
+              ->when($companyId !== null, fn ($w) => $w->where('s2.company_id', $companyId))
+              ->when($sellerIds !== null, fn ($w) => $w->whereIn('s2.id', $sellerIds))
+              ->when($cityId !== null, fn ($w) => $w->where('s2.city_id', $cityId));
+        };
+
+        // (a) Cuotas vencidas que HOY siguen con saldo: sin pagos posteriores
+        //     al corte, también lo tenían al corte.
+        $impagasHoy = DB::table('installments as i')
+            ->join('credits as cc', 'cc.id', '=', 'i.credit_id')
+            ->whereNull('i.deleted_at')
+            ->where('i.due_date', '<=', $vencidaHasta)
+            ->whereRaw('i.quota_amount - i.paid_amount > 0.01');
+        $alcance($impagasHoy);
+
+        // (b) Cuotas vencidas que recibieron pagos DESPUÉS del corte y,
+        //     descontándolos, tenían saldo al corte. En dos consultas simples
+        //     para que MySQL arranque por los pagos posteriores (índice de
+        //     business_date): unida a cuotas y créditos elegía mal el orden y
+        //     tardaba hasta un minuto.
+        $post = $this->aplicadoDespuesDelCortePorCuota($cut, $companyId, $sellerIds, $cityId);
+        $pagadasDespues = [];
+        foreach (array_chunk(array_keys($post), 5000) as $tanda) {
+            $cuotas = DB::table('installments as i')
+                ->join('credits as cc', 'cc.id', '=', 'i.credit_id')
+                ->whereIntegerInRaw('i.id', $tanda)
+                ->whereNull('i.deleted_at')
+                ->whereNull('cc.deleted_at')
+                ->whereNotIn('cc.status', ['Renovado', 'Unificado', 'Cartera Irrecuperable'])
+                ->where('i.due_date', '<=', $vencidaHasta)
+                ->get(['i.id', 'i.credit_id', 'i.quota_amount', 'i.paid_amount']);
+            foreach ($cuotas as $cu) {
+                if ((float) $cu->quota_amount - (float) $cu->paid_amount + $post[$cu->id] > 0.01) {
+                    $pagadasDespues[] = $cu->credit_id;
+                }
+            }
+        }
+
+        $candidatos = array_values(array_unique(array_merge(
+            $impagasHoy->distinct()->pluck('i.credit_id')->all(),
+            $pagadasDespues
+        )));
+
+        if (empty($candidatos)) {
+            return [];
+        }
+
+        // Paso 2: de esos, los vivos al corte. Por tandas, para no armar un IN
+        // con decenas de miles de ids en una sola consulta.
+        $ids = [];
+        foreach (array_chunk($candidatos, 5000) as $tanda) {
+            $q = DB::table('credits as c')->whereIntegerInRaw('c.id', $tanda)->select('c.id');
+            $this->creditoVivoAlCorte($q, $cut);
+            array_push($ids, ...$q->pluck('c.id')->all());
+        }
+
+        return array_map('intval', $ids);
+    }
+
+    /**
+     * Lo aplicado a cada cuota por pagos con fecha de negocio posterior al
+     * corte, recortado al alcance por el crédito del pago.
+     *
+     * @return array<int, float> installment_id => monto aplicado después del corte
+     */
+    private function aplicadoDespuesDelCortePorCuota(string $cut, $companyId = null, $sellerIds = null, $cityId = null): array
+    {
+        $q = DB::table('payments as p')
+            ->join('payment_installments as pi', 'pi.payment_id', '=', 'p.id')
+            ->whereNull('p.deleted_at')
+            ->whereNull('pi.deleted_at')
+            ->where('p.business_date', '>', $cut);
+
+        if ($companyId !== null || $sellerIds !== null || $cityId !== null) {
+            $q->join('credits as pc', 'pc.id', '=', 'p.credit_id')
+              ->join('clients as pcl', 'pcl.id', '=', 'pc.client_id')
+              ->join('sellers as ps', 'ps.id', '=', 'pcl.seller_id')
+              ->when($companyId !== null, fn ($w) => $w->where('ps.company_id', $companyId))
+              ->when($sellerIds !== null, fn ($w) => $w->whereIn('ps.id', $sellerIds))
+              ->when($cityId !== null, fn ($w) => $w->where('ps.city_id', $cityId));
+        }
+
+        // Alias explícito: pluck() sobre una expresión SUM(...) no encuentra la
+        // columna y devuelve nulos.
+        return array_map(
+            'floatval',
+            $q->groupBy('pi.installment_id')
+              ->select('pi.installment_id', DB::raw('SUM(pi.applied_amount) as aplicado'))
+              ->pluck('aplicado', 'installment_id')
+              ->all()
+        );
+    }
+
+    /**
+     * Clientes MOROSOS por vendedor al cierre del rango: clientes activos con al
+     * menos un crédito en mora (idsCreditosEnMoraAlCorte). Mismo alcance que
+     * getClientCreditStateBySeller, así un moroso siempre es también un
+     * "Con Crédito Activo" del mismo vendedor.
+     *
+     * @return array<int, int> seller_id => cantidad de clientes morosos
+     */
+    public function getDelinquentClientsBySeller($endDate, $companyId = null, $sellerIds = null, $cityId = null): array
+    {
+        return $this->countDelinquentClients('s.id', $endDate, $companyId, $sellerIds, $cityId);
+    }
+
+    /**
+     * Igual que getDelinquentClientsBySeller(), agrupado por CIUDAD (ruta). Cada
+     * cliente es de un solo vendedor y cada vendedor de una sola ciudad, así que
+     * los vendedores de una ruta suman exactamente el número de la ruta.
+     *
+     * @return array<int, int> city_id => cantidad de clientes morosos
+     */
+    public function getDelinquentClientsByCity($endDate, $companyId = null, $sellerIds = null): array
+    {
+        return $this->countDelinquentClients('s.city_id', $endDate, $companyId, $sellerIds);
+    }
+
+    /** Conteo de clientes morosos al corte, agrupado por la columna indicada. */
+    private function countDelinquentClients(string $groupBy, $endDate, $companyId = null, $sellerIds = null, $cityId = null): array
+    {
+        $cut = Carbon::parse($endDate)->format('Y-m-d');
+        $this->assertDateFormat($cut);
+
+        $enMora = $this->idsCreditosEnMoraAlCorte($cut, $companyId, $sellerIds, $cityId);
+        if (empty($enMora)) {
+            return [];
+        }
+
+        // Créditos → clientes → grupo, en búsquedas por clave primaria. Unido en
+        // una sola consulta con un IN largo, MySQL recorría clientes y vendedores
+        // primero y tardaba casi un minuto para todas las empresas.
+        $clientIds = [];
+        foreach (array_chunk($enMora, 5000) as $tanda) {
+            foreach (DB::table('credits')->whereIntegerInRaw('id', $tanda)->pluck('client_id') as $cid) {
+                $clientIds[$cid] = true;
+            }
+        }
+
+        $out = [];
+        foreach (array_chunk(array_keys($clientIds), 5000) as $tanda) {
+            $filas = DB::table('clients as cl')
+                ->join('sellers as s', 's.id', '=', 'cl.seller_id')
+                ->whereIntegerInRaw('cl.id', $tanda)
+                ->whereNull('cl.deleted_at')
+                ->whereNull('s.deleted_at')
+                ->where('cl.status', 'active')
+                ->pluck($groupBy . ' as grupo');
+            // Cada id de cliente aparece una sola vez: contar filas es contar
+            // clientes, sin doble conteo entre tandas.
+            foreach ($filas as $grupo) {
+                $out[$grupo] = ($out[$grupo] ?? 0) + 1;
+            }
+        }
+
+        return $out;
+    }
+
+    /** Pega "delinquent_clients" sobre cada fila; sin datos queda en cero explícito. */
+    private function attachDelinquentClients($rows, array $morosos, string $keyField)
+    {
+        return $rows->map(function ($row) use ($morosos, $keyField) {
+            $id = is_array($row) ? ($row[$keyField] ?? null) : ($row->{$keyField} ?? null);
+            $n = $id !== null ? ($morosos[$id] ?? 0) : 0;
+            if (is_array($row)) {
+                $row['delinquent_clients'] = $n;
+            } else {
+                $row->delinquent_clients = $n;
+            }
+            return $row;
+        });
+    }
+
+    /**
+     * Los clientes que hay detrás del número "Morosos" de un vendedor, con sus
+     * créditos en mora, cuánto debían vencido al corte y los días de atraso de
+     * la cuota impaga más vieja. Mismo predicado que el conteo.
+     */
+    public function getDelinquentClientsDetail($endDate, $companyId = null, $sellerIds = null, $cityId = null): array
+    {
+        $cut = Carbon::parse($endDate)->format('Y-m-d');
+        $this->assertDateFormat($cut);
+        $vencidaHasta = Carbon::parse($cut)->subDays(2)->format('Y-m-d');
+
+        $creditos = DB::table('credits as c')
+            ->join('clients as cl', 'cl.id', '=', 'c.client_id')
+            ->join('sellers as s', 's.id', '=', 'cl.seller_id')
+            ->join('users as u', 'u.id', '=', 's.user_id')
+            ->join('cities as ci', 'ci.id', '=', 's.city_id')
+            ->select(
+                'c.id as credit_id',
+                'c.credit_value',
+                'c.total_amount',
+                'c.business_date',
+                'cl.id as client_id',
+                'cl.name as client_name',
+                'cl.dni',
+                'cl.phone',
+                'u.name as seller_name',
+                'ci.name as city_name'
+            )
+            ->whereNull('cl.deleted_at')
+            ->whereNull('s.deleted_at')
+            ->where('cl.status', 'active');
+
+        if ($companyId !== null) {
+            $creditos->where('s.company_id', $companyId);
+        }
+        if ($sellerIds !== null) {
+            $creditos->whereIn('s.id', $sellerIds);
+        }
+        if ($cityId !== null) {
+            $creditos->where('s.city_id', $cityId);
+        }
+
+        $enMora = $this->idsCreditosEnMoraAlCorte($cut, $companyId, $sellerIds, $cityId);
+        if (empty($enMora)) {
+            return [];
+        }
+        // El detalle es de una ruta o un vendedor: pocos ids, un solo IN.
+        $creditos = $creditos->whereIntegerInRaw('c.id', $enMora)->get();
+
+        if ($creditos->isEmpty()) {
+            return [];
+        }
+
+        // Cuotas vencidas de esos créditos con lo que se les había aplicado al
+        // corte. Una sola consulta para todos: son pocos créditos (solo los
+        // morosos del alcance) y así no hay N+1.
+        // Pagado al corte = paid_amount de hoy − lo aplicado después del corte
+        // (mismo criterio que idsCreditosEnMoraAlCorte).
+        $post = $this->aplicadoDespuesDelCortePorCuota($cut, $companyId, $sellerIds, $cityId);
+        $cuotas = DB::table('installments as i')
+            ->whereIntegerInRaw('i.credit_id', $creditos->pluck('credit_id')->all())
+            ->whereNull('i.deleted_at')
+            ->where('i.due_date', '<=', $vencidaHasta)
+            ->orderBy('i.due_date')
+            ->get(['i.id', 'i.credit_id', 'i.due_date', 'i.quota_amount', 'i.paid_amount'])
+            ->map(function ($cu) use ($post) {
+                $cu->aplicado = (float) $cu->paid_amount - ($post[$cu->id] ?? 0);
+                return $cu;
+            })
+            ->groupBy('credit_id');
+
+        $corte = Carbon::parse($cut)->startOfDay();
+
+        // Una fila por CLIENTE (como las otras columnas de estado), sumando sus
+        // créditos en mora.
+        return $creditos->groupBy('client_id')->map(function ($deCliente) use ($cuotas, $corte) {
+            $primero = $deCliente->first();
+            $vencido = 0.0;
+            $cuotasVencidas = 0;
+            $masVieja = null;
+
+            foreach ($deCliente as $cr) {
+                foreach ($cuotas->get($cr->credit_id, collect()) as $cu) {
+                    $saldo = (float) $cu->quota_amount - (float) $cu->aplicado;
+                    if ($saldo <= 0.01) {
+                        continue;
+                    }
+                    $vencido += $saldo;
+                    $cuotasVencidas++;
+                    if ($masVieja === null || $cu->due_date < $masVieja) {
+                        $masVieja = $cu->due_date;
+                    }
+                }
+            }
+
+            $creditIds = $deCliente->sortByDesc('business_date')->pluck('credit_id')->map(fn ($id) => (int) $id)->values()->all();
+
+            return [
+                'client_id' => (int) $primero->client_id,
+                // El modal usa credit_id como key; la fila es el cliente.
+                'credit_id' => (int) $primero->client_id,
+                'client_name' => $primero->client_name,
+                'dni' => $primero->dni,
+                'phone' => $primero->phone,
+                'seller_name' => $primero->seller_name,
+                'city_name' => $primero->city_name,
+                'credit_ids' => $creditIds,
+                'creditos_vivos' => count($creditIds),
+                'credit_value' => round((float) $deCliente->sum('credit_value'), 2),
+                'total_amount' => round((float) $deCliente->sum('total_amount'), 2),
+                'business_day' => $deCliente->max('business_date'),
+                'overdue_amount' => round($vencido, 2),
+                'overdue_installments' => $cuotasVencidas,
+                'days_overdue' => $masVieja
+                    ? (int) Carbon::parse($masVieja)->startOfDay()->diffInDays($corte)
+                    : 0,
+                'credit_status' => null,
+                'creditos_previos' => null,
+            ];
+        })
+            // Los más atrasados primero: es lo que se sale a cobrar.
+            ->sortByDesc('days_overdue')
+            ->values()
+            ->all();
+    }
+
+    /**
      * Pega sobre cada fila del reporte el estado de clientes al corte. Igual que
      * attachCreditCounts: una ruta sin datos queda en cero explícito.
      */
@@ -3502,6 +3860,10 @@ class LiquidationService
         $clientState = $this->getClientCreditStateByCity($endUTC, $companyId, $sellerIds);
         $result = $this->attachClientCreditState($result, $clientState, 'city_id');
 
+        // Clientes morosos al cierre, por ruta (misma foto del último día).
+        $morosos = $this->getDelinquentClientsByCity($endUTC, $companyId, $sellerIds);
+        $result = $this->attachDelinquentClients($result, $morosos, 'city_id');
+
         \Log::debug("getAccumulatedByCity - Resultado:", ['count' => $result->count(), 'data' => $result]);
         return $result;
     }
@@ -3647,8 +4009,12 @@ class LiquidationService
         // porque no cuenta lo que pasó en el período —eso son las columnas de
         // colocación— sino cómo quedó la cartera del vendedor el último día.
         $clientState = $this->getClientCreditStateBySeller($endUTC, $companyId, $sellerIds, $cityId);
+        $result = $this->attachClientCreditState($result, $clientState, 'seller_id');
 
-        return $this->attachClientCreditState($result, $clientState, 'seller_id');
+        // Clientes morosos al cierre (misma foto del último día del rango).
+        $morosos = $this->getDelinquentClientsBySeller($endUTC, $companyId, $sellerIds, $cityId);
+
+        return $this->attachDelinquentClients($result, $morosos, 'seller_id');
     }
 
     public function getSellerLiquidationsDetail($sellerId, $startDate, $endDate)

@@ -1367,7 +1367,8 @@ class LiquidationController extends Controller
     {
         $validator = Validator::make($request->all(), [
             'end_date' => 'required|date',
-            'bucket' => 'required|in:with_credit,without_credit',
+            // delinquent = clientes morosos al cierre (columna "Morosos").
+            'bucket' => 'required|in:with_credit,without_credit,delinquent',
             'city_id' => 'nullable|exists:cities,id',
             // Permite abrir el mismo detalle desde la tabla de vendedores, no
             // solo desde el resumen por ruta.
@@ -1407,13 +1408,20 @@ class LiquidationController extends Controller
             // vendedores llega uno solo. Sin seller_id se recorta a los
             // asignados, y si el usuario no está acotado queda en null: el
             // detalle sale por ruta, como antes.
-            $clientes = $this->liquidationService->getClientCreditStateDetail(
-                $request->input('end_date'),
-                $request->input('bucket'),
-                $companyId,
-                $sellerIdsPermitidos,
-                $request->input('city_id')
-            );
+            $clientes = $request->input('bucket') === 'delinquent'
+                ? $this->liquidationService->getDelinquentClientsDetail(
+                    $request->input('end_date'),
+                    $companyId,
+                    $sellerIdsPermitidos,
+                    $request->input('city_id')
+                )
+                : $this->liquidationService->getClientCreditStateDetail(
+                    $request->input('end_date'),
+                    $request->input('bucket'),
+                    $companyId,
+                    $sellerIdsPermitidos,
+                    $request->input('city_id')
+                );
 
             return response()->json([
                 'success' => true,
