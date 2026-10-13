@@ -299,6 +299,11 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
     Route::post('credits/toggle-massively', [CreditController::class, 'toggleCreditsStatusMassively']);
     Route::post('credits/unify', [CreditController::class, 'unifyCredits']);
 
+    // Avance del cobrador hacia su meta de recaudo (barra de su pantalla).
+    // Siempre del vendedor autenticado; si la empresa no lo habilitó responde
+    // available=false.
+    Route::get('my/collection-progress', [\App\Http\Controllers\SellerProgressController::class, 'show']);
+
     // Cartera irrecuperable a nivel cliente (mueve TODOS los créditos vigentes
     // del cliente). Restringido a Super-Admin y Admin. Reversible vía restore.
     Route::get('clients/{clientId}/uncollectible-summary', [CreditController::class, 'clientUncollectibleSummary']);
@@ -316,6 +321,19 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         Route::post('holidays', [\App\Http\Controllers\HolidayController::class, 'store']);
         Route::put('holidays/{id}', [\App\Http\Controllers\HolidayController::class, 'update']);
         Route::delete('holidays/{id}', [\App\Http\Controllers\HolidayController::class, 'destroy']);
+
+        // Metas de recaudo por empresa y moneda (escala de colores del Resumen
+        // General de vendedores). El Admin opera solo sobre su empresa.
+        Route::get('collection-scales', [\App\Http\Controllers\CollectionScaleController::class, 'index']);
+        Route::get('collection-scales/deleted', [\App\Http\Controllers\CollectionScaleController::class, 'deleted']);
+        // "Mostrar avance al vendedor": lo ven Admin y Super-Admin; lo cambia
+        // solo el Super-Admin (lo valida CollectionScaleService::setProgress).
+        Route::get('collection-scales/progress-setting', [\App\Http\Controllers\CollectionScaleController::class, 'progressSetting']);
+        Route::put('collection-scales/progress-setting', [\App\Http\Controllers\CollectionScaleController::class, 'updateProgressSetting']);
+        Route::get('collection-scales/{id}/history', [\App\Http\Controllers\CollectionScaleController::class, 'history'])->whereNumber('id');
+        Route::post('collection-scales', [\App\Http\Controllers\CollectionScaleController::class, 'store']);
+        Route::put('collection-scales/{id}', [\App\Http\Controllers\CollectionScaleController::class, 'update'])->whereNumber('id');
+        Route::delete('collection-scales/{id}', [\App\Http\Controllers\CollectionScaleController::class, 'destroy'])->whereNumber('id');
 
         // "Trabaja domingos" por empresa/país. Super-Admin ve todas; Admin solo
         // la suya (scope en el controlador). Edición individual + masiva.

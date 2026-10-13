@@ -33,7 +33,10 @@ class SummaryReportExport implements FromArray, WithEvents
             // las filas de totales, cuyo estilo se calcula desde la última fila
             // de la hoja, y el formato terminaría pintando lo que no es.
             $leyenda
-                ? array_merge(['Recaudo del período'], array_column($leyenda, 'etiqueta'))
+                ? array_merge(
+                    ['Meta de recaudo (' . implode(' · ', $this->data['tone_legend_titles'] ?? []) . ')'],
+                    array_column($leyenda, 'etiqueta')
+                )
                 : [],
             $this->data['columns'],
         ];
@@ -98,14 +101,20 @@ class SummaryReportExport implements FromArray, WithEvents
                 // que en pantalla —Vendedor, Moneda, Total Recaudado— y los
                 // mismos cortes. Fila por fila, porque cada una puede caer en un
                 // tramo distinto; no hay rango que estilizar de una sola vez.
-                foreach (($this->data['row_tones'] ?? []) as $i => $tono) {
+                // Los colores vienen por fila (row_colors): cada vendedor con la
+                // paleta de SU meta, que puede ser personalizada.
+                foreach (($this->data['row_colors'] ?? []) as $i => $color) {
+                    // Sin meta configurada: la fila queda sin color.
+                    if (!$color) {
+                        continue;
+                    }
                     $fila = $filaEncabezado + 1 + $i;
                     $estilo = $hoja->getStyle("A{$fila}:C{$fila}");
                     $estilo->getFont()->setBold(true)
-                        ->getColor()->setARGB('FF' . \App\Support\EscalaRecaudo::texto($tono));
+                        ->getColor()->setARGB('FF' . $color['texto']);
                     $estilo->getFill()
                         ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
-                        ->getStartColor()->setARGB('FF' . \App\Support\EscalaRecaudo::fondo($tono));
+                        ->getStartColor()->setARGB('FF' . $color['fondo']);
                 }
 
                 // Formato de miles con dos decimales en las columnas de dinero.

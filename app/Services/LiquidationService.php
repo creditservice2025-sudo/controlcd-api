@@ -338,6 +338,9 @@ class LiquidationService
             // firmados se saltean solos: la cascada no reescribe lo firmado.
             $this->recalculateNextLiquidations($liquidation->seller_id, $liquidation->date);
 
+            // Control de conciliación: solo compara y avisa, después de responder.
+            $this->avisarSiRecaudoNoCuadra($liquidation);
+
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Liquidación cerrada y aprobada correctamente.',
@@ -347,6 +350,60 @@ class LiquidationService
             \Log::error("Error en approve: " . $e->getMessage());
             return $this->errorResponse('Error al aprobar la liquidación', 500);
         }
+    }
+
+    /**
+     * Control de conciliación al aprobar: compara el total_collected que quedó
+     * sellado en la liquidación contra la suma de pagos del día calculada con
+     * el criterio único (RecaudoVendedorService). Si difieren, deja registro en
+     * el log y avisa por Telegram.
+     *
+     * NO bloquea, NO corrige y NO cambia nada: solo detecta. Corre DESPUÉS de
+     * enviar la respuesta (afterResponse), así ni una consulta lenta ni un
+     * Telegram caído pueden demorar o hacer fallar una aprobación. Sirve para
+     * saber con evidencia si hay incongruencias antes de unificar los cálculos.
+     */
+    private function avisarSiRecaudoNoCuadra(Liquidation $liquidation): void
+    {
+        $id = $liquidation->id;
+
+        dispatch(function () use ($id) {
+            try {
+                $liq = Liquidation::with('seller.user:id,name')->find($id);
+                if (!$liq) {
+                    return;
+                }
+                $fecha = substr((string) $liq->date, 0, 10);
+                $pagos = app(\App\Services\RecaudoVendedorService::class)
+                    ->recaudoPagosDelDia((int) $liq->seller_id, $fecha);
+                $sellado = round((float) $liq->total_collected, 2);
+                $diferencia = round($sellado - $pagos, 2);
+
+                if (abs($diferencia) <= 0.01) {
+                    return;
+                }
+
+                $vendedor = optional(optional($liq->seller)->user)->name ?? "vendedor {$liq->seller_id}";
+                \Log::warning('Conciliación de recaudo: la liquidación no cuadra con los pagos', [
+                    'liquidation_id' => $liq->id,
+                    'seller_id' => $liq->seller_id,
+                    'fecha' => $fecha,
+                    'total_collected' => $sellado,
+                    'suma_pagos' => $pagos,
+                    'diferencia' => $diferencia,
+                ]);
+
+                app(\App\Services\TelegramService::class)->sendMessage(
+                    "⚠️ *Conciliación de recaudo*\n"
+                    . "Liquidación #{$liq->id} · {$vendedor} · {$fecha}\n"
+                    . "Sellado: {$sellado} · Pagos del día: {$pagos}\n"
+                    . "Diferencia: {$diferencia}",
+                    'conciliacion_recaudo'
+                );
+            } catch (\Throwable $e) {
+                \Log::warning('Conciliación de recaudo: no se pudo verificar la liquidación ' . $id . ': ' . $e->getMessage());
+            }
+        })->afterResponse();
     }
 
     public function approveMultiple($ids, $timezone = null)
@@ -397,6 +454,9 @@ class LiquidationService
 
                 // Los posteriores ya firmados se saltean solos.
                 $this->recalculateNextLiquidations($liquidation->seller_id, $liquidation->date);
+
+                // Control de conciliación: solo compara y avisa, después de responder.
+                $this->avisarSiRecaudoNoCuadra($liquidation);
             }
 
             return $this->successResponse([
@@ -2424,11 +2484,45 @@ class LiquidationService
         // Tono de recaudo por fila, SOLO en el nivel vendedor: la escala es una
         // vara pensada para lo que recauda una persona. Aplicarla a una ruta
         // —que suma varios vendedores— daría verde siempre y no diría nada.
+        // El tono ya viene resuelto en cada fila con la meta de su empresa y
+        // moneda (attachCollectionTone). null = su moneda no tiene meta: la
+        // fila sale sin color.
         $tonos = [];
+        $leyenda = [];
         if ($level === 'seller') {
-            foreach ($rows as $fila) {
-                // Índice 2 = Total Recaudado (0 es el nombre, 1 la moneda).
-                $tonos[] = \App\Support\EscalaRecaudo::tono($fila[2]);
+            foreach ($filas as $f) {
+                $tonos[] = $f->collection_tone ?? null;
+                // Colores de ESA fila según la paleta de su meta (puede ser propia).
+                $tono = $f->collection_tone ?? null;
+                $pal = $tono ? ($f->collection_scale['palette'][$tono] ?? null) : null;
+                $coloresFila[] = $pal
+                    ? ['texto' => ltrim($pal['texto'], '#'), 'fondo' => ltrim($pal['fondo'], '#')]
+                    : null;
+
+                // Una referencia por meta usada: la general de cada moneda y las
+                // propias de los vendedores que las tengan. Cada fila se mide
+                // con su vara.
+                $esc = $f->collection_scale ?? null;
+                if ($esc) {
+                    $quien = $esc['scope'] === 'seller'
+                        ? ($esc['seller_name'] ?? 'Vendedor') . ' (' . $esc['currency'] . ')'
+                        : $esc['currency'];
+                    // Las generales primero (por moneda), luego las propias.
+                    $clave = ($esc['scope'] === 'seller' ? '1|' : '0|') . $quien;
+                    if (!isset($leyenda[$clave])) {
+                        $leyenda[$clave] = array_map(fn ($t) => [
+                            'tono' => $t['tono'],
+                            'etiqueta' => $quien . ' ' . $t['etiqueta'],
+                            'texto' => ltrim($t['texto'], '#'),
+                            'fondo' => ltrim($t['fondo'], '#'),
+                        ], $esc['legend']);
+                        $leyendaTitulos[$clave] = $quien . ': ' . $esc['period_label'];
+                    }
+                }
+            }
+            ksort($leyenda);
+            if (isset($leyendaTitulos)) {
+                ksort($leyendaTitulos);
             }
         }
 
@@ -2464,7 +2558,12 @@ class LiquidationService
             // Color por fila y su referencia. Vacíos fuera del nivel vendedor,
             // así el Excel y el PDF no necesitan preguntar de qué nivel vienen.
             'row_tones' => $tonos,
-            'tone_legend' => $tonos ? \App\Support\EscalaRecaudo::leyenda() : [],
+            // Texto y fondo de cada fila (hex sin #), con la paleta de su meta.
+            'row_colors' => $coloresFila ?? [],
+            // Lista plana (moneda + tramo) para el Excel, que la dibuja en una
+            // fila; y los títulos por moneda ("ARS: Meta diaria…") para el PDF.
+            'tone_legend' => array_merge([], ...array_values($leyenda)),
+            'tone_legend_titles' => array_values($leyendaTitulos ?? []),
             'tone_colors' => \App\Support\EscalaRecaudo::COLORES,
         ];
     }
@@ -3182,6 +3281,32 @@ class LiquidationService
         }
 
         return $out;
+    }
+
+    /**
+     * Pega sobre cada fila de vendedor el tono de la escala de recaudo de su
+     * empresa y moneda (CollectionScaleService):
+     *   - collection_tone:  rojo | amarillo | azul | verde, o null si su moneda
+     *                       no tiene meta configurada (fila sin color).
+     *   - collection_value: el recaudo llevado a la unidad de la meta (promedio
+     *                       diario, ritmo semanal/mensual o total del período).
+     *   - collection_scale: cortes, tipo y leyenda, para dibujar la referencia.
+     */
+    private function attachCollectionTone($rows, string $start, string $end)
+    {
+        $svc = app(\App\Services\CollectionScaleService::class);
+        $scales = $svc->scalesFor($rows->pluck('company_id')->all());
+        $rangeDays = \App\Services\CollectionScaleService::rangeDays($start, $end);
+
+        return $rows->map(function ($row) use ($svc, $scales, $rangeDays) {
+            // La meta propia del vendedor manda sobre la general de su moneda.
+            $scale = $svc->scaleForSeller($scales, $row->seller_id, $row->company_id ?? null, $row->currency ?? null);
+            $r = $svc->evaluate($scale, (float) $row->total_collected, (int) ($row->worked_days ?? 0), $rangeDays);
+            $row->collection_tone = $r['tone'];
+            $row->collection_value = $r['value'];
+            $row->collection_scale = $r['scale'];
+            return $row;
+        });
     }
 
     /** Pega "delinquent_clients" sobre cada fila; sin datos queda en cero explícito. */
@@ -3972,7 +4097,11 @@ class LiquidationService
                 DB::raw('SUM(liquidations.shortage) as shortage'),
                 DB::raw('SUM(liquidations.surplus) as surplus'),
                 DB::raw('SUM(liquidations.cash_delivered) as cash_delivered'),
-                DB::raw('COUNT(liquidations.id) as liquidation_count')
+                DB::raw('COUNT(liquidations.id) as liquidation_count'),
+                // Para la meta de recaudo por moneda: la empresa del vendedor
+                // elige la escala y los días trabajados alimentan la meta diaria.
+                'sellers.company_id',
+                DB::raw('COUNT(DISTINCT DATE(liquidations.date)) as worked_days')
             )
             ->where('cities.id', $cityId)
             ->whereNull('liquidations.deleted_at')
@@ -4013,8 +4142,11 @@ class LiquidationService
 
         // Clientes morosos al cierre (misma foto del último día del rango).
         $morosos = $this->getDelinquentClientsBySeller($endUTC, $companyId, $sellerIds, $cityId);
+        $result = $this->attachDelinquentClients($result, $morosos, 'seller_id');
 
-        return $this->attachDelinquentClients($result, $morosos, 'seller_id');
+        // Tono de recaudo según la meta de SU empresa y SU moneda. Se resuelve
+        // acá para que la pantalla, el Excel, el PDF y el WhatsApp digan lo mismo.
+        return $this->attachCollectionTone($result, $startUTC, $endUTC);
     }
 
     public function getSellerLiquidationsDetail($sellerId, $startDate, $endDate)

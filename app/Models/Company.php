@@ -41,6 +41,10 @@ class Company extends Model
     ];
 
     protected $casts = [
+        // Barra de avance de la meta de recaudo en la pantalla del cobrador.
+        // La decide solo el Super-Admin (CollectionScaleController). No va en
+        // $fillable a propósito: solo se escribe por ese camino, auditado.
+        'show_collection_progress' => 'boolean',
         'telegram_feature_enabled' => 'boolean',
         'telegram_enabled' => 'boolean',
         'telegram_notify_new_client' => 'boolean',
