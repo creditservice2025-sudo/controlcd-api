@@ -83,10 +83,11 @@ class CollectionScaleService
             ->where('s.company_id', $companyId)
             ->whereNull('s.deleted_at')
             ->orderBy('u.name')
-            ->get(['s.id', 'u.name', 'ci.name as city_name', 'co.currency'])
+            ->get(['s.id', 'u.name', 's.city_id', 'ci.name as city_name', 'co.currency'])
             ->map(fn ($r) => [
                 'id' => (int) $r->id,
                 'name' => $r->name,
+                'city_id' => (int) $r->city_id,
                 'city_name' => $r->city_name,
                 'currency' => strtoupper((string) $r->currency),
             ])
@@ -302,17 +303,47 @@ class CollectionScaleService
             throw new \DomainException('Empresa no encontrada.', 404);
         }
 
+        $targets = DB::table('collection_progress_targets')->where('company_id', $companyId)->get();
+        $vendedores = $this->companySellers($companyId);
+
+        // Rutas de la empresa (las de sus vendedores), con cuántos tiene cada una.
+        $rutas = collect($vendedores)
+            ->groupBy('city_id')
+            ->map(fn ($g, $cityId) => [
+                'id' => (int) $cityId,
+                'name' => $g->first()['city_name'],
+                'sellers_count' => $g->count(),
+            ])
+            ->sortBy('name')
+            ->values()
+            ->all();
+
+        $scope = $company->collection_progress_scope === 'custom' ? 'custom' : 'all';
+        $cityIds = $targets->where('target_type', 'city')->pluck('target_id')->map(fn ($v) => (int) $v)->values()->all();
+        $sellerIds = $targets->where('target_type', 'seller')->pluck('target_id')->map(fn ($v) => (int) $v)->values()->all();
+
         return [
             'enabled' => (bool) $company->show_collection_progress,
             'can_edit' => (int) Auth::user()->role_id === 1,
+            'scope' => $scope,
+            'city_ids' => $cityIds,
+            'seller_ids' => $sellerIds,
+            'cities' => $rutas,
+            // Cuántos vendedores entran en la audiencia actual.
+            'reach' => $scope === 'all'
+                ? count($vendedores)
+                : collect($vendedores)->filter(
+                    fn ($v) => in_array($v['city_id'], $cityIds, true) || in_array($v['id'], $sellerIds, true)
+                )->count(),
             'history' => DB::table('collection_progress_audits')
                 ->where('company_id', $companyId)
                 ->orderByDesc('created_at')
                 ->orderByDesc('id')
-                ->limit(20)
+                ->limit(30)
                 ->get()
                 ->map(fn ($a) => [
                     'enabled' => (bool) $a->enabled,
+                    'detail' => $a->detail ? json_decode($a->detail, true) : null,
                     'user_name' => $a->user_name,
                     'at' => Carbon::parse($a->created_at)->toIso8601String(),
                 ])
@@ -321,11 +352,16 @@ class CollectionScaleService
     }
 
     /**
-     * Prende o apaga la barra de avance para los vendedores de la empresa.
+     * Prende o apaga la barra de avance y define QUIÉN la ve:
+     *   scope 'all'    → todas las rutas de la empresa;
+     *   scope 'custom' → las rutas de $cityIds (con todos sus vendedores,
+     *                    también los que se sumen después) MÁS los vendedores
+     *                    de $sellerIds. Se suman.
+     *   scope null     → se conserva la audiencia actual (p. ej. solo apagar).
      * SOLO el Super-Admin: mostrarle la meta al cobrador es una decisión de
      * negocio que no queda en manos de cada administrador.
      */
-    public function setProgress(int $companyId, bool $enabled): array
+    public function setProgress(int $companyId, bool $enabled, ?string $scope = null, array $cityIds = [], array $sellerIds = []): array
     {
         if ((int) Auth::user()->role_id !== 1) {
             throw new \DomainException('Solo el Super-Admin puede cambiar esta opción.', 403);
@@ -336,21 +372,108 @@ class CollectionScaleService
             throw new \DomainException('Empresa no encontrada.', 404);
         }
 
-        if ((bool) $company->show_collection_progress !== $enabled) {
-            DB::transaction(function () use ($company, $enabled) {
-                // forceFill: el campo no está en $fillable a propósito.
-                $company->forceFill(['show_collection_progress' => $enabled])->save();
-                DB::table('collection_progress_audits')->insert([
-                    'company_id' => $company->id,
-                    'enabled' => $enabled,
-                    'user_id' => Auth::id(),
-                    'user_name' => optional(Auth::user())->name,
-                    'created_at' => now(),
-                ]);
-            });
+        $actuales = DB::table('collection_progress_targets')->where('company_id', $companyId)->get();
+        $idsActuales = fn ($tipo) => $actuales->where('target_type', $tipo)->pluck('target_id')->map(fn ($v) => (int) $v)->values()->all();
+
+        $cambiaAudiencia = $scope !== null;
+        $scope = $scope ?? ($company->collection_progress_scope ?: 'all');
+        if (!in_array($scope, ['all', 'custom'], true)) {
+            throw new \DomainException('Alcance no válido.');
         }
 
+        if ($cambiaAudiencia && $scope === 'custom') {
+            // Solo rutas y vendedores de ESTA empresa: no se puede apuntar a
+            // los de otra cambiando ids.
+            $vendedores = collect($this->companySellers($companyId));
+            $cityIds = array_values(array_intersect(
+                array_unique(array_map('intval', $cityIds)),
+                $vendedores->pluck('city_id')->unique()->all()
+            ));
+            $sellerIds = array_values(array_intersect(
+                array_unique(array_map('intval', $sellerIds)),
+                $vendedores->pluck('id')->all()
+            ));
+            if (!$cityIds && !$sellerIds) {
+                throw new \DomainException('Elija al menos una ruta o un vendedor.');
+            }
+        } else {
+            // 'all' o sin cambio de audiencia: la lista guardada se conserva
+            // (si luego se vuelve a 'custom', aparece como estaba).
+            $cityIds = $idsActuales('city');
+            $sellerIds = $idsActuales('seller');
+        }
+
+        $firma = fn ($en, $sc, $c, $s) => json_encode([
+            $en, $sc,
+            $sc === 'custom' ? collect($c)->sort()->values()->all() : [],
+            $sc === 'custom' ? collect($s)->sort()->values()->all() : [],
+        ]);
+        $antes = $firma(
+            (bool) $company->show_collection_progress,
+            $company->collection_progress_scope ?: 'all',
+            $idsActuales('city'),
+            $idsActuales('seller')
+        );
+        $despues = $firma($enabled, $scope, $cityIds, $sellerIds);
+
+        if ($antes === $despues) {
+            return $this->progressSetting($companyId);
+        }
+
+        $detalle = ['scope' => $scope];
+        if ($scope === 'custom') {
+            $detalle['cities'] = DB::table('cities')->whereIn('id', $cityIds ?: [0])->orderBy('name')->pluck('name')->all();
+            $detalle['sellers'] = DB::table('sellers as s')->join('users as u', 'u.id', '=', 's.user_id')
+                ->whereIn('s.id', $sellerIds ?: [0])->orderBy('u.name')->pluck('u.name')->all();
+        }
+
+        DB::transaction(function () use ($company, $enabled, $scope, $cambiaAudiencia, $cityIds, $sellerIds, $detalle) {
+            // forceFill: estos campos no están en $fillable a propósito.
+            $company->forceFill([
+                'show_collection_progress' => $enabled,
+                'collection_progress_scope' => $scope,
+            ])->save();
+
+            if ($cambiaAudiencia && $scope === 'custom') {
+                DB::table('collection_progress_targets')->where('company_id', $company->id)->delete();
+                $filas = array_merge(
+                    array_map(fn ($id) => ['company_id' => $company->id, 'target_type' => 'city', 'target_id' => $id, 'created_at' => now()], $cityIds),
+                    array_map(fn ($id) => ['company_id' => $company->id, 'target_type' => 'seller', 'target_id' => $id, 'created_at' => now()], $sellerIds)
+                );
+                DB::table('collection_progress_targets')->insert($filas);
+            }
+
+            DB::table('collection_progress_audits')->insert([
+                'company_id' => $company->id,
+                'enabled' => $enabled,
+                'detail' => json_encode($detalle, JSON_UNESCAPED_UNICODE),
+                'user_id' => Auth::id(),
+                'user_name' => optional(Auth::user())->name,
+                'created_at' => now(),
+            ]);
+        });
+
         return $this->progressSetting($companyId);
+    }
+
+    /**
+     * ¿Este vendedor está en la audiencia de la barra? No mira el interruptor
+     * (eso lo hace quien llama). Lo decide el servidor: el APK no puede saltarlo.
+     */
+    public function enAudiencia(int $companyId, int $sellerId, ?int $cityId): bool
+    {
+        $scope = DB::table('companies')->where('id', $companyId)->value('collection_progress_scope');
+        if ($scope !== 'custom') {
+            return true;
+        }
+
+        return DB::table('collection_progress_targets')
+            ->where('company_id', $companyId)
+            ->where(function ($q) use ($sellerId, $cityId) {
+                $q->where(fn ($w) => $w->where('target_type', 'seller')->where('target_id', $sellerId))
+                  ->orWhere(fn ($w) => $w->where('target_type', 'city')->where('target_id', (int) $cityId));
+            })
+            ->exists();
     }
 
     // ---- Evaluación (lo que usa el reporte) ---------------------------------

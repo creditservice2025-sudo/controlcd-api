@@ -133,8 +133,34 @@ class RecaudoVendedorService
         if (!$habilitado) {
             return ['available' => false, 'reason' => 'disabled'];
         }
+        // Audiencia: todas las rutas, o las rutas/vendedores que eligió el
+        // Super-Admin. También fuera de la caché, por la misma razón.
+        if (!$this->scales->enAudiencia((int) $seller->company_id, (int) $seller->id, $seller->city_id ? (int) $seller->city_id : null)) {
+            return ['available' => false, 'reason' => 'not_in_audience'];
+        }
 
         return Cache::remember(self::cacheKey($seller->id), self::CACHE_TTL, fn () => $this->calcularProgreso($seller));
+    }
+
+    /**
+     * Vista previa para el administrador: la barra EXACTA que vería ese
+     * vendedor (mismo cálculo, sin caché), aunque el interruptor esté apagado,
+     * para poder revisarla antes de prenderlo. `toggle_enabled` dice si hoy el
+     * vendedor la está viendo de verdad.
+     */
+    public function vistaPrevia(Seller $seller): array
+    {
+        $habilitado = (bool) DB::table('companies')->where('id', $seller->company_id)->value('show_collection_progress');
+
+        return $this->calcularProgreso($seller) + [
+            'toggle_enabled' => $habilitado,
+            // ¿Está en la audiencia? Si no, aunque el interruptor esté prendido no la ve.
+            'in_audience' => $this->scales->enAudiencia(
+                (int) $seller->company_id,
+                (int) $seller->id,
+                $seller->city_id ? (int) $seller->city_id : null
+            ),
+        ];
     }
 
     private function calcularProgreso(Seller $seller): array

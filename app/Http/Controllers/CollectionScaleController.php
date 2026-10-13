@@ -68,8 +68,35 @@ class CollectionScaleController extends Controller
             'message' => $request->boolean('enabled')
                 ? 'Los vendedores ya pueden ver su avance.'
                 : 'Los vendedores ya no ven su avance.',
-            'data' => $this->scales->setProgress($this->company($request), $request->boolean('enabled')),
+            // scope ausente = conservar la audiencia actual (p. ej. solo apagar).
+            'data' => $request->filled('scope')
+                ? $this->scales->setProgress(
+                    $this->company($request),
+                    $request->boolean('enabled'),
+                    (string) $request->input('scope'),
+                    (array) $request->input('city_ids', []),
+                    (array) $request->input('seller_ids', [])
+                )
+                : $this->scales->setProgress($this->company($request), $request->boolean('enabled')),
         ]);
+    }
+
+    /**
+     * Vista previa de la barra de un vendedor. El vendedor tiene que ser de la
+     * empresa que se está administrando (el Admin, siempre la suya): no se
+     * puede espiar a un vendedor de otra empresa cambiando el id.
+     */
+    public function progressPreview(Request $request)
+    {
+        return $this->run(function () use ($request) {
+            $companyId = $this->company($request);
+            $seller = \App\Models\Seller::where('company_id', $companyId)
+                ->find((int) $request->input('seller_id'));
+            if (!$seller) {
+                throw new \DomainException('El vendedor no pertenece a la empresa.', 404);
+            }
+            return ['data' => app(\App\Services\RecaudoVendedorService::class)->vistaPrevia($seller)];
+        });
     }
 
     private function company(Request $request): int

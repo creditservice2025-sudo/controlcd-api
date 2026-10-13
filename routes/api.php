@@ -330,6 +330,8 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
         // solo el Super-Admin (lo valida CollectionScaleService::setProgress).
         Route::get('collection-scales/progress-setting', [\App\Http\Controllers\CollectionScaleController::class, 'progressSetting']);
         Route::put('collection-scales/progress-setting', [\App\Http\Controllers\CollectionScaleController::class, 'updateProgressSetting']);
+        // Vista previa: la barra exacta que vería un vendedor de la empresa.
+        Route::get('collection-scales/progress-preview', [\App\Http\Controllers\CollectionScaleController::class, 'progressPreview']);
         Route::get('collection-scales/{id}/history', [\App\Http\Controllers\CollectionScaleController::class, 'history'])->whereNumber('id');
         Route::post('collection-scales', [\App\Http\Controllers\CollectionScaleController::class, 'store']);
         Route::put('collection-scales/{id}', [\App\Http\Controllers\CollectionScaleController::class, 'update'])->whereNumber('id');
