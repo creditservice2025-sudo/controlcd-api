@@ -1454,6 +1454,11 @@ class LiquidationController extends Controller
             'level' => 'required|in:city,seller,day',
             'city_id' => 'required_if:level,seller|nullable|exists:cities,id',
             'seller_id' => 'required_if:level,day|nullable|exists:sellers,id',
+            // Filtros de la pantalla: rutas (city) o vendedores (seller) que se
+            // están viendo y el texto de los filtros para el encabezado.
+            'only_ids' => 'nullable|array|max:2000',
+            'only_ids.*' => 'integer',
+            'filters_label' => 'nullable|string|max:300',
         ]);
 
         if ($validator->fails()) {
@@ -1488,7 +1493,9 @@ class LiquidationController extends Controller
                 $companyId,
                 $sellerIdsPermitidos,
                 $request->input('city_id'),
-                $request->input('seller_id')
+                $request->input('seller_id'),
+                $request->has('only_ids') ? (array) $request->input('only_ids') : null,
+                $request->input('filters_label')
             );
 
             $nombre = 'resumen_' . $request->input('level') . '_'

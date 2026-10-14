@@ -2395,8 +2395,16 @@ class LiquidationService
         $companyId = null,
         $sellerIds = null,
         $cityId = null,
-        $sellerId = null
+        $sellerId = null,
+        ?array $soloIds = null,
+        ?string $filtros = null
     ): array {
+        // $soloIds / $filtros: la descarga respeta los filtros de la pantalla.
+        // $soloIds son las rutas (nivel city) o los vendedores (nivel seller)
+        // que se están viendo. Solo ACHICAN el resultado: se aplican sobre las
+        // filas que ya pasaron el recorte por empresa/usuario, así nunca pueden
+        // traer filas ajenas. $filtros es el texto que se imprime en el
+        // encabezado para que el archivo no se confunda con el reporte completo.
         $etiquetaPrimera = ['city' => 'Ciudad/Ruta', 'seller' => 'Vendedor', 'day' => 'Fecha'][$level] ?? null;
 
         if ($etiquetaPrimera === null) {
@@ -2415,6 +2423,15 @@ class LiquidationService
             $filas = $this->getSellerLiquidationsDetail($sellerId, $startDate, $endDate);
             $primera = fn ($f) => Carbon::parse($f->date)->format('d/m/Y');
             $titulo = 'Liquidaciones de ' . ($filas->first()->seller->user->name ?? 'vendedor');
+        }
+
+        // Filtros de la pantalla. Se aplican ANTES de armar filas y totales:
+        // así el pie suma solo lo que se descarga.
+        $totalSinFiltrar = $filas->count();
+        if ($soloIds !== null && in_array($level, ['city', 'seller'], true)) {
+            $clave = $level === 'city' ? 'city_id' : 'seller_id';
+            $permitidos = array_flip(array_map('intval', $soloIds));
+            $filas = $filas->filter(fn ($f) => isset($permitidos[(int) ($f->{$clave} ?? 0)]))->values();
         }
 
         $columnas = [
@@ -2541,10 +2558,47 @@ class LiquidationService
             $filasTotales[] = array_merge(['Total ' . $moneda, $moneda], array_values($suma));
         }
 
+        // Nivel vendedor: qué meta se le aplicó a cada uno y el valor que se
+        // comparó contra ella, para que el archivo se entienda sin la pantalla.
+        // Van AL FINAL para no correr los índices de las columnas de dinero.
+        if ($level === 'seller') {
+            $columnas[] = 'Meta aplicada';
+            $columnas[] = 'Valor comparado';
+            // La meta es SUPERAR el techo del azul, igual que en pantalla y en
+            // la barra del cobrador; el % sale del mismo valor comparado.
+            $columnas[] = 'Meta';
+            $columnas[] = '% de la meta';
+            $unidades = ['daily' => ' / día', 'weekly' => ' / sem', 'monthly' => ' / mes', 'range' => ''];
+            $tipos = ['daily' => 'Diaria', 'weekly' => 'Semanal', 'monthly' => 'Mensual', 'range' => 'Período'];
+
+            foreach (array_values($filas->all()) as $i => $f) {
+                $esc = $f->collection_scale ?? null;
+                if (!$esc) {
+                    array_push($rows[$i], 'Sin meta', '', '', '');
+                    continue;
+                }
+                $sufijo = $unidades[$esc['period_type']] ?? '';
+                $meta = (float) $esc['cut_blue'];
+                $rows[$i][] = ($esc['scope'] === 'seller' ? 'Propia' : 'General ' . $esc['currency'])
+                    . ' · ' . ($tipos[$esc['period_type']] ?? $esc['period_type']);
+                $rows[$i][] = \App\Support\FormatoMoneda::formatear($f->collection_value, $esc['currency']) . $sufijo;
+                $rows[$i][] = \App\Support\FormatoMoneda::formatear($meta, $esc['currency']) . $sufijo;
+                $rows[$i][] = $meta > 0 ? round((float) $f->collection_value / $meta * 100) . ' %' : '';
+            }
+            foreach ($filasTotales as $i => $t) {
+                array_push($filasTotales[$i], '', '', '', '');
+            }
+        }
+
         return [
             'title' => $titulo,
             'subtitle' => 'Del ' . Carbon::parse($startDate)->format('d/m/Y')
-                . ' al ' . Carbon::parse($endDate)->format('d/m/Y'),
+                . ' al ' . Carbon::parse($endDate)->format('d/m/Y')
+                . ($soloIds !== null && in_array($level, ['city', 'seller'], true)
+                    ? ' · Filtrado: ' . ($filtros ? trim($filtros) . ' · ' : '')
+                        . $filas->count() . ' de ' . $totalSinFiltrar
+                        . ($level === 'city' ? ' rutas' : ' vendedores')
+                    : ''),
             'generated_at' => Carbon::now()->format('d/m/Y H:i'),
             'columns' => $columnas,
             'rows' => $rows,
