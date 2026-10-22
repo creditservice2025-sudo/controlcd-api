@@ -49,8 +49,10 @@ class ClientService
      *   atrasados    -> ¿quién tiene cuotas vencidas sin saldar?
      *   cobrados_hoy -> ¿de quién entró dinero hoy?
      *   sin_gestion  -> ¿a quién no tocó nadie hoy (ni pago, ni visita, ni nota)?
+     *   transferidos -> ¿qué clientes me llegaron por transferencia en los
+     *                   últimos TRANSFER_BADGE_DAYS días? (mismo criterio que la etiqueta)
      */
-    public const DAY_FILTERS = ['vencen_hoy', 'atrasados', 'cobrados_hoy', 'sin_gestion'];
+    public const DAY_FILTERS = ['vencen_hoy', 'atrasados', 'cobrados_hoy', 'sin_gestion', 'transferidos'];
 
     private const CREDIT_STATUSES_CLOSED = [
         'Liquidado',
@@ -1014,7 +1016,7 @@ class ClientService
                     'id', 'uuid', 'name', 'dni', 'email', 'phone', 'address',
                     'reference', 'company_name', 'status', 'seller_id',
                     'geolocation', 'gps_geolocalization', 'gps_address',
-                    'routing_order', 'capacity', 'created_at',
+                    'routing_order', 'capacity', 'created_at', 'transferred_at',
                     // Estado de bloqueo de creación de nuevos créditos.
                     // El frontend usa estos campos para mostrar el badge
                     // "BLOQUEADO" + el sombreado rojo de la fila + las
@@ -1415,6 +1417,8 @@ class ClientService
                 return $client;
             });
 
+            $this->attachTransferInfo($paginator->getCollection());
+
             $payload = [
                 'success' => true,
                 'message' => 'Clientes encontrados',
@@ -1786,6 +1790,50 @@ class ClientService
         return $result;
     }
 
+    /** Días que el listado marca a un cliente como TRANSFERIDO (cubre un ciclo diario y semanal). */
+    public const TRANSFER_BADGE_DAYS = 7;
+
+    /**
+     * Agrega transfer_info {from, by, at} a los clientes transferidos hace menos de
+     * TRANSFER_BADGE_DAYS días, para el tooltip de la etiqueta TRANSFERIDO.
+     * Origen y usuario salen de client_histories (field = seller_id); las
+     * transferencias anteriores a ese registro quedan con from/by en null.
+     * Tres consultas en total, sin importar cuántos clientes traiga el listado.
+     */
+    private function attachTransferInfo($clients): void
+    {
+        $since = now()->subDays(self::TRANSFER_BADGE_DAYS);
+        $recent = $clients->filter(
+            fn ($c) => $c->transferred_at && Carbon::parse($c->transferred_at)->gte($since)
+        );
+        if ($recent->isEmpty()) {
+            return;
+        }
+
+        $last = ClientHistory::where('field', 'seller_id')
+            ->whereIn('client_id', $recent->pluck('id'))
+            ->orderByDesc('created_at')->orderByDesc('id')
+            ->get(['client_id', 'user_id', 'old_value', 'created_at'])
+            ->unique('client_id')
+            ->keyBy('client_id');
+
+        $sellerNames = Seller::withTrashed()->with('user:id,name')
+            ->whereIn('id', $last->pluck('old_value')->filter()->unique())
+            ->get()
+            ->mapWithKeys(fn ($s) => [$s->id => optional($s->user)->name ?? "Vendedor #{$s->id}"]);
+        $userNames = \App\Models\User::whereIn('id', $last->pluck('user_id')->filter()->unique())
+            ->pluck('name', 'id');
+
+        foreach ($recent as $client) {
+            $h = $last[$client->id] ?? null;
+            $client->transfer_info = [
+                'at'   => $client->transferred_at,
+                'from' => $h ? ($sellerNames[(int) $h->old_value] ?? null) : null,
+                'by'   => $h ? ($userNames[$h->user_id] ?? null) : null,
+            ];
+        }
+    }
+
     public function getClientsBySeller($sellerId, $search = '', $companyId = null, $status = null, $todayStatus = null)
     {
         try {
@@ -1800,7 +1848,7 @@ class ClientService
             $todayLocal = Carbon::now($timezone)->toDateString();
 
             $clientsQuery = Client::query()
-                ->select('id', 'uuid', 'name', 'dni', 'email', 'address', 'seller_id', 'routing_order', 'geolocation', 'gps_geolocalization', 'gps_address', 'phone', 'capacity', 'needs_update', 'created_at')
+                ->select('id', 'uuid', 'name', 'dni', 'email', 'address', 'seller_id', 'routing_order', 'geolocation', 'gps_geolocalization', 'gps_address', 'phone', 'capacity', 'needs_update', 'created_at', 'transferred_at')
                 ->with([
                     'seller' => function ($q) {
                         $q->select('id', 'user_id', 'city_id', 'company_id');
@@ -1895,6 +1943,10 @@ class ClientService
                     $clientsQuery->whereHas('credits', function ($q) {
                         $q->whereNotIn('status', self::CREDIT_STATUSES_CLOSED);
                     });
+                } elseif ($status === 'transferidos') {
+                    // Llegaron a esta ruta hace poco: el cobrador nuevo todavía no
+                    // los conoce. Combinado con "No visitados" dice a quién falta ir.
+                    $clientsQuery->where('transferred_at', '>=', now()->subDays(self::TRANSFER_BADGE_DAYS));
                 }
             }
 
@@ -1925,6 +1977,8 @@ class ClientService
 
                 return $client;
             });
+
+            $this->attachTransferInfo($clients);
 
             // "Sin gestión" solo se puede resolver una vez calculado el resumen:
             // depende de pagos, visitas y comentarios del día a la vez.

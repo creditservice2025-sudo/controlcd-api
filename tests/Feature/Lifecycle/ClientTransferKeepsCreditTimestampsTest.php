@@ -213,6 +213,48 @@ class ClientTransferKeepsCreditTimestampsTest extends TestCase
             ->assertForbidden();
     }
 
+    public function test_client_listing_exposes_transfer_origin_for_badge(): void
+    {
+        $t = $this->makeClientWithCredits();
+        $untouched = $this->makeClientWithCredits(); // se queda en el origen
+
+        $this->actingAs($this->admin, 'api')
+            ->postJson("/api/clients/{$t['client']->id}/transfer", ['new_seller_id' => $this->target->id])
+            ->assertOk();
+
+        Auth::setUser($this->admin);
+        $clients = app(ClientService::class)->getClientsBySeller($this->target->id);
+        $row = collect($clients)->firstWhere('id', $t['client']->id);
+
+        $this->assertNotNull($row, 'el cliente transferido aparece en la ruta destino');
+        $this->assertNotNull($row->transferred_at);
+        $this->assertSame($this->origin->user->name, $row->transfer_info['from']);
+        $this->assertSame($this->admin->name, $row->transfer_info['by']);
+
+        // Filtro "Transferidos": trae al transferido y no a los clientes propios del destino.
+        $own = Client::factory()->create([
+            'seller_id' => $this->target->id, 'geolocation' => '[]', 'uuid' => Str::uuid()->toString(),
+        ]);
+        $ids = collect(app(ClientService::class)->getClientsBySeller($this->target->id, '', null, 'transferidos'))
+            ->pluck('id')->all();
+        $this->assertContains($t['client']->id, $ids);
+        $this->assertNotContains($own->id, $ids);
+
+        // Transferido hace más de 7 días: sin etiqueta.
+        DB::table('clients')->where('id', $t['client']->id)->update(['transferred_at' => now()->subDays(8)]);
+        $row = collect(app(ClientService::class)->getClientsBySeller($this->target->id))
+            ->firstWhere('id', $t['client']->id);
+        $this->assertNull($row->transfer_info ?? null);
+        $ids = collect(app(ClientService::class)->getClientsBySeller($this->target->id, '', null, 'transferidos'))
+            ->pluck('id')->all();
+        $this->assertNotContains($t['client']->id, $ids, 'pasados 7 días sale del filtro');
+
+        // Cliente nunca transferido: sin etiqueta.
+        $row = collect(app(ClientService::class)->getClientsBySeller($this->origin->id))
+            ->firstWhere('id', $untouched['client']->id);
+        $this->assertNull($row->transfer_info ?? null);
+    }
+
     public function test_old_liquidated_credit_is_not_listed_as_liquidated_today_after_transfer(): void
     {
         $t = $this->makeClientWithCredits();
