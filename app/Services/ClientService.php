@@ -3881,6 +3881,9 @@ class ClientService
             'credits.installments' => function ($query) use ($formattedDate) {
                 $query->orderBy('due_date', 'asc');
             },
+            // Precarga para evitar N+1 en morosidad y pagos del día (rutas grandes superaban los 30 s)
+            'credits.installments.payments.payment',
+            'credits.payments',
 
             'seller.user:id,name',
             'guarantors:id,name'
@@ -3892,6 +3895,9 @@ class ClientService
         $totalRecaudarHoy = 0;
 
         foreach ($clients as $client) {
+            // La morosidad es por cliente (recorre todos sus créditos): se calcula una sola vez
+            $delinquencyInfo = $this->calculateDelinquencyDetailsForDate($client, $referenceDate);
+
             foreach ($client->credits as $credit) {
 
                 $cuotasHoyCollection = $credit->installments->filter(function ($installment) use ($formattedDate) {
@@ -3908,7 +3914,6 @@ class ClientService
                     }
                 }
 
-                $delinquencyInfo = $this->calculateDelinquencyDetailsForDate($client, $referenceDate);
                 $creditInfo = $this->getCreditInfoForDate($credit, $referenceDate);
 
                 // 4. Agregar el resultado
@@ -3936,6 +3941,9 @@ class ClientService
                 ];
             }
         }
+
+        // El front no usa client.credits y repetía toda la cartera del cliente en cada fila (JSON de 67 MB)
+        $clients->each->makeHidden('credits');
 
         // 5. Retornar el resultado final
         return [

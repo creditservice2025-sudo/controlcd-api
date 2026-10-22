@@ -246,6 +246,8 @@ Route::middleware(['auth:api', 'supervisor.lock', 'liquidation.closed', 'active.
             ->middleware('permission:transferir_clientes');
         Route::post('/transfer-massive', [ClientController::class, 'transferMassive'])
             ->middleware('permission:transferir_clientes');
+        Route::get('/transfers/audit', [ClientController::class, 'transfersAudit'])
+            ->middleware('permission:ver_auditoria');
 
         // Orden de ruta
         Route::post('/update-order', [ClientController::class, 'updateOrder']);
