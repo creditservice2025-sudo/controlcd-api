@@ -49,7 +49,7 @@
 
     @if (count($tone_legend))
         <div class="escala">
-            <span class="escala-titulo">Recaudo del período:</span>
+            <span class="escala-titulo">Meta de recaudo ({{ implode(' · ', $tone_legend_titles ?? []) }}):</span>
             @foreach ($tone_legend as $tramo)
                 <span class="escala-item"
                       style="background: #{{ $tramo['fondo'] }}; color: #{{ $tramo['texto'] }};">{{ $tramo['etiqueta'] }}</span>
@@ -67,7 +67,7 @@
         </thead>
         <tbody>
             @foreach ($rows as $indiceFila => $fila)
-                @php($tono = $row_tones[$indiceFila] ?? null)
+                @php($colorFila = ($row_colors ?? [])[$indiceFila] ?? null)
                 <tr>
                     @foreach ($fila as $i => $celda)
                         {{-- La banda cubre Vendedor, Moneda y Total Recaudado, igual
@@ -76,7 +76,7 @@
                              que sí. El estilo va inline porque es el único que
                              gana sobre el rayado de filas pares. --}}
                         <td class="{{ $i === 0 ? 'izq' : ($i === 1 ? 'centro' : '') }}"
-                            @if ($tono && $i <= 2) style="background: #{{ $tone_colors[$tono]['fondo'] }}; color: #{{ $tone_colors[$tono]['texto'] }}; font-weight: bold;" @endif>
+                            @if ($colorFila && $i <= 2) style="background: #{{ $colorFila['fondo'] }}; color: #{{ $colorFila['texto'] }}; font-weight: bold;" @endif>
                             {{ in_array($i, $money_columns, true) ? number_format((float) $celda, 2, ',', '.') : $celda }}
                         </td>
                     @endforeach

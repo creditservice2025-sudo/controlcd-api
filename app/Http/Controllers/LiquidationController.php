@@ -1404,7 +1404,8 @@ class LiquidationController extends Controller
     {
         $validator = Validator::make($request->all(), [
             'end_date' => 'required|date',
-            'bucket' => 'required|in:with_credit,without_credit',
+            // delinquent = clientes morosos al cierre (columna "Morosos").
+            'bucket' => 'required|in:with_credit,without_credit,delinquent',
             'city_id' => 'nullable|exists:cities,id',
             // Permite abrir el mismo detalle desde la tabla de vendedores, no
             // solo desde el resumen por ruta.
@@ -1444,13 +1445,20 @@ class LiquidationController extends Controller
             // vendedores llega uno solo. Sin seller_id se recorta a los
             // asignados, y si el usuario no está acotado queda en null: el
             // detalle sale por ruta, como antes.
-            $clientes = $this->liquidationService->getClientCreditStateDetail(
-                $request->input('end_date'),
-                $request->input('bucket'),
-                $companyId,
-                $sellerIdsPermitidos,
-                $request->input('city_id')
-            );
+            $clientes = $request->input('bucket') === 'delinquent'
+                ? $this->liquidationService->getDelinquentClientsDetail(
+                    $request->input('end_date'),
+                    $companyId,
+                    $sellerIdsPermitidos,
+                    $request->input('city_id')
+                )
+                : $this->liquidationService->getClientCreditStateDetail(
+                    $request->input('end_date'),
+                    $request->input('bucket'),
+                    $companyId,
+                    $sellerIdsPermitidos,
+                    $request->input('city_id')
+                );
 
             return response()->json([
                 'success' => true,
@@ -1483,6 +1491,11 @@ class LiquidationController extends Controller
             'level' => 'required|in:city,seller,day',
             'city_id' => 'required_if:level,seller|nullable|exists:cities,id',
             'seller_id' => 'required_if:level,day|nullable|exists:sellers,id',
+            // Filtros de la pantalla: rutas (city) o vendedores (seller) que se
+            // están viendo y el texto de los filtros para el encabezado.
+            'only_ids' => 'nullable|array|max:2000',
+            'only_ids.*' => 'integer',
+            'filters_label' => 'nullable|string|max:300',
         ]);
 
         if ($validator->fails()) {
@@ -1517,7 +1530,9 @@ class LiquidationController extends Controller
                 $companyId,
                 $sellerIdsPermitidos,
                 $request->input('city_id'),
-                $request->input('seller_id')
+                $request->input('seller_id'),
+                $request->has('only_ids') ? (array) $request->input('only_ids') : null,
+                $request->input('filters_label')
             );
 
             $nombre = 'resumen_' . $request->input('level') . '_'

@@ -67,6 +67,17 @@ class CreditController extends Controller
 
     public function unifyCredits(Request $request)
     {
+        // Unificar quedó habilitado para el Admin (rol 2): cada crédito, el
+        // cliente y el vendedor del unificado tienen que ser de su empresa.
+        foreach ((array) $request->input('credit_ids', []) as $creditId) {
+            \App\Support\Tenant::assertCreditInScope($creditId);
+        }
+        if ($request->filled('client_id')) {
+            \App\Support\Tenant::assertClientInScope($request->input('client_id'));
+        }
+        if ($request->filled('seller_id')) {
+            \App\Support\Tenant::assertSellerInScope((int) $request->input('seller_id'));
+        }
         try {
             return $this->creditService->unifyCredits($request);
         } catch (Exception $e) {

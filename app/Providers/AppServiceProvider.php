@@ -6,6 +6,8 @@ use App\Models\PayrollRule;
 use App\Models\SellerConfig;
 use App\Models\User;
 use App\Observers\PayrollRuleObserver;
+use App\Models\SellerCollectionScale;
+use App\Observers\SellerCollectionScaleObserver;
 use App\Observers\SellerConfigObserver;
 use App\Observers\UserRoleSyncObserver;
 use Illuminate\Auth\Notifications\ResetPassword;
@@ -46,6 +48,31 @@ class AppServiceProvider extends ServiceProvider
         // Historial (línea de tiempo) de las reglas de comisión de nómina:
         // quién creó, editó o eliminó cada regla y qué cambió.
         PayrollRule::observe(PayrollRuleObserver::class);
+
+        // Historial de las metas de recaudo por moneda: quién creó, editó o
+        // eliminó cada una y qué cambió.
+        SellerCollectionScale::observe(SellerCollectionScaleObserver::class);
+
+        // La barra de avance del cobrador se guarda 60 s en caché. Un pago
+        // registrado, editado o anulado la invalida para que el cambio se vea
+        // en la siguiente consulta y no a los 60 s. Defensivo: si falla, el
+        // pago se guarda igual y la caché vence sola.
+        $olvidarAvance = function ($payment) {
+            try {
+                $sellerId = \Illuminate\Support\Facades\DB::table('credits')
+                    ->where('id', $payment->credit_id)
+                    ->value('seller_id');
+                if ($sellerId) {
+                    \Illuminate\Support\Facades\Cache::forget(
+                        \App\Services\RecaudoVendedorService::cacheKey((int) $sellerId)
+                    );
+                }
+            } catch (\Throwable $e) {
+                \Log::warning('No se pudo invalidar el avance de recaudo: ' . $e->getMessage());
+            }
+        };
+        \App\Models\Payment::saved($olvidarAvance);
+        \App\Models\Payment::deleted($olvidarAvance);
 
         // El rol vive en dos lados: `users.role_id` y la tabla de Spatie. El alta
         // solo escribía la columna, así que el usuario quedaba sin los permisos

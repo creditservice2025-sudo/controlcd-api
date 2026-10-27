@@ -832,12 +832,17 @@ class ClientController extends Controller
             // Si solo movemos el cliente, sus créditos quedan con el vendedor viejo y
             // el dashboard descuadra (cliente en uno, plata en otro). Movemos ambos.
             $creditsMoved = 0;
-            DB::transaction(function () use ($client, $newSeller, &$creditsMoved) {
+            DB::transaction(function () use ($client, $newSeller, $oldSellerId, $request, &$creditsMoved) {
                 $client->seller_id  = $newSeller->id;
                 $client->transferred_at = now();
                 $client->save();
 
+                $this->recordTransfer($client->id, $oldSellerId, $newSeller->id, $request->ip());
+
+                // toBase(): no tocar updated_at. La liquidación marca "Liquidado hoy" por
+                // updated_at y la transferencia hacía aparecer toda la cartera liquidada.
                 $creditsMoved = Credit::where('client_id', $client->id)
+                    ->toBase()
                     ->update(['seller_id' => $newSeller->id]);
             });
 
@@ -853,6 +858,91 @@ class ClientController extends Controller
         } catch (\Exception $e) {
             \Log::error('Error transfiriendo cliente: ' . $e->getMessage());
             return $this->errorResponse('Error al transferir el cliente', 500);
+        }
+    }
+
+    /**
+     * Deja la transferencia en client_histories (field = seller_id). Es la única
+     * traza del vendedor de origen: clients.transferred_at solo guarda la última
+     * fecha. La lee la pantalla Auditoría de Transferencias (transfersAudit).
+     */
+    private function recordTransfer(int $clientId, $oldSellerId, int $newSellerId, ?string $ip): void
+    {
+        if ((int) $oldSellerId === $newSellerId) {
+            return;
+        }
+
+        \App\Models\ClientHistory::create([
+            'client_id'  => $clientId,
+            'user_id'    => auth()->id(),
+            'field'      => 'seller_id',
+            'old_value'  => $oldSellerId,
+            'new_value'  => $newSellerId,
+            'ip_address' => $ip,
+        ]);
+    }
+
+    /**
+     * Auditoría de Transferencias: historial de cambios de vendedor de clientes,
+     * acotado a los vendedores que el usuario puede ver (origen o destino).
+     */
+    public function transfersAudit(Request $request)
+    {
+        try {
+            $perPage = min(max((int) $request->input('per_page', 20), 1), 100);
+
+            $query = \App\Models\ClientHistory::query()
+                ->where('field', 'seller_id')
+                ->with(['client:id,name,dni', 'user:id,name']);
+
+            if (!\App\Support\Tenant::isSuperAdmin()) {
+                $sellerIds = \App\Support\Tenant::restrictedSellerIds();
+                if ($sellerIds === null) {
+                    $companyId = \App\Support\Tenant::currentCompanyId();
+                    $sellerIds = $companyId
+                        ? Seller::where('company_id', $companyId)->pluck('id')->all()
+                        : [];
+                }
+                $sellerIds = array_map('strval', $sellerIds ?: [-1]);
+                $query->where(function ($q) use ($sellerIds) {
+                    $q->whereIn('old_value', $sellerIds)->orWhereIn('new_value', $sellerIds);
+                });
+            }
+
+            $descending = filter_var($request->input('descending', true), FILTER_VALIDATE_BOOLEAN);
+            $history = $query->orderBy('created_at', $descending ? 'desc' : 'asc')
+                ->orderBy('id', $descending ? 'desc' : 'asc')
+                ->paginate($perPage);
+
+            // Nombres de vendedores en una sola consulta (sin N+1)
+            $ids = $history->getCollection()
+                ->flatMap(fn ($h) => [$h->old_value, $h->new_value])
+                ->filter()->unique()->values();
+            $names = Seller::withTrashed()->with('user:id,name')->whereIn('id', $ids)->get()
+                ->mapWithKeys(fn ($s) => [$s->id => optional($s->user)->name ?? "Vendedor #{$s->id}"]);
+
+            $items = $history->getCollection()->map(function ($h) use ($names) {
+                $row = $h->toArray();
+                $row['old_value_name'] = $names[(int) $h->old_value] ?? 'N/A';
+                $row['new_value_name'] = $names[(int) $h->new_value] ?? 'N/A';
+                return $row;
+            });
+
+            return $this->successResponse([
+                'success' => true,
+                'data' => [
+                    'data'         => $items,
+                    'current_page' => $history->currentPage(),
+                    'per_page'     => $history->perPage(),
+                    'total'        => $history->total(),
+                    'last_page'    => $history->lastPage(),
+                ],
+            ]);
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
+            throw $e;
+        } catch (\Exception $e) {
+            \Log::error('Error en auditoría de transferencias: ' . $e->getMessage());
+            return $this->errorResponse('Error al obtener la auditoría de transferencias', 500);
         }
     }
 
@@ -884,13 +974,17 @@ class ClientController extends Controller
                         : Client::where('uuid', $clientId)->first();
 
                     if ($client) {
+                        $oldSellerId = $client->seller_id;
                         $client->seller_id = $newSeller->id;
                         $client->transferred_at = now();
                         $client->save();
 
+                        $this->recordTransfer($client->id, $oldSellerId, $newSeller->id, $request->ip());
+
                         // Reasignar también los créditos del cliente para que la cartera
                         // y el recaudo sigan al nuevo vendedor (ver transfer()).
                         Credit::where('client_id', $client->id)
+                            ->toBase() // sin updated_at (ver transfer())
                             ->update(['seller_id' => $newSeller->id]);
 
                         $transferred++;

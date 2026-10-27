@@ -44,6 +44,48 @@ class EscalaRecaudo
         'verde' => ['texto' => '2E7D32', 'fondo' => 'DCF3DE'],
     ];
 
+    /** Los cuatro tramos en orden (la clave es la posición, no el color). */
+    public const TONOS = ['rojo', 'amarillo', 'azul', 'verde'];
+
+    /**
+     * Paleta de una meta de recaudo: texto y fondo de cada tramo, en hex SIN
+     * '#'. Sin colores propios devuelve COLORES tal cual; con colores propios,
+     * el texto es el color elegido y el fondo un tinte suave de ese mismo color
+     * (88 % hacia el blanco), como los de la paleta original.
+     *
+     * @param  array<string, string>|null  $colores  {"rojo": "#AABBCC", ...}
+     * @return array<string, array{texto: string, fondo: string}>
+     */
+    public static function paleta(?array $colores): array
+    {
+        $out = [];
+        foreach (self::TONOS as $tono) {
+            $hex = self::normalizarHex($colores[$tono] ?? null);
+            $out[$tono] = $hex
+                ? ['texto' => $hex, 'fondo' => self::tinte($hex, 0.88)]
+                : self::COLORES[$tono];
+        }
+        return $out;
+    }
+
+    /** "#c62828" / "C62828" → "C62828"; cualquier otra cosa → null. */
+    public static function normalizarHex(?string $hex): ?string
+    {
+        $hex = strtoupper(ltrim(trim((string) $hex), '#'));
+        return preg_match('/^[0-9A-F]{6}$/', $hex) ? $hex : null;
+    }
+
+    /** Mezcla el color con blanco: $cuanto = 0 el mismo color, 1 blanco. */
+    private static function tinte(string $hex, float $cuanto): string
+    {
+        $out = '';
+        foreach (str_split($hex, 2) as $canal) {
+            $v = hexdec($canal);
+            $out .= str_pad(dechex((int) round($v + (255 - $v) * $cuanto)), 2, '0', STR_PAD_LEFT);
+        }
+        return strtoupper($out);
+    }
+
     /** El primer tramo que contiene al monto. */
     public static function tono($monto): string
     {

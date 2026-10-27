@@ -338,6 +338,9 @@ class LiquidationService
             // firmados se saltean solos: la cascada no reescribe lo firmado.
             $this->recalculateNextLiquidations($liquidation->seller_id, $liquidation->date);
 
+            // Control de conciliación: solo compara y avisa, después de responder.
+            $this->avisarSiRecaudoNoCuadra($liquidation);
+
             return $this->successResponse([
                 'success' => true,
                 'message' => 'Liquidación cerrada y aprobada correctamente.',
@@ -347,6 +350,60 @@ class LiquidationService
             \Log::error("Error en approve: " . $e->getMessage());
             return $this->errorResponse('Error al aprobar la liquidación', 500);
         }
+    }
+
+    /**
+     * Control de conciliación al aprobar: compara el total_collected que quedó
+     * sellado en la liquidación contra la suma de pagos del día calculada con
+     * el criterio único (RecaudoVendedorService). Si difieren, deja registro en
+     * el log y avisa por Telegram.
+     *
+     * NO bloquea, NO corrige y NO cambia nada: solo detecta. Corre DESPUÉS de
+     * enviar la respuesta (afterResponse), así ni una consulta lenta ni un
+     * Telegram caído pueden demorar o hacer fallar una aprobación. Sirve para
+     * saber con evidencia si hay incongruencias antes de unificar los cálculos.
+     */
+    private function avisarSiRecaudoNoCuadra(Liquidation $liquidation): void
+    {
+        $id = $liquidation->id;
+
+        dispatch(function () use ($id) {
+            try {
+                $liq = Liquidation::with('seller.user:id,name')->find($id);
+                if (!$liq) {
+                    return;
+                }
+                $fecha = substr((string) $liq->date, 0, 10);
+                $pagos = app(\App\Services\RecaudoVendedorService::class)
+                    ->recaudoPagosDelDia((int) $liq->seller_id, $fecha);
+                $sellado = round((float) $liq->total_collected, 2);
+                $diferencia = round($sellado - $pagos, 2);
+
+                if (abs($diferencia) <= 0.01) {
+                    return;
+                }
+
+                $vendedor = optional(optional($liq->seller)->user)->name ?? "vendedor {$liq->seller_id}";
+                \Log::warning('Conciliación de recaudo: la liquidación no cuadra con los pagos', [
+                    'liquidation_id' => $liq->id,
+                    'seller_id' => $liq->seller_id,
+                    'fecha' => $fecha,
+                    'total_collected' => $sellado,
+                    'suma_pagos' => $pagos,
+                    'diferencia' => $diferencia,
+                ]);
+
+                app(\App\Services\TelegramService::class)->sendMessage(
+                    "⚠️ *Conciliación de recaudo*\n"
+                    . "Liquidación #{$liq->id} · {$vendedor} · {$fecha}\n"
+                    . "Sellado: {$sellado} · Pagos del día: {$pagos}\n"
+                    . "Diferencia: {$diferencia}",
+                    'conciliacion_recaudo'
+                );
+            } catch (\Throwable $e) {
+                \Log::warning('Conciliación de recaudo: no se pudo verificar la liquidación ' . $id . ': ' . $e->getMessage());
+            }
+        })->afterResponse();
     }
 
     public function approveMultiple($ids, $timezone = null)
@@ -397,6 +454,9 @@ class LiquidationService
 
                 // Los posteriores ya firmados se saltean solos.
                 $this->recalculateNextLiquidations($liquidation->seller_id, $liquidation->date);
+
+                // Control de conciliación: solo compara y avisa, después de responder.
+                $this->avisarSiRecaudoNoCuadra($liquidation);
             }
 
             return $this->successResponse([
@@ -2335,8 +2395,16 @@ class LiquidationService
         $companyId = null,
         $sellerIds = null,
         $cityId = null,
-        $sellerId = null
+        $sellerId = null,
+        ?array $soloIds = null,
+        ?string $filtros = null
     ): array {
+        // $soloIds / $filtros: la descarga respeta los filtros de la pantalla.
+        // $soloIds son las rutas (nivel city) o los vendedores (nivel seller)
+        // que se están viendo. Solo ACHICAN el resultado: se aplican sobre las
+        // filas que ya pasaron el recorte por empresa/usuario, así nunca pueden
+        // traer filas ajenas. $filtros es el texto que se imprime en el
+        // encabezado para que el archivo no se confunda con el reporte completo.
         $etiquetaPrimera = ['city' => 'Ciudad/Ruta', 'seller' => 'Vendedor', 'day' => 'Fecha'][$level] ?? null;
 
         if ($etiquetaPrimera === null) {
@@ -2355,6 +2423,15 @@ class LiquidationService
             $filas = $this->getSellerLiquidationsDetail($sellerId, $startDate, $endDate);
             $primera = fn ($f) => Carbon::parse($f->date)->format('d/m/Y');
             $titulo = 'Liquidaciones de ' . ($filas->first()->seller->user->name ?? 'vendedor');
+        }
+
+        // Filtros de la pantalla. Se aplican ANTES de armar filas y totales:
+        // así el pie suma solo lo que se descarga.
+        $totalSinFiltrar = $filas->count();
+        if ($soloIds !== null && in_array($level, ['city', 'seller'], true)) {
+            $clave = $level === 'city' ? 'city_id' : 'seller_id';
+            $permitidos = array_flip(array_map('intval', $soloIds));
+            $filas = $filas->filter(fn ($f) => isset($permitidos[(int) ($f->{$clave} ?? 0)]))->values();
         }
 
         $columnas = [
@@ -2382,8 +2459,10 @@ class LiquidationService
         if ($level !== 'day') {
             $columnas[] = 'Con Crédito Activo';
             $columnas[] = 'Sin Crédito';
+            $columnas[] = 'Morosos';
             $campos[] = 'clients_with_active_credit';
             $campos[] = 'clients_without_credit';
+            $campos[] = 'delinquent_clients';
         }
 
         $columnas[] = 'Caja Inicial';
@@ -2392,7 +2471,7 @@ class LiquidationService
         // Los conteos son enteros, no dinero: se redondean y no llevan símbolo.
         $camposEnteros = [
             'new_clients', 'settled_clients', 'additional_clients',
-            'clients_with_active_credit', 'clients_without_credit',
+            'clients_with_active_credit', 'clients_without_credit', 'delinquent_clients',
         ];
 
         $rows = [];
@@ -2422,11 +2501,45 @@ class LiquidationService
         // Tono de recaudo por fila, SOLO en el nivel vendedor: la escala es una
         // vara pensada para lo que recauda una persona. Aplicarla a una ruta
         // —que suma varios vendedores— daría verde siempre y no diría nada.
+        // El tono ya viene resuelto en cada fila con la meta de su empresa y
+        // moneda (attachCollectionTone). null = su moneda no tiene meta: la
+        // fila sale sin color.
         $tonos = [];
+        $leyenda = [];
         if ($level === 'seller') {
-            foreach ($rows as $fila) {
-                // Índice 2 = Total Recaudado (0 es el nombre, 1 la moneda).
-                $tonos[] = \App\Support\EscalaRecaudo::tono($fila[2]);
+            foreach ($filas as $f) {
+                $tonos[] = $f->collection_tone ?? null;
+                // Colores de ESA fila según la paleta de su meta (puede ser propia).
+                $tono = $f->collection_tone ?? null;
+                $pal = $tono ? ($f->collection_scale['palette'][$tono] ?? null) : null;
+                $coloresFila[] = $pal
+                    ? ['texto' => ltrim($pal['texto'], '#'), 'fondo' => ltrim($pal['fondo'], '#')]
+                    : null;
+
+                // Una referencia por meta usada: la general de cada moneda y las
+                // propias de los vendedores que las tengan. Cada fila se mide
+                // con su vara.
+                $esc = $f->collection_scale ?? null;
+                if ($esc) {
+                    $quien = $esc['scope'] === 'seller'
+                        ? ($esc['seller_name'] ?? 'Vendedor') . ' (' . $esc['currency'] . ')'
+                        : $esc['currency'];
+                    // Las generales primero (por moneda), luego las propias.
+                    $clave = ($esc['scope'] === 'seller' ? '1|' : '0|') . $quien;
+                    if (!isset($leyenda[$clave])) {
+                        $leyenda[$clave] = array_map(fn ($t) => [
+                            'tono' => $t['tono'],
+                            'etiqueta' => $quien . ' ' . $t['etiqueta'],
+                            'texto' => ltrim($t['texto'], '#'),
+                            'fondo' => ltrim($t['fondo'], '#'),
+                        ], $esc['legend']);
+                        $leyendaTitulos[$clave] = $quien . ': ' . $esc['period_label'];
+                    }
+                }
+            }
+            ksort($leyenda);
+            if (isset($leyendaTitulos)) {
+                ksort($leyendaTitulos);
             }
         }
 
@@ -2445,10 +2558,47 @@ class LiquidationService
             $filasTotales[] = array_merge(['Total ' . $moneda, $moneda], array_values($suma));
         }
 
+        // Nivel vendedor: qué meta se le aplicó a cada uno y el valor que se
+        // comparó contra ella, para que el archivo se entienda sin la pantalla.
+        // Van AL FINAL para no correr los índices de las columnas de dinero.
+        if ($level === 'seller') {
+            $columnas[] = 'Meta aplicada';
+            $columnas[] = 'Valor comparado';
+            // La meta es SUPERAR el techo del azul, igual que en pantalla y en
+            // la barra del cobrador; el % sale del mismo valor comparado.
+            $columnas[] = 'Meta';
+            $columnas[] = '% de la meta';
+            $unidades = ['daily' => ' / día', 'weekly' => ' / sem', 'monthly' => ' / mes', 'range' => ''];
+            $tipos = ['daily' => 'Diaria', 'weekly' => 'Semanal', 'monthly' => 'Mensual', 'range' => 'Período'];
+
+            foreach (array_values($filas->all()) as $i => $f) {
+                $esc = $f->collection_scale ?? null;
+                if (!$esc) {
+                    array_push($rows[$i], 'Sin meta', '', '', '');
+                    continue;
+                }
+                $sufijo = $unidades[$esc['period_type']] ?? '';
+                $meta = (float) $esc['cut_blue'];
+                $rows[$i][] = ($esc['scope'] === 'seller' ? 'Propia' : 'General ' . $esc['currency'])
+                    . ' · ' . ($tipos[$esc['period_type']] ?? $esc['period_type']);
+                $rows[$i][] = \App\Support\FormatoMoneda::formatear($f->collection_value, $esc['currency']) . $sufijo;
+                $rows[$i][] = \App\Support\FormatoMoneda::formatear($meta, $esc['currency']) . $sufijo;
+                $rows[$i][] = $meta > 0 ? round((float) $f->collection_value / $meta * 100) . ' %' : '';
+            }
+            foreach ($filasTotales as $i => $t) {
+                array_push($filasTotales[$i], '', '', '', '');
+            }
+        }
+
         return [
             'title' => $titulo,
             'subtitle' => 'Del ' . Carbon::parse($startDate)->format('d/m/Y')
-                . ' al ' . Carbon::parse($endDate)->format('d/m/Y'),
+                . ' al ' . Carbon::parse($endDate)->format('d/m/Y')
+                . ($soloIds !== null && in_array($level, ['city', 'seller'], true)
+                    ? ' · Filtrado: ' . ($filtros ? trim($filtros) . ' · ' : '')
+                        . $filas->count() . ' de ' . $totalSinFiltrar
+                        . ($level === 'city' ? ' rutas' : ' vendedores')
+                    : ''),
             'generated_at' => Carbon::now()->format('d/m/Y H:i'),
             'columns' => $columnas,
             'rows' => $rows,
@@ -2462,7 +2612,12 @@ class LiquidationService
             // Color por fila y su referencia. Vacíos fuera del nivel vendedor,
             // así el Excel y el PDF no necesitan preguntar de qué nivel vienen.
             'row_tones' => $tonos,
-            'tone_legend' => $tonos ? \App\Support\EscalaRecaudo::leyenda() : [],
+            // Texto y fondo de cada fila (hex sin #), con la paleta de su meta.
+            'row_colors' => $coloresFila ?? [],
+            // Lista plana (moneda + tramo) para el Excel, que la dibuja en una
+            // fila; y los títulos por moneda ("ARS: Meta diaria…") para el PDF.
+            'tone_legend' => array_merge([], ...array_values($leyenda)),
+            'tone_legend_titles' => array_values($leyendaTitulos ?? []),
             'tone_colors' => \App\Support\EscalaRecaudo::COLORES,
         ];
     }
@@ -2965,6 +3120,388 @@ class LiquidationService
                       ->whereNull('p2.deleted_at');
                 });
           });
+    }
+
+    /**
+     * Crédito EN MORA al corte: vivo al corte (creditoVivoAlCorte) y con al
+     * menos una cuota que, a esa fecha, llevaba MÁS DE 1 DÍA vencida sin
+     * pagarse completa. Es el mismo umbral que el reporte de Morosos
+     * (ClientService::getDebtorCredits: días de mora > 1).
+     *
+     * Se reconstruye a la fecha de corte, no con el estado de hoy: lo pagado de
+     * cada cuota sale de payment_installments filtrando los pagos con
+     * business_date <= corte. installments.status / paid_amount son el estado de
+     * HOY y harían que un cliente que pagó después del corte desaparezca de un
+     * rango pasado. (Medido: en las cuotas vivas, lo aplicado en
+     * payment_installments coincide con paid_amount salvo 1 de 192.781.)
+     *
+     * Cómo se calcula lo pagado de una cuota AL CORTE sin sumar todo el
+     * historial de pagos (eso tardaba 51 s para todas las empresas):
+     *
+     *   pagado al corte = paid_amount (hoy) − lo aplicado DESPUÉS del corte
+     *
+     * Una cuota estaba impaga al corte si hoy sigue impaga, o si recibió algo
+     * después del corte y descontándolo quedaba saldo.
+     *
+     * Va en DOS PASOS y por conjuntos, por rendimiento:
+     *  1. Créditos del alcance con alguna cuota vencida impaga al corte. Lo
+     *     aplicado después del corte se agrupa por cuota en una sola pasada
+     *     (índice de payments.business_date). Son pocos: ~9 mil en todo el
+     *     sistema, segundos.
+     *  2. Recién sobre ESOS ids se aplica creditoVivoAlCorte(). Ese filtro, el
+     *     mismo de "Con Crédito Activo", es caro con cortes viejos (133 s para
+     *     todas las empresas un mes atrás) porque recorre todos los créditos;
+     *     restringido a los candidatos deja de serlo.
+     * Todo junto en una consulta, o correlacionado por cuota, tardaba de 51 a
+     * 184 s.
+     *
+     * OJO: las listas de ids van con whereIntegerInRaw, no whereIn. Con miles
+     * de ids como parámetros enlazados MySQL descarta la clave primaria y
+     * recorre la tabla (medido: 26 s contra 0,16 s para 5.000 ids). Es seguro:
+     * los ids son enteros que salen de la propia base.
+     *
+     * Vive en un solo lugar porque lo usan el conteo y el detalle.
+     *
+     * @return array<int, int> ids de créditos en mora al corte
+     */
+    private function idsCreditosEnMoraAlCorte(string $cut, $companyId = null, $sellerIds = null, $cityId = null): array
+    {
+        // "Más de 1 día vencida" = vencimiento como mucho dos días antes del
+        // corte. El corte ya es fecha de negocio (zona del vendedor).
+        $vencidaHasta = Carbon::parse($cut)->subDays(2)->format('Y-m-d');
+
+        // Paso 1: candidatos, ya recortados al alcance (empresa / vendedores /
+        // ruta) desde el principio, para que el reporte de un vendedor no mire
+        // todo el sistema. Son dos casos y cada uno es una consulta barata:
+        $alcance = function ($q) use ($companyId, $sellerIds, $cityId) {
+            $q->join('clients as cl2', 'cl2.id', '=', 'cc.client_id')
+              ->join('sellers as s2', 's2.id', '=', 'cl2.seller_id')
+              ->whereNull('cc.deleted_at')
+              // Estados que creditoVivoAlCorte() descarta siempre: filtrarlos
+              // acá achica el conjunto sin cambiar el resultado.
+              ->whereNotIn('cc.status', ['Renovado', 'Unificado', 'Cartera Irrecuperable'])
+              ->when($companyId !== null, fn ($w) => $w->where('s2.company_id', $companyId))
+              ->when($sellerIds !== null, fn ($w) => $w->whereIn('s2.id', $sellerIds))
+              ->when($cityId !== null, fn ($w) => $w->where('s2.city_id', $cityId));
+        };
+
+        // (a) Cuotas vencidas que HOY siguen con saldo: sin pagos posteriores
+        //     al corte, también lo tenían al corte.
+        $impagasHoy = DB::table('installments as i')
+            ->join('credits as cc', 'cc.id', '=', 'i.credit_id')
+            ->whereNull('i.deleted_at')
+            ->where('i.due_date', '<=', $vencidaHasta)
+            ->whereRaw('i.quota_amount - i.paid_amount > 0.01');
+        $alcance($impagasHoy);
+
+        // (b) Cuotas vencidas que recibieron pagos DESPUÉS del corte y,
+        //     descontándolos, tenían saldo al corte. En dos consultas simples
+        //     para que MySQL arranque por los pagos posteriores (índice de
+        //     business_date): unida a cuotas y créditos elegía mal el orden y
+        //     tardaba hasta un minuto.
+        $post = $this->aplicadoDespuesDelCortePorCuota($cut, $companyId, $sellerIds, $cityId);
+        $pagadasDespues = [];
+        foreach (array_chunk(array_keys($post), 5000) as $tanda) {
+            $cuotas = DB::table('installments as i')
+                ->join('credits as cc', 'cc.id', '=', 'i.credit_id')
+                ->whereIntegerInRaw('i.id', $tanda)
+                ->whereNull('i.deleted_at')
+                ->whereNull('cc.deleted_at')
+                ->whereNotIn('cc.status', ['Renovado', 'Unificado', 'Cartera Irrecuperable'])
+                ->where('i.due_date', '<=', $vencidaHasta)
+                ->get(['i.id', 'i.credit_id', 'i.quota_amount', 'i.paid_amount']);
+            foreach ($cuotas as $cu) {
+                if ((float) $cu->quota_amount - (float) $cu->paid_amount + $post[$cu->id] > 0.01) {
+                    $pagadasDespues[] = $cu->credit_id;
+                }
+            }
+        }
+
+        $candidatos = array_values(array_unique(array_merge(
+            $impagasHoy->distinct()->pluck('i.credit_id')->all(),
+            $pagadasDespues
+        )));
+
+        if (empty($candidatos)) {
+            return [];
+        }
+
+        // Paso 2: de esos, los vivos al corte. Por tandas, para no armar un IN
+        // con decenas de miles de ids en una sola consulta.
+        $ids = [];
+        foreach (array_chunk($candidatos, 5000) as $tanda) {
+            $q = DB::table('credits as c')->whereIntegerInRaw('c.id', $tanda)->select('c.id');
+            $this->creditoVivoAlCorte($q, $cut);
+            array_push($ids, ...$q->pluck('c.id')->all());
+        }
+
+        return array_map('intval', $ids);
+    }
+
+    /**
+     * Lo aplicado a cada cuota por pagos con fecha de negocio posterior al
+     * corte, recortado al alcance por el crédito del pago.
+     *
+     * @return array<int, float> installment_id => monto aplicado después del corte
+     */
+    private function aplicadoDespuesDelCortePorCuota(string $cut, $companyId = null, $sellerIds = null, $cityId = null): array
+    {
+        $q = DB::table('payments as p')
+            ->join('payment_installments as pi', 'pi.payment_id', '=', 'p.id')
+            ->whereNull('p.deleted_at')
+            ->whereNull('pi.deleted_at')
+            ->where('p.business_date', '>', $cut);
+
+        if ($companyId !== null || $sellerIds !== null || $cityId !== null) {
+            $q->join('credits as pc', 'pc.id', '=', 'p.credit_id')
+              ->join('clients as pcl', 'pcl.id', '=', 'pc.client_id')
+              ->join('sellers as ps', 'ps.id', '=', 'pcl.seller_id')
+              ->when($companyId !== null, fn ($w) => $w->where('ps.company_id', $companyId))
+              ->when($sellerIds !== null, fn ($w) => $w->whereIn('ps.id', $sellerIds))
+              ->when($cityId !== null, fn ($w) => $w->where('ps.city_id', $cityId));
+        }
+
+        // Alias explícito: pluck() sobre una expresión SUM(...) no encuentra la
+        // columna y devuelve nulos.
+        return array_map(
+            'floatval',
+            $q->groupBy('pi.installment_id')
+              ->select('pi.installment_id', DB::raw('SUM(pi.applied_amount) as aplicado'))
+              ->pluck('aplicado', 'installment_id')
+              ->all()
+        );
+    }
+
+    /**
+     * Clientes MOROSOS por vendedor al cierre del rango: clientes activos con al
+     * menos un crédito en mora (idsCreditosEnMoraAlCorte). Mismo alcance que
+     * getClientCreditStateBySeller, así un moroso siempre es también un
+     * "Con Crédito Activo" del mismo vendedor.
+     *
+     * @return array<int, int> seller_id => cantidad de clientes morosos
+     */
+    public function getDelinquentClientsBySeller($endDate, $companyId = null, $sellerIds = null, $cityId = null): array
+    {
+        return $this->countDelinquentClients('s.id', $endDate, $companyId, $sellerIds, $cityId);
+    }
+
+    /**
+     * Igual que getDelinquentClientsBySeller(), agrupado por CIUDAD (ruta). Cada
+     * cliente es de un solo vendedor y cada vendedor de una sola ciudad, así que
+     * los vendedores de una ruta suman exactamente el número de la ruta.
+     *
+     * @return array<int, int> city_id => cantidad de clientes morosos
+     */
+    public function getDelinquentClientsByCity($endDate, $companyId = null, $sellerIds = null): array
+    {
+        return $this->countDelinquentClients('s.city_id', $endDate, $companyId, $sellerIds);
+    }
+
+    /** Conteo de clientes morosos al corte, agrupado por la columna indicada. */
+    private function countDelinquentClients(string $groupBy, $endDate, $companyId = null, $sellerIds = null, $cityId = null): array
+    {
+        $cut = Carbon::parse($endDate)->format('Y-m-d');
+        $this->assertDateFormat($cut);
+
+        $enMora = $this->idsCreditosEnMoraAlCorte($cut, $companyId, $sellerIds, $cityId);
+        if (empty($enMora)) {
+            return [];
+        }
+
+        // Créditos → clientes → grupo, en búsquedas por clave primaria. Unido en
+        // una sola consulta con un IN largo, MySQL recorría clientes y vendedores
+        // primero y tardaba casi un minuto para todas las empresas.
+        $clientIds = [];
+        foreach (array_chunk($enMora, 5000) as $tanda) {
+            foreach (DB::table('credits')->whereIntegerInRaw('id', $tanda)->pluck('client_id') as $cid) {
+                $clientIds[$cid] = true;
+            }
+        }
+
+        $out = [];
+        foreach (array_chunk(array_keys($clientIds), 5000) as $tanda) {
+            $filas = DB::table('clients as cl')
+                ->join('sellers as s', 's.id', '=', 'cl.seller_id')
+                ->whereIntegerInRaw('cl.id', $tanda)
+                ->whereNull('cl.deleted_at')
+                ->whereNull('s.deleted_at')
+                ->where('cl.status', 'active')
+                ->pluck($groupBy . ' as grupo');
+            // Cada id de cliente aparece una sola vez: contar filas es contar
+            // clientes, sin doble conteo entre tandas.
+            foreach ($filas as $grupo) {
+                $out[$grupo] = ($out[$grupo] ?? 0) + 1;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Pega sobre cada fila de vendedor el tono de la escala de recaudo de su
+     * empresa y moneda (CollectionScaleService):
+     *   - collection_tone:  rojo | amarillo | azul | verde, o null si su moneda
+     *                       no tiene meta configurada (fila sin color).
+     *   - collection_value: el recaudo llevado a la unidad de la meta (promedio
+     *                       diario, ritmo semanal/mensual o total del período).
+     *   - collection_scale: cortes, tipo y leyenda, para dibujar la referencia.
+     */
+    private function attachCollectionTone($rows, string $start, string $end)
+    {
+        $svc = app(\App\Services\CollectionScaleService::class);
+        $scales = $svc->scalesFor($rows->pluck('company_id')->all());
+        $rangeDays = \App\Services\CollectionScaleService::rangeDays($start, $end);
+
+        return $rows->map(function ($row) use ($svc, $scales, $rangeDays) {
+            // La meta propia del vendedor manda sobre la general de su moneda.
+            $scale = $svc->scaleForSeller($scales, $row->seller_id, $row->company_id ?? null, $row->currency ?? null);
+            $r = $svc->evaluate($scale, (float) $row->total_collected, (int) ($row->worked_days ?? 0), $rangeDays);
+            $row->collection_tone = $r['tone'];
+            $row->collection_value = $r['value'];
+            $row->collection_scale = $r['scale'];
+            return $row;
+        });
+    }
+
+    /** Pega "delinquent_clients" sobre cada fila; sin datos queda en cero explícito. */
+    private function attachDelinquentClients($rows, array $morosos, string $keyField)
+    {
+        return $rows->map(function ($row) use ($morosos, $keyField) {
+            $id = is_array($row) ? ($row[$keyField] ?? null) : ($row->{$keyField} ?? null);
+            $n = $id !== null ? ($morosos[$id] ?? 0) : 0;
+            if (is_array($row)) {
+                $row['delinquent_clients'] = $n;
+            } else {
+                $row->delinquent_clients = $n;
+            }
+            return $row;
+        });
+    }
+
+    /**
+     * Los clientes que hay detrás del número "Morosos" de un vendedor, con sus
+     * créditos en mora, cuánto debían vencido al corte y los días de atraso de
+     * la cuota impaga más vieja. Mismo predicado que el conteo.
+     */
+    public function getDelinquentClientsDetail($endDate, $companyId = null, $sellerIds = null, $cityId = null): array
+    {
+        $cut = Carbon::parse($endDate)->format('Y-m-d');
+        $this->assertDateFormat($cut);
+        $vencidaHasta = Carbon::parse($cut)->subDays(2)->format('Y-m-d');
+
+        $creditos = DB::table('credits as c')
+            ->join('clients as cl', 'cl.id', '=', 'c.client_id')
+            ->join('sellers as s', 's.id', '=', 'cl.seller_id')
+            ->join('users as u', 'u.id', '=', 's.user_id')
+            ->join('cities as ci', 'ci.id', '=', 's.city_id')
+            ->select(
+                'c.id as credit_id',
+                'c.credit_value',
+                'c.total_amount',
+                'c.business_date',
+                'cl.id as client_id',
+                'cl.name as client_name',
+                'cl.dni',
+                'cl.phone',
+                'u.name as seller_name',
+                'ci.name as city_name'
+            )
+            ->whereNull('cl.deleted_at')
+            ->whereNull('s.deleted_at')
+            ->where('cl.status', 'active');
+
+        if ($companyId !== null) {
+            $creditos->where('s.company_id', $companyId);
+        }
+        if ($sellerIds !== null) {
+            $creditos->whereIn('s.id', $sellerIds);
+        }
+        if ($cityId !== null) {
+            $creditos->where('s.city_id', $cityId);
+        }
+
+        $enMora = $this->idsCreditosEnMoraAlCorte($cut, $companyId, $sellerIds, $cityId);
+        if (empty($enMora)) {
+            return [];
+        }
+        // El detalle es de una ruta o un vendedor: pocos ids, un solo IN.
+        $creditos = $creditos->whereIntegerInRaw('c.id', $enMora)->get();
+
+        if ($creditos->isEmpty()) {
+            return [];
+        }
+
+        // Cuotas vencidas de esos créditos con lo que se les había aplicado al
+        // corte. Una sola consulta para todos: son pocos créditos (solo los
+        // morosos del alcance) y así no hay N+1.
+        // Pagado al corte = paid_amount de hoy − lo aplicado después del corte
+        // (mismo criterio que idsCreditosEnMoraAlCorte).
+        $post = $this->aplicadoDespuesDelCortePorCuota($cut, $companyId, $sellerIds, $cityId);
+        $cuotas = DB::table('installments as i')
+            ->whereIntegerInRaw('i.credit_id', $creditos->pluck('credit_id')->all())
+            ->whereNull('i.deleted_at')
+            ->where('i.due_date', '<=', $vencidaHasta)
+            ->orderBy('i.due_date')
+            ->get(['i.id', 'i.credit_id', 'i.due_date', 'i.quota_amount', 'i.paid_amount'])
+            ->map(function ($cu) use ($post) {
+                $cu->aplicado = (float) $cu->paid_amount - ($post[$cu->id] ?? 0);
+                return $cu;
+            })
+            ->groupBy('credit_id');
+
+        $corte = Carbon::parse($cut)->startOfDay();
+
+        // Una fila por CLIENTE (como las otras columnas de estado), sumando sus
+        // créditos en mora.
+        return $creditos->groupBy('client_id')->map(function ($deCliente) use ($cuotas, $corte) {
+            $primero = $deCliente->first();
+            $vencido = 0.0;
+            $cuotasVencidas = 0;
+            $masVieja = null;
+
+            foreach ($deCliente as $cr) {
+                foreach ($cuotas->get($cr->credit_id, collect()) as $cu) {
+                    $saldo = (float) $cu->quota_amount - (float) $cu->aplicado;
+                    if ($saldo <= 0.01) {
+                        continue;
+                    }
+                    $vencido += $saldo;
+                    $cuotasVencidas++;
+                    if ($masVieja === null || $cu->due_date < $masVieja) {
+                        $masVieja = $cu->due_date;
+                    }
+                }
+            }
+
+            $creditIds = $deCliente->sortByDesc('business_date')->pluck('credit_id')->map(fn ($id) => (int) $id)->values()->all();
+
+            return [
+                'client_id' => (int) $primero->client_id,
+                // El modal usa credit_id como key; la fila es el cliente.
+                'credit_id' => (int) $primero->client_id,
+                'client_name' => $primero->client_name,
+                'dni' => $primero->dni,
+                'phone' => $primero->phone,
+                'seller_name' => $primero->seller_name,
+                'city_name' => $primero->city_name,
+                'credit_ids' => $creditIds,
+                'creditos_vivos' => count($creditIds),
+                'credit_value' => round((float) $deCliente->sum('credit_value'), 2),
+                'total_amount' => round((float) $deCliente->sum('total_amount'), 2),
+                'business_day' => $deCliente->max('business_date'),
+                'overdue_amount' => round($vencido, 2),
+                'overdue_installments' => $cuotasVencidas,
+                'days_overdue' => $masVieja
+                    ? (int) Carbon::parse($masVieja)->startOfDay()->diffInDays($corte)
+                    : 0,
+                'credit_status' => null,
+                'creditos_previos' => null,
+            ];
+        })
+            // Los más atrasados primero: es lo que se sale a cobrar.
+            ->sortByDesc('days_overdue')
+            ->values()
+            ->all();
     }
 
     /**
@@ -3502,6 +4039,10 @@ class LiquidationService
         $clientState = $this->getClientCreditStateByCity($endUTC, $companyId, $sellerIds);
         $result = $this->attachClientCreditState($result, $clientState, 'city_id');
 
+        // Clientes morosos al cierre, por ruta (misma foto del último día).
+        $morosos = $this->getDelinquentClientsByCity($endUTC, $companyId, $sellerIds);
+        $result = $this->attachDelinquentClients($result, $morosos, 'city_id');
+
         \Log::debug("getAccumulatedByCity - Resultado:", ['count' => $result->count(), 'data' => $result]);
         return $result;
     }
@@ -3610,7 +4151,11 @@ class LiquidationService
                 DB::raw('SUM(liquidations.shortage) as shortage'),
                 DB::raw('SUM(liquidations.surplus) as surplus'),
                 DB::raw('SUM(liquidations.cash_delivered) as cash_delivered'),
-                DB::raw('COUNT(liquidations.id) as liquidation_count')
+                DB::raw('COUNT(liquidations.id) as liquidation_count'),
+                // Para la meta de recaudo por moneda: la empresa del vendedor
+                // elige la escala y los días trabajados alimentan la meta diaria.
+                'sellers.company_id',
+                DB::raw('COUNT(DISTINCT DATE(liquidations.date)) as worked_days')
             )
             ->where('cities.id', $cityId)
             ->whereNull('liquidations.deleted_at')
@@ -3647,8 +4192,15 @@ class LiquidationService
         // porque no cuenta lo que pasó en el período —eso son las columnas de
         // colocación— sino cómo quedó la cartera del vendedor el último día.
         $clientState = $this->getClientCreditStateBySeller($endUTC, $companyId, $sellerIds, $cityId);
+        $result = $this->attachClientCreditState($result, $clientState, 'seller_id');
 
-        return $this->attachClientCreditState($result, $clientState, 'seller_id');
+        // Clientes morosos al cierre (misma foto del último día del rango).
+        $morosos = $this->getDelinquentClientsBySeller($endUTC, $companyId, $sellerIds, $cityId);
+        $result = $this->attachDelinquentClients($result, $morosos, 'seller_id');
+
+        // Tono de recaudo según la meta de SU empresa y SU moneda. Se resuelve
+        // acá para que la pantalla, el Excel, el PDF y el WhatsApp digan lo mismo.
+        return $this->attachCollectionTone($result, $startUTC, $endUTC);
     }
 
     public function getSellerLiquidationsDetail($sellerId, $startDate, $endDate)
