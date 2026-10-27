@@ -54,13 +54,40 @@ class ExpenseController extends Controller
     public function update(Request $request, $id)
     {
         \App\Support\Tenant::assertExpenseInScope($id);
+        if ($blocked = $this->blockPayrollExpense($id, 'editar')) {
+            return $blocked;
+        }
         return $this->expenseService->update($request, $id);
     }
 
     public function destroy($id)
     {
         \App\Support\Tenant::assertExpenseInScope($id);
+        if ($blocked = $this->blockPayrollExpense($id, 'eliminar')) {
+            return $blocked;
+        }
         return $this->expenseService->delete($id);
+    }
+
+    /**
+     * El gasto con el que la nómina sale de la caja del cobrador solo lo
+     * gestionan el Super-Admin y el Admin (roles 1 y 2). El resto lo veía con
+     * candado en "Gastos del día", pero el bloqueo era solo de pantalla.
+     * Va aquí y no en ExpenseService: "Anular" de Nómina borra el gasto
+     * llamando al servicio directamente y debe seguir funcionando.
+     */
+    private function blockPayrollExpense($expenseId, string $accion)
+    {
+        if (in_array(auth()->user()?->role_id, [1, 2])) {
+            return null;
+        }
+        if (!\App\Models\PayrollItem::where('expense_id', $expenseId)->exists()) {
+            return null;
+        }
+        return response()->json([
+            'success' => false,
+            'message' => "No puede {$accion} el pago de nómina: lo gestiona el administrador desde Nómina, él lo aprueba o lo rechaza.",
+        ], 403);
     }
 
     public function changeStatus(Request $request, $expenseId, $status)
